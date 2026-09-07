@@ -1920,7 +1920,7 @@
             <button id="rerun-tests-btn" onclick="rerunTests()"
               style="border:none; background:var(--success); color:#1a0a00; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
               onmouseover="this.style.opacity='0.85'"
-              onmouseout="this.style.opacity='1'">&#x21bb; Rerun Tests</button>
+              onmouseout="this.style.opacity='1'">↻ Rerun Tests</button>
           </div>
         </div>
 
@@ -4855,7 +4855,7 @@
         });
         const data = await res.json();
         if (!data.ok || !data.jobId) {
-          btn.textContent = '&#x21bb; Rerun Tests';
+          btn.textContent = '↻ Rerun Tests';
           btn.style.display = 'inline-block';
           return;
         }
@@ -4897,7 +4897,7 @@
         btn.onclick = () => rerunTests();
         setTimeout(() => {
           if (btn) {
-            btn.textContent = '&#x21bb; Rerun Tests';
+            btn.textContent = '↻ Rerun Tests';
             btn.style.background = 'var(--success)';
             btn.onclick = () => rerunTests();
           }
@@ -4948,13 +4948,13 @@
           btn.textContent = '&#x21bb; Cancelled';
           btn.style.background = 'var(--text-muted)';
         } else {
-          btn.textContent = '&#x21bb; Rerun Tests';
+          btn.textContent = '↻ Rerun Tests';
           btn.style.background = 'var(--success)';
         }
         btn.onclick = () => rerunTests();
         setTimeout(() => {
           if (btn) {
-            btn.textContent = '&#x21bb; Rerun Tests';
+            btn.textContent = '↻ Rerun Tests';
             btn.style.background = 'var(--success)';
             btn.onclick = () => rerunTests();
           }
