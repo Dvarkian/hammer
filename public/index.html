@@ -275,6 +275,33 @@
       cursor: grabbing;
     }
 
+    /* Side-by-side plots row: the provider/model network plot and the
+       Intelligence-vs-speed scatter share one row on wide screens and stack
+       on narrow ones. */
+    .plots-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    @media (max-width: 900px) {
+      .plots-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    #speed-intell-svg {
+      opacity: 1;
+      pointer-events: all;
+      cursor: crosshair;
+    }
+
+    /* Slope-line selector: threshold lines are draggable via fat invisible hit
+       lines that carry a data-sel-drag attribute. */
+    [data-sel-drag="minIntell"] { cursor: ns-resize; }
+    [data-sel-drag="minSpeed"] { cursor: ew-resize; }
+
     .kpi-content {
       position: relative;
       z-index: 1;
@@ -1793,6 +1820,7 @@
     </div>
 
     <div class="kpi-grid">
+      <div class="plots-grid">
       <div class="kpi-card topology-card">
         <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
         <div class="kpi-content">
@@ -1824,6 +1852,28 @@
             </div>
           </div>
         </div>
+      </div>
+
+      <div class="kpi-card topology-card">
+        <svg class="kpi-bg-svg" id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="kpi-content">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <div class="kpi-label" style="margin:0;">Intelligence vs Speed</div>
+            <span class="kpi-value" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;">—</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:5px;">
+            <label class="switch" title="Route smartest traffic using the slope line" style="margin:0;">
+              <input type="checkbox" id="sel-enabled">
+              <span class="slider"></span>
+            </label>
+            <span class="kpi-label" style="margin:0; white-space:nowrap;">Slope</span>
+            <input type="range" id="sel-slope-slider" min="0" max="1000" value="0"
+              style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, higher values trade intelligence for speed">
+            <span class="kpi-value" id="sel-slope-value" style="font-size:0.72rem; min-width:34px; text-align:right;">—</span>
+          </div>
+          <div class="kpi-value" id="sel-pick" style="font-size:0.76rem; margin-top:3px;">—</div>
+        </div>
+      </div>
       </div>
     </div>
 
@@ -2243,6 +2293,15 @@
     let activePinnedProviderKey = null;
     let activePinnedRowKeys = []; // resolved pinned rows from server/client
     let pinningMode = 'canonical';
+
+    // Slope-line selector (Intelligence-vs-Speed plot → smartest routing).
+    // Mirrors the server-side selectModelBySlope() pick so the plot is a live
+    // preview of what the router will select when no model is manually pinned.
+    let selectorState = { enabled: false, slope: null, minSpeed: null, minIntell: null };
+    let selectorSaveTimer = null;
+    let scatterDrag = null;       // active threshold-line drag
+    let scatterScales = null;     // plot extents, refreshed by every draw
+    let selectorSlopeMax = 0;     // data-derived slider scale (2 * ySpan / xSpan)
     let isTableHovered = false;
     let metaLoaded = false;
     let logsViewMode = 'history';
@@ -2254,6 +2313,9 @@
     let kiroDevicePollTimer = null;
     let kiroBrowserAuthState = null;
     let kiroUiMessage = null;
+    let devinOAuthState = null;
+    let devinOAuthPollTimer = null;
+    let devinUiMessage = null;
     let chatMessages = [];
     let chatInFlight = false;
     let chatSelectedModel = 'smartest';
@@ -2576,6 +2638,440 @@
       document.getElementById('kpi-best').textContent = bestModel ? bestModel.label : 'None Online';
 
       drawBipartiteTopology(models, bestModel);
+      drawSpeedIntellScatter(models);
+    }
+
+    // Intelligence vs. speed scatter — one dot per model/provider combination
+    // (each row of the live models list, the same rows behind the main table's
+    // TTFT / Tok/s columns).
+    //   y = intelligence: the same benchmark value the Intelligence column sorts by
+    //   x = speed       : 1 / (TTFT + 1000 / tok-per-s), higher = faster overall
+    // Dots are colored per provider (stable hue) so multi-provider duplicates of
+    // the same model are distinguishable; hover a dot for its tooltip.
+    function drawSpeedIntellScatter(models) {
+      const svg = document.getElementById('speed-intell-svg');
+      if (!svg) return;
+      const card = svg.parentElement;
+      const W = card ? card.clientWidth : 600;
+      const H = card ? card.clientHeight : 340;
+
+      const rows = [];
+      for (const m of models || []) {
+        if (!m || m.status === 'noauth') continue;
+        // Same number the Intelligence column shows (Elo scale): real LMArena
+        // rating when present, otherwise the raw score mapped onto the Elo scale.
+        const eloNum = Number(m.elo);
+        const intellNum = (Number.isFinite(eloNum) && eloNum > 0) ? eloNum : Number(m.intell) * 100;
+        if (!Number.isFinite(intellNum) || intellNum <= 0) continue;
+        const ttft = m.ttft != null ? Number(m.ttft) : (m.lastResponse && m.lastResponse.ttftMs != null ? Number(m.lastResponse.ttftMs) : null);
+        const tps = m.tps != null ? Number(m.tps) : (m.lastResponse && m.lastResponse.tps != null ? Number(m.lastResponse.tps) : null);
+        if (ttft == null || !Number.isFinite(ttft) || ttft < 0) continue;
+        if (tps == null || !Number.isFinite(tps) || tps <= 0) continue;
+        rows.push({
+          m,
+          intell: intellNum,
+          ttft,
+          tps,
+          speed: 1 / (ttft + 1000 / tps),
+        });
+      }
+      rows.sort((a, b) => a.intell - b.intell);
+
+      const countEl = document.getElementById('speed-intell-count');
+      if (countEl) countEl.textContent = rows.length > 0 ? `${rows.length} combo${rows.length === 1 ? '' : 's'}` : 'no speed data yet';
+
+      // Selector state is part of the redraw key so threshold drags and slope
+      // changes re-render immediately even when the model data is unchanged.
+      const selHash = `${selectorState.enabled ? 1 : 0},${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'}`;
+      const hash = rows.map(r => `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}`).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
+      if (svg.dataset.hash === hash) return;
+      svg.dataset.hash = hash;
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.innerHTML = '';
+
+      const NS = 'http://www.w3.org/2000/svg';
+      const el = (name, attrs) => {
+        const n = document.createElementNS(NS, name);
+        for (const k in attrs) n.setAttribute(k, attrs[k]);
+        return n;
+      };
+      const cssVar = (name) => (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim();
+      const muted = cssVar('--text-muted') || '#999';
+
+      if (rows.length === 0) {
+        selectorSlopeMax = 0;
+        syncSelectorControls();
+        const pickEl = document.getElementById('sel-pick');
+        if (pickEl) pickEl.textContent = 'no speed data yet';
+        const t = el('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
+        t.textContent = 'No measurements yet — TTFT and tok/s are recorded from real requests and model tests.';
+        svg.appendChild(t);
+        return;
+      }
+
+      const pad = { top: 44, right: 18, bottom: 46, left: 62 };
+      const plotW = Math.max(40, W - pad.left - pad.right);
+      const plotH = Math.max(40, H - pad.top - pad.bottom);
+
+      const xs = rows.map(r => r.speed);
+      const ys = rows.map(r => r.intell);
+      let xMin = Math.min(...xs), xMax = Math.max(...xs);
+      let yMin = Math.min(...ys), yMax = Math.max(...ys);
+      if (xMax === xMin) { const p = (Math.abs(xMax) * 0.2) || 0.001; xMin -= p; xMax += p; }
+      const xPad = (xMax - xMin) * 0.08 || (xMax * 0.05) || 1;
+      xMin = Math.max(0, xMin - xPad);
+      xMax += xPad;
+      const ySpan0 = (yMax - yMin) || (Math.abs(yMax) * 0.05) || 10;
+      yMin = Math.max(0, yMin - ySpan0 * 0.08);
+      yMax = Math.min(10000, yMax + ySpan0 * 0.08);
+      const ySpan = Math.max(1e-9, yMax - yMin);
+      const xSpan = Math.max(1e-9, xMax - xMin);
+      scatterScales = { pad, plotW, plotH, xMin, xMax, yMin, yMax, xSpan, ySpan };
+
+      const xOf = s => pad.left + ((s - xMin) / xSpan) * plotW;
+      const yOf = i => pad.top + (1 - (i - yMin) / ySpan) * plotH;
+
+      const fmtSpeed = (v) => {
+        if (v >= 1000) return v.toFixed(0);
+        if (v >= 1) return v.toPrecision(3).replace(/\.?0+$/, '');
+        return v.toPrecision(2).replace(/\.?0+$/, '');
+      };
+      const fmtIntell = (v) => v >= 100 ? String(Math.round(v)) : (Number.isInteger(v) ? String(v) : v.toFixed(1));
+
+      const g = el('g', {});
+      for (let i = 0; i <= 4; i++) {
+        const gx = pad.left + (i / 4) * plotW;
+        g.appendChild(el('line', { x1: gx, y1: pad.top, x2: gx, y2: pad.top + plotH, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
+        const tv = xMin + (i / 4) * xSpan;
+        const txt = el('text', { x: gx, y: pad.top + plotH + 15, fill: muted, 'font-size': '9px', 'text-anchor': 'middle' });
+        txt.textContent = fmtSpeed(tv);
+        g.appendChild(txt);
+      }
+      for (let i = 0; i <= 4; i++) {
+        const gy = pad.top + (i / 4) * plotH;
+        g.appendChild(el('line', { x1: pad.left, y1: gy, x2: pad.left + plotW, y2: gy, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
+        const iv = yMax - (i / 4) * ySpan;
+        const txt = el('text', { x: pad.left - 7, y: gy + 3, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
+        txt.textContent = fmtIntell(iv);
+        g.appendChild(txt);
+      }
+      const cap = el('text', { x: pad.left + plotW / 2, y: H - 10, fill: muted, 'font-size': '10px', 'text-anchor': 'middle' });
+      cap.textContent = 'speed = 1 / (TTFT + 1000 / tok·s)  —  faster to the right';
+      g.appendChild(cap);
+      const capY = el('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '10px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
+      capY.textContent = 'Intelligence';
+      g.appendChild(capY);
+      svg.appendChild(g);
+
+      const ring = cssVar('--card') || '#fff';
+      const providerHue = (pk) => {
+        let h = 0;
+        for (const ch of String(pk)) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
+        return Math.abs(h) % 360;
+      };
+      const strokeFor = (r) => {
+        if (r.m.status === 'up') return { color: ring, width: 1 };
+        if (r.m.isRateLimited) return { color: cssVar('--warning') || '#d29922', width: 2 };
+        return { color: cssVar('--error') || '#e5484d', width: 2 };
+      };
+      const rSize = rows.length > 220 ? 3 : 4.5;
+      for (const r of rows) {
+        const hue = providerHue(r.m.providerKey);
+        const st = strokeFor(r);
+        const c = el('circle', {
+          cx: xOf(r.speed), cy: yOf(r.intell), r: rSize,
+          fill: `hsl(${hue} 70% 55%)`, 'fill-opacity': 0.85,
+          stroke: st.color, 'stroke-width': st.width,
+        });
+        const title = el('title', {});
+        title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}\n` +
+          `intelligence ${fmtIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · speed ${fmtSpeed(r.speed)}`;
+        c.appendChild(title);
+        svg.appendChild(c);
+      }
+
+      // Visible labels: the model's short display name, drawn beside each dot
+      // with a card-colored halo so grid lines never cut through the text. When
+      // the same model is offered by several providers the provider is appended
+      // so every model/provider combination stays identifiable.
+      const shortName = (m) => {
+        const l = (m.label || '').trim();
+        if (l) return l;
+        return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '') || m.modelId || '?';
+      };
+      const nameCounts = {};
+      for (const r of rows) {
+        const n = shortName(r.m);
+        nameCounts[n] = (nameCounts[n] || 0) + 1;
+      }
+      const maxLabelChars = 18;
+      const textRightEdge = pad.left + plotW - 4;
+      const labelFill = cssVar('--text') || '#444';
+      const labelHalo = cssVar('--card') || '#fff';
+      for (const r of rows) {
+        const name = shortName(r.m);
+        // Truncate the model name first so the disambiguating provider suffix
+        // always survives on models offered by several providers.
+        const suffix = nameCounts[name] > 1 ? ` · ${r.m.providerKey}` : '';
+        const nameBudget = Math.max(1, maxLabelChars - suffix.length);
+        const shortLabelName = name.length > nameBudget ? name.slice(0, nameBudget - 1) + '…' : name;
+        const label = shortLabelName + suffix;
+        const dx = xOf(r.speed);
+        const dy = yOf(r.intell);
+        const fitsRight = dx + rSize + 6 + label.length * 4.4 <= textRightEdge;
+        const t = el('text', {
+          x: fitsRight ? dx + rSize + 6 : dx - rSize - 6,
+          y: dy + 2.8,
+          'font-size': '8.5px',
+          fill: labelFill,
+          stroke: labelHalo,
+          'stroke-width': '2.5',
+          'stroke-linejoin': 'round',
+          'paint-order': 'stroke',
+          'text-anchor': fitsRight ? 'start' : 'end',
+        });
+        t.textContent = label;
+        svg.appendChild(t);
+      }
+
+      // ---- Slope-line selector overlay --------------------------------------
+      // Two draggable threshold lines (minimum intelligence / minimum speed) and
+      // a slope-controlled line lowered onto the plot: the first eligible model
+      // it touches is the pick. The pick mirrors selectModelBySlope() in
+      // lib/utils.js; a manual pin (highlighted instead when active) outranks it.
+      selectorSlopeMax = xSpan > 0 ? (2 * ySpan) / xSpan : 0;
+
+      const accentColor = cssVar('--accent') || '#3b82f6';
+      const selEnabled = !!selectorState.enabled;
+      const selLineColor = selEnabled ? accentColor : muted;
+      const selClip = el('clipPath', { id: 'sel-plot-clip' });
+      selClip.appendChild(el('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
+      svg.appendChild(selClip);
+
+      const slopePick = pickSlopeModel(rows);
+      const pinnedSelRow = activePinnedModelId
+        ? rows.find(r => r.m.modelId === activePinnedModelId && (!activePinnedProviderKey || r.m.providerKey === activePinnedProviderKey))
+        : null;
+      const shownSelRow = pinnedSelRow || slopePick;
+
+      // Minimum intelligence: horizontal dashed line, drag up/down.
+      const miVal = selectorState.minIntell != null
+        ? Math.min(Math.max(selectorState.minIntell, yMin), yMax)
+        : yMin;
+      const miY = yOf(miVal);
+      svg.appendChild(el('line', {
+        x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
+        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
+      }));
+      svg.appendChild(el('line', {
+        x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
+        stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minIntell', 'pointer-events': 'stroke',
+      }));
+      const miTxt = el('text', {
+        x: pad.left + plotW - 4, y: Math.min(Math.max(miY - 4, pad.top + 22), pad.top + plotH - 2),
+        'font-size': '9px', fill: selLineColor, 'text-anchor': 'end',
+        'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
+      });
+      miTxt.textContent = `min intelligence ${selectorState.minIntell != null ? fmtIntell(miVal) : '—'}`;
+      svg.appendChild(miTxt);
+
+      // Minimum speed: vertical dashed line, drag left/right.
+      const msVal = selectorState.minSpeed != null
+        ? Math.min(Math.max(selectorState.minSpeed, xMin), xMax)
+        : xMin;
+      const msX = xOf(msVal);
+      svg.appendChild(el('line', {
+        x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
+        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
+      }));
+      svg.appendChild(el('line', {
+        x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
+        stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minSpeed', 'pointer-events': 'stroke',
+      }));
+      const msTxt = el('text', {
+        x: Math.min(Math.max(msX + 4, pad.left + 2), pad.left + plotW - 70), y: pad.top + plotH - 6,
+        'font-size': '9px', fill: selLineColor,
+        'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
+      });
+      msTxt.textContent = `min speed ${selectorState.minSpeed != null ? fmtSpeed(msVal) : '—'}`;
+      svg.appendChild(msTxt);
+
+      // The sloped line, lowered onto the plot: rests on the first model it
+      // touches (nothing qualifies → it rests on the plot floor at bottom-left).
+      const slopeNum = Number(selectorState.slope);
+      if (Number.isFinite(slopeNum)) {
+        const intercept = shownSelRow
+          ? (shownSelRow.intell + slopeNum * shownSelRow.speed)
+          : (yMin + slopeNum * xMin);
+        const intellAt = (s) => intercept - slopeNum * s;
+        const slopeAttrs = {
+          x1: xOf(xMin), y1: yOf(intellAt(xMin)),
+          x2: xOf(xMax), y2: yOf(intellAt(xMax)),
+          stroke: selEnabled ? accentColor : muted,
+          'stroke-width': selEnabled ? 1.6 : 1.2,
+          'stroke-opacity': selEnabled ? 0.95 : 0.6,
+          'clip-path': 'url(#sel-plot-clip)',
+        };
+        if (!selEnabled) slopeAttrs['stroke-dasharray'] = '7 5';
+        svg.appendChild(el('line', slopeAttrs));
+      }
+
+      // Highlight the winning dot: a manual pin first, else the slope pick.
+      const pickEl = document.getElementById('sel-pick');
+      if (shownSelRow) {
+        svg.appendChild(el('circle', {
+          cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
+          stroke: selEnabled ? accentColor : muted, 'stroke-width': 2,
+        }));
+        if (pickEl) {
+          pickEl.textContent = (pinnedSelRow ? 'Pinned: ' : (selEnabled ? 'Selected: ' : 'Preview: ')) + shortName(shownSelRow.m);
+          pickEl.style.color = selEnabled ? accentColor : '';
+        }
+      } else if (pickEl) {
+        pickEl.textContent = selEnabled ? 'No model above the minimums — Elo fallback' : 'Preview: nothing clears the minimums';
+        pickEl.style.color = '';
+      }
+      syncSelectorControls();
+    }
+
+    // ---- Slope-line selector helpers (Intelligence-vs-Speed plot) ----
+    // Client-side mirror of selectModelBySlope() in lib/utils.js for immediate
+    // feedback: eligible rows are 'up', not rate-limited, and above both
+    // minimums; the pick maximizes intelligence + slope * speed, which is
+    // exactly the first dot a rightward-descending line of the given slope
+    // touches when lowered from above.
+    function pickSlopeModel(rows) {
+      const slope = Number(selectorState.slope);
+      if (!Number.isFinite(slope)) return null;
+      let best = null;
+      let bestVal = -Infinity;
+      for (const r of rows || []) {
+        const m = r.m;
+        if (!m || m.status !== 'up' || m.isRateLimited) continue;
+        if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
+        if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
+        const val = r.intell + slope * r.speed;
+        if (val > bestVal) { best = r; bestVal = val; }
+      }
+      return best;
+    }
+
+    function svgLocalPoint(svg, clientX, clientY) {
+      try {
+        const ctm = svg.getScreenCTM && svg.getScreenCTM();
+        if (!ctm) return null;
+        const p = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
+        return { x: p.x, y: p.y };
+      } catch { return null; }
+    }
+
+    function syncSelectorControls() {
+      const slider = document.getElementById('sel-slope-slider');
+      const valEl = document.getElementById('sel-slope-value');
+      const en = document.getElementById('sel-enabled');
+      if (en) en.checked = !!selectorState.enabled;
+      const frac = (selectorState.slope != null && selectorSlopeMax > 0)
+        ? Math.min(1, selectorState.slope / selectorSlopeMax)
+        : 0;
+      if (slider) slider.value = String(Math.round(frac * 1000));
+      if (valEl) valEl.textContent = (selectorState.slope != null && selectorSlopeMax > 0) ? `${Math.round(frac * 100)}%` : '—';
+    }
+
+    function onSlopeSliderInput() {
+      const slider = document.getElementById('sel-slope-slider');
+      if (!slider) return;
+      const v = Number(slider.value) / 1000;
+      selectorState.slope = (selectorSlopeMax > 0 && v > 0) ? v * selectorSlopeMax : null;
+      scheduleSelectorSave();
+      requestScatterRedraw();
+    }
+
+    function scheduleSelectorSave() {
+      if (selectorSaveTimer) clearTimeout(selectorSaveTimer);
+      selectorSaveTimer = setTimeout(async () => {
+        selectorSaveTimer = null;
+        try {
+          await fetch('/api/selector', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              enabled: selectorState.enabled,
+              slope: selectorState.slope,
+              minSpeed: selectorState.minSpeed,
+              minIntell: selectorState.minIntell,
+            }),
+          });
+        } catch { /* retried on the next change */ }
+      }, 300);
+    }
+
+    async function loadSelectorState() {
+      try {
+        const res = await fetch('/api/selector');
+        if (!res.ok) return;
+        const sel = await res.json();
+        selectorState = {
+          enabled: sel.enabled === true,
+          slope: Number.isFinite(Number(sel.slope)) ? Number(sel.slope) : null,
+          minSpeed: Number.isFinite(Number(sel.minSpeed)) ? Number(sel.minSpeed) : null,
+          minIntell: Number.isFinite(Number(sel.minIntell)) ? Number(sel.minIntell) : null,
+        };
+        syncSelectorControls();
+        requestScatterRedraw();
+      } catch { /* defaults until the next save */ }
+    }
+
+    let scatterRedrawQueued = false;
+    function requestScatterRedraw() {
+      if (scatterRedrawQueued) return;
+      scatterRedrawQueued = true;
+      requestAnimationFrame(() => {
+        scatterRedrawQueued = false;
+        drawSpeedIntellScatter(allModels);
+      });
+    }
+
+    function initScatterControls() {
+      const svg = document.getElementById('speed-intell-svg');
+      if (!svg) return;
+      svg.addEventListener('pointerdown', (e) => {
+        const hit = e.target && e.target.closest && e.target.closest('[data-sel-drag]');
+        if (!hit) return;
+        scatterDrag = { type: hit.getAttribute('data-sel-drag') };
+        try { svg.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
+        e.preventDefault();
+      });
+      svg.addEventListener('pointermove', (e) => {
+        if (!scatterDrag) return;
+        const pt = svgLocalPoint(svg, e.clientX, e.clientY);
+        const s = scatterScales;
+        if (!pt || !s) return;
+        if (scatterDrag.type === 'minIntell') {
+          const frac = 1 - (pt.y - s.pad.top) / s.plotH;
+          selectorState.minIntell = Math.min(s.yMax, Math.max(s.yMin, s.yMin + frac * s.ySpan));
+        } else if (scatterDrag.type === 'minSpeed') {
+          const frac = (pt.x - s.pad.left) / s.plotW;
+          selectorState.minSpeed = Math.min(s.xMax, Math.max(s.xMin, s.xMin + frac * s.xSpan));
+        } else {
+          return;
+        }
+        scheduleSelectorSave();
+        requestScatterRedraw();
+      });
+      const endDrag = () => { scatterDrag = null; };
+      svg.addEventListener('pointerup', endDrag);
+      svg.addEventListener('pointercancel', endDrag);
+
+      const slider = document.getElementById('sel-slope-slider');
+      if (slider) slider.addEventListener('input', onSlopeSliderInput);
+      const en = document.getElementById('sel-enabled');
+      if (en) en.addEventListener('change', () => {
+        selectorState.enabled = en.checked;
+        scheduleSelectorSave();
+        requestScatterRedraw();
+      });
+
+      loadSelectorState();
     }
 
     // Spring-layout topology: provider nodes (favicon or monogram + ring + name)
@@ -5438,6 +5934,44 @@
         const activeContainer = document.getElementById('active-providers-container');
         const setupContainer = document.getElementById('setup-providers-container');
         if (!activeContainer || !setupContainer) return;
+
+        // loadSettings runs on a ~4s dashboard poll, and rebuilding these two
+        // containers would silently discard a key the user is still typing
+        // (the input node is destroyed before blur/Enter can save it). Capture
+        // the current value/focus of every provider control and restore it on
+        // the freshly built DOM below.
+        const inputState = new Map();
+        for (const root of [activeContainer, setupContainer]) {
+          root.querySelectorAll('input, textarea, select').forEach(el => {
+            if (!el.id) return;
+            inputState.set(el.id, {
+              value: el.value,
+              checked: el.type === 'checkbox' ? el.checked : undefined,
+              focused: document.activeElement === el,
+              selStart: (el.type === 'text' || el.type === 'password') ? el.selectionStart : null,
+              dataset: { ...el.dataset },
+            });
+          });
+        }
+        const restoreInputState = () => {
+          inputState.forEach((s, id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (el.type === 'checkbox' && s.checked !== undefined) {
+              el.checked = s.checked;
+            } else if (el.type !== 'checkbox') {
+              el.value = s.value;
+            }
+            if (s.dataset) {
+              for (const [k, v] of Object.entries(s.dataset)) el.dataset[k] = v;
+            }
+            if (s.focused) {
+              el.focus();
+              try { el.setSelectionRange(s.selStart ?? el.value.length, el.value.length); } catch { /* non-text inputs */ }
+            }
+          });
+        };
+
         activeContainer.innerHTML = '';
         setupContainer.innerHTML = '';
         const endpointContainer = activeContainer;
@@ -5671,6 +6205,70 @@
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
           }
+          if (p.key === 'devin') {
+            const devinConnected = p.hasKey;
+            const devinStatusBg = devinConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
+            const devinStatusColor = devinConnected ? 'var(--status-success-text)' : 'var(--status-warning-text)';
+            const devinStatusText = devinConnected ? 'Connected' : 'Not connected';
+            const devinMessageHtml = devinUiMessage
+              ? `<div id="devin-ui-message" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.8rem; border:1px solid ${devinUiMessage.tone === 'error' ? 'var(--status-error-border)' : devinUiMessage.tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}; background:${devinUiMessage.tone === 'error' ? 'var(--status-error-bg)' : devinUiMessage.tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)'}; color:${devinUiMessage.tone === 'error' ? 'var(--status-error-text)' : devinUiMessage.tone === 'success' ? 'var(--status-success-text)' : 'var(--text)'};">${escapeHtml(devinUiMessage.text)}</div>`
+              : '<div id="devin-ui-message" style="display:none;"></div>';
+
+            const devinFlowHtml = devinOAuthState ? `
+              <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
+                <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">Devin sign-in in progress</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Approve the login in the popup. Hammer listens on <code>${escapeHtml(devinOAuthState.redirectUri)}</code> and finishes automatically — no code to copy.</div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                  <input type="text" id="devin-auth-url" readonly value="${escapeHtml(devinOAuthState.authUrl)}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
+                  <button onclick="copyDevinAuthUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
+                </div>
+                <div style="font-size:0.74rem; color:var(--text-muted); margin-bottom:8px;">If the popup can't reach the local callback (different machine or blocked port), paste the full URL from the popup's address bar below.</div>
+                <input type="text" id="devin-callback-url" placeholder="${escapeHtml(devinOAuthState.redirectUri)}?code=...&amp;state=..." style="width:100%; box-sizing:border-box; background:var(--input-bg); color:var(--text); font-size:0.76rem; padding:8px 10px; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;">
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <button onclick="completeDevinOAuthManual()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Connect (paste URL)</button>
+                  <button onclick="cancelDevinOAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
+                </div>
+              </div>
+            ` : `
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                <button onclick="startDevinOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.8rem; font-weight:600;">Sign in with Devin</button>
+              </div>
+            `;
+
+            section.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="background:${devinStatusBg}; color:${devinStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${devinConnected ? '✅' : '⚠️'} ${escapeHtml(devinStatusText)}</span>
+                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Get Devin" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                      <polyline points="21 3 21 9 15 9"></polyline>
+                    </svg>
+                    <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
+                  </button>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
+                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
+                    Enabled
+                  </label>
+                </div>
+              </div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with your Cognition (Devin) account — the same browser flow the Devin CLI uses. Hammer stores the session token locally and uses it for the swe-1.6 / swe-1.5 models.</div>
+              ${devinFlowHtml}
+              <div class="form-group" style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+                <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (Session token configured)' : 'Or paste a session token (devin-session-token$...)'}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
+                <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide token" aria-label="Show or hide token" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
+                <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
+              </div>
+              ${devinMessageHtml}
+              ${providerErrorHtml}
+              ${rateLimitHtml}
+            `;
+            (providerIsActive ? activeContainer : setupContainer).appendChild(section);
+            return;
+          }
           section.innerHTML = `
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
               <div style="display:flex; align-items:center; gap:10px;">
@@ -5692,7 +6290,7 @@
               </div>
             </div>
             <div class="form-group" style="display:flex; gap:8px; align-items:center;">
-              <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (' + (tokenOptional ? 'API Key Configured' : 'Key Configured') + ')' : (tokenOptional ? 'Enter API Key (optional)...' : 'Enter API Key...')}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})">
+              <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (' + (tokenOptional ? 'API Key Configured' : 'Key Configured') + ')' : (tokenOptional ? 'Enter API Key (optional)...' : 'Enter API Key...')}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
               <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide API key" aria-label="Show or hide API key" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
             </div>
             ${(Array.isArray(p.apiKeyPool) && p.apiKeyPool.length > 0) ? `
@@ -5712,7 +6310,7 @@
                 `).join('')}
               </div>
               <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
-                <input type="password" id="new-key-${p.key}" placeholder="Add new account key..." style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:0.78rem; background:var(--input-bg); color:var(--text);">
+                <input type="password" id="new-key-${p.key}" placeholder="Add new account key..." style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:0.78rem; background:var(--input-bg); color:var(--text);" onkeydown="if(event.key==='Enter'){event.preventDefault();addAccountKey(${jsStringAttr(p.key)});}" title="Press Enter to add">
                 <button onclick="addAccountKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Add Account</button>
               </div>
             </div>
@@ -5724,6 +6322,7 @@
           `;
           (providerIsActive ? activeContainer : setupContainer).appendChild(section);
         });
+        restoreInputState();
       } catch (err) { console.error(err); }
     }
 
@@ -5734,6 +6333,17 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ providerKey: key, enabled })
       });
+      scheduleKeySaveRefetch();
+    }
+
+    // Saving a provider key/enable state makes the server refresh that
+    // provider's models in the background. Re-pull once shortly after so the
+    // newly available rows appear in the table without waiting for the next
+    // poll cycle.
+    function scheduleKeySaveRefetch() {
+      setTimeout(() => {
+        if (!document.hidden) fetchData().catch(() => { });
+      }, 1800);
     }
 
     async function updateProviderKey(key) {
@@ -5757,6 +6367,7 @@
         input.value = '';
         await loadSettings();
         await fetchData();
+        scheduleKeySaveRefetch();
       } catch (err) {
         console.error('Failed to save provider key:', err);
         alert(`Could not save provider key: ${err.message || err}`);
@@ -6301,6 +6912,230 @@
         await fetchData();
       } catch (err) {
         setKiroUiMessage(err.message || 'Failed to complete Kiro browser OAuth.', 'error');
+      }
+    }
+
+    function clearDevinPollTimer() {
+      if (devinOAuthPollTimer) {
+        clearTimeout(devinOAuthPollTimer);
+        devinOAuthPollTimer = null;
+      }
+    }
+
+    function setDevinUiMessage(text, tone = 'info') {
+      devinUiMessage = text ? { text, tone } : null;
+      const el = document.getElementById('devin-ui-message');
+      if (!el) return;
+      if (!devinUiMessage) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = devinUiMessage.text;
+      el.style.border = `1px solid ${tone === 'error' ? 'var(--status-error-border)' : tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}`;
+      el.style.background = tone === 'error' ? 'var(--status-error-bg)' : tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)';
+      el.style.color = tone === 'error' ? 'var(--status-error-text)' : tone === 'success' ? 'var(--status-success-text)' : 'var(--text)';
+      el.style.marginTop = '12px';
+      el.style.padding = '10px 12px';
+      el.style.borderRadius = '8px';
+      el.style.fontSize = '0.8rem';
+    }
+
+    async function copyDevinAuthUrl() {
+      const input = document.getElementById('devin-auth-url');
+      const value = input ? input.value.trim() : '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setDevinUiMessage('Copied the Devin sign-in link to your clipboard.', 'success');
+      } catch {
+        setDevinUiMessage('Clipboard copy failed. Copy the Devin sign-in link manually.', 'error');
+      }
+    }
+
+    async function cancelDevinOAuth() {
+      clearDevinPollTimer();
+      const flowId = devinOAuthState && devinOAuthState.flowId;
+      devinOAuthState = null;
+      if (flowId) {
+        try {
+          await fetch('/api/oauth/devin/cancel', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ flowId })
+          });
+        } catch { /* best-effort */ }
+      }
+      setDevinUiMessage(null);
+      await loadSettings();
+    }
+
+    async function pollDevinOAuth() {
+      if (!devinOAuthState) return;
+
+      const now = Date.now();
+      if (devinOAuthState.expiresAt && now >= devinOAuthState.expiresAt) {
+        clearDevinPollTimer();
+        devinOAuthState = null;
+        setDevinUiMessage('Devin sign-in expired. Start it again to get a fresh link.', 'error');
+        await loadSettings();
+        return;
+      }
+
+      try {
+        const res = await fetch(`/api/oauth/devin/status?flowId=${encodeURIComponent(devinOAuthState.flowId)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed while checking the Devin sign-in status.');
+        }
+
+        if (data.status === 'success') {
+          clearDevinPollTimer();
+          devinOAuthState = null;
+          setDevinUiMessage('Connected Devin. Its models will appear once the health check finishes.', 'success');
+          await loadSettings();
+          await fetchData();
+          scheduleKeySaveRefetch();
+          return;
+        }
+
+        if (data.status === 'error') {
+          clearDevinPollTimer();
+          devinOAuthState = null;
+          setDevinUiMessage(data.error || 'Devin sign-in failed.', 'error');
+          await loadSettings();
+          return;
+        }
+
+        if (data.status === 'expired' || data.status === 'missing') {
+          clearDevinPollTimer();
+          devinOAuthState = null;
+          setDevinUiMessage(data.status === 'expired' ? 'Devin sign-in expired. Start it again.' : 'Devin sign-in session was lost. Start it again.', 'error');
+          await loadSettings();
+          return;
+        }
+
+        clearDevinPollTimer();
+        devinOAuthPollTimer = setTimeout(() => {
+          pollDevinOAuth().catch(err => {
+            setDevinUiMessage(err.message || 'Failed while checking the Devin sign-in status.', 'error');
+          });
+        }, 2000);
+      } catch (err) {
+        clearDevinPollTimer();
+        devinOAuthState = null;
+        setDevinUiMessage(err.message || 'Failed while checking the Devin sign-in status.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function startDevinOAuth() {
+      clearDevinPollTimer();
+      if (devinOAuthState) {
+        const oldFlowId = devinOAuthState.flowId;
+        devinOAuthState = null;
+        if (oldFlowId) {
+          try {
+            await fetch('/api/oauth/devin/cancel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ flowId: oldFlowId })
+            });
+          } catch { /* best-effort */ }
+        }
+      }
+      try {
+        setDevinUiMessage('Preparing the Devin sign-in flow...', 'info');
+        const res = await fetch('/api/oauth/devin/authorize');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to start the Devin sign-in flow.');
+        }
+
+        devinOAuthState = {
+          flowId: data.flowId,
+          authUrl: data.authUrl,
+          redirectUri: data.redirectUri,
+          expiresAt: Date.now() + (Math.max(60, Number(data.expiresIn || 300)) * 1000),
+        };
+        await loadSettings();
+
+        const popup = window.open(data.authUrl, 'devin_oauth');
+        if (!popup) {
+          setDevinUiMessage('Popup blocked. Open the copied sign-in link manually, then paste the callback URL into the field below after approving.', 'info');
+        } else {
+          setDevinUiMessage('Opened the Devin sign-in page. Approve the login there and Hammer will finish automatically.', 'info');
+        }
+        pollDevinOAuth().catch(err => {
+          setDevinUiMessage(err.message || 'Failed while checking the Devin sign-in status.', 'error');
+        });
+      } catch (err) {
+        devinOAuthState = null;
+        setDevinUiMessage(err.message || 'Failed to start the Devin sign-in flow.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function completeDevinOAuthManual() {
+      if (!devinOAuthState) return;
+      const input = document.getElementById('devin-callback-url');
+      const raw = input ? input.value.trim() : '';
+      if (!raw) {
+        setDevinUiMessage('Paste the full callback URL from the popup address bar first.', 'error');
+        return;
+      }
+
+      let code = raw;
+      let state = '';
+      const parseError = (() => {
+        try {
+          const url = new URL(raw);
+          const errorParam = url.searchParams.get('error');
+          if (errorParam) {
+            return new Error(url.searchParams.get('error_description') || errorParam);
+          }
+          const codeParam = url.searchParams.get('code');
+          if (!codeParam) {
+            return new Error('No authorization code found in the callback URL.');
+          }
+          code = codeParam;
+          state = url.searchParams.get('state') || '';
+          return null;
+        } catch (err) {
+          // Not a URL — treat the pasted value as a bare authorization code.
+          return err instanceof TypeError ? null : err;
+        }
+      })();
+      if (parseError) {
+        setDevinUiMessage(parseError.message, 'error');
+        return;
+      }
+
+      try {
+        setDevinUiMessage('Exchanging the Devin authorization code...', 'info');
+        const res = await fetch('/api/oauth/devin/exchange', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            flowId: devinOAuthState.flowId,
+            code,
+            state,
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Failed to complete the Devin sign-in.');
+        }
+
+        clearDevinPollTimer();
+        devinOAuthState = null;
+        setDevinUiMessage('Connected Devin. Its models will appear once the health check finishes.', 'success');
+        await loadSettings();
+        await fetchData();
+        scheduleKeySaveRefetch();
+      } catch (err) {
+        setDevinUiMessage(err.message || 'Failed to complete the Devin sign-in.', 'error');
       }
     }
 
@@ -7232,6 +8067,7 @@
 
     initializeChat();
     updateLogsPauseButton();
+    initScatterControls();
 
     // Self-scheduling poll loop: never overlaps a slow fetch, skips hidden tabs,
     // refreshes immediately when the tab becomes visible again, and backs off on

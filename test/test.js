@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
+import { gzipSync, gunzipSync } from 'node:zlib'
 
 import { sources, MODELS, PROVIDER_QUOTAS, canonicalizeModelId, getPreferredModelContext, getPreferredModelLabel, getScore, resolveAliasedModelId } from '../sources.js'
 import { TAG_VOCABULARY, MODEL_TAGS, getModelTags as getBuiltInModelTags } from '../tags.js'
@@ -57,6 +58,8 @@ import {
   isEmptyModelResponseText,
   isIncompatibleModelError,
   isRateLimitedErrorText,
+  selectModelBySlope,
+  computeRowSpeed,
   shouldKeepUpAfterFailedProbe,
   VERDICT_ORDER,
 } from '../lib/utils.js'
@@ -80,7 +83,7 @@ import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autos
 import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
-  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches, isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, transformKiroResponse, _setKeyPoolState } from '../lib/server.js'
+  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
@@ -251,6 +254,30 @@ describe('config helpers', () => {
       assert.equal(normalized.logRequestContent, false)
       assert.equal(normalized.persistRequestLogs, false)
     })
+  })
+
+  it('normalizes the slope-line selector with safe defaults', () => {
+    const normalized = normalizeConfigShape({})
+    assert.equal(normalized.selector.enabled, false)
+    assert.equal(normalized.selector.slope, null)
+    assert.equal(normalized.selector.minSpeed, null)
+    assert.equal(normalized.selector.minIntell, null)
+
+    const preserved = normalizeConfigShape({
+      selector: { enabled: true, slope: 42.5, minSpeed: 0.001, minIntell: 1200 },
+    })
+    assert.equal(preserved.selector.enabled, true)
+    assert.equal(preserved.selector.slope, 42.5)
+    assert.equal(preserved.selector.minSpeed, 0.001)
+    assert.equal(preserved.selector.minIntell, 1200)
+
+    const invalid = normalizeConfigShape({
+      selector: { enabled: 'yes', slope: -5, minSpeed: 'abc', minIntell: null },
+    })
+    assert.equal(invalid.selector.enabled, false)
+    assert.equal(invalid.selector.slope, null)
+    assert.equal(invalid.selector.minSpeed, null)
+    assert.equal(invalid.selector.minIntell, null)
   })
 })
 
@@ -1018,6 +1045,200 @@ describe('provider api key resolution', () => {
     assert.ok(payload.length > 5);
   })
 
+  it('maps Devin SWE row ids to the gateway\'s hyphenated wire uids', () => {
+    // The gateway's GetCliModelConfigs catalog names Devin SWE with hyphens
+    // (swe-1-6 / swe-1-5), while hammer's rows use dots.
+    const payload = buildProviderRequestBody('devin', {
+      messages: [{ role: 'user', content: 'Hi' }],
+    }, 'swe-1.6', { apiKey: 'tok' })
+    assert.ok(Buffer.isBuffer(payload))
+    const wire = gunzipSync(payload.subarray(5)).toString('utf8')
+    assert.ok(wire.includes('swe-1-6'))
+    assert.ok(!wire.includes('swe-1.6'))
+  })
+
+  it('decodes GetCliModelConfigs entries (uid, label, disabled, maxTokens)', () => {
+    const payload = Buffer.concat([
+      devTestMsgField(1, [
+        devTestStrField(1, 'SWE-1.6 Slow'),
+        devTestVarintField(18, 200000),
+        devTestStrField(22, 'swe-1-6-slow'),
+      ]),
+      devTestMsgField(1, [
+        devTestStrField(1, 'SWE 1.5'),
+        devTestVarintField(4, 1),
+        devTestStrField(22, 'swe-1-5'),
+      ]),
+    ])
+    const configs = decodeDevinModelConfigsPayload(payload)
+    assert.equal(configs.length, 2)
+    assert.deepEqual(
+      configs.find(c => c.uid === 'swe-1-6-slow'),
+      { uid: 'swe-1-6-slow', label: 'SWE-1.6 Slow', disabled: false, maxTokens: 200000 },
+    )
+    assert.equal(configs.find(c => c.uid === 'swe-1-5').disabled, true)
+  })
+
+  it('fetchDevinModelConfigs gunzips the unary response and reports HTTP errors readably', async () => {
+    const originalFetch = globalThis.fetch
+    try {
+      const payload = devTestMsgField(1, [
+        devTestStrField(1, 'SWE-1.6 Slow'),
+        devTestStrField(22, 'swe-1-6-slow'),
+        devTestVarintField(18, 200000),
+      ])
+      globalThis.fetch = async (url, init) => {
+        assert.ok(String(url).includes('GetCliModelConfigs'))
+        assert.equal(init.headers['Content-Type'], 'application/proto')
+        return new Response(gzipSync(payload), { status: 200, headers: { 'content-type': 'application/proto' } })
+      }
+      const configs = await fetchDevinModelConfigs('devin-session-token$abc')
+      assert.equal(configs.length, 1)
+      assert.equal(configs[0].uid, 'swe-1-6-slow')
+
+      globalThis.fetch = async () => new Response(JSON.stringify({ message: 'nope' }), { status: 403 })
+      await assert.rejects(() => fetchDevinModelConfigs('devin-session-token$abc'), /HTTP 403[\s\S]*nope/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('adds an entitlement hint to opaque permission_denied trailers', async () => {
+    const trailer = Buffer.from(JSON.stringify({ error: { code: 'permission_denied', message: 'an internal error occurred (trace ID: abc)' } }))
+    const frames = devFrame(trailer, { compressed: false, end: true })
+    const upstream = new Response(frames, { status: 200, headers: { 'content-type': 'application/connect+proto' } })
+    const transformed = await transformDevinResponse(upstream, 'swe-1.6', false)
+    const data = JSON.parse(await transformed.text())
+    assert.equal(data.error.code, 'permission_denied')
+    assert.match(data.error.message, /may not be entitled/)
+  })
+
+  // ---- Devin Connect wire helpers (unit-level) ----
+  function devTestVarint(value) {
+    const bytes = []
+    let n = value
+    while (n > 127) { bytes.push((n & 127) | 128); n = Math.floor(n / 128) }
+    bytes.push(n)
+    return Buffer.from(bytes)
+  }
+  function devTestStrField(field, text) {
+    const data = Buffer.from(text, 'utf8')
+    return Buffer.concat([devTestVarint((field << 3) | 2), devTestVarint(data.length), data])
+  }
+  function devTestMsgField(field, parts) {
+    const data = Buffer.concat(parts)
+    return Buffer.concat([devTestVarint((field << 3) | 2), devTestVarint(data.length), data])
+  }
+  function devTestVarintField(field, value) {
+    return Buffer.concat([devTestVarint((field << 3) | 0), devTestVarint(value)])
+  }
+  function devResponseProto({ messageId = 'r1', deltaText = '', stopReason = 0, toolCalls = [], deltaThinking = '', usage = null } = {}) {
+    const parts = [devTestStrField(1, messageId)]
+    if (deltaText) parts.push(devTestStrField(3, deltaText))
+    if (stopReason) parts.push(devTestVarintField(5, stopReason))
+    for (const tc of toolCalls) {
+      const tcParts = []
+      if (tc.id) tcParts.push(devTestStrField(1, tc.id))
+      if (tc.name) tcParts.push(devTestStrField(2, tc.name))
+      if (tc.argumentsJson) tcParts.push(devTestStrField(3, tc.argumentsJson))
+      parts.push(devTestMsgField(6, tcParts))
+    }
+    if (deltaThinking) parts.push(devTestStrField(9, deltaThinking))
+    if (usage) {
+      const usageParts = [
+        devTestVarintField(1, usage.inputTokens || 0),
+        devTestVarintField(2, usage.outputTokens || 0),
+        devTestVarintField(3, usage.cacheReadTokens || 0),
+        devTestVarintField(4, usage.cacheWriteTokens || 0),
+      ]
+      parts.push(devTestMsgField(7, usageParts))
+    }
+    return Buffer.concat(parts)
+  }
+  function devFrame(protoBuffer, { compressed = true, end = false } = {}) {
+    const payload = compressed ? gzipSync(protoBuffer) : protoBuffer
+    const out = Buffer.alloc(5 + payload.length)
+    out[0] = (compressed ? 0x01 : 0) | (end ? 0x02 : 0)
+    out.writeUInt32BE(payload.length, 1)
+    payload.copy(out, 5)
+    return out
+  }
+
+  it('decodes a Devin ChatMessageResponse protobuf delta', () => {
+    const raw = devResponseProto({
+      messageId: 'r1',
+      deltaText: 'Hello there',
+      stopReason: 2,
+      toolCalls: [{ id: 'call_1', name: 'bash', argumentsJson: '{"cmd":"ls"}' }],
+      usage: { inputTokens: 11, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1 },
+    })
+    const msg = decodeDevinChatResponsePayload(raw)
+    assert.equal(msg.messageId, 'r1')
+    assert.equal(msg.deltaText, 'Hello there')
+    assert.equal(msg.stopReason, 2)
+    assert.equal(msg.deltaToolCalls.length, 1)
+    assert.equal(msg.deltaToolCalls[0].name, 'bash')
+    assert.equal(msg.usage.inputTokens, 11)
+    assert.equal(msg.usage.outputTokens, 5)
+  })
+
+  it('splits Connect frames and keeps partial trailing bytes', () => {
+    const single = devFrame(devResponseProto({ deltaText: 'first' }))
+    const partial = parseConnectFrames(single.subarray(0, single.length - 3))
+    assert.equal(partial.frames.length, 0)
+    assert.equal(partial.rest.length, single.length - 3)
+
+    const body = Buffer.concat([single, devFrame(devResponseProto({ deltaText: 'second' }))])
+    const full = parseConnectFrames(body)
+    assert.equal(full.frames.length, 2)
+    assert.equal(full.rest.length, 0)
+  })
+
+  it('transforms Devin Connect frames into a non-streaming OpenAI completion', async () => {
+    const frames = Buffer.concat([
+      devFrame(devResponseProto({ deltaText: 'Hello' })),
+      devFrame(devResponseProto({ deltaText: ' there', stopReason: 2, usage: { inputTokens: 11, outputTokens: 7 } })),
+    ])
+    const upstream = new Response(frames, { status: 200, headers: { 'content-type': 'application/connect+proto' } })
+    const transformed = await transformDevinResponse(upstream, 'swe-1.6', false)
+    const data = JSON.parse(await transformed.text())
+    assert.equal(data.choices[0].message.content, 'Hello there')
+    assert.equal(data.choices[0].finish_reason, 'stop')
+    assert.equal(data.usage.completion_tokens, 7)
+  })
+
+  it('streams Devin Connect frames as OpenAI SSE chunks', async () => {
+    const frames = Buffer.concat([
+      devFrame(devResponseProto({ deltaText: 'Hi' })),
+      devFrame(devResponseProto({ deltaText: ' there' })),
+      devFrame(devResponseProto({ stopReason: 2 }), { end: true, compressed: false }), // end marker
+    ])
+    const upstream = new Response(frames, { status: 200, headers: { 'content-type': 'application/connect+proto' } })
+    const transformed = await transformDevinResponse(upstream, 'swe-1.6', true)
+    const sse = await transformed.text()
+    const chunks = sse.split('\n')
+      .filter(line => line.startsWith('data: ') && !line.includes('[DONE]'))
+      .map(line => JSON.parse(line.slice(6)))
+    const text = chunks
+      .filter(chunk => chunk.choices?.[0]?.delta?.content)
+      .map(chunk => chunk.choices[0].delta.content)
+      .join('')
+    assert.equal(text, 'Hi there')
+    assert.ok(chunks.some(chunk => chunk.choices && chunk.choices[0].finish_reason === 'stop'))
+    assert.ok(sse.endsWith('data: [DONE]\n\n'))
+  })
+
+  it('turns a Devin Connect error trailer into a readable error instead of raw bytes', async () => {
+    const trailer = Buffer.from(JSON.stringify({ error: { code: 'resource_exhausted', message: 'account quota exhausted' } }), 'utf8')
+    const body = devFrame(trailer, { compressed: true, end: true })
+    const upstream = new Response(body, { status: 200, headers: { 'content-type': 'application/connect+proto' } })
+    const transformed = await transformDevinResponse(upstream, 'swe-1.6', false)
+    assert.equal(transformed.status, 502)
+    const payload = JSON.parse(await transformed.text())
+    assert.match(payload.error.message, /account quota exhausted/)
+    assert.equal(payload.error.code, 'resource_exhausted')
+  })
+
   it('adds Kiro SDK headers to provider requests', () => {
     const headers = buildProviderRequestHeaders('kiro', {
       apiKey: 'kiro-key',
@@ -1179,6 +1400,87 @@ describe('provider api key resolution', () => {
       shouldRetryOptionalProviderWithBearer({ apiKeys: { openrouter: 'openrouter-key' } }, 'openrouter', { token: null }, '401', 'Unauthorized'),
       false
     )
+  })
+})
+
+describe('Devin browser OAuth', () => {
+  it('builds the omp-style Devin authorize URL', () => {
+    const url = buildDevinOAuthLoginUrl({
+      codeChallenge: 'challenge-abc',
+      state: 'state-123',
+      redirectUri: 'http://127.0.0.1:59653/callback',
+    })
+    assert.ok(url.startsWith('https://app.devin.ai/auth/cli/continue?'))
+    const parsed = new URL(url)
+    assert.equal(parsed.searchParams.get('response_type'), 'code')
+    assert.equal(parsed.searchParams.get('redirect_uri'), 'http://127.0.0.1:59653/callback')
+    assert.equal(parsed.searchParams.get('code_challenge'), 'challenge-abc')
+    assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256')
+    assert.equal(parsed.searchParams.get('state'), 'state-123')
+    assert.equal(parsed.searchParams.get('prompt'), 'select_account')
+    assert.equal(parsed.searchParams.get('client_id'), null)
+  })
+
+  it('exchanges an authorization code for a Devin session token', async () => {
+    let captured = null
+    const fetchImpl = async (url, opts) => {
+      captured = { url, opts }
+      return new Response(JSON.stringify({ token: 'devin-jwt-1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const { token } = await exchangeDevinOAuthCode('auth-code-1', 'verifier-1', { fetchImpl })
+    assert.equal(token, 'devin-jwt-1')
+    assert.equal(captured.url, 'https://api.devin.ai/auth/cli/token')
+    assert.equal(captured.opts.method, 'POST')
+    assert.equal(captured.opts.headers['Content-Type'], 'application/json')
+    assert.equal(captured.opts.headers.Accept, 'application/json')
+    assert.deepEqual(JSON.parse(captured.opts.body), { code: 'auth-code-1', code_verifier: 'verifier-1' })
+  })
+
+  it('surfaces readable errors from a failed Devin token exchange', async () => {
+    const fetchImpl = async () => new Response(JSON.stringify({ error: 'invalid_grant' }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' },
+    })
+    await assert.rejects(
+      exchangeDevinOAuthCode('bad-code', 'verifier-1', { fetchImpl }),
+      /invalid_grant/
+    )
+  })
+
+  it('runs a full loopback flow through start/status/cancel', async () => {
+    const started = await startDevinOAuthFlow()
+    try {
+      assert.ok(started.flowId)
+      assert.equal(started.autoCallback, true)
+      assert.match(started.redirectUri, /^http:\/\/127\.0\.0\.1:5965[0-9]\/callback$/)
+      assert.ok(started.authUrl.startsWith('https://app.devin.ai/auth/cli/continue?'))
+      const parsed = new URL(started.authUrl)
+      assert.equal(parsed.searchParams.get('redirect_uri'), started.redirectUri)
+      assert.equal(parsed.searchParams.get('state'), started.state)
+
+      const pending = getDevinOAuthFlowStatus(started.flowId)
+      assert.equal(pending.status, 'pending')
+
+      assert.equal(cancelDevinOAuthFlow(started.flowId), true)
+      assert.equal(getDevinOAuthFlowStatus(started.flowId).status, 'missing')
+    } finally {
+      cancelDevinOAuthFlow(started.flowId)
+    }
+  })
+
+  it('rejects manual code exchange when the state does not match', async () => {
+    const started = await startDevinOAuthFlow()
+    try {
+      await assert.rejects(
+        exchangeDevinOAuthFlow(started.flowId, 'some-code', 'wrong-state'),
+        /state did not match/
+      )
+    } finally {
+      cancelDevinOAuthFlow(started.flowId)
+    }
   })
 })
 
@@ -2234,6 +2536,60 @@ describe('rankModelsForRouting', () => {
     ]).map(r => r.modelId), ['fallback-high', 'fallback-low'])
   })
 
+  it('computes the combined speed metric from TTFT and tok/s', () => {
+    // 1 / (500 + 1000/100) = 1/510
+    assert.ok(Math.abs(computeRowSpeed({ ttft: 500, tps: 100 }) - 1 / 510) < 1e-12)
+    assert.equal(computeRowSpeed({ ttft: -1, tps: 100 }), null)
+    assert.equal(computeRowSpeed({ ttft: 500, tps: 0 }), null)
+    assert.equal(computeRowSpeed({}), null)
+    // lastResponse fallback
+    assert.ok(Math.abs(computeRowSpeed({ lastResponse: { ttftMs: 500, tps: 100 } }) - 1 / 510) < 1e-12)
+  })
+
+  it('selects the first model a slope line touches, honoring minimums', () => {
+    // Speeds: slow-genius 1/2020 ≈ 0.000495, mid 1/510 ≈ 0.00196, fast-dumb 1/105 ≈ 0.00952.
+    // slow-genius and fast-dumb span the Pareto hull; mid sits above the line
+    // joining them, so it is the first touch at intermediate slopes.
+    const slowGenius = mockResult({ modelId: 'slow-genius', label: 'SlowGenius', status: 'up', elo: 1500, ttft: 2000, tps: 50 })
+    const mid = mockResult({ modelId: 'mid', label: 'Mid', status: 'up', elo: 1450, ttft: 500, tps: 100 })
+    const fastDumb = mockResult({ modelId: 'fast-dumb', label: 'FastDumb', status: 'up', elo: 1100, ttft: 100, tps: 200 })
+    const results = [slowGenius, mid, fastDumb]
+
+    // Slope 0: smartest eligible model wins (line lowered flat).
+    assert.equal(selectModelBySlope(results, { slope: 0 }).model.modelId, 'slow-genius')
+
+    // Steep slope: the fast-and-dumb model becomes the first contact.
+    assert.equal(selectModelBySlope(results, { slope: 100000 }).model.modelId, 'fast-dumb')
+
+    // Moderate slope lands on the balanced pick on the hull.
+    assert.equal(selectModelBySlope(results, { slope: 40000 }).model.modelId, 'mid')
+
+    // Minimum intelligence filters the first geometric hit out (fast-dumb is
+    // below 1200, so the line falls through to the next model it touches).
+    const withMinIntell = selectModelBySlope(results, { slope: 100000, minIntell: 1200 })
+    assert.equal(withMinIntell.model.modelId, 'mid')
+
+    // Minimum speed filters slow rows even when they would win at low slope.
+    const withMinSpeed = selectModelBySlope(results, { slope: 0, minSpeed: 1 / 1000 })
+    assert.equal(withMinSpeed.model.modelId, 'mid')
+
+    // Impossible minimums select nothing.
+    assert.equal(selectModelBySlope(results, { slope: 0, minIntell: 99999 }), null)
+
+    // Invalid slope is inert.
+    assert.equal(selectModelBySlope(results, { slope: null }), null)
+    assert.equal(selectModelBySlope(results, { slope: -1 }), null)
+
+    // Ineligible rows are skipped: banned, rate-limited, and down models never win.
+    const mixed = [
+      mockResult({ modelId: 'banned', status: 'banned', elo: 2000, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'limited', status: 'up', elo: 1900, ttft: 10, tps: 500, rateLimit: { wasRateLimited: true } }),
+      mockResult({ modelId: 'down', status: 'down', elo: 1800, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'ok', status: 'up', elo: 1200, ttft: 10, tps: 500 }),
+    ]
+    assert.equal(selectModelBySlope(mixed, { slope: 0 }).model.modelId, 'ok')
+  })
+
   it('excludes proxy-rate-limited models (wasRateLimited === true)', () => {
     const results = [
       mockResult({
@@ -3220,6 +3576,17 @@ describe('package and entrypoint sanity', () => {
     assert.equal(dashboardContent.includes('>SWE-bench</div>'), false)
   })
 
+  it('dashboard wires the slope-line selector controls', () => {
+    assert.ok(dashboardContent.includes('id="sel-slope-slider"'))
+    assert.ok(dashboardContent.includes('id="sel-enabled"'))
+    assert.ok(dashboardContent.includes('id="sel-pick"'))
+    assert.ok(dashboardContent.includes("'data-sel-drag': 'minIntell'"))
+    assert.ok(dashboardContent.includes("'data-sel-drag': 'minSpeed'"))
+    assert.ok(dashboardContent.includes("fetch('/api/selector'"))
+    assert.ok(dashboardContent.includes('function pickSlopeModel'))
+    assert.ok(dashboardContent.includes('function initScatterControls'))
+  })
+
   it('removes the main-table filter controls', () => {
     assert.equal(dashboardContent.includes('toggleFilterBar'), false)
     assert.equal(dashboardContent.includes('class="filter-bar"'), false)
@@ -3271,6 +3638,43 @@ describe('package and entrypoint sanity', () => {
     assert.match(dashboardContent, /\.topo-model-img\s*\{\s*opacity:\s*1;/)
     assert.match(dashboardContent, /\.topo-provider-img\s*\{\s*opacity:\s*1;/)
     assert.match(dashboardContent, /\.topo-provider-mono\s*\{\s*opacity:\s*1;/)
+  })
+
+  it('adds an Intelligence-vs-speed scatter plot beside the network plot', () => {
+    assert.ok(dashboardContent.includes('class="plots-grid"'))
+    assert.ok(dashboardContent.includes('id="speed-intell-svg"'))
+    assert.ok(dashboardContent.includes('Intelligence vs Speed'))
+    assert.ok(dashboardContent.includes('function drawSpeedIntellScatter(models)'))
+    assert.ok(dashboardContent.includes('drawSpeedIntellScatter(models)'))
+    assert.ok(dashboardContent.includes('speed: 1 / (ttft + 1000 / tps)'))
+  })
+
+  it('keeps provider key inputs intact across the auto-refresh rebuild and saves on Enter', () => {
+    // The ~4s poll calls loadSettings() which rebuilds the provider containers;
+    // without state preservation a half-typed key would be discarded before blur.
+    assert.ok(dashboardContent.includes('const inputState = new Map();'))
+    assert.ok(dashboardContent.includes('const restoreInputState = () => {'))
+    assert.ok(dashboardContent.includes('restoreInputState();'))
+    assert.ok(dashboardContent.includes("onkeydown=\"if(event.key==='Enter'){event.preventDefault();updateProviderKey("))
+    assert.ok(dashboardContent.includes("onkeydown=\"if(event.key==='Enter'){event.preventDefault();addAccountKey("))
+  })
+
+  it('refreshes a provider\'s models immediately when its first API key is saved', () => {
+    const serverContent = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+    // Saving a key for a generic keyed provider (groq, cerebras, googleai, ...)
+    // must run discovery + pings right away instead of waiting for the next
+    // periodic ping wave (~30 min), which is what surfaced models late.
+    assert.ok(serverContent.includes("const providerHasKeyAfterSave = providerKey !== KIRO_PROVIDER_KEY && getApiKeyPool(currentConfig, providerKey).length > 0;"))
+    assert.ok(serverContent.includes("const keyFieldsWereWritten = apiKey !== undefined || (Array.isArray(apiKeys) && apiKeys.some(k => typeof k === 'string' && k.trim()));"))
+    assert.ok(serverContent.includes('providerHasKeyAfterSave && keyFieldsWereWritten'))
+    assert.ok(serverContent.includes('Generic keyed providers (Groq, Cerebras, Google AI, Codestral, ...)'))
+    assert.ok(serverContent.includes('void triggerImmediateProviderPing(providerKey);'))
+    // Client re-pulls shortly after a key save / enable toggle so the refreshed
+    // rows land in the table without waiting for the next 4s poll.
+    assert.ok(dashboardContent.includes('function scheduleKeySaveRefetch()'))
+    assert.ok(dashboardContent.includes('}, 1800);'))
+    assert.ok(dashboardContent.includes('scheduleKeySaveRefetch();'))
+    assert.ok(dashboardContent.includes("if (!document.hidden) fetchData().catch(() => { });"))
   })
 
   it('adds a Response column with a Test button that captures full model responses', () => {
