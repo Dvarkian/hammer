@@ -23,31 +23,9 @@
     "openai",
     "api"
   ],
-  "homepage": "https://github.com/Dvarkian/hammer#readme",
-  "bugs": {
-    "url": "https://github.com/Dvarkian/hammer/issues"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Dvarkian/hammer.git"
-  },
   "license": "MIT",
   "author": "anonymous",
   "type": "module",
-  "main": "bin/hammer.js",
-  "bin": {
-    "hammer": "./bin/hammer.js"
-  },
-  "files": [
-    "bin/",
-    "lib/",
-    "public/",
-    "sources.js",
-    "scores.js",
-    "tags.js",
-    "README.md",
-    "LICENSE"
-  ],
   "scripts": {
     "start": "node bin/hammer.js",
     "test": "node --test test/test.js"

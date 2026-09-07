@@ -26,10 +26,10 @@
 - ⚡ **Lightning Fast:** The built-in benchmark continually evaluates metrics to pick the fastest and most capable LLM for your request.
 - 🔄 **OpenAI-Compatible:** A perfect drop-in replacement that works seamlessly with your existing tools, scripts, and workflows.
 
-## 🚀 Install via NPM
+## 🚀 Run from source
 
 ```bash
-npm install -g hammer
+node bin/hammer.js
 
 # Start it
 hammer
@@ -42,26 +42,6 @@ Router endpoint:
 - Base URL: `http://127.0.0.1:7352/v1`
 - API key: any string
 - Model: `smartest` (router picks actual backend)
-
-## 🚀 Install via Docker
-
-### Prerequisites
-- Docker Engine
-- Docker Compose (the `docker compose` command)
-
-
-```bash
-mkdir hammer
-
-cd hammer
-
-curl -fsSL -o Dockerfile https://raw.githubusercontent.com/Dvarkian/hammer/master/Dockerfile
-curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/Dvarkian/hammer/master/docker-compose.yml
-
-docker compose up -d --build
-```
-
-Once running, hammer is accessible at `http://localhost:7352/`.
 
 ## 🔌 Installing Integrations
 
@@ -330,32 +310,6 @@ To trigger a manual npm update and restart the service, run:
 npm i -g hammer@latest
 hammer autostart --start
 ```
-
-### Testing updates locally without publishing to npm
-
-You can point the updater at a local tarball instead of the npm registry:
-
-```bash
-npm pack
-HAMMER_UPDATE_TARBALL=./hammer-1.8.3.tgz pnpm start
-```
-
-If you want the Web UI to always show an update while testing, set a higher forced version:
-
-```bash
-HAMMER_FORCE_UPDATE_VERSION=9.9.9
-```
-
-If the tarball filename does not contain a semantic version, also set:
-
-```bash
-HAMMER_UPDATE_VERSION=1.8.3
-```
-
-When `HAMMER_UPDATE_TARBALL` is set, the Web UI update flow and `hammer update`
-install from that tarball and bypass the normal Git checkout update block. This is for
-local testing only. `HAMMER_FORCE_UPDATE_VERSION` only affects version detection; the
-actual install still comes from the tarball path.
 
 ---
 

@@ -57,6 +57,7 @@ import {
   isDeadModelError,
   isEmptyModelResponseText,
   isIncompatibleModelError,
+  isLastResponseReady,
   isRateLimitedErrorText,
   selectModelBySlope,
   computeRowSpeed,
@@ -1720,11 +1721,52 @@ describe('LMArena Elo model matching', () => {
     assert.equal(m.displayName, 'glm-5.2-max')
   })
 
-  it('prefers the overall board over the coding board', () => {
+  it('falls back to the overall board when the model is absent from the coding board', () => {
     const m = findLMArenaEntry('claude-sonnet-4.5', boards)
     assert.ok(m)
     assert.equal(m.board, 'overall')
     assert.equal(m.displayName, 'claude-sonnet-4-5-20250929')
+  })
+
+  it('prefers the coding board when a model is listed on both boards', () => {
+    // Mirrors the live boards: gpt-oss-120b appears on the overall board only
+    // because it just makes the served top-of-board cutoff (Elo == board floor),
+    // while its coding rating is the meaningful one. The overall entry's larger
+    // vote count must not win the tie.
+    const dual = {
+      coding: [
+        { displayName: 'gpt-oss-120b', elo: 1391, votes: 6336 },
+        { displayName: 'gpt-oss-20b', elo: 1370, votes: 2184 },
+      ],
+      overall: [
+        { displayName: 'gpt-oss-120b', elo: 1352, votes: 29955 },
+      ],
+    }
+    const m = findLMArenaEntry('openai/gpt-oss-120b', dual)
+    assert.ok(m)
+    assert.equal(m.board, 'coding')
+    assert.equal(m.displayName, 'gpt-oss-120b')
+    assert.equal(m.elo, 1391)
+  })
+
+  it('keeps the GPT-OSS family on one board so the 120B outranks the 20B', () => {
+    const dual = {
+      coding: [
+        { displayName: 'gpt-oss-120b', elo: 1391, votes: 6336 },
+        { displayName: 'gpt-oss-20b', elo: 1370, votes: 2184 },
+      ],
+      overall: [
+        { displayName: 'gpt-oss-120b', elo: 1352, votes: 29955 },
+      ],
+    }
+    const m120 = findLMArenaEntry('openai/gpt-oss-120b', dual)
+    const m20 = findLMArenaEntry('openai/gpt-oss-20b', dual)
+    assert.equal(m120.board, 'coding')
+    assert.equal(m20.board, 'coding')
+    // Same board, so percentiles preserve the raw Elo ordering (1391 > 1370).
+    const pct120 = normalizeLMArenaElo(m120.elo, null, dual.coding)
+    const pct20 = normalizeLMArenaElo(m20.elo, null, dual.coding)
+    assert.ok(pct120 > pct20, 'gpt-oss-120b must outrank gpt-oss-20b')
   })
 
   it('keeps size tokens distinct (gpt-oss-20b vs gpt-oss-120b)', () => {
@@ -1777,11 +1819,13 @@ describe('LMArena Elo priority in score resolution', () => {
   it('prefers LMArena Elo over Artificial Analysis when a match exists', () => {
     const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
     quality.lmArenaBoards = boards
+    // The model is listed on both boards; the coding entry is authoritative so
+    // siblings measured on the coding board stay comparable (see findLMArenaEntry).
     const direct = resolveModelQuality(quality, 'vendor/direct-model', 0.99)
-    assert.equal(direct.source, 'lmarena-overall')
+    assert.equal(direct.source, 'lmarena-coding')
     assert.equal(direct.isEstimated, false)
-    assert.equal(direct.elo, 1500)
-    assert.match(direct.detail, /LMArena overall Elo 1500/)
+    assert.equal(direct.elo, 1400)
+    assert.match(direct.detail, /LMArena coding Elo 1400/)
   })
 
   it('falls back to the catalog index when LMArena has no match', () => {
@@ -1959,6 +2003,23 @@ describe('dynamic model score resolution', () => {
     assert.equal(model.providerKey, 'ollama')
     assert.equal(model.label, 'GPT OSS 120B')
     assert.equal(model.isEstimatedScore, false)
+  })
+
+  it('keeps GPT OSS 120B outranking 20B in the offline fallback', () => {
+    // Regression: the offline scores were inverted so the 20B showed a higher
+    // intelligence score than the 120B. The 120B is the larger model and must
+    // always outrank the 20B, for both vendor-prefixed and bare keys.
+    const sizeKeys = [
+      ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'],
+      ['gpt-oss-120b', 'gpt-oss-20b'],
+    ]
+    for (const [big, small] of sizeKeys) {
+      const bigScore = getScore(big)
+      const smallScore = getScore(small)
+      assert.ok(bigScore != null, `${big} should have a score`)
+      assert.ok(smallScore != null, `${small} should have a score`)
+      assert.ok(bigScore > smallScore, `${big} (${bigScore}) should outrank ${small} (${smallScore})`)
+    }
   })
 
   it('maps Ollama-style aliases like qwen3:4b to existing score entries', () => {
@@ -3555,8 +3616,6 @@ describe('package and entrypoint sanity', () => {
     assert.ok(pkg.version)
     assert.match(pkg.version, /^\d+\.\d+\.\d+$/)
     assert.equal(pkg.type, 'module')
-    assert.ok(pkg.bin.hammer)
-    assert.ok(existsSync(join(ROOT, pkg.bin.hammer)))
   })
 
   it('CLI script has shebang and required imports', () => {
@@ -3690,8 +3749,8 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes('inflightTests'))
     assert.ok(dashboardContent.includes('function contradictoryRetestSignature(m)'))
     assert.ok(dashboardContent.includes('function scheduleContradictoryRetests()'))
-    assert.ok(dashboardContent.includes("m.status !== 'down' || !hasReady"))
-    assert.ok(dashboardContent.includes("m.status !== 'up' || !hasError"))
+    assert.ok(dashboardContent.includes('isLastResponseReady(response) && m.status !== \'up\''))
+    assert.ok(dashboardContent.includes('response.error && m.status === \'up\''))
     assert.ok(dashboardContent.includes("scheduleContradictoryRetests();"))
     assert.ok(dashboardContent.includes("fetch('/api/test-model'"))
     // Server: route exists, persists the response, records real usage stats
@@ -4414,6 +4473,30 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isEmptyModelResponseText('  Ready  '), false)
   })
 
+  it('recognizes a clean Ready lastResponse (and rejects non-ready ones)', () => {
+    // Clean Ready
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', at: Date.now() }), true)
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', at: Date.now(), ttftMs: 100, tps: 50 }), true)
+    // Not ready: no response at all
+    assert.equal(isLastResponseReady(null), false)
+    assert.equal(isLastResponseReady(undefined), false)
+    // Not ready: empty text
+    assert.equal(isLastResponseReady({ ok: true, text: '' }), false)
+    assert.equal(isLastResponseReady({ ok: true, text: '   ' }), false)
+    // Not ready: error present
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', error: 'something' }), false)
+    assert.equal(isLastResponseReady({ ok: false, text: 'Ready' }), false)
+    assert.equal(isLastResponseReady({ ok: false, text: 'Ready', error: 'fail' }), false)
+    // Not ready: expired
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', expiresAt: Date.now() - 1000 }), false)
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', expiresAt: Date.now() + 60_000 }), true)
+    // Explicit now overrides default
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', expiresAt: 0 }, 100), false)
+    assert.equal(isLastResponseReady({ ok: true, text: 'Ready', expiresAt: 200 }, 100), true)
+    // 200 status with ready text (what the test endpoint returns on success)
+    assert.equal(isLastResponseReady({ status: 200, ok: true, text: 'Ready', at: Date.now() }), true)
+  })
+
   it('detects incompatible model errors (text-input rejected)', () => {
     assert.equal(isIncompatibleModelError('Content cannot be a plain string. The model does not support text input.', 400), true)
     assert.equal(isIncompatibleModelError('{"object":"error","message":"Content cannot be a plain string. The model does not support text input. Content cannot be a plain string. The model does not support text input.","type":"BadRequestError"}', 400), true)
@@ -4622,5 +4705,86 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(none.quotaValue, null)
     assert.equal(none.code, null)
     assert.deepEqual(extractQuotaFailure('not json'), { code: null, quotaId: null, quotaValue: null, quotaMetric: null })
+  })
+})
+
+describe('status reconciliation and bulk retest', () => {
+  const dashboardContent = readFileSync(join(ROOT, 'public/index.html'), 'utf8')
+  const serverContent = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+
+  it('forces status to up when lastResponse is Ready in GET /api/models', () => {
+    // Server-side reconcile: isLastResponseReady check in the models formatter
+    assert.ok(serverContent.includes('isLastResponseReady(usageEntry?.lastResponse)'))
+    assert.ok(serverContent.includes('out.status = \'up\''))
+  })
+
+  it('defines the same Ready check in the dashboard (isLastResponseReady in index.html)', () => {
+    assert.ok(dashboardContent.includes('function isLastResponseReady(lastResponse)'))
+    assert.ok(dashboardContent.includes('lastResponse.ok === false'))
+    assert.ok(dashboardContent.includes('lastResponse.error'))
+    assert.ok(dashboardContent.includes('lastResponse.expiresAt'))
+  })
+
+  it('statusCellHTML honors Ready lastResponse over stale status', () => {
+    assert.ok(dashboardContent.includes('const effectiveUp = m.status === \'up\' || isLastResponseReady(m.lastResponse)'))
+    assert.ok(dashboardContent.includes("const dotColor = effectiveUp ? 'var(--success)'"))
+  })
+
+  it('combinedStatusCellHTML honors Ready lastResponse', () => {
+    assert.ok(dashboardContent.includes('const isUp = m.status === \'up\' || isLastResponseReady(m.lastResponse)'))
+    assert.ok(dashboardContent.includes("paymentRequired === true && !isUp"))
+    assert.ok(dashboardContent.includes("incompatible === true && !isUp"))
+    assert.ok(dashboardContent.includes('microContext === true && !isUp'))
+    assert.ok(dashboardContent.includes("dead === true && !isUp"))
+  })
+
+  it('contradictoryRetestSignature uses isLastResponseReady', () => {
+    assert.ok(dashboardContent.includes('function contradictoryRetestSignature(m)'))
+    assert.ok(dashboardContent.includes('isLastResponseReady(response) && m.status !== \'up\''))
+    assert.ok(dashboardContent.includes('response.error && m.status === \'up\''))
+  })
+
+  it('compareProviders uses isLastResponseReady for Ready sorting', () => {
+    assert.ok(dashboardContent.includes('const aReady = isLastResponseReady(a.lastResponse)'))
+    assert.ok(dashboardContent.includes('const bReady = isLastResponseReady(b.lastResponse)'))
+  })
+
+  it('adds a Rerun Tests button and bulk retest endpoints', () => {
+    assert.ok(dashboardContent.includes('id="rerun-tests-btn"'))
+    assert.ok(dashboardContent.includes('function rerunTests()'))
+    assert.ok(dashboardContent.includes('pollRestestStatus'))
+    assert.ok(dashboardContent.includes('cancelRerun'))
+    assert.ok(dashboardContent.includes('updateRerunButtonVisibility'))
+    assert.ok(dashboardContent.includes('fetch(\'/api/restest-models\''))
+    assert.ok(dashboardContent.includes('fetch(\'/api/restest-status'))
+    assert.ok(dashboardContent.includes('fetch(\'/api/restest-cancel'))
+    const serverContent = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+    assert.ok(serverContent.includes("app.post('/api/restest-models'"))
+    assert.ok(serverContent.includes("app.get('/api/restest-status'"))
+    assert.ok(serverContent.includes("app.post('/api/restest-cancel'"))
+    assert.ok(serverContent.includes('RESTEST_STATE_PATH'))
+    assert.ok(serverContent.includes('restestJobs'))
+    assert.ok(serverContent.includes('restestAllNonReady'))
+  })
+
+  it('restestAllNonReady fans out tests to all non-ready members', () => {
+    assert.ok(serverContent.includes('async function restestAllNonReady(jobId)'))
+    assert.ok(serverContent.includes('rowsToTest.push'))
+    assert.ok(serverContent.includes('isLastResponseReady(lastResponse)'))
+    assert.ok(serverContent.includes('job.status === \'cancelled\''))
+    assert.ok(serverContent.includes('job.progress = Math.round'))
+  })
+
+  it('discards non-ready states for a Ready lastResponse', () => {
+    // A model whose last test returned Ready should never show as down,
+    // regardless of what the ping cycle says.
+    const ready = { ok: true, text: 'Ready', at: Date.now(), ttftMs: 100, tps: 50 }
+    assert.equal(isLastResponseReady(ready), true)
+    // isLastResponseReady does not look at an explicit status field — it only cares
+    // about ok, text, error, and expiry. The reconcile in GET /api/models is what
+    // overrides the model's status to 'up' when this returns true.
+    assert.equal(isLastResponseReady({ ...ready, status: 'down' }), true)
+    // A Ready with an expired window is treated as not-ready
+    assert.equal(isLastResponseReady({ ...ready, expiresAt: Date.now() - 1000 }), false)
   })
 })
