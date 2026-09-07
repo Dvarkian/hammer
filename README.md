@@ -302,15 +302,6 @@ hammer supports configuring multiple OpenAI-compatible upstream endpoints (vLLM,
 
 ## Troubleshooting
 
-### Clicking the update button or running `hammer` won't perform an update
-
-To trigger a manual npm update and restart the service, run:
-
-```bash
-npm i -g hammer@latest
-hammer autostart --start
-```
-
 ---
 
 ⭐️ If you find hammer useful, please consider [starring the repo](https://github.com/Dvarkian/hammer)!

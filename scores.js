@@ -45,6 +45,14 @@ export const scores = {
   "gemma-3-27b-it": 0.18,
   "gemma-3-4b-it": 0.428,
   "giga-potato-thinking": 0.592,
+  // Devin SWE 1.6 (Cognition): not on LMArena/OpenRouter, so this offline seed is
+  // the only source. Derived from published launch evals (Terminal-Bench 2.1
+  // 39.7%, SWE-bench Multilingual 58.3%, FrontierCode 9.4% — benchmarklist.com,
+  // cognition.com/blog/swe-1-6-preview); the -slow variant is the same model at
+  // higher reasoning effort. resolveModelQuality maps this onto the LMArena Elo
+  // scale via eloForPercentile and flags it eloEstimated.
+  "swe-1-6-slow": 0.62,
+  "swe-1.6-slow": 0.62,
   "glm-4.6": 0.7,
   "zai-glm-4.7": 0.738,
   "google/gemma-2-9b-it": 0.18,

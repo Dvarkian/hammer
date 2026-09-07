@@ -1917,6 +1917,10 @@
               onmouseover="this.style.background='var(--surface-alt)';this.style.color='var(--text)'"
               onmouseout="this.style.background='none';this.style.color='var(--text-muted)'">&#x2715; Reset
               sort</button>
+            <button id="rerun-tests-btn" onclick="rerunTests()"
+              style="border:none; background:var(--success); color:#1a0a00; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
+              onmouseover="this.style.opacity='0.85'"
+              onmouseout="this.style.opacity='1'">&#x21bb; Rerun Tests</button>
           </div>
         </div>
 
@@ -2403,6 +2407,9 @@
         render(); // triggers automatic (non-user) layout pass
         scheduleContradictoryRetests();
         updateKPIs(allModels, data.best);
+        // Show the 'Rerun Tests' button when there are models whose last response
+        // is not a clean 'Ready' (and they have auth configured).
+        updateRerunButtonVisibility();
         if (openDrawerModelId) {
           const m = allModels.find(x => x.modelId === openDrawerModelId);
           if (m && document.activeElement?.id !== 'model-tags-input') updateDrawerContent(m);
@@ -4195,9 +4202,10 @@
 
     // Providers within a model group sorted by: Ready first, paid last, then faster first.
     function compareProviders(a, b) {
-      // Ready (has a successful test result) sorts first
-      const aReady = a.status === 'up' && a.lastResponse && a.lastResponse.ok !== false && !a.lastResponse.error && a.lastResponse.text != null;
-      const bReady = b.status === 'up' && b.lastResponse && b.lastResponse.ok !== false && !b.lastResponse.error && b.lastResponse.text != null;
+      // Ready (has a successful test result) sorts first — uses the same definition
+      // as isLastResponseReady so the sort matches the dashboard status display.
+      const aReady = isLastResponseReady(a.lastResponse);
+      const bReady = isLastResponseReady(b.lastResponse);
       if (aReady && !bReady) return -1;
       if (!aReady && bReady) return 1;
       // Paid sorts last
@@ -4665,6 +4673,17 @@
       return escapeHtml(s).replace(/"/g, '&quot;');
     }
 
+    // True when the model's most recent test response is a clean 'Ready' (non-expired,
+    // successful, non-empty text, no error). The last real request is authoritative.
+    function isLastResponseReady(lastResponse) {
+      if (!lastResponse) return false
+      if (lastResponse.ok === false) return false
+      if (lastResponse.error) return false
+      if (!lastResponse.text || String(lastResponse.text).trim() === '') return false
+      if (lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt)) return false
+      return true
+    }
+
     // Compact "1h ago" / "2d ago" label for stale test responses.
     function fmtAgo(ms) {
       const m = Math.max(1, Math.floor(ms / 60000));
@@ -4684,10 +4703,16 @@
     function contradictoryRetestSignature(m) {
       const response = m?.lastResponse;
       if (!response) return null;
-      const hasReady = m.status === 'up' && response.ok !== false && !response.error && response.text != null;
-      const hasError = !!response.error;
-      if ((m.status !== 'down' || !hasReady) && (m.status !== 'up' || !hasError)) return null;
-      return `${m.status}|${response.at || 0}|${hasReady ? 'ready' : 'error'}|${String(response.text || response.error)}`;
+      // If lastResponse is a clean Ready but status is down, that's a contradiction
+      // (shouldn't happen after the server-side reconcile, but belt-and-suspenders).
+      if (isLastResponseReady(response) && m.status !== 'up') {
+        return `${m.status}|${response.at || 0}|ready|${String(response.text)}`;
+      }
+      // If lastResponse has an error but status is up, also a contradiction.
+      if (response.error && m.status === 'up') {
+        return `${m.status}|${response.at || 0}|error|${String(response.error)}`;
+      }
+      return null;
     }
 
     function scheduleContradictoryRetests() {
@@ -4779,8 +4804,7 @@
         cell.innerHTML = hideGroupError
           ? responseCellHTML(null, opts)
           : responseCellHTML(lastResponse, opts);
-      } catch (err) {
-        cell.innerHTML = responseCellHTML({
+      } catch (err) {        cell.innerHTML = responseCellHTML({
           text: null,
           error: err?.message || 'Network error',
           status: 0,
@@ -4793,6 +4817,156 @@
         inflightTests.delete(rowKey);
         if (refreshAfterTest) fetchData(); // refresh stats recorded by a completed test
       }
+
+    // State for the bulk 'Rerun Tests' operation
+    let restestJobId = null;
+    let restestPollTimer = null;
+    let restestCancelToken = null;
+
+    // Shows or hides the 'Rerun Tests' button based on whether there are models
+    // that need retesting (have auth but no clean Ready response).
+    function updateRerunButtonVisibility() {
+      const btn = document.getElementById('rerun-tests-btn');
+      if (!btn) return;
+      if (restestJobId) return; // don't touch while a job is running
+      const needsRetest = allModels.some(m =>
+        m.status !== 'noauth' &&
+        m.status !== 'banned' &&
+        m.status !== 'excluded' &&
+        m.status !== 'disabled' &&
+        !isLastResponseReady(m.lastResponse)
+      );
+      btn.style.display = needsRetest ? 'inline-block' : 'none';
+    }
+
+    // Kicks off a bulk retest of every model whose last test response is not a
+    // clean 'Ready', then polls until the job completes.
+    async function rerunTests() {
+      if (restestJobId) return; // already running
+      const btn = document.getElementById('rerun-tests-btn');
+      if (!btn) return;
+      btn.style.display = 'none';
+
+      try {
+        const res = await fetch('/api/restest-models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!data.ok || !data.jobId) {
+          btn.textContent = '&#x21bb; Rerun Tests';
+          btn.style.display = 'inline-block';
+          return;
+        }
+        restestJobId = data.jobId;
+        restestCancelToken = { cancelled: false };
+        btn.textContent = '&#x21bb; Testing…';
+        btn.style.background = 'var(--success)';
+        btn.onclick = () => cancelRerun();
+        btn.style.display = 'inline-block';
+        pollRestestStatus(data.jobId);
+      } catch (err) {
+        btn.textContent = '&#x21bb; Rerun Tests';
+        btn.style.background = 'var(--success)';
+        btn.style.display = 'inline-block';
+      }
+    }
+
+    async function cancelRerun() {
+      if (!restestJobId) return;
+      restestCancelToken.cancelled = true;
+      if (restestPollTimer) {
+        clearTimeout(restestPollTimer);
+        restestPollTimer = null;
+      }
+      try {
+        await fetch('/api/restest-cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: restestJobId }),
+        });
+      } catch {
+        // Best-effort cancel; the server-side job will stop on its own eventually.
+      }
+      restestJobId = null;
+      const btn = document.getElementById('rerun-tests-btn');
+      if (btn) {
+        btn.textContent = '&#x21bb; Cancelled';
+        btn.style.background = 'var(--text-muted)';
+        btn.onclick = () => rerunTests();
+        setTimeout(() => {
+          if (btn) {
+            btn.textContent = '&#x21bb; Rerun Tests';
+            btn.style.background = 'var(--success)';
+            btn.onclick = () => rerunTests();
+          }
+        }, 3000);
+      }
+    }
+
+    function pollRestestStatus(jobId) {
+      if (!jobId || restestCancelToken?.cancelled) return;
+      fetch('/api/restest-status?jobId=' + encodeURIComponent(jobId))
+        .then(res => res.json())
+        .then(data => {
+          if (!data.ok || !data.job) {
+            finishRerun('error');
+            return;
+          }
+          const job = data.job;
+          const btn = document.getElementById('rerun-tests-btn');
+          if (job.status === 'done' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled') {
+            finishRerun(job.status);
+          } else {
+            // Update button to show progress
+            if (btn && job.total > 0) {
+              btn.textContent = `&#x21bb; ${job.completed}/${job.total}`;
+            }
+            restestPollTimer = setTimeout(() => pollRestestStatus(jobId), 1500);
+          }
+        })
+        .catch(() => {
+          restestPollTimer = setTimeout(() => pollRestestStatus(jobId), 1500);
+        });
+    }
+
+    function finishRerun(status) {
+      if (restestPollTimer) {
+        clearTimeout(restestPollTimer);
+        restestPollTimer = null;
+      }
+      const btn = document.getElementById('rerun-tests-btn');
+      if (btn) {
+        if (status === 'done') {
+          btn.textContent = '&#x2713; Done';
+          btn.style.background = 'var(--success)';
+        } else if (status === 'partial') {
+          btn.textContent = '&#x26a0;&#xfe0f; Partial';
+          btn.style.background = 'var(--warning)';
+        } else if (status === 'cancelled') {
+          btn.textContent = '&#x21bb; Cancelled';
+          btn.style.background = 'var(--text-muted)';
+        } else {
+          btn.textContent = '&#x21bb; Rerun Tests';
+          btn.style.background = 'var(--success)';
+        }
+        btn.onclick = () => rerunTests();
+        setTimeout(() => {
+          if (btn) {
+            btn.textContent = '&#x21bb; Rerun Tests';
+            btn.style.background = 'var(--success)';
+            btn.onclick = () => rerunTests();
+          }
+        }, 3000);
+      }
+      restestJobId = null;
+      restestCancelToken = null;
+      // Refresh the table to pick up the new test results
+      fetchData().catch(() => {});
+    }
+
+
     }
 
     // Epoch-ms reset time: from the most recent test response first, otherwise
@@ -4905,10 +5079,13 @@
     // The status text is suppressed while these special states show, so 'down'
     // never sits next to them; the plain status is restored when they clear.
     function statusCellHTML(m) {
-      const dotColor = m.status === 'up' ? 'var(--success)'
+      // A clean Ready lastResponse means the model is up — the last real request is
+      // authoritative over whatever stale status the ping cycle says.
+      const effectiveUp = m.status === 'up' || isLastResponseReady(m.lastResponse);
+      const dotColor = effectiveUp ? 'var(--success)'
         : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
         : 'var(--error)';
-      const statusText = m.status === 'noauth' ? 'No Auth' : m.status;
+      const statusText = effectiveUp ? 'up' : (m.status === 'noauth' ? 'No Auth' : m.status);
       // Payment required (402 from a test): dollar icon + 'Paid', persists via lastResponse
       if (m.lastResponse && m.lastResponse.paymentRequired === true) {
         return `
@@ -4961,27 +5138,28 @@
     // response text → plain status dot + label.
     function combinedStatusCellHTML(m) {
       const currentStatus = String(m.status || '').toLowerCase();
+      const isUp = m.status === 'up' || isLastResponseReady(m.lastResponse);
       // Paid: show dollar icon + 'Paid'
-      if (m.lastResponse && m.lastResponse.paymentRequired === true && currentStatus !== 'up') {
+      if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp) {
         return `<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>`;
       }
       // Incompatible: model can't accept text chat (image/video only)
-      if ((m.lastResponse && m.lastResponse.incompatible === true && currentStatus !== 'up') || currentStatus === 'incompatible') {
+      if ((m.lastResponse && m.lastResponse.incompatible === true && !isUp) || currentStatus === 'incompatible') {
         return `<span style="color: var(--text-muted);" title="Model does not support text chat (image/video only)">Incompatible</span>`;
       }
       // Micro: context experimentally bounded at ≤16k by provider errors
-      if (m.microContext === true && currentStatus !== 'up') {
+      if (m.microContext === true && !isUp) {
         return `<span style="color: var(--text-muted);" title="Max context length bounded at ≤16k by provider errors">Micro</span>`;
       }
       // Dead: show red dot + 'DEAD'
-      if ((m.lastResponse && m.lastResponse.dead === true && currentStatus !== 'up') || currentStatus === 'dead') {
+      if ((m.lastResponse && m.lastResponse.dead === true && !isUp) || currentStatus === 'dead') {
         return `<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--error); display: inline-block; vertical-align: middle;"></span>
           <span style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase; vertical-align: middle;">Dead</span>`;
       }
       // Rate-limited: show countdown
       const resetAt = getRateLimitResetAt(m);
       if (resetAt != null) {
-        const dotColor = m.status === 'up' ? 'var(--success)'
+        const dotColor = isUp ? 'var(--success)'
           : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
           : 'var(--error)';
         const statusText = m.status === 'noauth' ? 'No Auth' : m.status;
