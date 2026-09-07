@@ -54,6 +54,9 @@ export const scores = {
   "google/gemma-3n-e4b-it": 0.38,
   "grok-code-fast-1": 0.708,
   "grok-code-fast-1:optimized": 0.708,
+  // GPT-OSS offline fallback. The 120B is the larger, stronger model and must
+  // always outrank the 20B; both keys (vendor-prefixed and bare) are kept in
+  // sync because getScore() looks up base then unprefixed ids.
   "gpt-oss-120b": 0.6,
   "hy3-preview": 0.744,
   "hy3-preview-free": 0.744,
@@ -112,8 +115,9 @@ export const scores = {
   "nvidia/nemotron-3-ultra-550b-a55b": 0.493,
   "nvidia/nemotron-nano-12b-v2-vl": 0.252,
   "nvidia/nemotron-nano-9b-v2": 0.432,
-  "openai/gpt-oss-120b": 0.304,
-  "openai/gpt-oss-20b": 0.42,
+  "openai/gpt-oss-120b": 0.6,
+  "openai/gpt-oss-20b": 0.38,
+  "gpt-oss-20b": 0.38,
   "poolside/laguna-m.1": 0.725,
   "poolside/laguna-s-2.1": 0.625,
   "poolside/laguna-xs-2.1": 0.592,
