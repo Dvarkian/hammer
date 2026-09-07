@@ -203,9 +203,9 @@ Example:
   "object": "list",
   "data": [
     { "id": "smartest", "object": "model", "owned_by": "router" },
-    { "id": "minimax-m2.5", "object": "model", "owned_by": "relay", "tags": ["agentic", "general", "coding"] },
-    { "id": "kimi-k2.5", "object": "model", "owned_by": "relay", "tags": ["agentic", "coding", "general"] },
-    { "id": "glm4.7", "object": "model", "owned_by": "relay", "tags": ["agentic", "coding", "general"] }
+    { "id": "minimax-m2.5", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "general", "coding"] },
+    { "id": "kimi-k2.5", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "coding", "general"] },
+    { "id": "glm4.7", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "coding", "general"] }
   ]
 }
 ```
