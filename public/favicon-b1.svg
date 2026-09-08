@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4d0c8"/>
+      <stop offset="100%" stop-color="#a8a298"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3a3530"/>
+      <stop offset="100%" stop-color="#5a544c"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#6b5a42"/>
+      <stop offset="30%" stop-color="#8a7250"/>
+      <stop offset="70%" stop-color="#6b5a42"/>
+      <stop offset="100%" stop-color="#5a4a35"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-15 16 17)">
+    <rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="url(#edge)"/>
+    <rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="url(#head)"/>
+    <rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.5"/>
+    <path d="M27.5 10 L27.5 13 Q27.5 17 24.5 17 L27.5 17Z" fill="#2a2520" opacity="0.6"/>
+
+    <rect x="13" y="17" width="6" height="11" rx="1" fill="url(#handle)"/>
+    <rect x="13" y="24" width="6" height="0.5" fill="#4a3d2a" opacity="0.5"/>
+    <rect x="13" y="25.5" width="6" height="0.5" fill="#4a3d2a" opacity="0.5"/>
+    <path d="M13 28 L12.2 29.5 L13.1 30 L18.9 30 L19.8 29.5 L19 28Z" fill="#4a3d2a"/>
+    <path d="M14 28 L13.6 29 L14.4 30 L17.6 30 L18.4 29 L18 28Z" fill="#8a7250" opacity="0.6"/>
+
+    <circle cx="8" cy="12.5" r="0.6" fill="#9a9088" opacity="0.4"/>
+    <circle cx="18" cy="13.5" r="0.5" fill="#9a9088" opacity="0.3"/>
+  </g>
+</svg>

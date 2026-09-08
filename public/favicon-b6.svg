@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8e4df"/>
+      <stop offset="100%" stop-color="#c8c4bc"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-15 16 17)">
+    <!-- Head outline: bold, chisel shape -->
+    <path d="M5 10 L27 10 L27 17 L5 17Z" fill="url(#head)" stroke="#3a3530" stroke-width="0.4"/>
+
+    <!-- Face highlights -->
+    <rect x="5" y="10" width="22" height="3" fill="#f0ece4" opacity="0.6"/>
+
+    <!-- Claw: two prongs at end -->
+    <path d="M26 10 L29 8.5 L29 10.5 L26.5 11.5 L26 10Z" fill="#3a3530"/>
+    <path d="M27 10 L30 9 L30 10.2 L27.3 11L27 10Z" fill="#5a544c" opacity="0.6"/>
+
+    <!-- Handle: simple tapered wood -->
+    <path d="M13.5 17 L12.8 28 L14.7 29.5 L17.3 29.5 L19.2 28 L18.5 17Z" fill="#7a6248"/>
+    <path d="M13.5 17 L12.8 28 L14.7 29.5 L17.3 29.5 L19.2 28 L18.5 17Z" fill="none" stroke="#5a4a35" stroke-width="0.4"/>
+
+    <!-- Handle center line (grain) -->
+    <path d="M16 17 L16 29" stroke="#5a4a35" stroke-width="0.5" opacity="0.5"/>
+
+    <!-- Wedge detail -->
+    <path d="M13.5 27 L13 29 L14.5 30 L17.5 30 L19 29 L18.5 27Z" fill="#4a3d2a"/>
+    <path d="M14.5 27 L14.2 28.5 L15 30 L17 30 L17.8 28.5 L17.5 27Z" fill="#6b5a42" opacity="0.6"/>
+  </g>
+</svg>

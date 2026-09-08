@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hammer Icon Options</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card: #ffffff;
+      --border: #e2e8f0;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --accent: #3b82f6;
+    }
+    [data-theme="dark"] {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #60a5fa;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "Geist", "Inter", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 32px 16px;
+    }
+    [data-theme="dark"] body {
+      background: radial-gradient(ellipse at top, #1e293b 0%, #0f172a 50%);
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 {
+      font-size: 1.75rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      color: var(--text-muted);
+      margin-bottom: 32px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+    @media (max-width: 700px) {
+      .grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+    }
+    @media (max-width: 480px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      text-align: center;
+      transition: box-shadow 200ms ease, transform 200ms ease;
+    }
+    .card:hover {
+      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
+      transform: translateY(-2px);
+    }
+    .preview-box {
+      width: 80px;
+      height: 80px;
+      background: #1a1a1a;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 16px;
+      border: 2px solid var(--border);
+    }
+    [data-theme="dark"] .preview-box {
+      background: #f8fafc;
+    }
+    .preview-box svg {
+      width: 48px;
+      height: 48px;
+    }
+    .name {
+      font-weight: 600;
+      margin-bottom: 6px;
+      font-size: 0.95rem;
+    }
+    .desc {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 14px;
+      line-height: 1.4;
+    }
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: center;
+    }
+    .tag {
+      font-size: 0.65rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      color: white;
+    }
+    .tag.neutral { background: var(--text-muted); }
+    .tag.success { background: #10b981; }
+    .tag.warning { background: #f59e0b; }
+    .tag.error { background: #ef4444; }
+    .tag.purple { background: #8b5cf6; }
+    .tag.pink { background: #ec4899; }
+    .tag.blue { background: var(--accent); }
+    .footer {
+      margin-top: 24px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .color-options {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .color-swatch {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      cursor: pointer;
+      border: 2px solid transparent;
+      transition: transform 150ms ease, border-color 150ms ease;
+    }
+    .color-swatch:hover {
+      transform: scale(1.2);
+    }
+    .color-swatch.active {
+      border-color: var(--text);
+    }
+    .swatch-orange { background: linear-gradient(45deg, #f59e0b, #ef4444); }
+    .swatch-green-blue { background: linear-gradient(45deg, #10b981, #3b82f6); }
+    .swatch-purple { background: linear-gradient(45deg, #6366f1, #8b5cf6); }
+    .swatch-multi { background: linear-gradient(45deg, #3b82f6, #6366f1, #a855f7); }
+    .swatch-pink-yellow { background: linear-gradient(45deg, #ec4899, #f59e0b); }
+    .current-favicon {
+      margin-top: 32px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+    }
+    .current-favicon svg {
+      width: 32px;
+      height: 32px;
+    }
+    .current-label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔨 Hammer Icon Options</h1>
+    <p class="subtitle">Choose your favorite icon design for the Hammer dashboard</p>
+
+    <div class="grid">
+      <!-- Option 1 -->
+      <div class="card">
+        <div class="preview-box">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <defs>
+              <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#f59e0b"/>
+                <stop offset="100%" stop-color="#ef4444"/>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="7" fill="url(#g1)"/>
+            <rect x="6" y="10" width="20" height="6" rx="1.5" fill="#1a1918"/>
+            <rect x="14" y="16" width="4" height="12" rx="1" fill="#1a1918"/>
+            <line x1="8" y1="13" x2="5" y2="13" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="8" y1="16" x2="4" y2="16" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+            <line x1="8" y1="19" x2="5" y2="19" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="name">Classic Hammer</div>
+        <div class="desc">Traditional hammer with impact lines — bold and immediately recognizable</div>
+        <div class="tags">
+          <span class="tag warning">Orange-red</span>
+          <span class="tag neutral">Direct</span>
+          <span class="tag success">Literal</span>
+        </div>
+      </div>
+
+      <!-- Option 2 -->
+      <div class="card">
+        <div class="preview-box">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <defs>
+              <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#10b981"/>
+                <stop offset="100%" stop-color="#3b82f6"/>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="7" fill="url(#g2)"/>
+            <path d="M8 8 L24 24 L22 26 L6 10Z" fill="#fff" opacity="0.95"/>
+            <path d="M10 26 L22 14 L24 12 L12 24Z" fill="#fff" opacity="0.6"/>
+          </svg>
+        </div>
+        <div class="name">Abstract Strike</div>
+        <div class="desc">Modern diagonal slash suggesting action and movement — clean and dynamic</div>
+        <div class="tags">
+          <span class="tag success">Green-blue</span>
+          <span class="tag blue">Modern</span>
+          <span class="tag purple">Abstract</span>
+        </div>
+      </div>
+
+      <!-- Option 3 -->
+      <div class="card">
+        <div class="preview-box">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <defs>
+              <linearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#6366f1"/>
+                <stop offset="100%" stop-color="#8b5cf6"/>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="7" fill="url(#g3)"/>
+            <rect x="5" y="11" width="22" height="5" rx="1.5" fill="#fff"/>
+            <rect x="13.5" y="16" width="5" height="11" rx="1" fill="#fff"/>
+          </svg>
+        </div>
+        <div class="name">Minimal Silhouette</div>
+        <div class="desc">Clean white hammer shape on purple gradient — minimalist and elegant</div>
+        <div class="tags">
+          <span class="tag purple">Purple</span>
+          <span class="tag neutral">Minimal</span>
+          <span class="tag success">Crisp</span>
+        </div>
+      </div>
+
+      <!-- Option 4 -->
+      <div class="card">
+        <div class="preview-box">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <defs>
+              <linearGradient id="g4" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#3b82f6"/>
+                <stop offset="50%" stop-color="#6366f1"/>
+                <stop offset="100%" stop-color="#a855f7"/>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="7" fill="url(#g4)"/>
+            <rect x="4" y="11" width="24" height="6" rx="2" fill="#fff"/>
+            <rect x="13" y="17" width="6" height="11" rx="1.5" fill="#fff"/>
+            <text x="28" y="10" font-family="system-ui, sans-serif" font-weight="900" font-size="14" fill="#fff" text-anchor="middle">!</text>
+          </svg>
+        </div>
+        <div class="name">Impact Bang</div>
+        <div class="desc">Hammer with emphasis mark — suggests power and effectiveness</div>
+        <div class="tags">
+          <span class="tag blue">Blue</span>
+          <span class="tag purple">Purple</span>
+          <span class="tag pink">Violet</span>
+        </div>
+      </div>
+
+      <!-- Option 5 -->
+      <div class="card">
+        <div class="preview-box">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+            <defs>
+              <linearGradient id="g5" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#ec4899"/>
+                <stop offset="100%" stop-color="#f59e0b"/>
+              </linearGradient>
+            </defs>
+            <rect width="32" height="32" rx="7" fill="url(#g5)"/>
+            <circle cx="16" cy="16" r="9" stroke="#fff" stroke-width="2.5" fill="none"/>
+            <line x1="9" y1="9" x2="23" y2="23" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>
+        </div>
+        <div class="name">Puncture Mark</div>
+        <div class="desc">Circle with diagonal slash — conveys forceful action through a target</div>
+        <div class="tags">
+          <span class="tag pink">Pink-yellow</span>
+          <span class="tag warning">Bold</span>
+          <span class="tag neutral">Abstract</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <div class="color-options">
+        <span style="font-size: 0.85rem; color: var(--text-muted); margin-right: 8px;">Gradient styles:</span>
+        <div class="color-swatch swatch-orange active" title="Orange to Red (Option 1)"></div>
+        <div class="color-swatch swatch-green-blue" title="Green to Blue (Option 2)"></div>
+        <div class="color-swatch swatch-purple" title="Indigo to Purple (Option 3)"></div>
+        <div class="color-swatch swatch-multi" title="Blue to Purple to Violet (Option 4)"></div>
+        <div class="color-swatch swatch-pink-yellow" title="Pink to Yellow (Option 5)"></div>
+      </div>
+    </div>
+
+    <div class="current-favicon">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#3b82f6"/>
+            <stop offset="100%" stop-color="#6366f1"/>
+          </linearGradient>
+        </defs>
+        <rect width="32" height="32" rx="7" fill="url(#g)"/>
+        <circle cx="16" cy="16" r="3.5" fill="#fff"/>
+        <circle cx="7"  cy="8"  r="2" fill="rgba(255,255,255,0.9)"/>
+        <circle cx="25" cy="8"  r="2" fill="rgba(255,255,255,0.9)"/>
+        <circle cx="7"  cy="24" r="2" fill="rgba(255,255,255,0.9)"/>
+        <circle cx="25" cy="24" r="2" fill="rgba(255,255,255,0.9)"/>
+        <line x1="16" y1="16" x2="7"  y2="8"  stroke="rgba(255,255,255,0.5)" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="16" y1="16" x2="25" y2="8"  stroke="rgba(255,255,255,0.5)" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="16" y1="16" x2="7"  y2="24" stroke="rgba(255,255,255,0.5)" stroke-width="1.2" stroke-linecap="round"/>
+        <line x1="16" y1="16" x2="25" y2="24" stroke="rgba(255,255,255,0.5)" stroke-width="1.2" stroke-linecap="round"/>
+        <path d="M14 14.5 L18.5 16 L14 17.5Z" fill="rgba(59,130,246,0.8)"/>
+      </svg>
+      <span class="current-label">Current icon: Network topology node</span>
+    </div>
+  </div>
+</body>
+</html>

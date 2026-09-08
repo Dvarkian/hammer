@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4d0c8"/>
+      <stop offset="100%" stop-color="#a8a298"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#3a3530"/>
+      <stop offset="100%" stop-color="#5a544c"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#2d2d2d"/>
+      <stop offset="50%" stop-color="#4a4a4a"/>
+      <stop offset="100%" stop-color="#2d2d2d"/>
+    </linearGradient>
+    <linearGradient id="vibrant" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ff5f15"/>
+      <stop offset="100%" stop-color="#cc3a00"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-18 16 17)">
+    <!-- Head -->
+    <rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="url(#edge)"/>
+    <rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="url(#head)"/>
+    <rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.5"/>
+    <path d="M27.5 10 L27.5 13 Q27.5 17 24.5 17 L27.5 17Z" fill="#2a2520" opacity="0.6"/>
+
+    <!-- Handle: black vulcanized grip -->
+    <rect x="13" y="17" width="6" height="11" rx="1" fill="url(#handle)"/>
+    <rect x="13" y="17" width="6" height="11" rx="1" fill="none" stroke="#1a1a1a" stroke-width="0.4"/>
+
+    <!-- Grip texture: raised ridges -->
+    <g stroke="#3a3a3a" stroke-width="0.4" opacity="0.7">
+      <rect x="13.5" y="19" width="5" height="0.3" rx="0.15"/>
+      <rect x="13.5" y="20.5" width="5" height="0.3" rx="0.15"/>
+      <rect x="13.5" y="22" width="5" height="0.3" rx="0.15"/>
+      <rect x="13.5" y="23.5" width="5" height="0.3" rx="0.15"/>
+      <rect x="13.5" y="25" width="5" height="0.3" rx="0.15"/>
+      <rect x="13.5" y="26.5" width="5" height="0.3" rx="0.15"/>
+    </g>
+
+    <!-- Accent ring at handle base -->
+    <rect x="12.5" y="26.5" width="7" height="1.5" rx="0.5" fill="url(#vibrant)"/>
+    <rect x="12.5" y="26.5" width="7" height="0.5" fill="#ff8a45" opacity="0.6"/>
+
+    <!-- Wedge at tail -->
+    <path d="M13 28 L12.6 29.8 L13.3 30 L18.7 30 L19.4 29.8 L19 28Z" fill="#3a3530"/>
+    <path d="M14 28 L13.7 29.3 L14.3 30 L17.7 30 L18.3 29.3 L18 28Z" fill="#5a544c" opacity="0.7"/>
+  </g>
+</svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="50%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#g)"/>
+  <!-- Hammer head with motion lines -->
+  <rect x="4" y="11" width="24" height="6" rx="2" fill="#fff"/>
+  <rect x="13" y="17" width="6" height="11" rx="1.5" fill="#fff"/>
+  <!-- Spark/bang impact indicator -->
+  <text x="28" y="10" font-family="system-ui, sans-serif" font-weight="900" font-size="14" fill="#fff" text-anchor="middle">!</text>
+</svg>

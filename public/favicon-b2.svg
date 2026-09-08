@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-20 16 17)">
+    <!-- Head: ball-peen, rounded -->
+    <rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="#3a3530"/>
+    <rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="#c8c4bc"/>
+    <rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.4"/>
+
+    <!-- Ball end: rounded peen -->
+    <circle cx="27" cy="13.5" r="3.5" fill="#3a3530"/>
+    <circle cx="27" cy="13.5" r="2" fill="#5a544c"/>
+    <circle cx="27" cy="13.5" r="1" fill="#8a847a"/>
+
+    <!-- Handle: straight hardwood with checkering -->
+    <rect x="12.5" y="17" width="7" height="11" rx="1.2" fill="#6b5a42"/>
+    <rect x="12.5" y="17" width="7" height="11" rx="1.2" fill="none" stroke="#5a4a35" stroke-width="0.4"/>
+
+    <!-- Checkering texture lines -->
+    <g stroke="#4a3d2a" stroke-width="0.3" opacity="0.6">
+      <line x1="13" y1="22" x2="19" y2="22"/>
+      <line x1="13" y1="23.5" x2="19" y2="23.5"/>
+      <line x1="13" y1="25" x2="19" y2="25"/>
+      <line x1="13" y1="26.5" x2="19" y2="26.5"/>
+    </g>
+
+    <!-- Brass wedge -->
+    <path d="M12.5 17 L12 18 L13.5 28.5 L13.5 17Z" fill="#b0a03a"/>
+    <path d="M19.5 17 L20 18 L18.5 28.5 L18.5 17Z" fill="#9a8a2a"/>
+
+    <!-- Head cross-peen -->
+    <rect x="4.5" y="10.8" width="8" height="5.4" rx="1" fill="#4a4540"/>
+    <rect x="4.5" y="10.8" width="8" height="2" rx="1" fill="#a8a298"/>
+  </g>
+</svg>

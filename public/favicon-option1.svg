@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#ef4444"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#g)"/>
+  <!-- Hammer head -->
+  <rect x="6" y="10" width="20" height="6" rx="1.5" fill="#1a1918"/>
+  <!-- Handle -->
+  <rect x="14" y="16" width="4" height="12" rx="1" fill="#1a1918"/>
+  <!-- Impact lines -->
+  <line x1="8" y1="13" x2="5" y2="13" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="8" y1="16" x2="4" y2="16" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="8" y1="19" x2="5" y2="19" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

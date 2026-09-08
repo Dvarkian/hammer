@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hammer — Icon Concepts</title>
+<style>
+  :root {
+    --bg: #1a1816;
+    --card: #241f1b;
+    --card-border: #3a342d;
+    --text: #e8e4df;
+    --text-dim: #a89888;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Iowan Old Style", Georgia, serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 48px 16px 80px;
+  }
+  .container { max-width: 880px; margin: 0 auto; }
+  header { text-align: center; margin-bottom: 32px; }
+  h1 {
+    font-family: "Iowan Old Style", Georgia, serif;
+    font-weight: 400;
+    font-size: 2rem;
+    letter-spacing: 0.01em;
+    margin-bottom: 8px;
+    color: #f0ebe3;
+  }
+  .subtitle { color: var(--text-dim); font-size: 0.9rem; font-style: italic; }
+  .intro {
+    max-width: 62ch;
+    margin: 0 auto 36px;
+    color: var(--text-dim);
+    font-size: 0.88rem;
+    line-height: 1.6;
+    text-align: center;
+  }
+  .cards { display: flex; flex-direction: column; gap: 18px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 8px;
+    padding: 18px 18px 16px;
+    text-align: center;
+    transition: border-color 200ms ease;
+  }
+  .card:hover { border-color: #5a5045; }
+  .tile {
+    width: 92px; height: 92px;
+    background: #0c0a08;
+    border-radius: 6px;
+    margin: 0 auto 12px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .tile svg { width: 68px; height: 68px; }
+  .name {
+    font-family: "Iowan Old Style", Georgia, serif;
+    font-weight: 400;
+    font-size: 0.98rem;
+    margin-bottom: 5px;
+    color: #f0ebe3;
+  }
+  .desc {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    line-height: 1.45;
+    font-style: normal;
+  }
+  footer {
+    margin-top: 28px;
+    padding-top: 16px;
+    border-top: 1px solid var(--card-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .note { font-size: 0.75rem; color: var(--text-dim); font-style: italic; }
+  .current {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .current svg { width: 20px; height: 20px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Hammer</h1>
+    <p class="subtitle">Icon concepts — actual hammers</p>
+  </header>
+
+  <p class="intro">
+    Eight more. Every one is a real tool, drawn from a specific hammer family.
+    No abstraction, no metaphor. Pick the shape and the object itself.
+  </p>
+
+  <div class="cards">
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="hb1h" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#d4d0c8"/><stop offset="100%" stop-color="#a8a298"/></linearGradient><linearGradient id="hb1e" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#3a3530"/><stop offset="100%" stop-color="#5a544c"/></linearGradient><linearGradient id="hb1d" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#6b5a42"/><stop offset="30%" stop-color="#8a7250"/><stop offset="70%" stop-color="#6b5a42"/><stop offset="100%" stop-color="#5a4a35"/></linearGradient></defs><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-15 16 17)"><rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="url(#hb1e)"/><rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="url(#hb1h)"/><rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.5"/><path d="M27.5 10 L27.5 13 Q27.5 17 24.5 17 L27.5 17Z" fill="#2a2520" opacity="0.6"/><rect x="13" y="17" width="6" height="11" rx="1" fill="url(#hb1d)"/><rect x="13" y="24" width="6" height="0.5" fill="#4a3d2a" opacity="0.5"/><rect x="13" y="25.5" width="6" height="0.5" fill="#4a3d2a" opacity="0.5"/><path d="M13 28 L12.2 29.5 L13.1 30 L18.9 30 L19.8 29.5 L19 28Z" fill="#4a3d2a"/><path d="M14 28 L13.6 29 L14.4 30 L17.6 30 L18.4 29 L18 28Z" fill="#8a7250" opacity="0.6"/><circle cx="8" cy="12.5" r="0.6" fill="#9a9088" opacity="0.4"/><circle cx="18" cy="13.5" r="0.5" fill="#9a9088" opacity="0.3"/></g></svg></div>
+      <div class="name">Standard Claw Hammer</div>
+      <div class="desc">The classic. Rectangular head, curved claw hidden at the end, hickory handle with grip rings and a wedge at the tail. Everything you'd expect from a real claw hammer.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-20 16 17)"><rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="#3a3530"/><rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="#c8c4bc"/><rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.4"/><circle cx="27" cy="13.5" r="3.5" fill="#3a3530"/><circle cx="27" cy="13.5" r="2" fill="#5a544c"/><circle cx="27" cy="13.5" r="1" fill="#8a847a"/><rect x="12.5" y="17" width="7" height="11" rx="1.2" fill="#6b5a42"/><rect x="12.5" y="17" width="7" height="11" rx="1.2" fill="none" stroke="#5a4a35" stroke-width="0.4"/><path d="M12.5 17 L12 18 L13.5 28.5 L13.5 17Z" fill="#b0a03a"/><path d="M19.5 17 L20 18 L18.5 28.5 L18.5 17Z" fill="#9a8a2a"/><rect x="4.5" y="10.8" width="8" height="5.4" rx="1" fill="#4a4540"/><rect x="4.5" y="10.8" width="8" height="2" rx="1" fill="#a8a298"/></g></svg></div>
+      <div class="name">Ball-Peen Hammer</div>
+      <div class="desc">Rounded peen at one end, flat face at the other, checkered handle with brass wedge accents. The ball peen shape shows in the rounded end.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-10 16 17)"><rect x="4" y="10" width="24" height="8" rx="4" fill="#5c3020"/><rect x="4" y="10" width="24" height="8" rx="4" fill="none" stroke="#4a2515" stroke-width="0.5"/><rect x="4" y="10" width="24" height="2" rx="4" fill="#7a4028" opacity="0.7"/><rect x="4" y="16" width="24" height="2" rx="4" fill="#3a1a10" opacity="0.5"/><rect x="13" y="18" width="6" height="11" rx="1.5" fill="#5a4530"/><rect x="13" y="18" width="6" height="11" rx="1.5" fill="none" stroke="#4a3520" stroke-width="0.4"/><line x1="15" y1="18" x2="15" y2="29" stroke="#4a3520" stroke-width="0.3" opacity="0.6"/><line x1="17" y1="18" x2="17" y2="29" stroke="#4a3520" stroke-width="0.3" opacity="0.4"/><rect x="4" y="17" width="24" height="2" rx="0.5" fill="#2a1508"/><rect x="4" y="18.5" width="24" height="1" fill="#4a2515" opacity="0.6"/></g></svg></div>
+      <div class="name">Rubber Mallet</div>
+      <div class="desc">Cylindrical rubber head, dark red, with a thick wood handle. Roundover and flat faces show the mallet shape rather than a claw hammer wedge and claw.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="hb4h" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#d4d0c8"/><stop offset="100%" stop-color="#a8a298"/></linearGradient><linearGradient id="hb4e" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#3a3530"/><stop offset="100%" stop-color="#5a544c"/></linearGradient><linearGradient id="hb4d" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2d2d2d"/><stop offset="50%" stop-color="#4a4a4a"/><stop offset="100%" stop-color="#2d2d2d"/></linearGradient><linearGradient id="v4" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff5f15"/><stop offset="100%" stop-color="#cc3a00"/></linearGradient></defs><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-18 16 17)"><rect x="4.5" y="10" width="23" height="7" rx="1.5" fill="url(#hb4e)"/><rect x="4.5" y="10" width="23" height="3" rx="1.5" fill="url(#hb4h)"/><rect x="4.5" y="10" width="23" height="1.2" rx="1.5" fill="#e8e4df" opacity="0.5"/><path d="M27.5 10 L27.5 13 Q27.5 17 24.5 17 L27.5 17Z" fill="#2a2520" opacity="0.6"/><rect x="13" y="17" width="6" height="11" rx="1" fill="url(#hb4d)"/><rect x="13" y="17" width="6" height="11" rx="1" fill="none" stroke="#1a1a1a" stroke-width="0.4"/><g stroke="#3a3a3a" stroke-width="0.4" opacity="0.7"><rect x="13.5" y="19" width="5" height="0.3" rx="0.15"/><rect x="13.5" y="20.5" width="5" height="0.3" rx="0.15"/><rect x="13.5" y="22" width="5" height="0.3" rx="0.15"/><rect x="13.5" y="23.5" width="5" height="0.3" rx="0.15"/><rect x="13.5" y="25" width="5" height="0.3" rx="0.15"/><rect x="13.5" y="26.5" width="5" height="0.3" rx="0.15"/></g><rect x="12.5" y="26.5" width="7" height="1.5" rx="0.5" fill="url(#v4)"/><rect x="12.5" y="26.5" width="7" height="0.5" fill="#ff8a45" opacity="0.6"/><path d="M13 28 L12.6 29.8 L13.3 30 L18.7 30 L19.4 29.8 L19 28Z" fill="#3a3530"/><path d="M14 28 L13.7 29.3 L14.3 30 L17.7 30 L18.3 29.3 L18 28Z" fill="#5a544c" opacity="0.7"/></g></svg></div>
+      <div class="name">Modern Claw Hammer</div>
+      <div class="desc">Black vulcanized grip with raised ridges, vibrantly colored accent ring near the base, steel head with a slight chamfer at the back. A contemporary take on the claw hammer.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="hb5h" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#d8d8d8"/><stop offset="100%" stop-color="#a0a0a0"/></linearGradient><linearGradient id="hb5e" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#5a5a5e"/><stop offset="100%" stop-color="#3a3a3e"/></linearGradient><linearGradient id="hb5d" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#1a4a8a"/><stop offset="50%" stop-color="#2a6aba"/><stop offset="100%" stop-color="#1a4a8a"/></linearGradient></defs><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-12 16 17)"><path d="M5 10 L27 10 L26 17 L6 17Z" fill="url(#hb5e)"/><rect x="5" y="10" width="22" height="3" fill="url(#hb5h)"/><rect x="5" y="10" width="22" height="1" fill="#e8e8e8" opacity="0.5"/><path d="M27 10 L26 17" stroke="#2a2a2e" stroke-width="0.3" opacity="0.6"/><path d="M12.5 17 L12 28 L13.3 29.5 L16 29.5 L18.7 29.5 L20 28 L19.5 17Z" fill="url(#hb5d)"/><path d="M12.5 17 L12 28 L13.3 29.5 L16 29.5 L18.7 29.5 L20 28 L19.5 17Z" fill="none" stroke="#0a2a4a" stroke-width="0.4"/><g stroke="#0a2a4a" stroke-width="0.3" opacity="0.5"><line x1="13.5" y1="19" x2="18.5" y2="19"/><line x1="13.3" y1="21" x2="18.7" y2="21"/><line x1="13.1" y1="23" x2="18.9" y2="23"/><line x1="13" y1="25" x2="19" y2="25"/><line x1="13" y1="27" x2="19" y2="27"/></g><circle cx="16" cy="18.5" r="0.6" fill="#5a9ae8" opacity="0.6"/><path d="M12 28 L11.5 29.5 L13 30 L19 30 L20.5 29.5 L20 28Z" fill="#5a5a5e"/><path d="M13 28 L12.8 29 L13.8 30 L18.2 30 L19.2 29 L19 28Z" fill="#8a8a8e" opacity="0.6"/></g></svg></div>
+      <div class="name">Titanium &amp; Blue</div>
+      <div class="desc">A titanium/silver head paired with a blue Denali-style handle. Tapered handle profile, blue gradient with subtle grip texture and accent dots. Industrial but with a distinctive color accent.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><defs><linearGradient id="hb6h" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#e8e4df"/><stop offset="100%" stop-color="#c8c4bc"/></linearGradient></defs><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-15 16 17)"><path d="M5 10 L27 10 L27 17 L5 17Z" fill="url(#hb6h)" stroke="#3a3530" stroke-width="0.4"/><rect x="5" y="10" width="22" height="3" fill="#f0ece4" opacity="0.6"/><path d="M26 10 L29 8.5 L29 10.5 L26.5 11.5 L26 10Z" fill="#3a3530"/><path d="M27 10 L30 9 L30 10.2 L27.3 11L27 10Z" fill="#5a544c" opacity="0.6"/><path d="M13.5 17 L12.8 28 L14.7 29.5 L17.3 29.5 L19.2 28 L18.5 17Z" fill="#7a6248"/><path d="M13.5 17 L12.8 28 L14.7 29.5 L17.3 29.5 L19.2 28 L18.5 17Z" fill="none" stroke="#5a4a35" stroke-width="0.4"/><path d="M16 17 L16 29" stroke="#5a4a35" stroke-width="0.5" opacity="0.5"/><path d="M13.5 27 L13 29 L14.5 30 L17.5 30 L19 29 L18.5 27Z" fill="#4a3d2a"/><path d="M14.5 27 L14.2 28.5 L15 30 L17 30 L17.8 28.5 L17.5 27Z" fill="#6b5a42" opacity="0.6"/></g></svg></div>
+      <div class="name">Line-Art Claw</div>
+      <div class="desc">Simplified silhouette: bold head shape, visible claw at the end, clean wood handle with grain line and wedge. Less rendering, more graphic shape — but still clearly a claw hammer.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-22 16 17)"><rect x="4" y="10" width="24" height="7" fill="#5a544c"/><rect x="4" y="10" width="24" height="3.5" fill="#c8c4bc"/><rect x="4" y="10" width="24" height="1.5" fill="#e8e4df" opacity="0.5"/><path d="M4 14 L2.5 13 L2.5 14.5 L4 15.5Z" fill="#3a3530"/><path d="M4 14.2 L3 13.5 L3 14.5 L4 15Z" fill="#2a2520" opacity="0.7"/><rect x="12.5" y="17" width="7" height="11" rx="1" fill="#6b5a42"/><rect x="12.5" y="17" width="7" height="11" rx="1" fill="none" stroke="#5a4a35" stroke-width="0.4"/><path d="M12 21 L12 25 Q12 26 13 26 L19 26 Q20 26 20 25 L20 21Z" fill="#5a4a35"/><path d="M12 21 L12 25 Q12 26 13 26 L19 26 Q20 26 20 25 L20 21Z" fill="none" stroke="#4a3520" stroke-width="0.4"/><rect x="12.5" y="27" width="7" height="1.5" fill="#4a3d2a" opacity="0.6"/><g stroke="#9a9088" stroke-width="0.3" opacity="0.3"><line x1="5" y1="12" x2="26" y2="12"/><line x1="5" y1="13" x2="26" y2="13"/><line x1="6" y1="13.5" x2="25" y2="13.5"/></g></g></svg></div>
+      <div class="name">Masonry / Chipping Hammer</div>
+      <div class="desc">A blocky masonry hammer with a chisel edge on one side and a flat face on the other. Short, thick handle with a wider grip section. Angular, brutalist — nothing curved or subtle about it.</div>
+    </div>
+
+    <div class="card">
+      <div class="tile"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" fill="#1a1816"/><g transform="rotate(-10 16 17)"><rect x="6" y="10" width="20" height="8" rx="4" fill="#5a544c"/><rect x="6" y="10" width="20" height="4" rx="4" fill="#c8c4bc"/><rect x="6" y="10" width="20" height="1.5" rx="4" fill="#e8e4df" opacity="0.5"/><rect x="13.5" y="18" width="5" height="11" rx="1" fill="#6b5a42"/><rect x="13.5" y="18" width="5" height="11" rx="1" fill="none" stroke="#5a4a35" stroke-width="0.4"/><rect x="13.5" y="23" width="5" height="0.4" fill="#4a3d2a" opacity="0.5"/><rect x="13.5" y="25" width="5" height="0.4" fill="#4a3d2a" opacity="0.5"/><rect x="13.5" y="27" width="5" height="0.4" fill="#4a3d2a" opacity="0.5"/><path d="M13.5 28 L13 29.5 L14.5 30 L17.5 30 L19 29.5 L18.5 28Z" fill="#4a3d2a"/><path d="M14.5 28 L14.2 29.2 L15 30 L17 30 L17.8 29.2 L17.5 28Z" fill="#6b5a42" opacity="0.6"/><g stroke="#9a9088" stroke-width="0.3" opacity="0.3"><line x1="7" y1="12" x2="25" y2="12"/><line x1="7" y1="13" x2="25" y2="13"/></g></g></svg></div>
+      <div class="name">Upholsterer's Hammer</div>
+      <div class="desc">Small, compact head with a long, thin handle. The rounded head and extended grip make it read as a different tool from the standard claw hammer — a specialist's instrument.</div>
+    </div>
+
+  </div>
+
+  <footer>
+    <p class="note">Files: favicon-b1.svg through favicon-b8.svg in public/.</p>
+    <p class="current">
+      <svg viewBox="0 0 32 32"><path d="M16 6 C10 6 6 10 6 16 C6 22 10 26 16 26 C22 26 26 22 26 16 C26 10 22 6 16 6Z" fill="#3b82f6"/><circle cx="16" cy="16" r="3.5" fill="#fff"/><circle cx="8" cy="10" r="2" fill="rgba(255,255,255,0.85)"/><circle cx="24" cy="10" r="2" fill="rgba(255,255,255,0.85)"/><circle cx="8" cy="22" r="2" fill="rgba(255,255,255,0.85)"/><circle cx="24" cy="22" r="2" fill="rgba(255,255,255,0.85)"/></svg>
+      current: network node favicon
+    </p>
+  </footer>
+</div>
+</body>
+</html>

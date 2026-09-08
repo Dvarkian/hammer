@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-10 16 17)">
+    <!-- Rubber mallet head: cylinder, dark red/rubber color -->
+    <rect x="4" y="10" width="24" height="8" rx="4" fill="#5c3020"/>
+    <rect x="4" y="10" width="24" height="8" rx="4" fill="none" stroke="#4a2515" stroke-width="0.5"/>
+    <rect x="4" y="10" width="24" height="2" rx="4" fill="#7a4028" opacity="0.7"/>
+    <rect x="4" y="16" width="24" height="2" rx="4" fill="#3a1a10" opacity="0.5"/>
+
+    <!-- Handle: dark wood -->
+    <rect x="13" y="18" width="6" height="11" rx="1.5" fill="#5a4530"/>
+    <rect x="13" y="18" width="6" height="11" rx="1.5" fill="none" stroke="#4a3520" stroke-width="0.4"/>
+    <!-- Handle grain -->
+    <line x1="15" y1="18" x2="15" y2="29" stroke="#4a3520" stroke-width="0.3" opacity="0.6"/>
+    <line x1="17" y1="18" x2="17" y2="29" stroke="#4a3520" stroke-width="0.3" opacity="0.4"/>
+
+    <!-- Banding -->
+    <rect x="4" y="17" width="24" height="2" rx="0.5" fill="#2a1508"/>
+    <rect x="4" y="18.5" width="24" height="1" fill="#4a2515" opacity="0.6"/>
+  </g>
+</svg>

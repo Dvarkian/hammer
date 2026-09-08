@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="head" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d8d8d8"/>
+      <stop offset="100%" stop-color="#a0a0a0"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#5a5a5e"/>
+      <stop offset="100%" stop-color="#3a3a3e"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#1a4a8a"/>
+      <stop offset="50%" stop-color="#2a6aba"/>
+      <stop offset="100%" stop-color="#1a4a8a"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="32" height="32" fill="#1a1816"/>
+
+  <g transform="rotate(-12 16 17)">
+    <!-- Head: titanium/silver, slightly tapered -->
+    <path d="M5 10 L27 10 L26 17 L6 17Z" fill="url(#edge)"/>
+    <rect x="5" y="10" width="22" height="3" fill="url(#head)"/>
+    <rect x="5" y="10" width="22" height="1" fill="#e8e8e8" opacity="0.5"/>
+    <path d="M27 10 L26 17" stroke="#2a2a2e" stroke-width="0.3" opacity="0.6"/>
+
+    <!-- Handle: blue Denali-style -->
+    <path d="M12.5 17 L12 28 L13.3 29.5 L16 29.5 L18.7 29.5 L20 28 L19.5 17Z" fill="url(#handle)"/>
+    <path d="M12.5 17 L12 28 L13.3 29.5 L16 29.5 L18.7 29.5 L20 28 L19.5 17Z" fill="none" stroke="#0a2a4a" stroke-width="0.4"/>
+
+    <!-- Handle grip texture -->
+    <g stroke="#0a2a4a" stroke-width="0.3" opacity="0.5">
+      <line x1="13.5" y1="19" x2="18.5" y2="19"/>
+      <line x1="13.3" y1="21" x2="18.7" y2="21"/>
+      <line x1="13.1" y1="23" x2="18.9" y2="23"/>
+      <line x1="13" y1="25" x2="19" y2="25"/>
+      <line x1="13" y1="27" x2="19" y2="27"/>
+    </g>
+
+    <!-- Accent dots on handle -->
+    <circle cx="16" cy="18.5" r="0.6" fill="#5a9ae8" opacity="0.6"/>
+
+    <!-- Wedge detail -->
+    <path d="M12 28 L11.5 29.5 L13 30 L19 30 L20.5 29.5 L20 28Z" fill="#5a5a5e"/>
+    <path d="M13 28 L12.8 29 L13.8 30 L18.2 30 L19.2 29 L19 28Z" fill="#8a8a8e" opacity="0.6"/>
+  </g>
+</svg>

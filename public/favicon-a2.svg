@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#f5f2ea"/>
+      <stop offset="100%" stop-color="#e8e2d4"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="32" height="32" fill="url(#paper)"/>
+
+  <!-- Sumi ink, loaded brush: heavy head, tapered handle -->
+  <g fill="#16130f">
+    <!-- Head: slab of ink, slightly wedge-shaped -->
+    <path d="M6 9.5 Q7 9 9 9 L23 9 Q25 9 25 11 L25 15.5 Q25 16 24 16 L8 16 Q7 16 7 14.5 Z"/>
+    <!-- Highlight on top face (paper showing through ink edge) -->
+    <path d="M7 9.3 L24 9.3 L24.6 9.9 L7 9.9 Z" fill="#f5f2ea"/>
+    <!-- Bottom edge shadow -->
+    <path d="M7 15.7 L25 15.7 L25 16.3 Q25 16.6 24.4 16.6 L8 16.6 Q7 16.6 7 16.2 Z" fill="#000" opacity="0.18"/>
+
+    <!-- Handle: brush-like stroke, tapering, slight wobble -->
+    <path d="M13.6 16 Q13.3 20 13.7 24 Q13.9 27 14.3 29.6
+             L17.7 29.6 Q18.1 27 18.3 24 Q18.7 20 18.4 16 Z"/>
+
+    <!-- Brush hair texture lines on handle -->
+    <path d="M14.6 17 L14.5 29" stroke="#f5f2ea" stroke-width="0.3" opacity="0.5"/>
+    <path d="M16 17 L16 29.3" stroke="#f5f2ea" stroke-width="0.25" opacity="0.45"/>
+    <path d="M17.4 17 L17.5 29" stroke="#f5f2ea" stroke-width="0.3" opacity="0.5"/>
+
+    <!-- Ink drip at strike end -->
+    <circle cx="24.4" cy="15.4" r="0.45" fill="#16130f"/>
+    <circle cx="25.2" cy="14.1" r="0.25" fill="#16130f" opacity="0.7"/>
+  </g>
+
+  <!-- Seal-red stamp accent, bottom right -->
+  <g transform="translate(23 24)">
+    <rect x="0" y="0" width="5" height="5" fill="#b03a2e" transform="rotate(7)"/>
+    <text x="2.5" y="3.7" font-family=" system-ui, sans-serif" font-size="3.2" font-weight="700"
+          fill="#f5f2ea" text-anchor="middle" dominant-baseline="middle" transform="rotate(-7 2.5 2.5)">H</text>
+  </g>
+</svg>
