@@ -258,14 +258,16 @@ describe('config helpers', () => {
   })
 
   it('normalizes the slope-line selector with safe defaults', () => {
+    // The selector is always active: enabled is forced true even when absent
+    // or stored as false by an older build.
     const normalized = normalizeConfigShape({})
-    assert.equal(normalized.selector.enabled, false)
+    assert.equal(normalized.selector.enabled, true)
     assert.equal(normalized.selector.slope, null)
     assert.equal(normalized.selector.minSpeed, null)
     assert.equal(normalized.selector.minIntell, null)
 
     const preserved = normalizeConfigShape({
-      selector: { enabled: true, slope: 42.5, minSpeed: 0.001, minIntell: 1200 },
+      selector: { enabled: false, slope: 42.5, minSpeed: 0.001, minIntell: 1200 },
     })
     assert.equal(preserved.selector.enabled, true)
     assert.equal(preserved.selector.slope, 42.5)
@@ -275,7 +277,7 @@ describe('config helpers', () => {
     const invalid = normalizeConfigShape({
       selector: { enabled: 'yes', slope: -5, minSpeed: 'abc', minIntell: null },
     })
-    assert.equal(invalid.selector.enabled, false)
+    assert.equal(invalid.selector.enabled, true)
     assert.equal(invalid.selector.slope, null)
     assert.equal(invalid.selector.minSpeed, null)
     assert.equal(invalid.selector.minIntell, null)
@@ -2265,8 +2267,34 @@ describe('dynamic model score resolution', () => {
   it('ignores safety-only dynamic models that should not be routed as coding models', () => {
     assert.equal(toKiloCodeModelMeta({ id: 'meta-llama/llama-guard-4-12b:free' }), null)
     assert.equal(toOpenRouterModelMeta({ id: 'meta-llama/llama-guard-4-12b:free' }), null)
-    assert.equal(toKiloCodeModelMeta({ id: 'nvidia/nemotron-3.5-content-safety:free' }), null)
-    assert.equal(toOpenRouterModelMeta({ id: 'nvidia/nemotron-3.5-content-safety:free' }), null)
+    assert.equal(toKiloCodeModelMeta({ id: 'nvidia/nemotron-3.5-content-safety:free', name: 'NVIDIA: Nemotron 3.5 Content Safety (free)' }), null)
+    assert.equal(toOpenRouterModelMeta({ id: 'nvidia/nemotron-3.5-content-safety:free', name: 'NVIDIA: Nemotron 3.5 Content Safety (free)' }), null)
+    // ...while genuinely free chat models with image-capable names still pass
+    assert.ok(toOpenRouterModelMeta({ id: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free', name: 'NVIDIA: Nemotron 3 Nano Omni 30B A3B Reasoning (free)' }))
+    assert.ok(toOpenRouterModelMeta({ id: 'google/gemma-4-31b-it:free', name: 'Google: Gemma 4 31B IT (free)' }))
+  })
+
+  it('admits KiloCode free models flagged by the provider isFree field', () => {
+    const autoFree = toKiloCodeModelMeta({ id: 'kilo-auto/free', isFree: true })
+    assert.ok(autoFree)
+    assert.equal(autoFree.modelId, 'kilo-auto/free')
+
+    const router = toKiloCodeModelMeta({ id: 'openrouter/free', isFree: true })
+    assert.ok(router)
+    assert.equal(router.modelId, 'openrouter/free')
+
+    // The field is authoritative: without isFree (or the ':free' suffix) the model is not admitted
+    assert.equal(toKiloCodeModelMeta({ id: 'kilo-auto/free' }), null)
+    assert.equal(toKiloCodeModelMeta({ id: 'kilo-auto/free', isFree: false }), null)
+    // ':free' suffix remains a valid free signal when the field is absent
+    assert.ok(toKiloCodeModelMeta({ id: 'google/gemma-3n-e2b-it:free' }))
+  })
+
+  it('resolves newly discovered OpenCode Zen free models through catalog aliases', () => {
+    const nemotron = toOpenCodeModelMeta({ id: 'nemotron-3.5-lightning-free' })
+    assert.ok(nemotron)
+    assert.equal(resolveAliasedModelId('nemotron-3.5-lightning-free'), 'nvidia/nemotron-3.5-lightning')
+    assert.equal(nemotron.providerKey, 'opencode')
   })
 
   it('uses scores.js entry for KiloCode models when payload omits scores', () => {
@@ -3637,13 +3665,14 @@ describe('package and entrypoint sanity', () => {
 
   it('dashboard wires the slope-line selector controls', () => {
     assert.ok(dashboardContent.includes('id="sel-slope-slider"'))
-    assert.ok(dashboardContent.includes('id="sel-enabled"'))
     assert.ok(dashboardContent.includes('id="sel-pick"'))
     assert.ok(dashboardContent.includes("'data-sel-drag': 'minIntell'"))
     assert.ok(dashboardContent.includes("'data-sel-drag': 'minSpeed'"))
     assert.ok(dashboardContent.includes("fetch('/api/selector'"))
     assert.ok(dashboardContent.includes('function pickSlopeModel'))
     assert.ok(dashboardContent.includes('function initScatterControls'))
+    // The enable toggle was removed — the selector is always on.
+    assert.equal(dashboardContent.includes('id="sel-enabled"'), false)
   })
 
   it('removes the main-table filter controls', () => {

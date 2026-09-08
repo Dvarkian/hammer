@@ -65,6 +65,7 @@ export const MODEL_ID_ALIASES = {
   'nemotron-3-super-free': 'nvidia/nemotron-3-super-120b-a12b',
   'nemotron-3-ultra-free': 'nvidia/nemotron-3-ultra-550b-a55b',
   'nemotron-3-ultra': 'nvidia/nemotron-3-ultra-550b-a55b',
+  'nemotron-3.5-lightning-free': 'nvidia/nemotron-3.5-lightning',
   'north-mini-code-free': 'cohere/north-mini-code',
   'qwen3.6-plus-free': 'qwen/qwen3.5-397b-a17b',
   'qwen/qwen3.6-plus-preview:free': 'qwen/qwen3.5-397b-a17b',

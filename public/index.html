@@ -1574,6 +1574,15 @@
       text-decoration-thickness: 1px;
     }
 
+    /* The currently routed model row (pin > slope-line pick > Elo ranking) */
+    tr.row-best td {
+      background: rgba(59, 130, 246, 0.07);
+      background: color-mix(in srgb, var(--accent) 7%, transparent);
+    }
+    tr.row-best td:first-child {
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
     /* -------- Graveyard table (paid / dead models) -------- */
     .graveyard-details {
       margin-top: 24px;
@@ -1783,6 +1792,44 @@
       font-size: 0.84rem;
       line-height: 1.4;
     }
+
+    /* Intelligence-vs-Speed card: the title and the slope selector live in
+       their own strips above/below the plot so no control overlaps the
+       scatter itself. */
+    .scatter-card {
+      display: flex;
+      flex-direction: column;
+      padding: 0;
+      /* Keep the title, plot, and control strips usable even where the generic
+         .kpi-card min-height is overridden for small screens. */
+      min-height: 240px;
+    }
+    .scatter-card .scatter-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 20px 8px;
+      flex-shrink: 0;
+    }
+    .scatter-card #speed-intell-svg {
+      position: relative;
+      flex: 1 1 auto;
+      width: 100%;
+      min-height: 0;
+      opacity: 1;
+      pointer-events: all;
+      cursor: crosshair;
+    }
+    .scatter-controls {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      flex-shrink: 0;
+      padding: 10px 20px 12px;
+      border-top: 1px solid var(--border);
+      background: var(--card);
+    }
   </style>
 </head>
 
@@ -1821,7 +1868,7 @@
 
     <div class="kpi-grid">
       <div class="plots-grid">
-      <div class="kpi-card topology-card">
+        <div class="kpi-card topology-card">
         <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
         <div class="kpi-content">
           <div style="display:flex; gap:24px; align-items:flex-start;">
@@ -1852,28 +1899,22 @@
             </div>
           </div>
         </div>
-      </div>
+        </div>
 
-      <div class="kpi-card topology-card">
-        <svg class="kpi-bg-svg" id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
-        <div class="kpi-content">
-          <div style="display:flex; align-items:center; gap:8px;">
+        <div class="kpi-card topology-card scatter-card">
+          <div class="scatter-title">
             <div class="kpi-label" style="margin:0;">Intelligence vs Speed</div>
             <span class="kpi-value" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;">—</span>
           </div>
-          <div style="display:flex; align-items:center; gap:8px; margin-top:5px;">
-            <label class="switch" title="Route smartest traffic using the slope line" style="margin:0;">
-              <input type="checkbox" id="sel-enabled">
-              <span class="slider"></span>
-            </label>
+          <svg id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="scatter-controls">
             <span class="kpi-label" style="margin:0; white-space:nowrap;">Slope</span>
             <input type="range" id="sel-slope-slider" min="0" max="1000" value="0"
-              style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, higher values trade intelligence for speed">
+              style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, 100% picks the fastest">
             <span class="kpi-value" id="sel-slope-value" style="font-size:0.72rem; min-width:34px; text-align:right;">—</span>
+            <div class="kpi-value" id="sel-pick" style="font-size:0.76rem; flex-basis:100%;">—</div>
           </div>
-          <div class="kpi-value" id="sel-pick" style="font-size:0.76rem; margin-top:3px;">—</div>
         </div>
-      </div>
       </div>
     </div>
 
@@ -2301,11 +2342,14 @@
     // Slope-line selector (Intelligence-vs-Speed plot → smartest routing).
     // Mirrors the server-side selectModelBySlope() pick so the plot is a live
     // preview of what the router will select when no model is manually pinned.
-    let selectorState = { enabled: false, slope: null, minSpeed: null, minIntell: null };
+    let selectorState = { slope: null, minSpeed: null, minIntell: null };
     let selectorSaveTimer = null;
+    let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > Elo)
+    let currentBestProviderKey = null;
     let scatterDrag = null;       // active threshold-line drag
     let scatterScales = null;     // plot extents, refreshed by every draw
-    let selectorSlopeMax = 0;     // data-derived slider scale (2 * ySpan / xSpan)
+    let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
+    let selectorGuaranteeSlope = 0;   // fastest-row guarantee slope, applied only at 100%
     let isTableHovered = false;
     let metaLoaded = false;
     let logsViewMode = 'history';
@@ -2402,6 +2446,8 @@
         });
 
         setActivePinnedModel(data.pinnedModelId, data.pinnedProviderKey, data.pinnedRowKeys, data.pinningMode);
+        currentBestModelId = data.best || null;
+        currentBestProviderKey = data.bestProviderKey || null;
         updateChatModelOptions(allModels);
 
         render(); // triggers automatic (non-user) layout pass
@@ -2648,20 +2694,45 @@
       drawSpeedIntellScatter(models);
     }
 
-    // Intelligence vs. speed scatter — one dot per model/provider combination
-    // (each row of the live models list, the same rows behind the main table's
-    // TTFT / Tok/s columns).
+    // ---- Intelligence-vs-speed scatter plot ----
+    // One dot per model/provider combination (each row of the live models list,
+    // the same rows behind the main table's TTFT / Tok/s columns).
     //   y = intelligence: the same benchmark value the Intelligence column sorts by
     //   x = speed       : 1 / (TTFT + 1000 / tok-per-s), higher = faster overall
     // Dots are colored per provider (stable hue) so multi-provider duplicates of
     // the same model are distinguishable; hover a dot for its tooltip.
-    function drawSpeedIntellScatter(models) {
-      const svg = document.getElementById('speed-intell-svg');
-      if (!svg) return;
-      const card = svg.parentElement;
-      const W = card ? card.clientWidth : 600;
-      const H = card ? card.clientHeight : 340;
 
+    const scatterSvgNS = 'http://www.w3.org/2000/svg';
+    function svgEl(name, attrs) {
+      const n = document.createElementNS(scatterSvgNS, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      return n;
+    }
+    const cssVarValue = (name) => (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim();
+
+    const fmtScatterSpeed = (v) => {
+      if (v >= 1000) return v.toFixed(0);
+      if (v >= 1) return v.toPrecision(3).replace(/\.?0+$/, '');
+      return v.toPrecision(2).replace(/\.?0+$/, '');
+    };
+    const fmtScatterIntell = (v) => v >= 100 ? String(Math.round(v)) : (Number.isInteger(v) ? String(v) : v.toFixed(1));
+    // Stable hue per provider so multi-provider duplicates of the same model
+    // stay distinguishable at a glance.
+    const scatterProviderHue = (pk) => {
+      let h = 0;
+      for (const ch of String(pk)) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
+      return Math.abs(h) % 360;
+    };
+    const scatterShortName = (m) => {
+      const l = (m.label || '').trim();
+      if (l) return l;
+      return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '') || m.modelId || '?';
+    };
+    const scatterDotSize = (rows) => rows.length > 220 ? 3 : 4.5;
+
+    // One row per measurable model/provider combination, using the same
+    // numbers behind the main table's Intelligence / TTFT / Tok-s columns.
+    function buildScatterRows(models) {
       const rows = [];
       for (const m of models || []) {
         if (!m || m.status === 'noauth') continue;
@@ -2683,39 +2754,13 @@
         });
       }
       rows.sort((a, b) => a.intell - b.intell);
+      return rows;
+    }
 
-      const countEl = document.getElementById('speed-intell-count');
-      if (countEl) countEl.textContent = rows.length > 0 ? `${rows.length} combo${rows.length === 1 ? '' : 's'}` : 'no speed data yet';
-
-      // Selector state is part of the redraw key so threshold drags and slope
-      // changes re-render immediately even when the model data is unchanged.
-      const selHash = `${selectorState.enabled ? 1 : 0},${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'}`;
-      const hash = rows.map(r => `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}`).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
-      if (svg.dataset.hash === hash) return;
-      svg.dataset.hash = hash;
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      svg.innerHTML = '';
-
-      const NS = 'http://www.w3.org/2000/svg';
-      const el = (name, attrs) => {
-        const n = document.createElementNS(NS, name);
-        for (const k in attrs) n.setAttribute(k, attrs[k]);
-        return n;
-      };
-      const cssVar = (name) => (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim();
-      const muted = cssVar('--text-muted') || '#999';
-
-      if (rows.length === 0) {
-        selectorSlopeMax = 0;
-        syncSelectorControls();
-        const pickEl = document.getElementById('sel-pick');
-        if (pickEl) pickEl.textContent = 'no speed data yet';
-        const t = el('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
-        t.textContent = 'No measurements yet — TTFT and tok/s are recorded from real requests and model tests.';
-        svg.appendChild(t);
-        return;
-      }
-
+    // Plot geometry from the current rows: padded plot rect, data extents with
+    // a little headroom, and the x/y mappers (the drag handlers reuse the same
+    // scales through the global scatterScales).
+    function computeScatterScales(rows, W, H) {
       const pad = { top: 44, right: 18, bottom: 46, left: 62 };
       const plotW = Math.max(40, W - pad.left - pad.right);
       const plotH = Math.max(40, H - pad.top - pad.bottom);
@@ -2733,100 +2778,92 @@
       yMax = Math.min(10000, yMax + ySpan0 * 0.08);
       const ySpan = Math.max(1e-9, yMax - yMin);
       const xSpan = Math.max(1e-9, xMax - xMin);
-      scatterScales = { pad, plotW, plotH, xMin, xMax, yMin, yMax, xSpan, ySpan };
 
       const xOf = s => pad.left + ((s - xMin) / xSpan) * plotW;
       const yOf = i => pad.top + (1 - (i - yMin) / ySpan) * plotH;
+      return { pad, plotW, plotH, H, xMin, xMax, yMin, yMax, xSpan, ySpan, xOf, yOf };
+    }
 
-      const fmtSpeed = (v) => {
-        if (v >= 1000) return v.toFixed(0);
-        if (v >= 1) return v.toPrecision(3).replace(/\.?0+$/, '');
-        return v.toPrecision(2).replace(/\.?0+$/, '');
-      };
-      const fmtIntell = (v) => v >= 100 ? String(Math.round(v)) : (Number.isInteger(v) ? String(v) : v.toFixed(1));
-
-      const g = el('g', {});
+    function drawScatterGrid(svg, scales) {
+      const { pad, plotW, plotH, H, xMin, xMax, yMin, yMax, ySpan, xSpan, xOf } = scales;
+      const muted = cssVarValue('--text-muted') || '#999';
+      const g = svgEl('g', {});
       for (let i = 0; i <= 4; i++) {
         const gx = pad.left + (i / 4) * plotW;
-        g.appendChild(el('line', { x1: gx, y1: pad.top, x2: gx, y2: pad.top + plotH, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
+        g.appendChild(svgEl('line', { x1: gx, y1: pad.top, x2: gx, y2: pad.top + plotH, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
         const tv = xMin + (i / 4) * xSpan;
-        const txt = el('text', { x: gx, y: pad.top + plotH + 15, fill: muted, 'font-size': '9px', 'text-anchor': 'middle' });
-        txt.textContent = fmtSpeed(tv);
+        const txt = svgEl('text', { x: gx, y: pad.top + plotH + 15, fill: muted, 'font-size': '9px', 'text-anchor': 'middle' });
+        txt.textContent = fmtScatterSpeed(tv);
         g.appendChild(txt);
       }
       for (let i = 0; i <= 4; i++) {
         const gy = pad.top + (i / 4) * plotH;
-        g.appendChild(el('line', { x1: pad.left, y1: gy, x2: pad.left + plotW, y2: gy, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
+        g.appendChild(svgEl('line', { x1: pad.left, y1: gy, x2: pad.left + plotW, y2: gy, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
         const iv = yMax - (i / 4) * ySpan;
-        const txt = el('text', { x: pad.left - 7, y: gy + 3, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
-        txt.textContent = fmtIntell(iv);
+        const txt = svgEl('text', { x: pad.left - 7, y: gy + 3, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
+        txt.textContent = fmtScatterIntell(iv);
         g.appendChild(txt);
       }
-      const cap = el('text', { x: pad.left + plotW / 2, y: H - 10, fill: muted, 'font-size': '10px', 'text-anchor': 'middle' });
+      const cap = svgEl('text', { x: pad.left + plotW / 2, y: H - 10, fill: muted, 'font-size': '10px', 'text-anchor': 'middle' });
       cap.textContent = 'speed = 1 / (TTFT + 1000 / tok·s)  —  faster to the right';
       g.appendChild(cap);
-      const capY = el('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '10px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
+      const capY = svgEl('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '10px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
       capY.textContent = 'Intelligence';
       g.appendChild(capY);
       svg.appendChild(g);
+    }
 
-      const ring = cssVar('--card') || '#fff';
-      const providerHue = (pk) => {
-        let h = 0;
-        for (const ch of String(pk)) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
-        return Math.abs(h) % 360;
-      };
+    function drawScatterPoints(svg, rows, scales) {
+      const ring = cssVarValue('--card') || '#fff';
+      const rSize = scatterDotSize(rows);
       const strokeFor = (r) => {
         if (r.m.status === 'up') return { color: ring, width: 1 };
-        if (r.m.isRateLimited) return { color: cssVar('--warning') || '#d29922', width: 2 };
-        return { color: cssVar('--error') || '#e5484d', width: 2 };
+        if (r.m.isRateLimited) return { color: cssVarValue('--warning') || '#d29922', width: 2 };
+        return { color: cssVarValue('--error') || '#e5484d', width: 2 };
       };
-      const rSize = rows.length > 220 ? 3 : 4.5;
       for (const r of rows) {
-        const hue = providerHue(r.m.providerKey);
+        const hue = scatterProviderHue(r.m.providerKey);
         const st = strokeFor(r);
-        const c = el('circle', {
-          cx: xOf(r.speed), cy: yOf(r.intell), r: rSize,
+        const c = svgEl('circle', {
+          cx: scales.xOf(r.speed), cy: scales.yOf(r.intell), r: rSize,
           fill: `hsl(${hue} 70% 55%)`, 'fill-opacity': 0.85,
           stroke: st.color, 'stroke-width': st.width,
         });
-        const title = el('title', {});
+        const title = svgEl('title', {});
         title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}\n` +
-          `intelligence ${fmtIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · speed ${fmtSpeed(r.speed)}`;
+          `intelligence ${fmtScatterIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · speed ${fmtScatterSpeed(r.speed)}`;
         c.appendChild(title);
         svg.appendChild(c);
       }
+    }
 
-      // Visible labels: the model's short display name, drawn beside each dot
-      // with a card-colored halo so grid lines never cut through the text. When
-      // the same model is offered by several providers the provider is appended
-      // so every model/provider combination stays identifiable.
-      const shortName = (m) => {
-        const l = (m.label || '').trim();
-        if (l) return l;
-        return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '') || m.modelId || '?';
-      };
+    // Visible labels: the model's short display name, drawn beside each dot
+    // with a card-colored halo so grid lines never cut through the text. When
+    // the same model is offered by several providers the provider is appended
+    // so every model/provider combination stays identifiable.
+    function drawScatterLabels(svg, rows, scales) {
+      const rSize = scatterDotSize(rows);
+      const maxLabelChars = 18;
+      const textRightEdge = scales.pad.left + scales.plotW - 4;
+      const labelFill = cssVarValue('--text') || '#444';
+      const labelHalo = cssVarValue('--card') || '#fff';
       const nameCounts = {};
       for (const r of rows) {
-        const n = shortName(r.m);
+        const n = scatterShortName(r.m);
         nameCounts[n] = (nameCounts[n] || 0) + 1;
       }
-      const maxLabelChars = 18;
-      const textRightEdge = pad.left + plotW - 4;
-      const labelFill = cssVar('--text') || '#444';
-      const labelHalo = cssVar('--card') || '#fff';
       for (const r of rows) {
-        const name = shortName(r.m);
+        const name = scatterShortName(r.m);
         // Truncate the model name first so the disambiguating provider suffix
         // always survives on models offered by several providers.
         const suffix = nameCounts[name] > 1 ? ` · ${r.m.providerKey}` : '';
         const nameBudget = Math.max(1, maxLabelChars - suffix.length);
         const shortLabelName = name.length > nameBudget ? name.slice(0, nameBudget - 1) + '…' : name;
         const label = shortLabelName + suffix;
-        const dx = xOf(r.speed);
-        const dy = yOf(r.intell);
+        const dx = scales.xOf(r.speed);
+        const dy = scales.yOf(r.intell);
         const fitsRight = dx + rSize + 6 + label.length * 4.4 <= textRightEdge;
-        const t = el('text', {
+        const t = svgEl('text', {
           x: fitsRight ? dx + rSize + 6 : dx - rSize - 6,
           y: dy + 2.8,
           'font-size': '8.5px',
@@ -2840,46 +2877,125 @@
         t.textContent = label;
         svg.appendChild(t);
       }
+    }
 
-      // ---- Slope-line selector overlay --------------------------------------
-      // Two draggable threshold lines (minimum intelligence / minimum speed) and
-      // a slope-controlled line lowered onto the plot: the first eligible model
-      // it touches is the pick. The pick mirrors selectModelBySlope() in
-      // lib/utils.js; a manual pin (highlighted instead when active) outranks it.
-      selectorSlopeMax = xSpan > 0 ? (2 * ySpan) / xSpan : 0;
+    // ---- Slope-line selector overlay ----
+    // Two draggable threshold lines (minimum intelligence / minimum speed) and
+    // a slope-controlled line lowered onto the plot: the first eligible model
+    // it touches is the pick. The pick mirrors selectModelBySlope() in
+    // lib/utils.js; a manual pin (highlighted instead when active) outranks it.
+    // The slider spans the full rotation of the line: 0% is horizontal and 100%
+    // is vertical. The line's visual angle (not its numeric slope) advances
+    // evenly, so dragging the slider rotates the line smoothly the whole way.
+    // SLOPE_SLIDER_ANGLE_MAX is the angle at 100% (the line is drawn truly
+    // vertical there and the pick is the fastest eligible row).
+    const SLOPE_SLIDER_ANGLE_MAX = (85 * Math.PI) / 180;
+    const SLOPE_SLIDER_ANGLE_TAN = Math.tan(SLOPE_SLIDER_ANGLE_MAX);
+    // Data slope for a line at visual angle θ: tan(θ)·(ySpan/xSpan)·(plotW/plotH)
+    // (converts plot-pixel geometry to intelligence-per-speed units). The max is
+    // also floored by 2·ySpan/minSpeedGap so the 100% slope provably picks the
+    // fastest eligible row — matching pickFastestRow / the vertical-line display
+    // and, crucially, the server's selectModelBySlope() argmax, so the router
+    // routes to exactly the model the dashboard shows as selected.
+    //
+    // The two are deliberately kept separate: selectorSlopeMax is the pure
+    // angle mapping (equal slider steps = equal rotation, so mid-range drags
+    // stay smooth), while the guarantee slope is only applied AT the 100% end
+    // (see onSlopeSliderInput). Folding the guarantee into the max would push
+    // the line vertical within the first third of the slider whenever two rows
+    // have near-identical speeds.
+    function computeSelectorSlopeMax(scales) {
+      const { xSpan, ySpan, plotW, plotH } = scales;
+      if (!(xSpan > 0) || !(plotW > 0) || !(plotH > 0)) return 0;
+      return SLOPE_SLIDER_ANGLE_TAN * (ySpan / xSpan) * (plotW / plotH);
+    }
 
-      const accentColor = cssVar('--accent') || '#3b82f6';
-      const selEnabled = !!selectorState.enabled;
-      const selLineColor = selEnabled ? accentColor : muted;
-      const selClip = el('clipPath', { id: 'sel-plot-clip' });
-      selClip.appendChild(el('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
+    // Slope that makes the argmax pick (intelligence + slope·speed) the fastest
+    // eligible row regardless of intelligence gaps: with slope ≥ 2·ySpan/minSpeedGap,
+    // any speed difference ≥ the smallest gap outweighs any intelligence
+    // difference (≤ ySpan), so the fastest row always wins at 100% — matching
+    // pickFastestRow and the server's selectModelBySlope() argmax.
+    function computeSelectorGuaranteeSlope(scales, rows) {
+      const { xSpan, ySpan } = scales;
+      if (!(xSpan > 0) || !(ySpan > 0)) return 0;
+      let minSpeedGap = Infinity;
+      const eligibleSpeeds = (rows || [])
+        .filter(r => r.m && r.m.status === 'up' && !(r.m.rateLimit && r.m.rateLimit.wasRateLimited === true))
+        .map(r => Number(r.speed))
+        .filter(v => Number.isFinite(v))
+        .sort((a, b) => a - b);
+      for (let i = 1; i < eligibleSpeeds.length; i++) {
+        const gap = eligibleSpeeds[i] - eligibleSpeeds[i - 1];
+        if (gap > 0 && gap < minSpeedGap) minSpeedGap = gap;
+      }
+      if (!Number.isFinite(minSpeedGap) || minSpeedGap <= 0) return 0;
+      return 2 * ySpan / minSpeedGap;
+    }
+
+    function drawSelectorOverlay(svg, rows, scales) {
+      const { pad, plotW, plotH, xMin, xMax, yMin, yMax, ySpan, xSpan, xOf, yOf } = scales;
+      const muted = cssVarValue('--text-muted') || '#999';
+      const labelHalo = cssVarValue('--card') || '#fff';
+      const accentColor = cssVarValue('--accent') || '#3b82f6';
+      const rSize = scatterDotSize(rows);
+      // The slope-line selector is always active: it drives smartest routing
+      // whenever a slope is configured, so the line is always drawn in the
+      // accent color and the pick is always what the router will select.
+      const selLineColor = accentColor;
+
+      selectorSlopeMax = computeSelectorSlopeMax(scales);
+      selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
+
+      const selClip = svgEl('clipPath', { id: 'sel-plot-clip' });
+      selClip.appendChild(svgEl('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
       svg.appendChild(selClip);
 
-      const slopePick = pickSlopeModel(rows);
-      const pinnedSelRow = activePinnedModelId
+      const slopeNum = Number(selectorState.slope);
+      const atMaxSlope = Number.isFinite(slopeNum) && slopeNum >= selectorSlopeMax;
+      // The plot must always select exactly what the router will route, so the
+      // 'Selected' readout and the KPI 'Current' can never disagree. The router's
+      // precedence is: manual pin > slope-line pick (only when a slope is set) >
+      // Elo best. The client mirrors that with the same eligibility and math as
+      // selectModelBySlope(), falling back to the server-reported best row when
+      // no slope is configured (and to a plain name when the pinned / best model
+      // has no speed data to plot).
+      const pinned = !!activePinnedModelId;
+      const pinnedSelRow = pinned
         ? rows.find(r => r.m.modelId === activePinnedModelId && (!activePinnedProviderKey || r.m.providerKey === activePinnedProviderKey))
         : null;
-      const shownSelRow = pinnedSelRow || slopePick;
+      const pinnedModel = (pinned && !pinnedSelRow)
+        ? (allModels.find(x => x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
+        : null;
+      const slopeActive = selectorState.slope != null && Number.isFinite(Number(selectorState.slope));
+      const slopePick = (!pinned && slopeActive) ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
+      const fallbackRow = (!pinned && !slopePick && !slopeActive && currentBestModelId)
+        ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
+        : null;
+      const fallbackModel = (!pinned && !slopePick && !slopeActive && !fallbackRow && currentBestModelId)
+        ? (allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey)) || null)
+        : null;
+      const shownSelRow = pinnedSelRow || slopePick || fallbackRow;
+      const labelRow = pinnedSelRow || pinnedModel || slopePick || fallbackRow || fallbackModel;
 
       // Minimum intelligence: horizontal dashed line, drag up/down.
       const miVal = selectorState.minIntell != null
         ? Math.min(Math.max(selectorState.minIntell, yMin), yMax)
         : yMin;
       const miY = yOf(miVal);
-      svg.appendChild(el('line', {
+      svg.appendChild(svgEl('line', {
         x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
         stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
       }));
-      svg.appendChild(el('line', {
+      svg.appendChild(svgEl('line', {
         x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
         stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minIntell', 'pointer-events': 'stroke',
       }));
-      const miTxt = el('text', {
+      const miTxt = svgEl('text', {
         x: pad.left + plotW - 4, y: Math.min(Math.max(miY - 4, pad.top + 22), pad.top + plotH - 2),
         'font-size': '9px', fill: selLineColor, 'text-anchor': 'end',
         'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
       });
-      miTxt.textContent = `min intelligence ${selectorState.minIntell != null ? fmtIntell(miVal) : '—'}`;
+      miTxt.textContent = `min intelligence ${selectorState.minIntell != null ? fmtScatterIntell(miVal) : '—'}`;
       svg.appendChild(miTxt);
 
       // Minimum speed: vertical dashed line, drag left/right.
@@ -2887,57 +3003,136 @@
         ? Math.min(Math.max(selectorState.minSpeed, xMin), xMax)
         : xMin;
       const msX = xOf(msVal);
-      svg.appendChild(el('line', {
+      svg.appendChild(svgEl('line', {
         x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
         stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
       }));
-      svg.appendChild(el('line', {
+      svg.appendChild(svgEl('line', {
         x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
         stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minSpeed', 'pointer-events': 'stroke',
       }));
-      const msTxt = el('text', {
+      const msTxt = svgEl('text', {
         x: Math.min(Math.max(msX + 4, pad.left + 2), pad.left + plotW - 70), y: pad.top + plotH - 6,
         'font-size': '9px', fill: selLineColor,
         'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
       });
-      msTxt.textContent = `min speed ${selectorState.minSpeed != null ? fmtSpeed(msVal) : '—'}`;
+      msTxt.textContent = `min speed ${selectorState.minSpeed != null ? fmtScatterSpeed(msVal) : '—'}`;
       svg.appendChild(msTxt);
 
       // The sloped line, lowered onto the plot: rests on the first model it
       // touches (nothing qualifies → it rests on the plot floor at bottom-left).
-      const slopeNum = Number(selectorState.slope);
+      // At maximum slope the line is fully vertical through the pick, which is
+      // the fastest eligible row at that slope.
       if (Number.isFinite(slopeNum)) {
-        const intercept = shownSelRow
-          ? (shownSelRow.intell + slopeNum * shownSelRow.speed)
-          : (yMin + slopeNum * xMin);
-        const intellAt = (s) => intercept - slopeNum * s;
-        const slopeAttrs = {
-          x1: xOf(xMin), y1: yOf(intellAt(xMin)),
-          x2: xOf(xMax), y2: yOf(intellAt(xMax)),
-          stroke: selEnabled ? accentColor : muted,
-          'stroke-width': selEnabled ? 1.6 : 1.2,
-          'stroke-opacity': selEnabled ? 0.95 : 0.6,
-          'clip-path': 'url(#sel-plot-clip)',
-        };
-        if (!selEnabled) slopeAttrs['stroke-dasharray'] = '7 5';
-        svg.appendChild(el('line', slopeAttrs));
+        if (shownSelRow && atMaxSlope) {
+          svg.appendChild(svgEl('line', {
+            x1: xOf(shownSelRow.speed), y1: pad.top,
+            x2: xOf(shownSelRow.speed), y2: pad.top + plotH,
+            stroke: accentColor,
+            'stroke-width': 1.6,
+            'stroke-opacity': 0.95,
+            'clip-path': 'url(#sel-plot-clip)',
+          }));
+        } else {
+          const intercept = shownSelRow
+            ? (shownSelRow.intell + slopeNum * shownSelRow.speed)
+            : (yMin + slopeNum * xMin);
+          const intellAt = (s) => intercept - slopeNum * s;
+          svg.appendChild(svgEl('line', {
+            x1: xOf(xMin), y1: yOf(intellAt(xMin)),
+            x2: xOf(xMax), y2: yOf(intellAt(xMax)),
+            stroke: accentColor,
+            'stroke-width': 1.6,
+            'stroke-opacity': 0.95,
+            'clip-path': 'url(#sel-plot-clip)',
+          }));
+        }
       }
 
-      // Highlight the winning dot: a manual pin first, else the slope pick.
+      // Highlight the winning dot: a manual pin first, else the slope pick, else
+      // the routed Elo best. The same name also drives the KPI 'Current' readout
+      // (and vice versa on the next poll), so Selected and Current are always the
+      // same model — even mid-drag and when the selector falls back.
       const pickEl = document.getElementById('sel-pick');
-      if (shownSelRow) {
-        svg.appendChild(el('circle', {
-          cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
-          stroke: selEnabled ? accentColor : muted, 'stroke-width': 2,
-        }));
+      const kpiBestEl = document.getElementById('kpi-best');
+      if (slopeActive && !slopePick && !pinned) {
+        // A slope is set but nothing clears the minimums: routing falls back to
+        // the Elo best, so name that model instead of pretending the line
+        // touches a dot.
+        const fbModel = currentBestModelId
+          ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
+          : null;
+        const fbName = fbModel ? scatterShortName(fbModel) : null;
         if (pickEl) {
-          pickEl.textContent = (pinnedSelRow ? 'Pinned: ' : (selEnabled ? 'Selected: ' : 'Preview: ')) + shortName(shownSelRow.m);
-          pickEl.style.color = selEnabled ? accentColor : '';
+          pickEl.textContent = fbName ? `No model above the minimums — using ${fbName}` : 'No model above the minimums — Elo fallback';
+          pickEl.style.color = '';
         }
+        if (kpiBestEl && fbName) kpiBestEl.textContent = fbName;
+      } else if (labelRow) {
+        // labelRow is either a scatter row (has .m) or a bare model object when
+        // the pinned/best model has no speed data to plot.
+        const name = scatterShortName(labelRow.m || labelRow);
+        if (shownSelRow) {
+          svg.appendChild(svgEl('circle', {
+            cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
+            stroke: accentColor, 'stroke-width': 2,
+          }));
+        }
+        if (pickEl) {
+          pickEl.textContent = (pinned ? 'Pinned: ' : 'Selected: ') + name;
+          pickEl.style.color = accentColor;
+        }
+        if (kpiBestEl && name) kpiBestEl.textContent = name;
       } else if (pickEl) {
-        pickEl.textContent = selEnabled ? 'No model above the minimums — Elo fallback' : 'Preview: nothing clears the minimums';
+        pickEl.textContent = 'No model above the minimums — Elo fallback';
         pickEl.style.color = '';
       }
+    }
+
+    function drawSpeedIntellScatter(models) {
+      const svg = document.getElementById('speed-intell-svg');
+      if (!svg) return;
+      // The plot SVG now fills only the space between the title and the control
+      // strips (see .scatter-card), so measure the SVG itself, not the card.
+      const W = svg.clientWidth || 600;
+      const H = svg.clientHeight || 340;
+
+      const rows = buildScatterRows(models);
+
+      const countEl = document.getElementById('speed-intell-count');
+      if (countEl) countEl.textContent = rows.length > 0 ? `${rows.length} combo${rows.length === 1 ? '' : 's'}` : 'no speed data yet';
+
+      // Selector state is part of the redraw key so threshold drags and slope
+      // changes re-render immediately even when the model data is unchanged.
+      // The routed best and pin are part of the redraw key too: when the server
+      // reports a new best (pin toggled, slope save landed) the selection label
+      // and KPI must re-render even though the rows and slider state didn't move.
+      const selHash = `${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'},best=${currentBestModelId ?? 'n'}/${currentBestProviderKey ?? 'n'},pin=${activePinnedModelId ?? 'n'}/${activePinnedProviderKey ?? 'n'}`;
+      const hash = rows.map(r => `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}`).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
+      if (svg.dataset.hash === hash) return;
+      svg.dataset.hash = hash;
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.innerHTML = '';
+
+      if (rows.length === 0) {
+        selectorSlopeMax = 0;
+        selectorGuaranteeSlope = 0;
+        syncSelectorControls();
+        const pickEl = document.getElementById('sel-pick');
+        if (pickEl) pickEl.textContent = 'no speed data yet';
+        const muted = cssVarValue('--text-muted') || '#999';
+        const t = svgEl('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
+        t.textContent = 'No measurements yet — TTFT and tok/s are recorded from real requests and model tests.';
+        svg.appendChild(t);
+        return;
+      }
+
+      const scales = computeScatterScales(rows, W, H);
+      scatterScales = scales;
+      drawScatterGrid(svg, scales);
+      drawScatterPoints(svg, rows, scales);
+      drawScatterLabels(svg, rows, scales);
+      drawSelectorOverlay(svg, rows, scales);
       syncSelectorControls();
     }
 
@@ -2954,11 +3149,37 @@
       let bestVal = -Infinity;
       for (const r of rows || []) {
         const m = r.m;
-        if (!m || m.status !== 'up' || m.isRateLimited) continue;
+        // Same eligibility as the server's selectModelBySlope(): 'up' and not
+        // HTTP-429 rate-limited. Credit exhaustion alone does NOT exclude a row
+        // (the router only trusts the proxy's 429 signal), so the plot always
+        // selects exactly what routing will pick.
+        if (!m || m.status !== 'up' || (m.rateLimit && m.rateLimit.wasRateLimited === true)) continue;
         if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
         if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
         const val = r.intell + slope * r.speed;
         if (val > bestVal) { best = r; bestVal = val; }
+      }
+      return best;
+    }
+
+    // The row a fully vertical line touches: the fastest eligible row above the
+    // minimums (ties broken by intelligence) — the limit of the slope pick as
+    // the slope goes to infinity.
+    function pickFastestRow(rows) {
+      let best = null;
+      let bestSpeed = -Infinity;
+      let bestIntell = -Infinity;
+      for (const r of rows || []) {
+        const m = r.m;
+        // Same eligibility as the server's selectModelBySlope() (see pickSlopeModel).
+        if (!m || m.status !== 'up' || (m.rateLimit && m.rateLimit.wasRateLimited === true)) continue;
+        if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
+        if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
+        if (r.speed > bestSpeed || (r.speed === bestSpeed && r.intell > bestIntell)) {
+          best = r;
+          bestSpeed = r.speed;
+          bestIntell = r.intell;
+        }
       }
       return best;
     }
@@ -2975,10 +3196,8 @@
     function syncSelectorControls() {
       const slider = document.getElementById('sel-slope-slider');
       const valEl = document.getElementById('sel-slope-value');
-      const en = document.getElementById('sel-enabled');
-      if (en) en.checked = !!selectorState.enabled;
       const frac = (selectorState.slope != null && selectorSlopeMax > 0)
-        ? Math.min(1, selectorState.slope / selectorSlopeMax)
+        ? Math.min(1, Math.atan(Number(selectorState.slope) * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX)
         : 0;
       if (slider) slider.value = String(Math.round(frac * 1000));
       if (valEl) valEl.textContent = (selectorState.slope != null && selectorSlopeMax > 0) ? `${Math.round(frac * 100)}%` : '—';
@@ -2988,7 +3207,18 @@
       const slider = document.getElementById('sel-slope-slider');
       if (!slider) return;
       const v = Number(slider.value) / 1000;
-      selectorState.slope = (selectorSlopeMax > 0 && v > 0) ? v * selectorSlopeMax : null;
+      // Map the slider position to the slope that draws the line at angle v·max:
+      // slope = tan(v·θmax)·(selectorSlopeMax/tan(θmax)) — equal slider steps are
+      // equal rotations, so the line sweeps smoothly from horizontal to vertical.
+      // At 100% pin the slope to at least selectorSlopeMax (plus the guarantee
+      // slope when it is larger, i.e. when two rows have near-identical speeds)
+      // so the vertical-line branch and its fastest-model pick are exact, and the
+      // router selects the same fastest row the plot highlights.
+      selectorState.slope = (selectorSlopeMax > 0 && v > 0)
+        ? (v >= 1
+            ? Math.max(selectorSlopeMax, selectorGuaranteeSlope)
+            : selectorSlopeMax * Math.tan(v * SLOPE_SLIDER_ANGLE_MAX) / SLOPE_SLIDER_ANGLE_TAN)
+        : null;
       scheduleSelectorSave();
       requestScatterRedraw();
     }
@@ -3002,7 +3232,6 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              enabled: selectorState.enabled,
               slope: selectorState.slope,
               minSpeed: selectorState.minSpeed,
               minIntell: selectorState.minIntell,
@@ -3018,7 +3247,6 @@
         if (!res.ok) return;
         const sel = await res.json();
         selectorState = {
-          enabled: sel.enabled === true,
           slope: Number.isFinite(Number(sel.slope)) ? Number(sel.slope) : null,
           minSpeed: Number.isFinite(Number(sel.minSpeed)) ? Number(sel.minSpeed) : null,
           minIntell: Number.isFinite(Number(sel.minIntell)) ? Number(sel.minIntell) : null,
@@ -3071,12 +3299,6 @@
 
       const slider = document.getElementById('sel-slope-slider');
       if (slider) slider.addEventListener('input', onSlopeSliderInput);
-      const en = document.getElementById('sel-enabled');
-      if (en) en.addEventListener('change', () => {
-        selectorState.enabled = en.checked;
-        scheduleSelectorSave();
-        requestScatterRedraw();
-      });
 
       loadSelectorState();
     }
@@ -4209,8 +4431,8 @@
       if (aReady && !bReady) return -1;
       if (!aReady && bReady) return 1;
       // Paid sorts last
-      const aPaid = a.lastResponse && a.lastResponse.paymentRequired === true;
-      const bPaid = b.lastResponse && b.lastResponse.paymentRequired === true;
+      const aPaid = a.status === 'paid' || (a.lastResponse && a.lastResponse.paymentRequired === true);
+      const bPaid = b.status === 'paid' || (b.lastResponse && b.lastResponse.paymentRequired === true);
       if (aPaid && !bPaid) return 1;
       if (!aPaid && bPaid) return -1;
       // Faster ping first (Infinity = offline, sorts last)
@@ -4490,6 +4712,11 @@
 
     function updateRowCells(row, m) {
       const hasPing = m.avg !== Infinity && m.avg !== null;
+
+      // Mark the currently routed model (pin > slope-line pick > Elo) so the
+      // table always shows the same model the KPI, topology and scatter plot do.
+      row.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
+        && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
 
       // Paid / dead rows stay struck through even as other values refresh
       row.classList.toggle('row-struck', isRowStruck(m));
@@ -4804,7 +5031,8 @@
         cell.innerHTML = hideGroupError
           ? responseCellHTML(null, opts)
           : responseCellHTML(lastResponse, opts);
-      } catch (err) {        cell.innerHTML = responseCellHTML({
+      } catch (err) {
+        cell.innerHTML = responseCellHTML({
           text: null,
           error: err?.message || 'Network error',
           status: 0,
@@ -4817,6 +5045,7 @@
         inflightTests.delete(rowKey);
         if (refreshAfterTest) fetchData(); // refresh stats recorded by a completed test
       }
+    }
 
     // State for the bulk 'Rerun Tests' operation
     let restestJobId = null;
@@ -4966,9 +5195,6 @@
       fetchData().catch(() => {});
     }
 
-
-    }
-
     // Epoch-ms reset time: from the most recent test response first, otherwise
     // a reset captured by the proxy path (retryDelay/x-ratelimit headers).
     function getRateLimitResetAt(m) {
@@ -5086,8 +5312,8 @@
         : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
         : 'var(--error)';
       const statusText = effectiveUp ? 'up' : (m.status === 'noauth' ? 'No Auth' : m.status);
-      // Payment required (402 from a test): dollar icon + 'Paid', persists via lastResponse
-      if (m.lastResponse && m.lastResponse.paymentRequired === true) {
+      // Payment required (402 from a test or probe): dollar icon + 'Paid', persists via lastResponse
+      if (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)) {
         return `
             <div style="display: flex; align-items: center; gap: 6px;">
               <span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>
@@ -5140,7 +5366,7 @@
       const currentStatus = String(m.status || '').toLowerCase();
       const isUp = m.status === 'up' || isLastResponseReady(m.lastResponse);
       // Paid: show dollar icon + 'Paid'
-      if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp) {
+      if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp || m.status === 'paid' && !isUp) {
         return `<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>`;
       }
       // Incompatible: model can't accept text chat (image/video only)
@@ -5227,7 +5453,7 @@
     // Rows whose model is paid-walled, dead, incompatible, micro-context-bounded,
     // or missing authentication get every cell struck through in Unavailable.
     function isRowStruck(m) {
-      return (m.lastResponse && m.lastResponse.paymentRequired === true)
+      return (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true))
         || (m.lastResponse && m.lastResponse.dead === true)
         || m.status === 'dead'
         || (m.lastResponse && m.lastResponse.incompatible === true)
@@ -5321,7 +5547,7 @@
       const s = getGroupSummary(g);
       const fastest = s.fastest;
       const hasPing = fastest !== null && fastest !== Infinity;
-      const paidCount = members.filter(m => m.lastResponse && m.lastResponse.paymentRequired === true).length;
+      const paidCount = members.filter(m => m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)).length;
       const deadCount = members.filter(m => (m.lastResponse && m.lastResponse.dead === true) || m.status === 'dead').length;
       const incompatCount = members.filter(m => (m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible').length;
       const microCount = members.filter(m => m.microContext === true).length;
@@ -5374,6 +5600,8 @@
       const hasPing = m.avg !== Infinity && m.avg !== null;
 
       const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
+      tr.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
+        && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
       tr.innerHTML = `
           <td style="cursor:pointer;" onclick='openDrawer(${JSON.stringify(m).replace(/'/g, "&apos;")})'>
             <div style="display:flex; align-items:center; gap:8px;">
@@ -6089,30 +6317,43 @@
     }
 
     async function loadSettings() {
+      // Fetch the critical /api/config endpoint first and render providers
+      // independently so the providers panel never stays empty just because a
+      // secondary settings endpoint is briefly unavailable.
+      let providers = [];
       try {
-        const [providersRes, autoUpdateRes, filterRulesRes, pinningRes, autoPingRes, metaRes] = await Promise.all([
-          fetch('/api/config'),
+        const providersRes = await fetch('/api/config');
+        if (providersRes.ok) providers = await providersRes.json();
+      } catch (e) { console.error('loadSettings: config fetch failed:', e); }
+
+      // Fetch secondary settings in parallel; failures are non-fatal.
+      let autoUpdate = {}, filterRules = {}, pinning = {}, autoPing = {}, meta = {};
+      try {
+        const [autoUpdateRes, filterRulesRes, pinningRes, autoPingRes, metaRes] = await Promise.all([
           fetch('/api/autoupdate'),
           fetch('/api/filter-rules'),
           fetch('/api/pinning'),
           fetch('/api/auto-ping'),
           fetch('/api/meta'),
         ]);
-        const providers = await providersRes.json();
-        const autoUpdate = await autoUpdateRes.json();
-        const filterRules = await filterRulesRes.json();
-        const pinning = await pinningRes.json();
-        const autoPing = await autoPingRes.json();
-        const meta = await metaRes.json();
-        renderAutoUpdateSettings(autoUpdate);
-        renderAutoPingSettings(autoPing);
-        renderLoggingSettings((meta && meta.logging) || {});
-        renderPinningSettings(pinning);
-        renderFilterRules(filterRules, providers);
-        const activeContainer = document.getElementById('active-providers-container');
-        const setupContainer = document.getElementById('setup-providers-container');
-        if (!activeContainer || !setupContainer) return;
+        if (autoUpdateRes.ok) autoUpdate = await autoUpdateRes.json();
+        if (filterRulesRes.ok) filterRules = await filterRulesRes.json();
+        if (pinningRes.ok) pinning = await pinningRes.json();
+        if (autoPingRes.ok) autoPing = await autoPingRes.json();
+        if (metaRes.ok) meta = await metaRes.json();
+      } catch (e) { console.error('loadSettings: secondary settings fetch failed:', e); }
 
+      renderAutoUpdateSettings(autoUpdate);
+      renderAutoPingSettings(autoPing);
+      renderLoggingSettings((meta && meta.logging) || {});
+      renderPinningSettings(pinning);
+      renderFilterRules(filterRules, providers);
+
+      const activeContainer = document.getElementById('active-providers-container');
+      const setupContainer = document.getElementById('setup-providers-container');
+      if (!activeContainer || !setupContainer) return;
+
+      try {
         // loadSettings runs on a ~4s dashboard poll, and rebuilding these two
         // containers would silently discard a key the user is still typing
         // (the input node is destroyed before blur/Enter can save it). Capture
@@ -8283,7 +8524,13 @@
     });
 
     schedulePoll(POLL_INTERVAL_MS);
-    fetchData();
+    fetchData().catch(() => {});
+    // Always populate the providers panel on initial page load, even if the
+    // dashboard fetch failed or the models-view is hidden (e.g. the user is on
+    // the settings tab). loadSettings() is also called from inside fetchData()
+    // for periodic updates, but an explicit initial call guarantees the panel
+    // is populated before the first poll cycle.
+    loadSettings().catch(e => console.error('Initial loadSettings failed:', e));
   </script>
 </body>
 
