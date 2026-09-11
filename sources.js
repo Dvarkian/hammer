@@ -504,10 +504,10 @@ export const sources = {
       ["claude-sonnet-5", "Claude Sonnet 5", "200k"],
       ["claude-fable-5", "Claude Fable 5", "200k"],
       ["claude-fable-5.1", "Claude Fable 5.1", "200k"],
-      ["gpt-5-6-sol-for-free", "GPT 5.6 Sol", "128k"],
-      ["gpt-5-6-terra-for-free", "GPT 5.6 Terra", "128k"],
-      ["glm-5-2-for-free", "GLM 5.2", "200k"],
-      ["kimi-k3-for-free", "Kimi K3", "256k"]
+      ["sol", "GPT 5.6 Sol", "128k"],
+      ["terra", "GPT 5.6 Terra", "128k"],
+      ["glm-5.2", "GLM 5.2", "200k"],
+      ["kimi-k3", "Kimi K3", "256k"]
     ]
   }
 }

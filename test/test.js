@@ -324,6 +324,15 @@ describe('sources data integrity', () => {
   it('includes keyless FreeModels provider enabled by default', () => {
     assert.ok(sources.freemodels)
     assert.equal(sources.freemodels.url, 'https://freemodels-chat.freemodels.workers.dev')
+    assert.deepEqual(sources.freemodels.models.map(model => model[0]), [
+      'claude-sonnet-5',
+      'claude-fable-5',
+      'claude-fable-5.1',
+      'sol',
+      'terra',
+      'glm-5.2',
+      'kimi-k3'
+    ])
     assert.equal(isProviderEnabled({ providers: {} }, 'freemodels'), true)
   })
 
