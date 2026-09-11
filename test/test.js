@@ -4545,6 +4545,17 @@ describe('context window bounds (known + observed)', () => {
     const routeNotSupportedMsg = JSON.stringify({ status: 422, error: 'ROUTE NOT SUPPORTED', message: "endpoint '/v1/chat/completions' is not supported for model 'bge-multilingual-gemma2'" })
     assert.equal(isIncompatibleModelError(routeNotSupportedMsg, 422), true)
     assert.equal(isIncompatibleModelError("endpoint '/v1/chat/completions' is not supported for model 'bge-multilingual-gemma2'", 422), true)
+    // The same refusal verbatim as Scaleway puts it on the wire (this exact body
+    // showed up as 'down' / Offline for bge-multilingual-gemma2). The message field
+    // is what extractErrorMessage surfaces first, so this must classify even without
+    // the route path being retyped for us.
+    const scalewayWireMsg = `{"status":422,"error":"ROUTE NOT SUPPORTED","message":"endpoint '/v1/chat/completions' is not supported for model 'bge-multilingual-gemma2'"}`
+    assert.equal(isIncompatibleModelError(scalewayWireMsg, 422), true)
+    // Relays sometimes forward only the error field, so the bare phrasing must stand alone.
+    assert.equal(isIncompatibleModelError('ROUTE NOT SUPPORTED', 422), true)
+    // ...but a vague 'not supported' policy line with no route/model framing stays a
+    // generic error rather than being swept into Incompatible.
+    assert.equal(isIncompatibleModelError('This feature is not supported on the free plan', 422), false)
     assert.equal(isIncompatibleModelError('Rate limit exceeded', 429), false)
     assert.equal(isIncompatibleModelError('Payment required', 402), false)
     // Calibration-only models can return HTTP 200 while refusing normal chat.
