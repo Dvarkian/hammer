@@ -6412,7 +6412,7 @@
           return a.name.localeCompare(b.name);
         }).forEach(p => {
           const now = Date.now();
-          const providerNeedsApiKey = !['empero', 'opencode', 'ollama'].includes(p.key);
+          const providerNeedsApiKey = !['empero', 'opencode', 'ollama', 'freemodels'].includes(p.key);
           const providerIsActive = p.hasKey || !providerNeedsApiKey;
 
           const providerModels = allModels ? allModels.filter(m => m.providerKey === p.key) : [];
