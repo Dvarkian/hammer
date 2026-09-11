@@ -84,7 +84,7 @@ import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autos
 import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
-  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
+  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
@@ -1313,6 +1313,22 @@ describe('provider api key resolution', () => {
     assert.equal(freemodelsBody.deepSearch, false)
     assert.equal(freemodelsBody.temperature, 0.7)
     assert.deepEqual(freemodelsBody.messages, [{ role: 'user', content: 'Hello' }])
+  })
+
+  it('aggregates FreeModels SSE into a non-streaming OpenAI response', async () => {
+    const upstream = new Response([
+      'data: {"id":"chatcmpl-test","created":123,"model":"qwen3-30b-a3b","choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{"content":"HELLO"},"finish_reason":null}]}',
+      'data: {"choices":[{"delta":{"content":"_FREEMODELS"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+      '',
+    ].join('\n'))
+
+    const response = await transformFreeModelsResponse(upstream, 'claude-sonnet-5', false)
+    const body = await response.json()
+    assert.equal(body.choices[0].message.content, 'HELLO_FREEMODELS')
+    assert.equal(body.choices[0].finish_reason, 'stop')
+    assert.equal(body.model, 'qwen3-30b-a3b')
   })
 
   it('parses Kiro AWS EventStream frames', () => {
