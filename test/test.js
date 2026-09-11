@@ -4558,6 +4558,14 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isIncompatibleModelError(agenticMsg, 400), true)
     // A plain unrelated 403 stays classified as a generic error, not incompatible
     assert.equal(isIncompatibleModelError('invalid API key', 403), false)
+    // Additional Gemini Live-only wording variants: only the explicit bidirectional
+    // streaming / WebSocket story is treated as incompatible here; a plain
+    // "WebSocket" mention without the streaming/protocol framing is not matched.
+    assert.equal(isIncompatibleModelError('Please use the Gemini Live API (bidiGenerateContent via WebSocket).', 400), true)
+    assert.equal(isIncompatibleModelError('only supports bidirectional streaming', 400), true)
+    assert.equal(isIncompatibleModelError('only supports real-time bidirectional streaming', 400), true)
+    assert.equal(isIncompatibleModelError('Gemini Live API', 400), true)
+    assert.equal(isIncompatibleModelError('WebSocket', 400), false)
   })
 
   it('detects rate-limit errors delivered outside an HTTP 429', () => {
