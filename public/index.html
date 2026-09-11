@@ -2126,7 +2126,7 @@
           <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
             <label for="chat-model-select" style="font-size:0.76rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; font-weight:700;">Model</label>
             <select id="chat-model-select" class="chat-model-select" onchange="onChatModelChange()">
-              <option value="smartest">Smartest</option>
+              <option value="best">Best</option>
             </select>
             <button id="chat-clear-btn" class="btn" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border);" onclick="clearChat()">Clear Chat</button>
           </div>
@@ -2187,10 +2187,10 @@
   "agents": {
     "defaults": {
       "model": {
-        "primary": "hammer/smartest"
+        "primary": "hammer/best"
       },
       "models": {
-        "hammer/smartest": {}
+        "hammer/best": {}
       }
     }
   }
@@ -2226,13 +2226,13 @@
         "apiKey": "dummy-key"
       },
       "models": {
-        "smartest": {
-          "name": "Smartest"
+        "best": {
+          "name": "Best"
         }
       }
     }
   },
-  "model": "router/smartest"
+  "model": "router/best"
 }</pre>
           </div>
         </div>
@@ -2366,7 +2366,7 @@
     let devinUiMessage = null;
     let chatMessages = [];
     let chatInFlight = false;
-    let chatSelectedModel = 'smartest';
+    let chatSelectedModel = 'best';
     const CHAT_STORAGE_KEY = 'hammer-chat-v1';
     const CHAT_MODEL_STORAGE_KEY = 'hammer-chat-model-v1';
     const MODEL_ID_ALIASES = {
@@ -7623,17 +7623,17 @@
           : [];
 
         const rawModel = sessionStorage.getItem(CHAT_MODEL_STORAGE_KEY);
-        chatSelectedModel = rawModel && typeof rawModel === 'string' ? rawModel : 'smartest';
+        chatSelectedModel = rawModel && typeof rawModel === 'string' ? rawModel : 'best';
       } catch {
         chatMessages = [];
-        chatSelectedModel = 'smartest';
+        chatSelectedModel = 'best';
       }
     }
 
     function saveChatState() {
       try {
         sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages));
-        sessionStorage.setItem(CHAT_MODEL_STORAGE_KEY, chatSelectedModel || 'smartest');
+        sessionStorage.setItem(CHAT_MODEL_STORAGE_KEY, chatSelectedModel || 'best');
       } catch {
         // Ignore storage failures and keep chat in-memory.
       }
@@ -7643,9 +7643,9 @@
       const select = document.getElementById('chat-model-select');
       if (!select) return;
 
-      const previousSelection = chatSelectedModel || select.value || 'smartest';
+      const previousSelection = chatSelectedModel || select.value || 'best';
       const options = [
-        { value: 'smartest', label: 'Smartest' },
+        { value: 'best', label: 'Best' },
         ...models
           .filter(m => m && m.modelId)
           .sort((a, b) => (a.label || a.modelId).localeCompare(b.label || b.modelId))
@@ -7668,14 +7668,14 @@
         .join('');
 
       const hasPrevious = deduped.some(opt => opt.value === previousSelection);
-      chatSelectedModel = hasPrevious ? previousSelection : 'smartest';
+      chatSelectedModel = hasPrevious ? previousSelection : 'best';
       select.value = chatSelectedModel;
       saveChatState();
     }
 
     function onChatModelChange() {
       const select = document.getElementById('chat-model-select');
-      chatSelectedModel = (select && select.value) ? select.value : 'smartest';
+      chatSelectedModel = (select && select.value) ? select.value : 'best';
       saveChatState();
       setChatStatus(`Using model: ${chatSelectedModel}`, 'muted');
     }
@@ -7824,7 +7824,7 @@
 
       try {
         const requestBody = {
-          model: chatSelectedModel || 'smartest',
+          model: chatSelectedModel || 'best',
           messages: buildChatRequestMessages()
         };
 

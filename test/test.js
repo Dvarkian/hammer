@@ -81,7 +81,7 @@ import {
 } from '../lib/model-quality.js'
 import { getConfiguredTagNames, getModelTagKey, getModelTags as getUserModelTags, normalizeTag, normalizeTags, setModelTags } from '../lib/tags.js'
 import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autostart.js'
-import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint } from '../lib/config.js'
+import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
   buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
@@ -319,6 +319,12 @@ describe('sources data integrity', () => {
     assert.equal(sources.empero.url, 'https://free.empero.org/v1/chat/completions')
     assert.equal(sources.empero.discoverable, true)
     assert.deepEqual(sources.empero.models.map(model => model[0]), ['glm-5.3-flash', 'qwen3.8-flash'])
+  })
+
+  it('includes keyless FreeModels provider enabled by default', () => {
+    assert.ok(sources.freemodels)
+    assert.equal(sources.freemodels.url, 'https://freemodels-chat.freemodels.workers.dev')
+    assert.equal(isProviderEnabled({ providers: {} }, 'freemodels'), true)
   })
 
   it('does not enable discovery for Codestral because its API has no models endpoint', () => {
@@ -988,6 +994,7 @@ describe('provider api key resolution', () => {
   it('treats OpenCode and KiloCode auth as optional bearer auth providers, and local Ollama as optional', () => {
     assert.equal(isProviderAuthOptional({}, 'opencode'), true)
     assert.equal(isProviderAuthOptional({}, 'kilocode'), true)
+    assert.equal(isProviderAuthOptional({}, 'freemodels'), true)
     assert.equal(isProviderAuthOptional({}, 'ollama'), false)
     assert.equal(isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'), true)
     assert.equal(isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://localhost:11434' } } }, 'ollama'), true)
@@ -995,6 +1002,7 @@ describe('provider api key resolution', () => {
 
     assert.equal(isProviderBearerAuthEnabled({}, 'opencode'), true)
     assert.equal(isProviderBearerAuthEnabled({}, 'kilocode'), true)
+    assert.equal(isProviderBearerAuthEnabled({}, 'freemodels'), false)
     assert.equal(isProviderBearerAuthEnabled({}, 'ollama'), true)
     assert.equal(isProviderBearerAuthEnabled({ providers: { opencode: { useBearerAuth: false } } }, 'opencode'), false)
     assert.equal(isProviderBearerAuthEnabled({ providers: { kilocode: { useBearerAuth: false } } }, 'kilocode'), false)
@@ -1038,6 +1046,9 @@ describe('provider api key resolution', () => {
     assert.equal(headers['x-opencode-session'], 'ses_test')
     assert.equal(headers['x-opencode-request'], 'req_test')
     assert.equal(headers['x-opencode-client'], 'cli')
+
+    const freemodelsHeaders = buildProviderRequestHeaders('freemodels', { apiKey: 'ignored' })
+    assert.equal(freemodelsHeaders.Authorization, undefined)
   })
 
   it('builds a Devin Connect request and handles empty credentials safely', () => {
@@ -1286,6 +1297,22 @@ describe('provider api key resolution', () => {
 
     const passthrough = { model: 'gpt-4o-mini', messages: [{ role: 'user', content: 'Hello' }] }
     assert.equal(buildProviderRequestBody('openrouter', passthrough, 'gpt-4o-mini'), passthrough)
+  })
+
+  it('transforms FreeModels OpenAI requests to custom format', () => {
+    const freemodelsBody = buildProviderRequestBody('freemodels', {
+      model: 'gpt-4',
+      messages: [{ role: 'user', content: 'Hello' }],
+      temperature: 0.7,
+      stream: true,
+    }, 'claude-sonnet-5')
+
+    assert.equal(freemodelsBody.modelId, 'claude-sonnet-5')
+    assert.equal(freemodelsBody.stream, true)
+    assert.equal(freemodelsBody.thinking, false)
+    assert.equal(freemodelsBody.deepSearch, false)
+    assert.equal(freemodelsBody.temperature, 0.7)
+    assert.deepEqual(freemodelsBody.messages, [{ role: 'user', content: 'Hello' }])
   })
 
   it('parses Kiro AWS EventStream frames', () => {
@@ -3426,7 +3453,7 @@ describe('onboard integrations', () => {
     assert.equal(provider.baseUrl, 'http://127.0.0.1:7352/v1')
     assert.equal(provider.api, 'openai-completions')
     assert.equal(provider.apiKey, 'no-key')
-    assert.deepEqual(provider.models, [{ id: 'smartest', name: 'Smartest' }])
+    assert.deepEqual(provider.models, [{ id: 'best', name: 'Best' }])
   })
 })
 
@@ -3792,7 +3819,7 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes('paymentRequired === true'))
     assert.ok(dashboardContent.includes('paid-status'))
     assert.ok(serverContent.includes('paymentRequired'))
-    assert.ok(serverContent.includes("id: 'smartest'"))
+    assert.ok(serverContent.includes("id: 'best'"))
     assert.ok(serverContent.includes('rankModelsForSmartest'))
     assert.ok(serverContent.includes('isQuotaExhaustionError'))
     assert.ok(dashboardContent.includes('lastResponse?.rateLimitResetAt'))

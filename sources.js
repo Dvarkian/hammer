@@ -268,6 +268,10 @@ export const PROVIDER_QUOTAS = {
     source: 'Empero fair-usage limits are provider-managed',
     sourceUrl: 'https://free.empero.org/',
   },
+  freemodels: {
+    source: 'FreeModels usage limits are provider-managed; no public universal quota',
+    sourceUrl: 'https://freemodels.pro/',
+  },
   devin: {
     source: 'Devin account and plan limits are provider-managed',
     sourceUrl: 'https://devin.ai/pricing/',
@@ -490,6 +494,20 @@ export const sources = {
       ["gemma-3-27b-it", "Gemma 3 27B", "128k"],
       ["gemma-3-12b-it", "Gemma 3 12B", "128k"],
       ["gemma-3-4b-it", "Gemma 3 4B", "128k"]
+    ]
+  },
+  "freemodels": {
+    "name": "FreeModels",
+    "url": "https://freemodels-chat.freemodels.workers.dev",
+    "contextUrl": "https://freemodels.pro",
+    "models": [
+      ["claude-sonnet-5", "Claude Sonnet 5", "200k"],
+      ["claude-fable-5", "Claude Fable 5", "200k"],
+      ["claude-fable-5.1", "Claude Fable 5.1", "200k"],
+      ["gpt-5-6-sol-for-free", "GPT 5.6 Sol", "128k"],
+      ["gpt-5-6-terra-for-free", "GPT 5.6 Terra", "128k"],
+      ["glm-5-2-for-free", "GLM 5.2", "200k"],
+      ["kimi-k3-for-free", "Kimi K3", "256k"]
     ]
   }
 }
