@@ -4536,6 +4536,9 @@ describe('context window bounds (known + observed)', () => {
     // bidiGenerateContent over a WebSocket instead.
     const liveOnlyMsg = JSON.stringify({ error: { code: 400, message: 'models/gemini-3.5-transcribe-live only supports real-time bidirectional streaming via WebSocket (bidiGenerateContent). Please use the Gemini Live API (bidiGenerateContent via WebSocket) instead of generateContent.', status: 'INVALID_ARGUMENT' } })
     assert.equal(isIncompatibleModelError(liveOnlyMsg, 400), true)
+    // Robustly handle array-wrapped Gemini errors too
+    const arrayWrappedMsg = JSON.stringify([{ error: { code: 400, message: 'models/gemini-robotics-er-2-streaming-preview only supports real-time bidirectional streaming via WebSocket (bidiGenerateContent). Please use the Gemini Live API (bidiGenerateContent via WebSocket) instead of generateContent.', status: 'INVALID_ARGUMENT' } }])
+    assert.equal(isIncompatibleModelError(arrayWrappedMsg, 400), true)
     assert.equal(isIncompatibleModelError('This model only supports real-time bidirectional streaming via WebSocket.', 400), true)
     // Providers can refuse a specific OpenAPI route for a model, e.g. Scaleway-style
     // OpenAI-compatible 422 rejections that say /v1/chat/completions is not supported.
