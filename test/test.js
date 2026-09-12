@@ -78,6 +78,7 @@ import {
   aaForPercentile,
   buildOpenRouterQualityIndex,
   convertSelectorToAaScale,
+  scoreForAa,
   extractLMArenaEntries,
   findLMArenaEntry,
   fitAAFromEloRegression,
@@ -1839,16 +1840,21 @@ describe('OpenRouter model quality scoring', () => {
     const arena = resolveModelQuality(quality, 'arena-only-free', 0.99)
     const metadata = resolveModelQuality(quality, 'vendor/metadata-only:free', 0.99)
 
-    // AA's own rating is the displayed value, on AA's own 0-100 scale.
-    assert.equal(direct.score, 0.72)
+    // AA's own rating is the displayed value, on AA's own 0-100 scale. The row's
+    // 0-1 score is that same index read back as its position in the measured
+    // distribution (72 is the highest of [52, 72] -> the top of the range), so the
+    // column and everything that orders rows agree.
     assert.equal(direct.aa, 72)
+    assert.equal(direct.score, 0.95)
+    assert.equal(aaForPercentile(direct.score, [52, 72]), direct.aa)
     assert.equal(direct.aaEstimated, false)
     assert.equal(direct.source, 'artificial-analysis')
     assert.equal(direct.isEstimated, false)
     // No AA rating, but a Design Arena Elo: the AA index is interpolated from it
     // through the two anchors above (0.1 per Elo point) and flagged as an estimate.
     assert.equal(arena.aa, 62)
-    assert.equal(arena.score, 0.62)
+    assert.equal(arena.score, 0.5)    // midway between the only two measured values
+    assert.equal(aaForPercentile(arena.score, [52, 72]), arena.aa)
     assert.equal(arena.aaEstimated, true)
     assert.equal(arena.source, 'design-arena')
     assert.match(arena.detail, /AA interpolated/)
@@ -2027,8 +2033,10 @@ describe('LMArena Elo priority in score resolution', () => {
     assert.equal(direct.isEstimated, false)
     assert.equal(direct.aaEstimated, false)
     assert.equal(direct.aa, 60)
-    assert.equal(direct.score, 0.6)
     assert.match(direct.detail, /AA intelligence index 60/)
+    // The catalog holds a single measured index, so the row's percentile position
+    // within it is the midpoint rather than an invented range.
+    assert.equal(direct.score, 0.5)
   })
 
   it('falls back to the catalog index when LMArena has no match', () => {
@@ -2105,7 +2113,8 @@ describe('Artificial Analysis index mapping', () => {
     const arena = resolveModelQuality(quality, 'vendor/arena-only', 0.99)
     assert.equal(arena.source, 'design-arena')
     assert.equal(arena.aa, 55)          // 1200 * 0.1 - 65
-    assert.equal(arena.score, 0.55)
+    assert.equal(arena.score, 0.6125)   // 55 sits midway between 50 and 60
+    assert.equal(aaForPercentile(arena.score, quality.aaValues), arena.aa)
     assert.equal(arena.aaEstimated, true)
   })
 
@@ -2140,6 +2149,8 @@ describe('Artificial Analysis index mapping', () => {
     const result = resolveModelQuality(quality, 'vendor/boards-only', 0.99)
     assert.equal(result.source, 'lmarena-overall')
     assert.equal(result.aa, 25)          // 1250 * 0.1 - 100
+    // This catalog carries no measured index at all, so there is no distribution to
+    // read a position from and the score falls back to the raw 0-100 reading.
     assert.equal(result.score, 0.25)
     assert.equal(result.aaEstimated, true)
     assert.match(result.detail, /LMArena overall Elo 1250 \(900 votes\); AA interpolated \(n=12\)/)
@@ -2184,6 +2195,67 @@ describe('Artificial Analysis index mapping', () => {
     assert.equal(convertSelectorToAaScale({ slope: null, minIntell: null }, regression), null)
     assert.equal(convertSelectorToAaScale({ slope: 10, minIntell: 1400 }, null), null)
     assert.equal(convertSelectorToAaScale({ slope: 10 }, { slope: NaN, intercept: 0 }), null)
+  })
+
+  it('reads an index back to the score position it came from', () => {
+    const aaValues = [20, 40, 50, 60, 80]
+    // The two directions are exact inverses. That is what keeps a row's score and
+    // its displayed index from disagreeing about which row is smarter.
+    for (const value of [20, 25, 40, 55, 60, 79, 80]) {
+      assert.equal(aaForPercentile(scoreForAa(value, aaValues), aaValues), value)
+    }
+    assert.equal(scoreForAa(80, aaValues), 0.95)   // the top of the measured range
+    assert.equal(scoreForAa(20, aaValues), 0.05)   // the bottom, and the floor
+    assert.equal(scoreForAa(5, aaValues), 0.05)    // below it: still the floor
+    // A single measured value has no range to sit in, so every row is the midpoint.
+    assert.equal(scoreForAa(42, [42]), 0.5)
+    // Repeated values are common in a real catalog (137 measured models collapse to
+    // 81 distinct indexes), and a zero-width segment must not divide by zero —
+    // including one at the bottom, which is the first segment a value can land in.
+    assert.equal(scoreForAa(50, [20, 50, 50, 80]), 0.35)
+    assert.equal(scoreForAa(20, [20, 20, 50]), 0.05)
+    // No measured distribution at all: the raw 0-100 reading is the same scale.
+    assert.equal(scoreForAa(25, []), 0.25)
+    assert.equal(scoreForAa('nope', aaValues), null)
+  })
+
+  it('scores a measured model above a heuristic one, so routing can tell them apart', () => {
+    // The dashboard sorts on the score while displaying the index, and QoS turns the
+    // score into a percentile of the curated reference distribution. Scoring a
+    // measured index as `aa / 100` put the measured half of the catalog below the
+    // heuristic estimates on that scale: the live catalog sorted a 30-point estimate
+    // above a 53-point measurement, and `best` routed to the unmeasured model.
+    //
+    // A realistic index spread is required to see it — AA's own indices run ~4-53,
+    // not 0-100 — paired with the most favourable heuristic the estimator can
+    // produce, so the two scales genuinely collide rather than by luck.
+    const unmeasured = {
+      id: 'vendor/unmeasured-flagship',
+      created: 1_755_000_000,
+      context_length: 262144,
+      supported_parameters: ['reasoning', 'tools', 'structured_outputs'],
+    }
+    const realistic = [
+      unmeasured,                                                    // rank 1 of the popularity list
+      { id: 'vendor/tiny', benchmarks: { artificial_analysis: { intelligence_index: 3.8 } } },
+      { id: 'vendor/mid', benchmarks: { artificial_analysis: { intelligence_index: 30 } } },
+      { id: 'vendor/best-measured', benchmarks: { artificial_analysis: { intelligence_index: 53.4 } } },
+    ]
+    const quality = buildOpenRouterQualityIndex(realistic, realistic, 1_760_000_000_000)
+    const measured = resolveModelQuality(quality, 'vendor/best-measured', 0.99)
+    const heuristic = resolveModelQuality(quality, 'vendor/unmeasured-flagship', 0.99)
+    assert.equal(measured.source, 'artificial-analysis')
+    assert.equal(heuristic.source, 'metadata')
+    assert.equal(measured.aa, 53.4)
+    assert.ok(measured.score > heuristic.score, `expected score ${measured.score} > ${heuristic.score}`)
+    // The estimate still reads on the same scale, it just cannot claim the top.
+    assert.ok(heuristic.aa < measured.aa)
+
+    // Identical speed and uptime: the only difference is how the rows were scored.
+    const base = { status: 'up', pings: [{ ms: 1200, code: '200', ts: Date.now() }], uptimeSamples: 10, uptimeOk: 10 }
+    const qosMeasured = computeQoS({ ...base, modelId: 'vendor/best-measured', intell: measured.score, aa: measured.aa }, 3000)
+    const qosHeuristic = computeQoS({ ...base, modelId: 'vendor/unmeasured-flagship', intell: heuristic.score, aa: heuristic.aa }, 3000)
+    assert.ok(qosMeasured > qosHeuristic, `expected QoS ${qosMeasured} > ${qosHeuristic}`)
   })
 })
 
