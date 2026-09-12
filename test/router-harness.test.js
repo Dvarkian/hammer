@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { after, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { sources } from '../sources.js'
+import { computeRowSpeed } from '../lib/utils.js'
 
 // ── Isolate the run before the server module is loaded ──────────────────────
 // The router resolves ~/.hammer.json, its usage/log caches and the upstream
@@ -77,6 +78,13 @@ const PROBE_MODEL = 'stub-epsilon'
 // The FreeModels catalog row the FreeModels-specific tests drive.
 const FREEMODELS_ROW = 'claude-sonnet-5'
 const TEST_PROMPT = 'Respond with exactly the single word: Ready'
+// The FreeModels relay streams `usage: null` on every frame (and ignores
+// `stream_options.include_usage`), so a response it really produced carries no token
+// count. The stub reproduces that: 40 characters of content + 8 of streamed
+// reasoning, which is a 12-token estimate at ~4 characters per token.
+const NO_USAGE_CONTENT = 'pong '.repeat(8)
+const NO_USAGE_REASONING = 'think...'
+const NO_USAGE_ESTIMATED_TOKENS = 12
 
 const OK_COMPLETION = {
   id: 'chatcmpl-stub',
@@ -101,6 +109,7 @@ const OVERLENGTH_ERROR = {
 
 // mode: 'ok' | 'empty-200' | 'overlength-once' | 'hang' | 'freemodels-503-then-ok'
 //     | 'freemodels-error-always' | 'error-envelope-200' | 'model-not-found'
+//     | 'no-usage-stream'
 const stubState = { mode: 'ok', chatCalls: [], overlengthFired: false, heldResponses: [], freemodelsErrorsFired: 0 }
 
 function resetStub(mode = 'ok') {
@@ -190,6 +199,20 @@ const stubServer = createServer((req, res) => {
       stubState.overlengthFired = true
       res.writeHead(400, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify(OVERLENGTH_ERROR))
+      return
+    }
+
+    if (stubState.mode === 'no-usage-stream') {
+      // A relay that produces real content but never reports usage. It has to be
+      // measurable from the text alone, or its models have no tok/s and drop off the
+      // speed axis and the slope-line selector.
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+      const frame = payload => res.write(`data: ${JSON.stringify(payload)}\n\n`)
+      frame({ choices: [{ index: 0, delta: { role: 'assistant' } }] })
+      frame({ choices: [{ index: 0, delta: { reasoning_content: NO_USAGE_REASONING } }] })
+      frame({ choices: [{ index: 0, delta: { content: NO_USAGE_CONTENT } }] })
+      frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: null })
+      res.end('data: [DONE]\n\n')
       return
     }
 
@@ -350,6 +373,17 @@ async function freemodelsRows() {
 async function g4fRows() {
   const { json } = await api('/api/models')
   return (json?.models || []).filter(model => model.providerKey === 'g4f')
+}
+
+// Persisted output-token total for a row, the number every speed figure is derived
+// from (tok/s, QoS, the slope selector's x axis).
+function recordedCompletionTokens(providerKey, modelId) {
+  try {
+    const usage = JSON.parse(readFileSync(join(HOME_DIR, '.hammer-usage.json'), 'utf8'))
+    return Number(usage?.[`${providerKey}::${modelId}`]?.completionTokensSum) || 0
+  } catch {
+    return 0
+  }
 }
 
 async function waitForRestest(jobId, timeoutMs = 45_000) {
@@ -903,6 +937,66 @@ describe('router harness', () => {
 
     const row = await g4fRows().then(rows => rows.find(model => model.modelId === 'auto'))
     assert.equal(row?.status, 'dead', 'a recent success must not mask a dead verdict')
+  })
+
+  it('measures a relay that streams no usage block, so its models keep a speed', async () => {
+    // FreeModels answers with `usage: null` on every frame, so nothing tells the
+    // router how many tokens came back. Without a count there is no tok/s, and a row
+    // with no tok/s disappears from the speed axis, the slope-line selector and the
+    // QoS ranking — it reads as unmeasured rather than slow. The count has to fall
+    // back to the text the model actually produced, streamed reasoning included.
+    const tokensBefore = recordedCompletionTokens('freemodels', FREEMODELS_ROW)
+
+    resetStub('no-usage-stream')
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: FREEMODELS_ROW, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    await response.text()
+
+    assert.equal(
+      recordedCompletionTokens('freemodels', FREEMODELS_ROW) - tokensBefore,
+      NO_USAGE_ESTIMATED_TOKENS,
+      'the text the model produced must be counted, including its streamed reasoning',
+    )
+    const row = await modelById(FREEMODELS_ROW)
+    assert.ok(row?.tps > 0, `the row must report a tok/s, got ${row?.tps}`)
+    assert.ok(computeRowSpeed(row) > 0, 'the plot and the slope selector must be able to see the row')
+
+    // The same relay answering a non-streaming caller (it streams SSE regardless and
+    // Hammer aggregates it): one measuring site is not enough, so the buffered path
+    // must derive its count the same way.
+    const bufferedBefore = recordedCompletionTokens('freemodels', FREEMODELS_ROW)
+    resetStub('no-usage-stream')
+    const buffered = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: FREEMODELS_ROW, stream: false, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    const bufferedBody = await buffered.text()
+    assert.match(bufferedBody, /pong/, 'control: the buffered response carried the model text')
+    assert.equal(
+      recordedCompletionTokens('freemodels', FREEMODELS_ROW) - bufferedBefore,
+      NO_USAGE_ESTIMATED_TOKENS,
+      'a buffered response with no usage block must be counted too',
+    )
+
+    // And the manual Test a user clicks, which is the only measurement they ask for
+    // by hand: it must never come back with a speed of nothing.
+    const testedBefore = recordedCompletionTokens('freemodels', FREEMODELS_ROW)
+    resetStub('no-usage-stream')
+    const tested = await api('/api/test-model', {
+      method: 'POST',
+      body: JSON.stringify({ providerKey: 'freemodels', modelId: FREEMODELS_ROW }),
+    })
+    assert.equal(tested.json?.ok, true, 'control: the test itself succeeded')
+    assert.ok(tested.json?.tps > 0, `a Test must report a tok/s, got ${tested.json?.tps}`)
+    assert.equal(
+      recordedCompletionTokens('freemodels', FREEMODELS_ROW) - testedBefore,
+      NO_USAGE_ESTIMATED_TOKENS,
+      'a Test against a no-usage relay must be counted the same way',
+    )
   })
 
   it('exposes the g4f catalog and reports its key as required setup', async () => {

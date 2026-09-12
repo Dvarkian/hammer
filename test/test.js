@@ -43,6 +43,7 @@ import {
   isMicroContextBound,
   computeContextDisplay,
   computeUsageAverages,
+  resolveCompletionTokens,
   estimateMessageTokens,
   formatTokenCount,
   isOverLengthErrorText,
@@ -4529,6 +4530,21 @@ describe('usage stats (ttft / tokens per second)', () => {
     const stats = accumulateUsageSample(null, { ttft: 200, completionTokens: null, genMs: 1500 })
     assert.equal(stats.completionTokensSum, 0)
     assert.equal(stats.lastTps, null)
+  })
+
+  it('estimates output tokens for providers that report no usage', () => {
+    // A reported count always wins — an estimate must never overwrite real data.
+    assert.equal(resolveCompletionTokens(42, 'x'.repeat(4000)), 42)
+    assert.equal(resolveCompletionTokens('7', 'x'.repeat(4000)), 7)
+    // FreeModels (and other relays) send no usage block: ~4 characters per token.
+    assert.equal(resolveCompletionTokens(null, 'x'.repeat(48)), 12)
+    assert.equal(resolveCompletionTokens(undefined, 'x'.repeat(1)), 1)
+    // A response that reported nothing *and* produced nothing stays unmeasured
+    // rather than being recorded as a zero-token sample.
+    assert.equal(resolveCompletionTokens(null, ''), null)
+    assert.equal(resolveCompletionTokens(0, null), null)
+    // A provider that reports 0 tokens while returning text is still measurable.
+    assert.equal(resolveCompletionTokens(0, 'x'.repeat(48)), 12)
   })
 
   it('computes token-weighted averages', () => {
