@@ -582,6 +582,43 @@ describe('provider api key resolution', () => {
     }
   })
 
+  it('shares one g4f key across every g4f relay, without overriding a per-relay key', () => {
+    const original = process.env.G4F_API_KEY
+    const RELAYS = ['g4f-nvidia', 'g4f-groq', 'g4f-gemini', 'g4f-ollama', 'g4f-pollinations']
+
+    try {
+      delete process.env.G4F_API_KEY
+
+      // Nothing configured: the relays stay keyless (baked cake credits can cover them).
+      assert.equal(getApiKey({ apiKeys: {} }, 'g4f-nvidia'), null)
+      assert.deepEqual(getApiKeyPool({ apiKeys: {} }, 'g4f-nvidia'), [])
+
+      // A single config key on `g4f` reaches every relay.
+      const config = { apiKeys: { g4f: 'g4f-config-key' } }
+      assert.equal(getApiKey(config, 'g4f'), 'g4f-config-key')
+      for (const key of RELAYS) {
+        assert.equal(getApiKey(config, key), 'g4f-config-key', `${key} must inherit the shared g4f key`)
+        assert.deepEqual(getApiKeyPool(config, key), ['g4f-config-key'])
+      }
+
+      // A relay-specific key wins over the shared one.
+      const specific = { apiKeys: { g4f: 'shared', 'g4f-groq': 'own' } }
+      assert.equal(getApiKey(specific, 'g4f-groq'), 'own')
+      assert.equal(getApiKey(specific, 'g4f-nvidia'), 'shared')
+
+      // The env var reaches every relay and keeps precedence over the config.
+      process.env.G4F_API_KEY = 'g4f-env-key'
+      assert.equal(getApiKey({ apiKeys: {} }, 'g4f'), 'g4f-env-key')
+      assert.equal(getApiKey({ apiKeys: { g4f: 'g4f-config-key' } }, 'g4f-ollama'), 'g4f-env-key')
+
+      // Unrelated providers are untouched by the family fallback.
+      assert.equal(getApiKey({ apiKeys: { g4f: 'shared' } }, 'groq'), null)
+    } finally {
+      if (original == null) delete process.env.G4F_API_KEY
+      else process.env.G4F_API_KEY = original
+    }
+  })
+
   it('supports OpenAI-compatible provider env vars for key, base URL, and model', () => {
     const originalKey = process.env.OPENAI_COMPATIBLE_API_KEY
     const originalBaseUrl = process.env.OPENAI_COMPATIBLE_BASE_URL

@@ -274,7 +274,7 @@ If you point Ollama at a local host such as `http://127.0.0.1:11434`, hammer wil
 
 ### gpt4free (g4f) free relays
 
-hammer can route through [gpt4free](https://g4f.dev)'s **keyless** free relays, which publish OpenAI-compatible endpoints onto upstream free tiers. No API key is required, and none is sent unless you configure one.
+hammer can route through [gpt4free](https://g4f.dev)'s free relays, which publish OpenAI-compatible endpoints onto upstream free tiers. g4f gates anonymous traffic behind proof-of-work **cake credits**, so access works either by baking credits at [g4f.dev/chat](https://g4f.dev/chat) from this machine (credits are bound to your IP), or with a free account key from [g4f.dev/members.html](https://g4f.dev/members.html).
 
 | Provider key | Upstream |
 | --- | --- |
@@ -287,7 +287,8 @@ hammer can route through [gpt4free](https://g4f.dev)'s **keyless** free relays, 
 
 - Each relay is discovered automatically from its own `/models` endpoint (typically tens to ~140 chat models each, with non-chat models such as whisper/TTS/image filtered out). Curated fallback catalogs are used before the first successful discovery.
 - The relays share a small, globally rate-limited free budget, so hammer keeps them **out of the periodic probe wave**. Their rows stay routable for explicit model requests; use **Test** on a row to probe it on demand.
-- `G4F_API_KEY` (optional) supplies the hosted pool's free key. Any relay's base URL can be overridden in `~/.hammer.json` (see `G4F_BASE_URL` for the hosted pool) — e.g. to point at a self-hosted g4f server on `http://localhost:1337/v1`.
+- **One account key covers every relay.** Set `G4F_API_KEY` (or `apiKeys.g4f` in the config) and all six `g4f-*` providers use it — there is no need to configure each one.
+- Without credits or a key, every g4f endpoint answers HTTP `402` with `insufficient_credits`. Any relay's base URL can be overridden in `~/.hammer.json` (see `G4F_BASE_URL` for the hosted pool) — e.g. to point at a self-hosted g4f server on `http://localhost:1337/v1`.
 
 ### OpenAI-Compatible endpoints
 
