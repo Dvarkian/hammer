@@ -2751,19 +2751,30 @@
 
     // One row per measurable model/provider combination, using the same
     // numbers behind the main table's Intelligence / TTFT / Tok-s columns.
+    // Returns those rows plus how many primary-table rows had no speed to plot,
+    // so the card can report an omission instead of quietly drawing fewer dots
+    // than the table has rows.
     function buildScatterRows(models) {
       const rows = [];
+      let tableRowsWithoutSpeed = 0;
       for (const m of models || []) {
         if (!m || m.status === 'noauth') continue;
         // Same number the Intelligence column shows (Elo scale): real LMArena
         // rating when present, otherwise the raw score mapped onto the Elo scale.
         const eloNum = Number(m.elo);
         const intellNum = (Number.isFinite(eloNum) && eloNum > 0) ? eloNum : Number(m.intell) * 100;
-        if (!Number.isFinite(intellNum) || intellNum <= 0) continue;
         const ttft = m.ttft != null ? Number(m.ttft) : (m.lastResponse && m.lastResponse.ttftMs != null ? Number(m.lastResponse.ttftMs) : null);
         const tps = m.tps != null ? Number(m.tps) : (m.lastResponse && m.lastResponse.tps != null ? Number(m.lastResponse.tps) : null);
-        if (ttft == null || !Number.isFinite(ttft) || ttft < 0) continue;
-        if (tps == null || !Number.isFinite(tps) || tps <= 0) continue;
+        // A dot needs both axes: an honest position needs a rating and a speed.
+        const plottable = Number.isFinite(intellNum) && intellNum > 0
+          && ttft != null && Number.isFinite(ttft) && ttft >= 0
+          && tps != null && Number.isFinite(tps) && tps > 0;
+        if (!plottable) {
+          // Count only rows the main table shows, so the number matches what the user
+          // can count for themselves (graveyard rows are not omissions from the table).
+          if (!isRowStruck(m)) tableRowsWithoutSpeed += 1;
+          continue;
+        }
         rows.push({
           m,
           intell: intellNum,
@@ -2773,7 +2784,7 @@
         });
       }
       rows.sort((a, b) => a.intell - b.intell);
-      return rows;
+      return { rows, tableRowsWithoutSpeed };
     }
 
     // Plot geometry from the current rows: padded plot rect, data extents with
@@ -3244,10 +3255,15 @@
       const W = svg.clientWidth || 600;
       const H = svg.clientHeight || 340;
 
-      const rows = buildScatterRows(models);
+      const { rows, tableRowsWithoutSpeed } = buildScatterRows(models);
 
       const countEl = document.getElementById('speed-intell-count');
-      if (countEl) countEl.textContent = rows.length > 0 ? `${rows.length} combo${rows.length === 1 ? '' : 's'}` : 'no speed data yet';
+      if (countEl) {
+        const combos = `${rows.length} combo${rows.length === 1 ? '' : 's'}`;
+        countEl.textContent = rows.length > 0
+          ? (tableRowsWithoutSpeed > 0 ? `${combos} · ${tableRowsWithoutSpeed} without speed data` : combos)
+          : 'no speed data yet';
+      }
 
       // Selector state is part of the redraw key so threshold drags and slope
       // changes re-render immediately even when the model data is unchanged.
@@ -3491,11 +3507,16 @@
         if (isRowStruck(m)) return false;
         return true;
       });
-      // Only draw providers that currently have at least one online ('up') model —
-      // a provider whose models are all down/timeout has nothing to show.
-      const liveProviders = [...new Set(primaryModels.map(m => m.providerKey))]
-        .filter(pk => primaryModels.some(m => m.providerKey === pk && m.status === 'up'));
-      const numProvs = liveProviders.length;
+      // Every provider the primary table lists gets a node, including one whose models
+      // are all down/timeout. Restricting this to providers with an online model
+      // silently dropped whole model groups from the plot — an all-down row is still a
+      // primary-table row, not a graveyard row — so the picture contradicted the table
+      // it claims to mirror. Offline providers now render with the status styling they
+      // already had (red ring / red monogram), which keeps every model node attached to
+      // the provider it belongs to instead of floating unattached.
+      const plotProviders = [...new Set(primaryModels.map(m => m.providerKey))]
+        .sort();
+      const numProvs = plotProviders.length;
 
       // Always return a clean display name — never raw modelId with '/' or internal names
       function modelDisplayName(m) {
@@ -3578,7 +3599,7 @@
       // count), so the plot stays in lock-step with the primary table as models
       // come and go between the main and graveyard tables in real time.
       const membershipSig = primaryModels.map(m => getModelRowKey(m)).sort().join('|');
-      const providerSig = liveProviders.slice().sort().join('|');
+      const providerSig = plotProviders.join('|');
       const svgHash = `${membershipSig}:${providerSig}:${W}:${H}`;
       if (svg.dataset.hash !== svgHash) {
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -3597,8 +3618,8 @@
         // --- Build nodes (models first, then providers) ---
         const nodes = [];
         let seed = 0;
-        for (let i = 0; i < liveProviders.length; i++) {
-          for (let j = 0; j < liveProviders[i].length; j++) seed = ((seed << 5) - seed + liveProviders[i].charCodeAt(j)) | 0;
+        for (let i = 0; i < plotProviders.length; i++) {
+          for (let j = 0; j < plotProviders[i].length; j++) seed = ((seed << 5) - seed + plotProviders[i].charCodeAt(j)) | 0;
         }
         function lcg() { seed = (seed * 1664525 + 1013904223) | 0; return (seed >>> 0) / 4294967296; }
 
@@ -3609,9 +3630,9 @@
         for (let i = 0; i < numProvs; i++) {
           const angle = (2 * Math.PI * i) / numProvs + (lcg() - 0.5) * 0.25;
           provNodes.push({
-            id: `p:${liveProviders[i]}`, type: 'provider',
-            providerKey: liveProviders[i],
-            domain: PROVIDER_DOMAINS[liveProviders[i]] || '',
+            id: `p:${plotProviders[i]}`, type: 'provider',
+            providerKey: plotProviders[i],
+            domain: PROVIDER_DOMAINS[plotProviders[i]] || '',
             x: cx + rProvX * Math.cos(angle),
             y: cy + rProvY * Math.sin(angle),
             mass: 3.5
@@ -3619,16 +3640,14 @@
         }
 
         // One node per unique model (models first in array for index lookups).
-        // A model is only drawn when at least one of its providers is drawn (has
-        // an online model) — otherwise it would float as an isolated dot with no
-        // connections, which reads as a rendering glitch.
-        const drawnProvKeys = new Set(provNodes.map(p => p.providerKey));
+        // Every provider the primary table lists has a node, so each model group is
+        // always attached to at least one of them — nothing floats unattached, and
+        // nothing the table lists is left out.
         for (let i = 0; i < numModels; i++) {
           const um = uniqueModels[i];
-          const connectedKeys = um._providers.map(p => p.key).filter(k => drawnProvKeys.has(k));
-          if (connectedKeys.length === 0) continue;
-          // Pick best drawn provider (one that's up)
-          const bestProv = um._providers.find(p => p.model.status === 'up' && drawnProvKeys.has(p.key)) || um._providers.find(p => drawnProvKeys.has(p.key));
+          const connectedKeys = um._providers.map(p => p.key);
+          // Anchor on the provider that's up when there is one.
+          const bestProv = um._providers.find(p => p.model.status === 'up') || um._providers[0];
           const anchorProv = provNodes.find(p => p.providerKey === bestProv.key);
           const angle = lcg() * 2 * Math.PI;
           const dist = 5 + lcg() * 14;
@@ -3861,7 +3880,7 @@
         }
 
         // ---- Attach pan/zoom/highlight interactivity ----
-        attachTopologyInteractivity(svg, g, W, H, liveProviders, primaryModels, numModels);
+        attachTopologyInteractivity(svg, g, W, H, plotProviders, primaryModels, numModels);
         const tz = svg._topoZoom || 1;
         const tpx = svg._topoPanX || 0;
         const tpy = svg._topoPanY || 0;
@@ -3882,7 +3901,7 @@
       const monos = gLayer.querySelectorAll('.topo-provider-mono');
 
       const providerHealth = {};
-      for (const pk of liveProviders) {
+      for (const pk of plotProviders) {
         const provModels = primaryModels.filter(m => m.providerKey === pk);
         const upCount = provModels.filter(m => m.status === 'up').length;
         providerHealth[pk] = { upCount, total: provModels.length };
@@ -3968,9 +3987,9 @@
         const pk = ring.dataset.pkey;
         const h = providerHealth[pk];
         if (!h) return;
-        // Green means the provider has at least one live model. Providers with
-        // no live models are normally omitted from the plot, but retain a red
-        // fallback here for a stale node during a refresh transition.
+        // Green means the provider has at least one live model; red means every model
+        // it holds is down/timeout. Both are in the plot, so the colour is the only
+        // thing that distinguishes them.
         ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}`);
         const title = ring.querySelector('title');
         if (title) title.textContent = `${PROVIDER_NAMES[pk] || pk} · ${h.upCount}/${h.total} up`;
@@ -3998,7 +4017,7 @@
     }
 
     // ---- Interactivity: pan, zoom, click/dblclick ----
-    function attachTopologyInteractivity(svg, _g, W, H, liveProviders, primaryModels, numModels) {
+    function attachTopologyInteractivity(svg, _g, W, H, plotProviders, primaryModels, numModels) {
       if (svg._topoListenersAttached) return;
       svg._topoListenersAttached = true;
 

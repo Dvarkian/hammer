@@ -66,7 +66,12 @@ const STUB_INSTANCE_KEY = 'openai-compatible:stub'
 // score from scores.js (the slope selector needs both speed and intelligence).
 const SMART_MODEL = 'z-ai/glm5'                       // highest catalog score
 const FAST_MODEL = 'microsoft/phi-3.5-mini-instruct'  // lower score, seeded much faster
-const STUB_MODELS = ['stub-alpha', 'stub-beta', 'stub-gamma', 'stub-delta', 'stub-epsilon', 'stub-zeta', SMART_MODEL, FAST_MODEL]
+// Seeded to pin that the dashboard never invents a measurement: one row whose only
+// response carried no metrics, and one with a real measurement too slow to survive a
+// single-decimal round. Both are inert for routing (no catalog rating).
+const MEASURELESS_MODEL = 'stub-null-metrics'
+const SLOW_RATE_MODEL = 'stub-tiny-rate'
+const STUB_MODELS = ['stub-alpha', 'stub-beta', 'stub-gamma', 'stub-delta', 'stub-epsilon', 'stub-zeta', SMART_MODEL, FAST_MODEL, MEASURELESS_MODEL, SLOW_RATE_MODEL]
 // Seeded with clean test responses to pin the readiness promotion's freshness
 // window: one far outside it, one inside. Both are then contradicted by a probe, so
 // the only thing that can still mark them up is the readiness promotion itself.
@@ -328,6 +333,18 @@ const usageSeed = {
   [`${STUB_INSTANCE_KEY}::${RECENT_READY_MODEL}`]: {
     requests: 3, ttftSamples: 0, genMsSum: 0,
     lastResponse: { ok: true, text: 'Ready', status: 200, at: Date.now() - 30 * 60_000, expiresAt: null },
+  },
+  // A response that measured nothing: no counters, and a null tok/s alongside a real
+  // TTFT. The row must read "no data" on the speed axis, not a fabricated zero.
+  [`${STUB_INSTANCE_KEY}::${MEASURELESS_MODEL}`]: {
+    lastResponse: { ok: true, text: 'Ready', status: 200, at: Date.now(), ttftMs: 900, tps: null, expiresAt: null },
+  },
+  // 2 tokens over 60s is 0.033 tok/s — measurable, and exactly the rate a
+  // single-decimal round used to collapse to a zero the plot then discarded.
+  [`${STUB_INSTANCE_KEY}::${SLOW_RATE_MODEL}`]: {
+    requests: 2, ttftSamples: 2, ttftSum: 1600, genMsSum: 60_000, completionTokensSum: 2,
+    lastServedAt: Date.now(),
+    lastResponse: { ok: true, text: 'Ready', status: 200, at: Date.now(), ttftMs: 800, tps: null, expiresAt: null },
   },
 }
 writeFileSync(join(HOME_DIR, '.hammer-usage.json'), JSON.stringify(usageSeed, null, 2))
@@ -1065,6 +1082,25 @@ describe('router harness', () => {
       NO_USAGE_ESTIMATED_TOKENS,
       'a Test against a no-usage relay must be counted the same way',
     )
+  })
+
+  it('never reports a fabricated speed for a row with no measurement', async () => {
+    // A response with no tok/s and no counters must report no tok/s. Number(null) is 0,
+    // which used to pass the non-negative check and stamp the row with "0 tok/s" — a
+    // measurement the dashboard printed as fact and the speed plot read as proof of
+    // zero throughput, dropping the row from the scatter as unmeasured.
+    const measureless = await modelById(MEASURELESS_MODEL)
+    assert.ok(measureless, 'the seeded row must be listed')
+    assert.equal(measureless.ttft, 900, 'the real TTFT the response carried is kept')
+    assert.equal(measureless.tps, null, 'an unmeasured rate must stay unmeasured, not 0')
+
+    // A real measurement must survive: 2 tokens over 60s is 0.033 tok/s, which a
+    // single-decimal round turned into an exact zero and the plot then discarded.
+    const slow = await modelById(SLOW_RATE_MODEL)
+    assert.ok(slow, 'the seeded row must be listed')
+    assert.ok(slow.tps > 0, `a measured rate must never round to zero, got ${slow.tps}`)
+    assert.ok(slow.tps < 1, `the rate must stay its real value, got ${slow.tps}`)
+    assert.ok(computeRowSpeed(slow) > 0, 'a measured rate must give the row a speed')
   })
 
   it('exposes the g4f catalog and reports its key as required setup', async () => {

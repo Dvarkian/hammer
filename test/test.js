@@ -44,6 +44,7 @@ import {
   computeContextDisplay,
   computeUsageAverages,
   resolveCompletionTokens,
+  roundMeasuredRate,
   parseAllowedModelNamesFromRefusal,
   isKnownChatModelName,
   estimateMessageTokens,
@@ -3933,6 +3934,25 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes('speed: 1 / (ttft + 1000 / tps)'))
   })
 
+  it('plots the same model set the primary table lists', () => {
+    // The network plot draws a node for every provider the table lists. Filtering it
+    // to providers with an online model silently dropped whole model groups the table
+    // still shows — an all-down row is a primary-table row, not a graveyard row — so
+    // the picture contradicted the table it exists to illustrate.
+    assert.ok(dashboardContent.includes('const plotProviders = [...new Set(primaryModels.map(m => m.providerKey))]'))
+    assert.equal(
+      dashboardContent.includes("filter(pk => primaryModels.some(m => m.providerKey === pk && m.status === 'up'))"),
+      false,
+      'the topology must not drop providers whose models are all offline',
+    )
+    // Offline providers keep their red status styling instead of disappearing.
+    assert.match(dashboardContent, /\.topo-provider-ring\.red\s*\{/)
+    // The speed plot counts the rows it could not place of the rows the table shows,
+    // so a row missing from the scatter is accounted for rather than silently dropped.
+    assert.ok(dashboardContent.includes('tableRowsWithoutSpeed'))
+    assert.ok(dashboardContent.includes('without speed data'))
+  })
+
   it('keeps provider key inputs intact across the auto-refresh rebuild and saves on Enter', () => {
     // The ~4s poll calls loadSettings() which rebuilds the provider containers;
     // without state preservation a half-typed key would be discarded before blur.
@@ -4532,6 +4552,35 @@ describe('usage stats (ttft / tokens per second)', () => {
     const stats = accumulateUsageSample(null, { ttft: 200, completionTokens: null, genMs: 1500 })
     assert.equal(stats.completionTokensSum, 0)
     assert.equal(stats.lastTps, null)
+    // The stalled request's 1.5s must not sit in the denominator either: the token
+    // total never counted it, so folding it into the time drags every later sample
+    // down (the first real sample below would report 20 tok/s instead of 50).
+    assert.equal(stats.genMsSum, 0)
+    const recovered = accumulateUsageSample(stats, { ttft: 200, completionTokens: 50, genMs: 1000 })
+    assert.equal(computeUsageAverages(recovered).tps, 50)
+  })
+
+  it('never rounds a measured rate down to zero', () => {
+    // 2 tokens over 60s is 0.033 tok/s — a real measurement from a relay that stalls
+    // after a couple of tokens. toFixed(1) turned it into exactly 0, which the table
+    // printed as "0 tok/s" and the speed plot read as "unmeasured", dropping a row
+    // that had in fact been measured.
+    const stalling = computeUsageAverages(accumulateUsageSample(null, { ttft: 800, completionTokens: 2, genMs: 60_000 }))
+    assert.equal(stalling.tps, 0.033)
+    assert.ok(stalling.tps > 0)
+    // Even an extreme case keeps a positive value (2 tokens over 805s).
+    assert.ok(computeUsageAverages(accumulateUsageSample(null, { ttft: 100, completionTokens: 2, genMs: 805_749 })).tps > 0)
+    // Ordinary rates keep the single decimal the dashboard has always shown.
+    assert.equal(computeUsageAverages(accumulateUsageSample(null, { ttft: 100, completionTokens: 25, genMs: 1000 })).tps, 25)
+    assert.equal(computeUsageAverages(accumulateUsageSample(null, { ttft: 100, completionTokens: 300, genMs: 2000 })).tps, 150)
+    // The manual Test path writes its per-response rate through the same helper (a
+    // private rounding there is what stored the zero), so this is the shared behaviour.
+    assert.equal(roundMeasuredRate(2 / 60), 0.033)
+    assert.equal(roundMeasuredRate(2 / 805.749), 0.0025)
+    assert.equal(roundMeasuredRate(0), 0)
+    assert.equal(roundMeasuredRate(Number.NaN), 0)
+    const serverSource = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+    assert.ok(serverSource.includes('body.tps = roundMeasuredRate('))
   })
 
   it('estimates output tokens for providers that report no usage', () => {
