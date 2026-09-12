@@ -100,7 +100,7 @@ const OVERLENGTH_ERROR = {
 }
 
 // mode: 'ok' | 'empty-200' | 'overlength-once' | 'hang' | 'freemodels-503-then-ok'
-//     | 'freemodels-error-always' | 'error-envelope-200'
+//     | 'freemodels-error-always' | 'error-envelope-200' | 'model-not-found'
 const stubState = { mode: 'ok', chatCalls: [], overlengthFired: false, heldResponses: [], freemodelsErrorsFired: 0 }
 
 function resetStub(mode = 'ok') {
@@ -158,6 +158,14 @@ const stubServer = createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
       res.write(`data: ${JSON.stringify({ error: { message: 'Service temporarily overloaded', type: 'service_unavailable', code: 503 } })}\n\n`)
       res.end('data: [DONE]\n\n')
+      return
+    }
+
+    if (stubState.mode === 'model-not-found') {
+      // A relay gateway advertising a model that no backend server serves. It is a
+      // permanent catalog failure, so it must classify as dead rather than down.
+      res.writeHead(404, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: `No server found that supports model '${body.model || body.modelId || 'unknown'}'` }))
       return
     }
 
@@ -836,6 +844,65 @@ describe('router harness', () => {
     const freemodelsProbe = startupProbeCalls.find(call => (call.model || call.modelId) === FREEMODELS_ROW)
     assert.ok(freemodelsProbe, 'control: freemodels is probed at startup')
     assert.equal(freemodelsProbe.auth, null, 'keyless freemodels must stay unauthenticated')
+  })
+
+  it('files a relay catalog entry that no backend serves as dead, not down', async () => {
+    resetStub('model-not-found')
+
+    const { status, json } = await api('/api/models/ping', {
+      method: 'POST',
+      body: JSON.stringify({ modelId: 'auto' }),
+    })
+
+    assert.equal(status, 200)
+    assert.equal(
+      json.model.status,
+      'dead',
+      `a "No server found that supports model" 404 must be dead, got ${json.model.status}`,
+    )
+  })
+
+  it('records a manual test against a relay model no backend serves as dead', async () => {
+    // The path a user actually clicks: Test on a g4f row whose advertised model has
+    // no backend behind it. The row must land in the graveyard with the reason
+    // preserved, not read as a generic outage.
+    resetStub('model-not-found')
+
+    const { status, json } = await api('/api/test-model', {
+      method: 'POST',
+      body: JSON.stringify({ providerKey: 'g4f', modelId: 'auto' }),
+    })
+
+    assert.equal(status, 200)
+    assert.equal(json?.dead, true, 'a "no server found" test must be flagged dead')
+    assert.match(String(json?.error), /No server found that supports model/i)
+
+    const row = await g4fRows()
+      .then(rows => rows.find(model => model.modelId === 'auto'))
+    assert.equal(row?.status, 'dead', 'the row must report Dead, not Down')
+    assert.equal(row?.lastResponse?.dead, true, 'the Dead verdict must survive the next reload')
+  })
+
+  it('does not let a recent clean test outvote a dead probe verdict', async () => {
+    // The gateway served this model a moment ago and has now stopped. The roster is
+    // what the dashboard and the router both read, so the fresh verdict has to win
+    // there too — otherwise one stale success keeps a dead model looking usable.
+    resetStub('ok')
+    const tested = await api('/api/test-model', {
+      method: 'POST',
+      body: JSON.stringify({ providerKey: 'g4f', modelId: 'auto' }),
+    })
+    assert.equal(tested.json?.ok, true, 'control: the model must test clean first')
+
+    resetStub('model-not-found')
+    const probe = await api('/api/models/ping', {
+      method: 'POST',
+      body: JSON.stringify({ modelId: 'auto' }),
+    })
+    assert.equal(probe.json?.model?.status, 'dead')
+
+    const row = await g4fRows().then(rows => rows.find(model => model.modelId === 'auto'))
+    assert.equal(row?.status, 'dead', 'a recent success must not mask a dead verdict')
   })
 
   it('exposes the g4f catalog and reports its key as required setup', async () => {

@@ -4673,6 +4673,14 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isDeadModelError('models/lyria-realtime-exp is not found for API version v1main, or is not supported for generateContent.', 404), true)
     // NVIDIA NIM: plain 404 page not found for removed models
     assert.equal(isDeadModelError('404 page not found', 404), true)
+    // Relay gateways (g4f.space): a catalog entry no backend serves is dead, even
+    // though the gateway answers 404 rather than 410.
+    assert.equal(isDeadModelError("No server found that supports model 'GLM:GLM-5.3'", 404), true)
+    assert.equal(isDeadModelError('{"error":"No server found that supports model \'GLM:GLM-5.3\'"}', 404), true)
+    assert.equal(isDeadModelError('No provider found for model foo', 404), true)
+    // Guardrail: a transient "nothing available right now" must stay a plain outage.
+    assert.equal(isDeadModelError('No server is currently available, please retry', 503), false)
+    assert.equal(isDeadModelError('The server found that model too large', 400), false)
     // OpenAI-compatible providers: structured model_not_found errors are permanent
     // model/access failures even when the provider returns HTTP 400.
     assert.equal(isDeadModelError('{"message":"Model does not exist or you do not have access to it.","type":"not_found_error","param":"model","code":"model_not_found"}', 400), true)
