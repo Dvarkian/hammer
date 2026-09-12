@@ -85,6 +85,9 @@ const TEST_PROMPT = 'Respond with exactly the single word: Ready'
 const NO_USAGE_CONTENT = 'pong '.repeat(8)
 const NO_USAGE_REASONING = 'think...'
 const NO_USAGE_ESTIMATED_TOKENS = 12
+// The chat models the refusing backend offers, named as variants of catalog models.
+const LEARNED_MODEL = 'microsoft/phi-3.5-mini-instruct-awq'
+const TEST_LEARNED_MODEL = 'z-ai/glm5-awq'
 
 const OK_COMPLETION = {
   id: 'chatcmpl-stub',
@@ -109,7 +112,7 @@ const OVERLENGTH_ERROR = {
 
 // mode: 'ok' | 'empty-200' | 'overlength-once' | 'hang' | 'freemodels-503-then-ok'
 //     | 'freemodels-error-always' | 'error-envelope-200' | 'model-not-found'
-//     | 'no-usage-stream'
+//     | 'no-usage-stream' | 'model-not-allowed' | 'model-not-allowed-test'
 const stubState = { mode: 'ok', chatCalls: [], overlengthFired: false, heldResponses: [], freemodelsErrorsFired: 0 }
 
 function resetStub(mode = 'ok') {
@@ -167,6 +170,22 @@ const stubServer = createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
       res.write(`data: ${JSON.stringify({ error: { message: 'Service temporarily overloaded', type: 'service_unavailable', code: 503 } })}\n\n`)
       res.end('data: [DONE]\n\n')
+      return
+    }
+
+    if (stubState.mode === 'model-not-allowed' || stubState.mode === 'model-not-allowed-test') {
+      // A backend refusing a model while naming the roster it does have. Each mode
+      // offers a different chat model — one the gateway catalog lists only as a variant
+      // (…-awq) — so the probe path and the manual-Test path can be pinned separately.
+      // The speech/image names alongside them are models the gateway leaves out.
+      const offered = stubState.mode === 'model-not-allowed-test' ? TEST_LEARNED_MODEL : LEARNED_MODEL
+      res.writeHead(400, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        error: {
+          message: `Model '${body.model || body.modelId || 'unknown'}' is not allowed on this server. Allowed: whisper-large-v3-turbo, flux-1-schnell, ${offered}`,
+          type: 'model_not_allowed',
+        },
+      }))
       return
     }
 
@@ -915,6 +934,55 @@ describe('router harness', () => {
       .then(rows => rows.find(model => model.modelId === 'auto'))
     assert.equal(row?.status, 'dead', 'the row must report Dead, not Down')
     assert.equal(row?.lastResponse?.dead, true, 'the Dead verdict must survive the next reload')
+  })
+
+  it('learns the chat models a refusing backend names, and ignores its media models', async () => {
+    // The gateway's catalog is chat-only and goes stale per server, so a backend's own
+    // refusal is the only roster available. Its chat models have to become usable rows;
+    // the speech and image models it also runs must not be offered as chat.
+    const rowsFor = async () => (await api('/api/models')).json.models.filter(row => row.providerKey === STUB_INSTANCE_KEY)
+    assert.equal((await rowsFor()).some(row => row.modelId === LEARNED_MODEL), false, 'control: not listed before the refusal')
+
+    resetStub('model-not-allowed')
+    const probe = await api('/api/models/ping', {
+      method: 'POST',
+      body: JSON.stringify({ modelId: PROBE_MODEL }),
+    })
+    assert.equal(probe.json?.model?.status, 'dead', 'a per-server refusal is a dead catalog entry')
+
+    const listed = await rowsFor()
+    assert.ok(
+      listed.some(row => row.modelId === LEARNED_MODEL),
+      'the chat model the backend named must become a usable row',
+    )
+    assert.deepEqual(
+      listed.map(row => row.modelId).filter(id => /whisper|flux/i.test(id)),
+      [],
+      'media models a backend runs are not chat models and must stay out of the catalog',
+    )
+
+    // The manual Test a user clicks refuses the same way, and must learn from it too.
+    resetStub('model-not-allowed-test')
+    const tested = await api('/api/test-model', {
+      method: 'POST',
+      body: JSON.stringify({ providerKey: STUB_INSTANCE_KEY, modelId: 'stub-beta' }),
+    })
+    assert.equal(tested.json?.dead, true, 'a per-server refusal is dead on the Test path too')
+    assert.equal(
+      (await rowsFor()).some(row => row.modelId === TEST_LEARNED_MODEL),
+      true,
+      'the Test path must learn the roster it is told about as well',
+    )
+
+    // Discovery mirrors the gateway catalog, which lists neither learned model. The
+    // backend is healthy again for this step, so nothing can re-teach them: only the
+    // rows carried across the merge can keep them listed.
+    resetStub('ok')
+    const refreshed = await api(`/api/providers/${encodeURIComponent(STUB_INSTANCE_KEY)}/refresh`, { method: 'POST' })
+    assert.equal(refreshed.status, 200)
+    const stillListed = (await rowsFor()).map(row => row.modelId)
+    assert.ok(stillListed.includes(LEARNED_MODEL), 'a discovery refresh must not prune a learned model')
+    assert.ok(stillListed.includes(TEST_LEARNED_MODEL), 'nor the one learned from a Test')
   })
 
   it('does not let a recent clean test outvote a dead probe verdict', async () => {

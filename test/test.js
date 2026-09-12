@@ -44,6 +44,8 @@ import {
   computeContextDisplay,
   computeUsageAverages,
   resolveCompletionTokens,
+  parseAllowedModelNamesFromRefusal,
+  isKnownChatModelName,
   estimateMessageTokens,
   formatTokenCount,
   isOverLengthErrorText,
@@ -4697,6 +4699,12 @@ describe('context window bounds (known + observed)', () => {
     // Guardrail: a transient "nothing available right now" must stay a plain outage.
     assert.equal(isDeadModelError('No server is currently available, please retry', 503), false)
     assert.equal(isDeadModelError('The server found that model too large', 400), false)
+    // g4f.space per-server refusal: the gateway routed to a backend that does not
+    // serve this model and said so (HTTP 400, type model_not_allowed).
+    assert.equal(isDeadModelError("Model 'glm-5.3' is not allowed on this server. Allowed: gemma-4-26b, qwen-3.8-27b", 400), true)
+    assert.equal(isDeadModelError('{"error":{"message":"Model \'glm-5.3\' is not allowed on this server. Allowed: qwen-3.8-27b","type":"model_not_allowed"}}', 400), true)
+    // Guardrail: a plan/entitlement restriction is not a catalog death.
+    assert.equal(isDeadModelError('This model is not allowed for your plan', 403), false)
     // OpenAI-compatible providers: structured model_not_found errors are permanent
     // model/access failures even when the provider returns HTTP 400.
     assert.equal(isDeadModelError('{"message":"Model does not exist or you do not have access to it.","type":"not_found_error","param":"model","code":"model_not_found"}', 400), true)
@@ -4709,6 +4717,36 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isDeadModelError('Request timed out', 503), false)
     assert.equal(isDeadModelError('Payment required', 402), false)
     assert.equal(isDeadModelError(null, 200), false)
+  })
+
+  it('reads the roster a refusing gateway names, and only its chat models', () => {
+    const refusal = "Model 'glm-5.3' is not allowed on this server. Allowed: whisper-large-v3-turbo, moondream3.1, sdxl-lightning, flux-2-klein-4b, flux-2-dev, flux-1-schnell, phoenix-1.0, logfare/auto, melotts, aura-2-en, nova-3, lucid-origin, gemma-4-26b, qwen-3.8-27b"
+    const allowed = parseAllowedModelNamesFromRefusal(refusal)
+    assert.equal(allowed.length, 14)
+    assert.equal(allowed[0], 'whisper-large-v3-turbo')
+    assert.equal(allowed.at(-1), 'qwen-3.8-27b')
+    // The JSON wire form ends at the closing quote rather than swallowing the rest.
+    assert.deepEqual(
+      parseAllowedModelNamesFromRefusal(JSON.stringify({ error: { message: refusal, type: 'model_not_allowed' } })),
+      allowed,
+    )
+    // Anything that is not this refusal yields nothing, so callers can hand it every
+    // failure without learning a roster from an unrelated error.
+    assert.deepEqual(parseAllowedModelNamesFromRefusal('No server found that supports model'), [])
+    assert.deepEqual(parseAllowedModelNamesFromRefusal('Model is not allowed for your plan'), [])
+    assert.deepEqual(parseAllowedModelNamesFromRefusal(''), [])
+
+    // The gateway catalog is chat-only, so a roster name is surfaced only when it is
+    // recognisably one of those models — never the speech/image models it also runs.
+    const catalog = ['auto', 'srv_abc:gemma-4-26b-a4b-it', 'srv_def:qwen-3.8-27b', 'srv_ghi:z-ai/glm-5.3']
+    assert.equal(isKnownChatModelName('gemma-4-26b', catalog), true)   // family variant
+    assert.equal(isKnownChatModelName('qwen-3.8-27b', catalog), true)  // same model
+    assert.equal(isKnownChatModelName('auto', catalog), true)
+    assert.equal(isKnownChatModelName('whisper-large-v3-turbo', catalog), false)
+    assert.equal(isKnownChatModelName('moondream3.1', catalog), false)
+    assert.equal(isKnownChatModelName('flux-1-schnell', catalog), false)
+    assert.equal(isKnownChatModelName('lucid-origin', catalog), false)
+    assert.equal(isKnownChatModelName('', catalog), false)
   })
 
   it('treats empty successful test responses as incompatible', () => {
