@@ -1574,7 +1574,7 @@
       text-decoration-thickness: 1px;
     }
 
-    /* The currently routed model row (pin > slope-line pick > Elo ranking) */
+    /* The currently routed model row (pin > slope-line pick > intelligence ranking) */
     tr.row-best td {
       background: rgba(59, 130, 246, 0.07);
       background: color-mix(in srgb, var(--accent) 7%, transparent);
@@ -1980,7 +1980,7 @@
             <tr>
               <th class="sortable" onclick="setSort('model')" id="th-model">Model <i class="sort-arrow"
                   id="arrow-model">↕</i></th>
-              <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Elo rating (or Elo-scale estimate, marked *) — hover a value for its source">Intelligence <i class="sort-arrow"
+              <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, or the one interpolated from Elo where AA has none (marked *). Hover a value for its source.">Intelligence <i class="sort-arrow"
                   id="arrow-intell">↕</i></th>
               <th class="sortable text-right" onclick="setSort('ping')" id="th-ping">Ping <i
                   class="sort-arrow" id="arrow-ping">↕</i></th>
@@ -2351,7 +2351,7 @@
     // preview of what the router will select when no model is manually pinned.
     let selectorState = { slope: null, minSpeed: null, minIntell: null };
     let selectorSaveTimer = null;
-    let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > Elo)
+    let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
     let scatterDrag = null;       // active threshold-line drag
     let scatterScales = null;     // plot extents, refreshed by every draw
@@ -2759,10 +2759,10 @@
       let tableRowsWithoutSpeed = 0;
       for (const m of models || []) {
         if (!m || m.status === 'noauth') continue;
-        // Same number the Intelligence column shows (Elo scale): real LMArena
-        // rating when present, otherwise the raw score mapped onto the Elo scale.
-        const eloNum = Number(m.elo);
-        const intellNum = (Number.isFinite(eloNum) && eloNum > 0) ? eloNum : Number(m.intell) * 100;
+        // Same number the Intelligence column shows (the AA index): AA's own rating
+        // when the row has one, otherwise the raw score mapped onto that same scale.
+        const aaNum = Number(m.aa);
+        const intellNum = (Number.isFinite(aaNum) && aaNum > 0) ? aaNum : Number(m.intell) * 100;
         const ttft = m.ttft != null ? Number(m.ttft) : (m.lastResponse && m.lastResponse.ttftMs != null ? Number(m.lastResponse.ttftMs) : null);
         const tps = m.tps != null ? Number(m.tps) : (m.lastResponse && m.lastResponse.tps != null ? Number(m.lastResponse.tps) : null);
         // A dot needs both axes: an honest position needs a rating and a speed.
@@ -2805,7 +2805,8 @@
       xMax += xPad;
       const ySpan0 = (yMax - yMin) || (Math.abs(yMax) * 0.05) || 10;
       yMin = Math.max(0, yMin - ySpan0 * 0.08);
-      yMax = Math.min(10000, yMax + ySpan0 * 0.08);
+      // An Artificial Analysis index cannot exceed 100, so the axis never needs to.
+      yMax = Math.min(100, yMax + ySpan0 * 0.08);
       const ySpan = Math.max(1e-9, yMax - yMin);
       const xSpan = Math.max(1e-9, xMax - xMin);
 
@@ -2845,13 +2846,13 @@
       capX.textContent = 'faster →';
       g.appendChild(capX);
       const capY = svgEl('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '9px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
-      capY.textContent = 'Intelligence';
+      capY.textContent = 'AA index';
       g.appendChild(capY);
       svg.appendChild(g);
       const info = svgEl('title', {});
       info.textContent = 'Each dot is one model/provider combination.\n' +
         'x = speed = 1 / (TTFT + 1000 / tok/s) — faster to the right\n' +
-        'y = intelligence (Elo scale) — smarter upward\n' +
+        'y = Artificial Analysis Intelligence Index — smarter upward\n' +
         'Drag the edge lines to set minimums. Hover a dot for its numbers.';
       svg.appendChild(info);
     }
@@ -3084,7 +3085,7 @@
     // pass and the overlay so the highlighted dot, its label, the Selected
     // readout, and the drawn line can never disagree. Mirrors the router's
     // precedence: manual pin > slope-line pick (only when a slope is set) > the
-    // server-reported Elo best. Rows the router will not use are never picked, so
+    // server-reported intelligence best. Rows the router will not use are never picked, so
     // pickSlopeModel/pickFastestRow apply the same eligibility the server does.
     function getSelection(rows) {
       const pinned = !!activePinnedModelId;
@@ -3208,21 +3209,21 @@
       }
 
       // Highlight the winning dot: a manual pin first, else the slope pick, else
-      // the routed Elo best. The same name also drives the KPI 'Current' readout
+      // the routed intelligence best. The same name also drives the KPI 'Current' readout
       // (and vice versa on the next poll), so Selected and Current are always the
       // same model — even mid-drag and when the selector falls back.
       const pickEl = document.getElementById('sel-pick');
       const kpiBestEl = document.getElementById('kpi-best');
       if (slopeActive && !slopePick && !pinned) {
         // A slope is set but nothing clears the minimums: routing falls back to
-        // the Elo best, so name that model instead of pretending the line
+        // the intelligence best, so name that model instead of pretending the line
         // touches a dot.
         const fbModel = currentBestModelId
           ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
           : null;
         const fbName = fbModel ? scatterShortName(fbModel) : null;
         if (pickEl) {
-          pickEl.textContent = fbName ? `Below minimums — routing ${fbName}` : 'Below minimums — routing the Elo best';
+          pickEl.textContent = fbName ? `Below minimums — routing ${fbName}` : 'Below minimums — routing the intelligence best';
           pickEl.style.color = '';
         }
         if (kpiBestEl && fbName) kpiBestEl.textContent = fbName;
@@ -3242,7 +3243,7 @@
         }
         if (kpiBestEl && name) kpiBestEl.textContent = name;
       } else if (pickEl) {
-        pickEl.textContent = 'Below minimums — routing the Elo best';
+        pickEl.textContent = 'Below minimums — routing the intelligence best';
         pickEl.style.color = '';
       }
     }
@@ -4482,7 +4483,7 @@
     // Default sort priority and direction when used as a tiebreaker.
     // dir: 1 = ascending (lower value first), -1 = descending (higher value first)
     // Default ordering (used on first paint and after reset): strongest model first.
-    // Intelligence (Elo / Elo-scale estimate) is the primary key; status / QoS /
+    // Intelligence (the Artificial Analysis index) is the primary key; status / QoS /
     // latency / availability break ties among models with the same rating.
     const DEFAULT_SORT_CHAIN = [
       { col: 'intell', dir: -1 },  // Highest intelligence first
@@ -4726,7 +4727,7 @@
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${members.length} providers`}</div>
             <div class="model-tag-row">${renderModelTagChips(first.tags)}</div>
           </td>
-          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.elo)}</div></td>
+          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           <td class="text-right">
             <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
@@ -4904,7 +4905,7 @@
     function updateRowCells(row, m) {
       const hasPing = m.avg !== Infinity && m.avg !== null;
 
-      // Mark the currently routed model (pin > slope-line pick > Elo) so the
+      // Mark the currently routed model (pin > slope-line pick > intelligence) so the
       // table always shows the same model the KPI, topology and scatter plot do.
       row.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
         && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
@@ -5771,7 +5772,7 @@
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${members.length} providers`}</div>
           </td>
-          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.elo)}</div></td>
+          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           <td class="text-right">
             <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
@@ -5854,10 +5855,10 @@
 
     function getQualitySourceDisplay(source) {
       switch (source) {
-        case 'lmarena-overall': return { short: 'Elo', label: 'LMArena overall Elo' };
-        case 'lmarena-coding': return { short: 'Code Elo', label: 'LMArena coding Elo' };
-        case 'artificial-analysis': return { short: 'AA', label: 'Artificial Analysis index' };
-        case 'design-arena': return { short: 'Arena*', label: 'Design Arena estimate' };
+        case 'lmarena-overall': return { short: 'Elo*', label: 'LMArena overall Elo, AA-interpolated' };
+        case 'lmarena-coding': return { short: 'Code*', label: 'LMArena coding Elo, AA-interpolated' };
+        case 'artificial-analysis': return { short: 'AA', label: 'Artificial Analysis Intelligence Index' };
+        case 'design-arena': return { short: 'Arena*', label: 'Design Arena Elo, AA-interpolated' };
         case 'metadata': return { short: 'Meta*', label: 'Metadata estimate' };
         case 'local-fallback': return { short: 'Offline*', label: 'Offline fallback' };
         case 'default-fallback': return { short: 'Default*', label: 'Default fallback' };
@@ -5875,28 +5876,26 @@
         : `<span class="model-tag">${escapeHtml(tag)}</span>`).join('');
     }
 
-    // Every row displays one number on the Elo scale. Real LMArena ratings are
-    // plain; an estimate (AA mapped via regression, Design Arena Elo, or a
-    // percentile-mapped metadata/offline score) gets a small asterisk marker.
-    function getBenchmarkDisplayValue(value, source, detail = '', elo = null) {
+    // Every row displays one number: the Artificial Analysis Intelligence Index.
+    // AA's own rating is shown plain; a value interpolated from an Elo (or placed by
+    // percentile from a metadata/offline score) is an estimate and gets an asterisk.
+    function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);
-      const e = Number(elo);
-      if (Number.isFinite(e) && e > 0) {
-        if (source === 'lmarena-overall' || source === 'lmarena-coding') {
-          const pill = source === 'lmarena-coding' ? '<span class="pill-estimate">Code</span>' : '';
-          return `<span title="${title}">${Math.round(e)}${pill}</span>`;
-        }
-        return `<span title="${title}">${Math.round(e)}<span class="pill-estimate">*</span></span>`;
+      const n = Number(aa);
+      if (Number.isFinite(n) && n > 0) {
+        const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
+        const marker = source === 'artificial-analysis' ? '' : '<span class="pill-estimate">*</span>';
+        return `<span title="${title}">${shown}${marker}</span>`;
       }
-      // Degraded/offline mode: no board or regression available, show the raw score.
-      const n = Number(value);
-      if (!Number.isFinite(n) || n <= 0) return '—';
-      return `<span title="${title}">${Math.round(n * 100)}<span class="pill-estimate">${sourceDisplay.short}</span></span>`;
+      // Degraded/offline mode: no AA value at all, show the local score.
+      const score = Number(value);
+      if (!Number.isFinite(score) || score <= 0) return '—';
+      return `<span title="${title}">${Math.round(score * 100)}<span class="pill-estimate">${sourceDisplay.short}</span></span>`;
     }
 
-    function getBenchmarkTableDisplayValue(value, source, detail = '', elo = null) {
-      return getBenchmarkDisplayValue(value, source, detail, elo);
+    function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null) {
+      return getBenchmarkDisplayValue(value, source, detail, aa);
     }
 
     function formatIsoDateTime(value) {
@@ -6334,8 +6333,8 @@
 
     function formatSyncScore(model) {
       if (typeof model?.intell !== 'number' || !Number.isFinite(model.intell)) return 'Unknown';
-      const e = Number(model.elo);
-      const shown = Number.isFinite(e) && e > 0 ? Math.round(e) : Math.round(model.intell * 100);
+      const aa = Number(model.aa);
+      const shown = Number.isFinite(aa) && aa > 0 ? (Number.isInteger(aa) ? aa : aa.toFixed(1)) : Math.round(model.intell * 100);
       return `${shown} (${getQualitySourceDisplay(model.qualitySource).label})`;
     }
 
@@ -8542,7 +8541,7 @@
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px;">
           <div style="background: var(--chat-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">
             <div style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">Intelligence Score</div>
-            <div style="font-weight: 700;">${getBenchmarkDisplayValue(m.intell, m.qualitySource, m.qualityDetail, m.elo)}</div>
+            <div style="font-weight: 700;">${getBenchmarkDisplayValue(m.intell, m.qualitySource, m.qualityDetail, m.aa)}</div>
             <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 6px;">${escapeHtml(getQualitySourceDisplay(m.qualitySource).label)}${m.qualityDetail ? ` · ${escapeHtml(m.qualityDetail)}` : ''}</div>
           </div>
           <div style="background: var(--chat-bg); padding: 16px; border-radius: 12px; border: 1px solid var(--border);">

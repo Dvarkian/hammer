@@ -75,14 +75,16 @@ import { normalizeProviderUsageReport, selectProviderUsageReport, serializeProvi
 import { buildOpenClawProviderConfig } from '../lib/onboard.js'
 import { normalizeMissingScoreId } from '../lib/score-fetcher.js'
 import {
+  aaForPercentile,
   buildOpenRouterQualityIndex,
+  convertSelectorToAaScale,
   extractLMArenaEntries,
   findLMArenaEntry,
-  eloForPercentile,
-  fitAAEloRegression,
+  fitAAFromEloRegression,
   fitLinearRegression,
+  getArtificialAnalysisIndex,
   lmArenaMatchScore,
-  normalizeLMArenaElo,
+  predictAAFromElo,
   qualityLookupKeys,
   resolveModelQuality,
 } from '../lib/model-quality.js'
@@ -288,6 +290,13 @@ describe('config helpers', () => {
     assert.equal(invalid.selector.slope, null)
     assert.equal(invalid.selector.minSpeed, null)
     assert.equal(invalid.selector.minIntell, null)
+
+    // A selector written before the AA scale carries no marker, so the server knows
+    // those numbers are still Elo-scale and restates them once; only the current
+    // marker survives normalization.
+    assert.equal(preserved.selector.intellScale, null)
+    assert.equal(normalizeConfigShape({ selector: { intellScale: 'aa' } }).selector.intellScale, 'aa')
+    assert.equal(normalizeConfigShape({ selector: { intellScale: 'elo' } }).selector.intellScale, null)
   })
 })
 
@@ -1786,14 +1795,14 @@ describe('OpenRouter model quality scoring', () => {
       context_length: 131072,
       supported_parameters: ['reasoning', 'tools', 'structured_outputs'],
       benchmarks: {
-        artificial_analysis: { coding_index: 72 },
+        artificial_analysis: { intelligence_index: 72 },
         design_arena: [{ arena: 'models', category: 'codecategories', elo: 1300 }],
       },
     },
     {
       id: 'vendor/training-model',
       benchmarks: {
-        artificial_analysis: { coding_index: 52 },
+        artificial_analysis: { intelligence_index: 52 },
         design_arena: [{ arena: 'models', category: 'codecategories', elo: 1100 }],
       },
     },
@@ -1824,19 +1833,29 @@ describe('OpenRouter model quality scoring', () => {
     })
   })
 
-  it('uses coding index, Design Arena, then metadata in that order', () => {
+  it('uses the AA index, then a Design Arena Elo, then metadata in that order', () => {
     const quality = buildOpenRouterQualityIndex(catalog, [...catalog].reverse(), 1_760_000_000_000)
     const direct = resolveModelQuality(quality, 'vendor/direct-model', 0.99)
     const arena = resolveModelQuality(quality, 'arena-only-free', 0.99)
     const metadata = resolveModelQuality(quality, 'vendor/metadata-only:free', 0.99)
 
+    // AA's own rating is the displayed value, on AA's own 0-100 scale.
     assert.equal(direct.score, 0.72)
+    assert.equal(direct.aa, 72)
+    assert.equal(direct.aaEstimated, false)
     assert.equal(direct.source, 'artificial-analysis')
     assert.equal(direct.isEstimated, false)
+    // No AA rating, but a Design Arena Elo: the AA index is interpolated from it
+    // through the two anchors above (0.1 per Elo point) and flagged as an estimate.
+    assert.equal(arena.aa, 62)
     assert.equal(arena.score, 0.62)
+    assert.equal(arena.aaEstimated, true)
     assert.equal(arena.source, 'design-arena')
+    assert.match(arena.detail, /AA interpolated/)
     assert.equal(metadata.source, 'metadata')
     assert.ok(metadata.score >= 0.35 && metadata.score <= 0.65)
+    // Metadata is placed on the AA scale by percentile, so it still has a number.
+    assert.ok(metadata.aa > 0)
   })
 
   it('labels local and blind defaults when no catalog match exists', () => {
@@ -1943,10 +1962,11 @@ describe('LMArena Elo model matching', () => {
     const m20 = findLMArenaEntry('openai/gpt-oss-20b', dual)
     assert.equal(m120.board, 'coding')
     assert.equal(m20.board, 'coding')
-    // Same board, so percentiles preserve the raw Elo ordering (1391 > 1370).
-    const pct120 = normalizeLMArenaElo(m120.elo, null, dual.coding)
-    const pct20 = normalizeLMArenaElo(m20.elo, null, dual.coding)
-    assert.ok(pct120 > pct20, 'gpt-oss-120b must outrank gpt-oss-20b')
+    // The AA index is interpolated from the same board rating, and that interpolation
+    // is monotonic, so the 120B still outranks the 20B on the metric the dashboard and
+    // the router actually use.
+    const regression = fitLinearRegression([[1370, 12], [1391, 20]])
+    assert.ok(predictAAFromElo(m120.elo, regression) > predictAAFromElo(m20.elo, regression))
   })
 
   it('keeps size tokens distinct (gpt-oss-20b vs gpt-oss-120b)', () => {
@@ -1965,16 +1985,16 @@ describe('LMArena Elo model matching', () => {
     assert.equal(findLMArenaEntry('x', null), null)
   })
 
-  it('normalizes Elo as a monotonic percentile within the board', () => {
-    // 1455 is the median of the overall board (between 1436 and 1457) -> ~0.5.
-    const pct = normalizeLMArenaElo(1455, null, boards.overall)
-    assert.ok(pct >= 0.4 && pct <= 0.6)
-    // Higher Elo -> strictly higher percentile.
-    assert.ok(normalizeLMArenaElo(1470, null, boards.overall) > pct)
-    // Non-finite Elo -> no score (no 0.45 default).
-    assert.equal(normalizeLMArenaElo('nope', null, boards.overall), null)
-    // Empty board -> simple clamp fallback.
-    assert.ok(normalizeLMArenaElo(1455, null, []) >= 0.05)
+  it('interpolates a higher AA index from a higher Elo rating', () => {
+    // Both board sources feed one AA-from-Elo regression, so the ordering the old
+    // percentile scale guaranteed has to survive the mapping.
+    const regression = fitLinearRegression([[1348, 9], [1436, 18], [1470, 24]])
+    const low = predictAAFromElo(1348, regression)
+    const mid = predictAAFromElo(1436, regression)
+    const high = predictAAFromElo(1470, regression)
+    assert.ok(low < mid && mid < high, `expected a monotonic mapping, got ${low}/${mid}/${high}`)
+    // A non-finite rating has no prediction rather than a default.
+    assert.equal(predictAAFromElo('nope', regression), null)
   })
 })
 
@@ -1996,16 +2016,19 @@ describe('LMArena Elo priority in score resolution', () => {
     overall: [{ displayName: 'direct-model', elo: 1500, votes: 9000 }],
   }
 
-  it('prefers LMArena Elo over Artificial Analysis when a match exists', () => {
+  it('prefers the measured AA rating over an Elo interpolation', () => {
     const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
     quality.lmArenaBoards = boards
-    // The model is listed on both boards; the coding entry is authoritative so
-    // siblings measured on the coding board stay comparable (see findLMArenaEntry).
+    quality.aaFromEloRegression = fitAAFromEloRegression(catalog, boards)
+    // The model is listed on both boards *and* carries an AA rating. The measured AA
+    // index wins: a rating AA recorded beats one interpolated from an Elo.
     const direct = resolveModelQuality(quality, 'vendor/direct-model', 0.99)
-    assert.equal(direct.source, 'lmarena-coding')
+    assert.equal(direct.source, 'artificial-analysis')
     assert.equal(direct.isEstimated, false)
-    assert.equal(direct.elo, 1400)
-    assert.match(direct.detail, /LMArena coding Elo 1400/)
+    assert.equal(direct.aaEstimated, false)
+    assert.equal(direct.aa, 60)
+    assert.equal(direct.score, 0.6)
+    assert.match(direct.detail, /AA intelligence index 60/)
   })
 
   it('falls back to the catalog index when LMArena has no match', () => {
@@ -2026,13 +2049,13 @@ describe('LMArena Elo priority in score resolution', () => {
   })
 })
 
-describe('Artificial Analysis to Elo scale mapping', () => {
+describe('Artificial Analysis index mapping', () => {
   const catalog = [
-    { id: 'vendor/alpha', benchmarks: { artificial_analysis: { coding_index: 40 }, design_arena: [{ arena: 'models', category: 'codecategories', elo: 1050 }] } },
-    { id: 'vendor/beta', benchmarks: { artificial_analysis: { coding_index: 60 }, design_arena: [{ arena: 'models', category: 'codecategories', elo: 1250 }] } },
-    { id: 'vendor/gamma', benchmarks: { artificial_analysis: { coding_index: 80 } } },
-    { id: 'vendor/delta', benchmarks: { artificial_analysis: { coding_index: 50 } } },
-    { id: 'vendor/epsilon', benchmarks: { artificial_analysis: { coding_index: 20 } } },
+    { id: 'vendor/alpha', benchmarks: { artificial_analysis: { intelligence_index: 40 }, design_arena: [{ arena: 'models', category: 'codecategories', elo: 1050 }] } },
+    { id: 'vendor/beta', benchmarks: { artificial_analysis: { intelligence_index: 60 }, design_arena: [{ arena: 'models', category: 'codecategories', elo: 1250 }] } },
+    { id: 'vendor/gamma', benchmarks: { artificial_analysis: { intelligence_index: 80 } } },
+    { id: 'vendor/delta', benchmarks: { artificial_analysis: { intelligence_index: 50 } } },
+    { id: 'vendor/epsilon', benchmarks: { artificial_analysis: { intelligence_index: 20 } } },
     { id: 'vendor/arena-only', benchmarks: { design_arena: [{ arena: 'models', category: 'codecategories', elo: 1200 }] } },
     { id: 'vendor/meta-only', created: 1_750_000_000, context_length: 262144, supported_parameters: ['reasoning', 'tools'] },
   ]
@@ -2045,118 +2068,147 @@ describe('Artificial Analysis to Elo scale mapping', () => {
     coding: [],
   }
 
-  it('fits an AA -> Elo regression from models with both values', () => {
-    const regression = fitAAEloRegression(catalog, boards)
+  it('reads an AA index only when the catalog actually carries one', () => {
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: { artificial_analysis: { intelligence_index: 42 } } }), 42)
+    // A missing metric has to stay absent: Number(null) is 0, and a 0 both scores
+    // the model as the worst in the app and suppresses the Elo interpolation that
+    // should have covered it.
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: { artificial_analysis: {} } }), null)
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: { artificial_analysis: { intelligence_index: null } } }), null)
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: { artificial_analysis: { intelligence_index: '' } } }), null)
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: {} }), null)
+    assert.equal(getArtificialAnalysisIndex(null), null)
+    // A measured 0 is a rating, not an absence.
+    assert.equal(getArtificialAnalysisIndex({ benchmarks: { artificial_analysis: { intelligence_index: 0 } } }), 0)
+  })
+
+  it('fits an AA-from-Elo regression over the models that carry both', () => {
+    const regression = fitAAFromEloRegression(catalog, boards)
     assert.ok(regression)
     assert.equal(regression.sampleSize, 3)
-    assert.equal(regression.slope, 10)
-    assert.equal(regression.intercept, 700)
-    assert.equal(regression.eloMin, 1100)
-    assert.equal(regression.eloMax, 1500)
+    assert.equal(regression.slope, 0.1)
+    assert.equal(regression.intercept, -70)
+    assert.equal(regression.aaMin, 40)
+    assert.equal(regression.aaMax, 80)
   })
 
   it('returns null without at least two anchor points', () => {
-    assert.equal(fitAAEloRegression([catalog[0]], boards), null)
-    assert.equal(fitAAEloRegression([], boards), null)
-    assert.equal(fitAAEloRegression(catalog, { overall: [], coding: [] }), null)
+    assert.equal(fitAAFromEloRegression([catalog[0]], boards), null)
+    assert.equal(fitAAFromEloRegression([], boards), null)
+    assert.equal(fitAAFromEloRegression(catalog, { overall: [], coding: [] }), null)
   })
 
-  it('maps an AA-only model onto the Elo scale when no LMArena match exists', () => {
+  it('interpolates an AA index from an Elo for a model AA has no rating for', () => {
     const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    quality.lmArenaBoards = boards
-    quality.aaEloRegression = fitAAEloRegression(catalog, boards)
-
-    const result = resolveModelQuality(quality, 'vendor/delta', 0.99)
-    assert.equal(result.source, 'artificial-analysis')
-    assert.equal(result.score, 0.5)
-    assert.equal(result.elo, 1200)
-    assert.equal(result.eloEstimated, true)
-  })
-
-  it('clamps AA-mapped Elo estimates to the observed anchor range', () => {
-    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    quality.lmArenaBoards = boards
-    quality.aaEloRegression = fitAAEloRegression(catalog, boards)
-
-    // AA 20 extrapolates to Elo 900, below every anchor -> clamped to 1100.
-    const result = resolveModelQuality(quality, 'vendor/epsilon', 0.99)
-    assert.equal(result.elo, 1100)
-  })
-
-  it('prefers a real LMArena Elo over the AA-mapped estimate', () => {
-    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    quality.lmArenaBoards = boards
-    quality.aaEloRegression = fitAAEloRegression(catalog, boards)
-
-    const result = resolveModelQuality(quality, 'vendor/gamma', 0.99)
-    assert.equal(result.source, 'lmarena-overall')
-    assert.equal(result.elo, 1500)
-    assert.equal(result.eloFromAA, undefined)
-  })
-
-  it('falls back to the board percentile scale when no AA regression exists', () => {
-    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    quality.lmArenaBoards = boards
-    // No aaEloRegression attached -> the percentile of the overall board is used.
-    const result = resolveModelQuality(quality, 'vendor/delta', 0.99)
-    assert.equal(result.source, 'artificial-analysis')
-    assert.equal(result.score, 0.5)
-    assert.equal(result.elo, 1300)
-    assert.equal(result.eloEstimated, true)
-  })
-
-  it('uses the raw Design Arena Elo when present', () => {
-    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    // No boards attached: the raw Design Arena rating is still shown.
+    // The catalog index interpolates from the Design Arena Elo — the only Elo a
+    // catalog entry carries — through the two anchors above: 0.1 per Elo point.
     const arena = resolveModelQuality(quality, 'vendor/arena-only', 0.99)
     assert.equal(arena.source, 'design-arena')
-    assert.equal(arena.elo, 1200)
-    assert.equal(arena.eloEstimated, true)
+    assert.equal(arena.aa, 55)          // 1200 * 0.1 - 65
+    assert.equal(arena.score, 0.55)
+    assert.equal(arena.aaEstimated, true)
   })
 
-  it('maps metadata estimates onto the Elo scale via the board percentile', () => {
-    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
-    quality.lmArenaBoards = boards
-    const result = resolveModelQuality(quality, 'vendor/meta-only', 0.99)
-    assert.equal(result.source, 'metadata')
-    assert.ok(result.score >= 0.35 && result.score <= 0.65)
-    // Expected = the overall board Elo at the score's percentile.
-    assert.equal(result.elo, eloForPercentile(result.score, boards.overall))
-    assert.equal(result.eloEstimated, true)
+  it('clamps an interpolated AA index to the range AA actually recorded', () => {
+    // Design Arena Elo 900 extrapolates to AA 25, below every anchor -> 40.
+    const quality = buildOpenRouterQualityIndex([
+      ...catalog,
+      { id: 'vendor/weak', benchmarks: { design_arena: [{ arena: 'models', category: 'codecategories', elo: 900 }] } },
+    ], catalog, 1_760_000_000_000)
+    assert.equal(resolveModelQuality(quality, 'vendor/weak', 0.99).aa, 40)
   })
 
-  it('maps local offline scores to the Elo scale when boards exist', () => {
+  it('prefers a measured AA rating over an Elo interpolation and over the local score', () => {
     const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
     quality.lmArenaBoards = boards
-    const result = resolveModelQuality(quality, 'vendor/unknown-offline', 0.5)
-    assert.equal(result.source, 'local-fallback')
-    assert.equal(result.elo, 1300)
-    assert.equal(result.eloEstimated, true)
+    quality.aaFromEloRegression = fitAAFromEloRegression(catalog, boards)
+    // gamma is AA-rated and also on the board: AA's own rating wins.
+    const measured = resolveModelQuality(quality, 'vendor/gamma', 0.99)
+    assert.equal(measured.source, 'artificial-analysis')
+    assert.equal(measured.aa, 80)
+    assert.equal(measured.aaEstimated, false)
+    // A local score never displaces a catalog AA rating either.
+    assert.equal(resolveModelQuality(quality, 'vendor/delta', 0.99).aa, 50)
+    assert.equal(resolveModelQuality(quality, 'vendor/epsilon', 0.99).aa, 20)
+  })
+
+  it('interpolates an AA index from an LMArena Elo when AA has no rating', () => {
+    const eloOnly = [{ id: 'vendor/boards-only', created: 1_750_000_000, context_length: 131072 }]
+    const quality = buildOpenRouterQualityIndex(eloOnly, eloOnly, 1_760_000_000_000)
+    quality.lmArenaBoards = { overall: [{ displayName: 'boards-only', elo: 1250, votes: 900 }], coding: [] }
+    quality.aaFromEloRegression = { slope: 0.1, intercept: -100, aaMin: 10, aaMax: 40, sampleSize: 12 }
+    const result = resolveModelQuality(quality, 'vendor/boards-only', 0.99)
+    assert.equal(result.source, 'lmarena-overall')
+    assert.equal(result.aa, 25)          // 1250 * 0.1 - 100
+    assert.equal(result.score, 0.25)
+    assert.equal(result.aaEstimated, true)
+    assert.match(result.detail, /LMArena overall Elo 1250 \(900 votes\); AA interpolated \(n=12\)/)
+  })
+
+  it('places metadata and local estimates on the AA scale by percentile', () => {
+    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
+    const metadata = resolveModelQuality(quality, 'vendor/meta-only', 0.99)
+    assert.equal(metadata.source, 'metadata')
+    assert.ok(metadata.score >= 0.35 && metadata.score <= 0.65)
+    assert.equal(metadata.aa, aaForPercentile(metadata.score, quality.aaValues))
+    assert.equal(metadata.aaEstimated, true)
+
+    const offline = resolveModelQuality(quality, 'vendor/unknown-offline', 0.5)
+    assert.equal(offline.source, 'local-fallback')
+    assert.equal(offline.aa, aaForPercentile(0.5, quality.aaValues))
+    assert.equal(offline.aa, 50)         // the median of [20, 40, 50, 60, 80]
+    assert.equal(offline.aaEstimated, true)
+  })
+
+  it('leaves the index absent when nothing can place a model', () => {
+    const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
+    const blind = resolveModelQuality(quality, 'totally/unknown')
+    assert.equal(blind.source, 'default-fallback')
+    assert.equal(blind.score, null)
+    assert.equal(blind.aa, null)
+  })
+
+  it('restates an Elo-scale slope-line selector in AA units', () => {
+    const regression = { slope: 0.1, intercept: -70, aaMin: 40, aaMax: 80, sampleSize: 3 }
+    assert.deepEqual(convertSelectorToAaScale({ slope: 400, minSpeed: 0.002, minIntell: 1400 }, regression), {
+      slope: 40,
+      minSpeed: 0.002,
+      minIntell: 70,
+      intellScale: 'aa',
+    })
+    // The floor is translated on the raw line, not clamped to the AA band the
+    // anchors recorded: that clamp would saturate a high floor at the top of the
+    // catalog and exclude every model instead of translating it.
+    assert.equal(convertSelectorToAaScale({ minIntell: 1600 }, regression).minIntell, 90)
+    // Nothing configured to convert, or no regression to convert with, converts nothing.
+    assert.equal(convertSelectorToAaScale({ slope: null, minIntell: null }, regression), null)
+    assert.equal(convertSelectorToAaScale({ slope: 10, minIntell: 1400 }, null), null)
+    assert.equal(convertSelectorToAaScale({ slope: 10 }, { slope: NaN, intercept: 0 }), null)
   })
 })
 
-describe('Elo scale percentile mapping', () => {
-  const board = [{ elo: 1100, votes: 1 }, { elo: 1300, votes: 1 }, { elo: 1500, votes: 1 }]
+describe('AA scale percentile mapping', () => {
+  const aaValues = [40, 50, 60]
 
-  it('maps the endpoints of the percentile range to the board extremes', () => {
-    assert.equal(eloForPercentile(0.05, board), 1100)
-    assert.equal(eloForPercentile(0.95, board), 1500)
+  it('maps the endpoints of the percentile range to the AA extremes', () => {
+    assert.equal(aaForPercentile(0.05, aaValues), 40)
+    assert.equal(aaForPercentile(0.95, aaValues), 60)
   })
 
-  it('maps the median score to the board median Elo', () => {
-    assert.equal(eloForPercentile(0.5, board), 1300)
+  it('maps the median score to the median AA value', () => {
+    assert.equal(aaForPercentile(0.5, aaValues), 50)
   })
 
-  it('is monotonic and interpolates between board entries', () => {
-    assert.ok(eloForPercentile(0.3, board) > 1100)
-    assert.ok(eloForPercentile(0.3, board) < 1300)
-    assert.ok(eloForPercentile(0.8, board) > 1300)
-    assert.ok(eloForPercentile(0.8, board) < 1500)
+  it('is monotonic and interpolates between values', () => {
+    assert.ok(aaForPercentile(0.3, aaValues) > 40)
+    assert.ok(aaForPercentile(0.3, aaValues) < 50)
+    assert.ok(aaForPercentile(0.8, aaValues) > 50)
+    assert.ok(aaForPercentile(0.8, aaValues) < 60)
   })
 
-  it('returns null for an empty board or non-finite score', () => {
-    assert.equal(eloForPercentile(0.5, []), null)
-    assert.equal(eloForPercentile('nope', board), null)
+  it('returns null for an empty list or a non-finite score', () => {
+    assert.equal(aaForPercentile(0.5, []), null)
+    assert.equal(aaForPercentile('nope', aaValues), null)
   })
 })
 
@@ -2788,19 +2840,40 @@ describe('rankModelsForRouting', () => {
     assert.deepEqual(ranked.map(r => r.modelId), ['d'])
   })
 
-  it('ranks smartest by Elo, then excludes rate-limited and non-working models', () => {
+  it('ranks smartest by AA index, then excludes rate-limited and non-working models', () => {
     const results = [
-      mockResult({ modelId: 'highest', label: 'Highest Elo', status: 'up', elo: 1400, intell: 20 }),
-      mockResult({ modelId: 'middle', label: 'Middle Elo', status: 'up', elo: 1300, intell: 90 }),
-      mockResult({ modelId: 'down', label: 'Down Highest', status: 'down', elo: 1600, intell: 99 }),
-      mockResult({ modelId: 'limited', label: 'Limited', status: 'up', elo: 1500, rateLimit: { wasRateLimited: true } }),
+      mockResult({ modelId: 'highest', label: 'Highest AA', status: 'up', aa: 60, intell: 0.2 }),
+      mockResult({ modelId: 'middle', label: 'Middle AA', status: 'up', aa: 55, intell: 0.9 }),
+      mockResult({ modelId: 'down', label: 'Down Highest', status: 'down', aa: 99, intell: 0.99 }),
+      mockResult({ modelId: 'limited', label: 'Limited', status: 'up', aa: 70, rateLimit: { wasRateLimited: true } }),
     ]
     assert.deepEqual(rankModelsForSmartest(results).map(r => r.modelId), ['highest', 'middle'])
     assert.deepEqual(rankModelsForSmartest(results, ['highest']).map(r => r.modelId), ['middle'])
+    // No AA index anywhere in the pool: the local score is the same fallback the
+    // dashboard uses.
     assert.deepEqual(rankModelsForSmartest([
       mockResult({ modelId: 'fallback-high', status: 'up', intell: 90 }),
       mockResult({ modelId: 'fallback-low', status: 'up', intell: 10 }),
     ]).map(r => r.modelId), ['fallback-high', 'fallback-low'])
+  })
+
+  it('never ranks an unscored row as if it had a zero rating', () => {
+    // Number(null) is 0 and 0 is finite, so reading the raw field put every
+    // unscored row in the pool as a zero-rated runner-up — above a scored row
+    // whenever the model-id tie-break happened to favour it — and it made the
+    // intelligence fallback unreachable. Unscored rows come last, but stay
+    // reachable so a request still has a candidate.
+    const results = [
+      mockResult({ modelId: 'aaa-unscored', label: 'Unscored', status: 'up', aa: null, intell: null }),
+      mockResult({ modelId: 'mmm-local', label: 'Local', status: 'up', aa: null, intell: 0.5 }),
+      mockResult({ modelId: 'zzz-catalog', label: 'Catalog', status: 'up', aa: 30 }),
+    ]
+    assert.deepEqual(rankModelsForSmartest(results).map(r => r.modelId), ['zzz-catalog', 'mmm-local', 'aaa-unscored'])
+    // With no AA index at all the locally scored rows still lead.
+    assert.deepEqual(rankModelsForSmartest([
+      mockResult({ modelId: 'aaa-unscored', status: 'up', aa: null, intell: null }),
+      mockResult({ modelId: 'mmm-local', status: 'up', aa: null, intell: 0.5 }),
+    ]).map(r => r.modelId), ['mmm-local', 'aaa-unscored'])
   })
 
   it('computes the combined speed metric from TTFT and tok/s', () => {
@@ -2817,23 +2890,23 @@ describe('rankModelsForRouting', () => {
     // Speeds: slow-genius 1/2020 ≈ 0.000495, mid 1/510 ≈ 0.00196, fast-dumb 1/105 ≈ 0.00952.
     // slow-genius and fast-dumb span the Pareto hull; mid sits above the line
     // joining them, so it is the first touch at intermediate slopes.
-    const slowGenius = mockResult({ modelId: 'slow-genius', label: 'SlowGenius', status: 'up', elo: 1500, ttft: 2000, tps: 50 })
-    const mid = mockResult({ modelId: 'mid', label: 'Mid', status: 'up', elo: 1450, ttft: 500, tps: 100 })
-    const fastDumb = mockResult({ modelId: 'fast-dumb', label: 'FastDumb', status: 'up', elo: 1100, ttft: 100, tps: 200 })
+    const slowGenius = mockResult({ modelId: 'slow-genius', label: 'SlowGenius', status: 'up', aa: 50, ttft: 2000, tps: 50 })
+    const mid = mockResult({ modelId: 'mid', label: 'Mid', status: 'up', aa: 48, ttft: 500, tps: 100 })
+    const fastDumb = mockResult({ modelId: 'fast-dumb', label: 'FastDumb', status: 'up', aa: 30, ttft: 100, tps: 200 })
     const results = [slowGenius, mid, fastDumb]
 
-    // Slope 0: smartest eligible model wins (line lowered flat).
+    // Slope 0: the highest AA index wins (line lowered flat).
     assert.equal(selectModelBySlope(results, { slope: 0 }).model.modelId, 'slow-genius')
 
     // Steep slope: the fast-and-dumb model becomes the first contact.
-    assert.equal(selectModelBySlope(results, { slope: 100000 }).model.modelId, 'fast-dumb')
+    assert.equal(selectModelBySlope(results, { slope: 3000 }).model.modelId, 'fast-dumb')
 
     // Moderate slope lands on the balanced pick on the hull.
-    assert.equal(selectModelBySlope(results, { slope: 40000 }).model.modelId, 'mid')
+    assert.equal(selectModelBySlope(results, { slope: 1800 }).model.modelId, 'mid')
 
     // Minimum intelligence filters the first geometric hit out (fast-dumb is
-    // below 1200, so the line falls through to the next model it touches).
-    const withMinIntell = selectModelBySlope(results, { slope: 100000, minIntell: 1200 })
+    // below 40, so the line falls through to the next model it touches).
+    const withMinIntell = selectModelBySlope(results, { slope: 3000, minIntell: 40 })
     assert.equal(withMinIntell.model.modelId, 'mid')
 
     // Minimum speed filters slow rows even when they would win at low slope.
@@ -2868,10 +2941,10 @@ describe('rankModelsForRouting', () => {
 
     // Ineligible rows are skipped: banned, rate-limited, and down models never win.
     const mixed = [
-      mockResult({ modelId: 'banned', status: 'banned', elo: 2000, ttft: 10, tps: 500 }),
-      mockResult({ modelId: 'limited', status: 'up', elo: 1900, ttft: 10, tps: 500, rateLimit: { wasRateLimited: true } }),
-      mockResult({ modelId: 'down', status: 'down', elo: 1800, ttft: 10, tps: 500 }),
-      mockResult({ modelId: 'ok', status: 'up', elo: 1200, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'banned', status: 'banned', aa: 90, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'limited', status: 'up', aa: 85, ttft: 10, tps: 500, rateLimit: { wasRateLimited: true } }),
+      mockResult({ modelId: 'down', status: 'down', aa: 80, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'ok', status: 'up', aa: 50, ttft: 10, tps: 500 }),
     ]
     assert.equal(selectModelBySlope(mixed, { slope: 0 }).model.modelId, 'ok')
   })
@@ -3851,11 +3924,15 @@ describe('package and entrypoint sanity', () => {
 
   it('labels dashboard scores by the current intelligence source', () => {
     assert.ok(dashboardContent.includes('>Intelligence <i class="sort-arrow"'))
-    assert.ok(dashboardContent.includes('LMArena overall Elo'))
-    assert.ok(dashboardContent.includes('LMArena coding Elo'))
-    assert.ok(dashboardContent.includes('Artificial Analysis index'))
-    assert.ok(dashboardContent.includes('Design Arena estimate'))
+    assert.ok(dashboardContent.includes('Artificial Analysis Intelligence Index'))
+    assert.ok(dashboardContent.includes('LMArena overall Elo, AA-interpolated'))
+    assert.ok(dashboardContent.includes('LMArena coding Elo, AA-interpolated'))
+    assert.ok(dashboardContent.includes('Design Arena Elo, AA-interpolated'))
     assert.ok(dashboardContent.includes('Metadata estimate'))
+    // No Elo-scale wording is left where the user reads it, and every score cell
+    // reads the AA field rather than the retired Elo one.
+    assert.equal(dashboardContent.includes('Elo-scale estimate'), false)
+    assert.equal(dashboardContent.includes('m.elo'), false)
     assert.equal(dashboardContent.includes('>SWE% <i class="sort-arrow"'), false)
     assert.equal(dashboardContent.includes('>SWE-bench</div>'), false)
   })

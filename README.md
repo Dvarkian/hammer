@@ -178,7 +178,7 @@ hammer config export | hammer config import
 
 `POST /v1/chat/completions` is an OpenAI-compatible chat completions endpoint.
 
-- Use `model: "best"` to route to the highest-Elo working model
+- Use `model: "best"` to route to the highest-intelligence working model
 - Use a grouped model ID such as `minimax-m2.5`, `kimi-k2.5`, or `glm4.7` to route within that model group
 - For grouped IDs, hammer selects the provider with the best current QoS for that group
 - Use `model: "tag:<name>"` (e.g. `tag:coding`) to route to the best currently available model carrying that tag — either a curated capability tag or a custom tag you've assigned in the Web UI (see [Model tags](#model-tags)). This is useful because the free models behind hammer come and go as availability changes — routing by tag survives a given model disappearing, where routing by a specific model/group ID does not.
@@ -193,7 +193,7 @@ hammer config export | hammer config import
 - Model IDs are grouped slugs such as `minimax-m2.5`, `kimi-k2.5`, and `glm4.7`
 - Each grouped ID can represent the same model across multiple providers
 - When you select one of these IDs in `/v1/chat/completions`, hammer routes the request to the provider with the best current QoS for that model group
-- `best` is also exposed and routes to the highest-Elo working model
+- `best` is also exposed and routes to the highest-intelligence working model
 - Each entry includes a `tags` array combining curated capability tags with any user-defined tags (see [Model tags](#model-tags))
 
 Example:
@@ -225,7 +225,7 @@ Tag membership alone doesn't guarantee a model can fit your prompt — a tag can
 
 - `tag:general+min_ctx:32000` — best available `general`-tagged model with at least 32,000 tokens of context
 - `tag:coding+min_ctx:128k` — same, for `coding`, using the `k` shorthand
-- `best+min_ctx:1m` — highest-Elo working model with at least 1,000,000 tokens of context, no tag restriction
+- `best+min_ctx:1m` — highest-intelligence working model with at least 1,000,000 tokens of context, no tag restriction
 
 `<size>` accepts a plain token count (`32000`) or a `k`/`m` suffix (`32k`, `1m`). Models with no known context window, or a smaller one than requested, are excluded from consideration. An unparseable or unrecognized modifier is ignored, falling back to the unmodified `tag:<name>` or `best` behavior rather than erroring.
 
@@ -233,7 +233,7 @@ Hammer uses context data reported by the selected provider when it is available.
 
 ### Routing selection
 
-The `best` selector considers only provider/model rows currently marked `up`, orders them by verified Elo, and falls back to the local intelligence score when no Elo is available. Quota and rate-limit failures advance to the next highest-Elo working model.
+The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one interpolated from a model's Elo where AA has no rating for it (marked `*` in the dashboard). Rows with neither fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
 
 Grouped-ID and `tag:<name>` routing retain their normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target is configurable in the Web UI under **Settings → QoS Latency Target (ms)** (default: 3000ms).
 
