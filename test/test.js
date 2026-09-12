@@ -87,7 +87,7 @@ import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autos
 import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
-  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
+  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, resolveDiscoverableModelsUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, isG4fProviderKey, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
@@ -1007,6 +1007,9 @@ describe('provider api key resolution', () => {
     assert.equal(isProviderAuthOptional({}, 'opencode'), true)
     assert.equal(isProviderAuthOptional({}, 'kilocode'), true)
     assert.equal(isProviderAuthOptional({}, 'freemodels'), true)
+    assert.equal(isProviderAuthOptional({}, 'g4f'), true)
+    assert.equal(isProviderAuthOptional({}, 'g4f-nvidia'), true)
+    assert.equal(isProviderAuthOptional({}, 'g4f-pollinations'), true)
     assert.equal(isProviderAuthOptional({}, 'ollama'), false)
     assert.equal(isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'), true)
     assert.equal(isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://localhost:11434' } } }, 'ollama'), true)
@@ -1015,6 +1018,11 @@ describe('provider api key resolution', () => {
     assert.equal(isProviderBearerAuthEnabled({}, 'opencode'), true)
     assert.equal(isProviderBearerAuthEnabled({}, 'kilocode'), true)
     assert.equal(isProviderBearerAuthEnabled({}, 'freemodels'), false)
+    // g4f relays are keyless but keep optional bearer semantics: a key is only
+    // ever sent when the user configured one (relevant to the hosted pool).
+    assert.equal(isProviderBearerAuthEnabled({}, 'g4f'), true)
+    assert.equal(isProviderBearerAuthEnabled({}, 'g4f-groq'), true)
+    assert.equal(isProviderBearerAuthEnabled({ providers: { 'g4f-groq': { useBearerAuth: false } } }, 'g4f-groq'), false)
     assert.equal(isProviderBearerAuthEnabled({}, 'ollama'), true)
     assert.equal(isProviderBearerAuthEnabled({ providers: { opencode: { useBearerAuth: false } } }, 'opencode'), false)
     assert.equal(isProviderBearerAuthEnabled({ providers: { kilocode: { useBearerAuth: false } } }, 'kilocode'), false)
@@ -1025,6 +1033,60 @@ describe('provider api key resolution', () => {
     assert.equal(providerWantsBearerAuth({ providers: { kilocode: { useBearerAuth: false } } }, 'kilocode'), false)
     assert.equal(providerWantsBearerAuth({ providers: { ollama: { useBearerAuth: false } } }, 'ollama'), true)
     assert.equal(providerWantsBearerAuth({}, 'openrouter'), true)
+  })
+
+  it('registers every gpt4free free relay as a keyless, discoverable g4f.space provider', () => {
+    const G4F_KEYS = ['g4f', 'g4f-nvidia', 'g4f-groq', 'g4f-gemini', 'g4f-ollama', 'g4f-pollinations']
+    for (const key of G4F_KEYS) {
+      const source = sources[key]
+      assert.ok(source, `${key} must be registered in sources.js`)
+      assert.match(source.url, /^https:\/\/g4f\.space\//, `${key} must target g4f.space`)
+      assert.match(source.url, /\/chat\/completions$/, `${key} chat url must end in /chat/completions`)
+      assert.equal(source.discoverable, true, `${key} must be discoverable`)
+      assert.equal(source.skipAutoPing, true, `${key} must opt out of the probe wave`)
+      assert.equal(isG4fProviderKey(key), true)
+      assert.equal(isProviderEnabled({}, key), true, `${key} is enabled by default`)
+      assert.equal(isProviderAuthOptional({}, key), true, `${key} needs no API key`)
+      assert.ok(PROVIDER_QUOTAS[key], `${key} must have a quota note`)
+      // Pollinations publishes a large, fast-moving, author-namespaced community
+      // catalog whose discovered list is the only authoritative one, so it ships
+      // no fallback rows; every other relay seeds a curated fallback catalog.
+      if (key === 'g4f-pollinations') {
+        assert.equal(source.models.length, 0)
+      } else {
+        assert.ok(source.models.length > 0, `${key} must ship a fallback catalog`)
+        assert.ok(MODELS.some(([id, , , , providerKey]) => providerKey === key), `${key} models must reach the catalog`)
+      }
+    }
+    assert.equal(isG4fProviderKey('groq'), false)
+    assert.equal(isG4fProviderKey('nvidia'), false)
+  })
+
+  it('resolves each g4f relay model-list URL, honoring a source override', () => {
+    // Groq's relay publishes /models but 404s under /v1, so it names its own list.
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f-groq']), 'https://g4f.space/api/groq/models')
+    // The others are reachable through the generic builder.
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f-nvidia']), 'https://g4f.space/api/nvidia/v1/models')
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f-gemini']), 'https://g4f.space/api/gemini/v1/models')
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f-ollama']), 'https://g4f.space/api/ollama/v1/models')
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f-pollinations']), 'https://g4f.space/api/pollinations/v1/models')
+    // The hosted pool already ends in /v1, so no extra segment is added.
+    assert.equal(resolveDiscoverableModelsUrl(sources['g4f']), 'https://g4f.space/v1/models')
+    // Generic behaviors the builder already owns.
+    assert.equal(resolveDiscoverableModelsUrl({ url: 'https://x.test/chat/completions' }), 'https://x.test/v1/models')
+    assert.equal(resolveDiscoverableModelsUrl(null), null)
+  })
+
+  it('points the Groq relay at its bare /models path instead of the /v1 builder path', () => {
+    // Groq's g4f relay serves /models but 404s under /v1, so the generic builder
+    // would silently break discovery for it.
+    assert.equal(sources['g4f-groq'].modelsUrl, 'https://g4f.space/api/groq/models')
+    assert.ok(!sources['g4f-groq'].modelsUrl.endsWith('/v1/models'))
+    assert.equal(sources['g4f-groq'].url, 'https://g4f.space/api/groq/chat/completions')
+    // Every other relay is reachable through the generic builder, so it needs no override.
+    for (const key of ['g4f', 'g4f-nvidia', 'g4f-gemini', 'g4f-ollama', 'g4f-pollinations']) {
+      assert.equal(sources[key].modelsUrl, undefined, `${key} should not need a modelsUrl override`)
+    }
   })
 
   it('builds stable OpenCode CLI headers for unauthenticated requests', () => {

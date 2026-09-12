@@ -257,6 +257,8 @@ Grouped-ID and `tag:<name>` routing retain their normal QoS behavior. For those 
   - `KIRO_OAUTH_CLIENT_ID` (optional, for AWS Builder/IDC refresh flow)
   - `KIRO_OAUTH_CLIENT_SECRET` (optional, for AWS Builder/IDC refresh flow)
   - `GOOGLE_API_KEY`
+  - `G4F_API_KEY` (optional — the g4f relays are keyless)
+  - `G4F_BASE_URL` (optional — point the hosted g4f pool at a self-hosted server)
 
 Kiro OAuth notes:
 - Base endpoint is preconfigured to `https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse`
@@ -269,6 +271,23 @@ For hosted Ollama, set `OLLAMA_API_KEY` and optionally override `OLLAMA_BASE_URL
 If you leave the Ollama base URL blank in the UI, hammer defaults to `https://ollama.com/v1`.
 With a valid Ollama API key, hammer will discover available Ollama models automatically.
 If you point Ollama at a local host such as `http://127.0.0.1:11434`, hammer will also auto-discover models and does not require an API key.
+
+### gpt4free (g4f) free relays
+
+hammer can route through [gpt4free](https://g4f.dev)'s **keyless** free relays, which publish OpenAI-compatible endpoints onto upstream free tiers. No API key is required, and none is sent unless you configure one.
+
+| Provider key | Upstream |
+| --- | --- |
+| `g4f` | g4f.space hosted pool (rotating community servers) |
+| `g4f-nvidia` | NVIDIA NIM |
+| `g4f-groq` | Groq |
+| `g4f-gemini` | Google |
+| `g4f-ollama` | Ollama cloud |
+| `g4f-pollinations` | Pollinations |
+
+- Each relay is discovered automatically from its own `/models` endpoint (typically tens to ~140 chat models each, with non-chat models such as whisper/TTS/image filtered out). Curated fallback catalogs are used before the first successful discovery.
+- The relays share a small, globally rate-limited free budget, so hammer keeps them **out of the periodic probe wave**. Their rows stay routable for explicit model requests; use **Test** on a row to probe it on demand.
+- `G4F_API_KEY` (optional) supplies the hosted pool's free key. Any relay's base URL can be overridden in `~/.hammer.json` (see `G4F_BASE_URL` for the hosted pool) — e.g. to point at a self-hosted g4f server on `http://localhost:1337/v1`.
 
 ### OpenAI-Compatible endpoints
 

@@ -238,9 +238,14 @@ const config = {
     // stub — this exercises the resolveProviderUrl override seam and lets the
     // FreeModels SSE guard / retry path be pinned against a local upstream.
     freemodels: { enabled: true, baseUrl: `http://127.0.0.1:${stubPort}` },
+    // A g4f relay left enabled with its baseUrl pointed at the stub. Its discovery
+    // URL is off-host, so it fails under the harness network guard and the provider
+    // falls back to its curated catalog instead of pulling the stub's models — which
+    // keeps routing deterministic while exercising the g4f baseUrl-override seam.
+    'g4f-groq': { enabled: true, baseUrl: `http://127.0.0.1:${stubPort}` },
   },
   apiKeys: { [STUB_INSTANCE_KEY]: 'stub-key' },
-  excludedProviders: Object.keys(sources).filter(key => key !== 'freemodels'),
+  excludedProviders: Object.keys(sources).filter(key => key !== 'freemodels' && key !== 'g4f-groq'),
   autoUpdate: { enabled: false },
   autoPingEnabled: false,
   persistRequestLogs: false,
@@ -304,6 +309,10 @@ globalThis.fetch = (input, init) => {
 
 await runServer(loadConfig(), routerPort, false, [], '127.0.0.1')
 
+// What the startup probe wave actually asked the upstream, captured before any test
+// resets the stub. A skipAutoPing provider must not appear here.
+const startupProbeCalls = stubState.chatCalls.slice()
+
 const baseUrl = `http://127.0.0.1:${routerPort}`
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -327,6 +336,11 @@ async function modelById(modelId) {
 async function freemodelsRows() {
   const { json } = await api('/api/models')
   return (json?.models || []).filter(model => model.providerKey === 'freemodels')
+}
+
+async function g4fRows() {
+  const { json } = await api('/api/models')
+  return (json?.models || []).filter(model => model.providerKey === 'g4f-groq')
 }
 
 async function waitForRestest(jobId, timeoutMs = 45_000) {
@@ -807,5 +821,41 @@ describe('router harness', () => {
     assert.equal(response.headers.get('x-hammer-model'), SMART_MODEL)
     assert.equal(response.headers.get('x-hammer-provider'), STUB_INSTANCE_KEY)
     assert.equal(response.headers.get('x-hammer-substituted'), '0')
+  })
+
+  it('routes a g4f relay keylessly, sending no Authorization header', async () => {
+    resetStub('ok')
+    const G4F_MODEL = 'qwen/qwen3.6-27b'
+
+    const { status, json } = await api('/v1/chat/completions', {
+      method: 'POST',
+      body: JSON.stringify({ model: G4F_MODEL, stream: false, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+
+    assert.equal(status, 200)
+    assert.equal(json?.choices?.[0]?.message?.content, 'pong')
+    const call = stubState.chatCalls.find(c => c.model === G4F_MODEL)
+    assert.ok(call, 'the g4f relay row must be the one that served the request')
+    assert.equal(call.auth, null, 'a keyless g4f relay must be called without an Authorization header')
+  })
+
+  it('exposes the g4f relay catalog without requiring an API key', async () => {
+    const rows = await g4fRows()
+    assert.ok(rows.length > 0, 'the g4f relay must expose its catalog')
+    const ids = new Set(rows.map(model => model.modelId))
+    assert.ok(ids.has('qwen/qwen3.6-27b'), 'the curated fallback catalog must be present')
+  })
+
+  it('keeps skipAutoPing relays out of the startup probe wave', async () => {
+    const g4fCatalogIds = sources['g4f-groq'].models.map(([id]) => id)
+    // FreeModels-style payloads carry the id as `modelId`; the OpenAI-shaped relays
+    // carry it as `model`.
+    const probedModels = startupProbeCalls.map(call => call.model || call.modelId)
+    // Control: freemodels is enabled and keyless but NOT skipAutoPing, so the
+    // startup wave must have probed it. That proves the assertion below can fail.
+    assert.ok(probedModels.includes(FREEMODELS_ROW), 'control: freemodels is probed at startup')
+    for (const id of g4fCatalogIds) {
+      assert.ok(!probedModels.includes(id), `skipAutoPing relay must not be probed at startup: ${id}`)
+    }
   })
 })
