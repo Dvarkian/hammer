@@ -1815,7 +1815,11 @@
       position: relative;
       flex: 1 1 auto;
       width: 100%;
-      min-height: 0;
+      /* Floor for stacked/narrow layouts, where nothing stretches the card and
+         the SVG would otherwise sit at its 150px default: the plot keeps the
+         height the removed hint/pick rows used to take. Wide screens stretch
+         the card to match the topology card and flex fills the rest. */
+      min-height: 200px;
       opacity: 1;
       pointer-events: all;
       cursor: crosshair;
@@ -1829,12 +1833,6 @@
       padding: 10px 20px 12px;
       border-top: 1px solid var(--border);
       background: var(--card);
-    }
-    .scatter-controls .scatter-hint {
-      flex-basis: 100%;
-      color: var(--text-muted);
-      font-size: 0.7rem;
-      line-height: 1.35;
     }
   </style>
 </head>
@@ -1918,8 +1916,6 @@
             <input type="range" id="sel-slope-slider" min="0" max="1000" value="0"
               style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, 100% picks the fastest">
             <span class="kpi-value" id="sel-slope-value" style="font-size:0.72rem; min-width:34px; text-align:right;">—</span>
-            <div class="kpi-value" id="sel-pick" style="font-size:0.78rem; flex-basis:100%;">—</div>
-            <div class="scatter-hint">The line settles on the model routing will pick. Drag the dashed edge lines to set minimums.</div>
           </div>
         </div>
       </div>
@@ -2717,7 +2713,7 @@
     // One dot per model/provider combination (each row of the live models list,
     // the same rows behind the main table's TTFT / Tok/s columns).
     //   y = intelligence: the same benchmark value the Intelligence column sorts by
-    //   x = speed       : 1 / (TTFT + 1000 / tok-per-s), higher = faster overall
+    //   x = speed       : 1 / (TTFT + 600 / tok-per-s), higher = faster overall
     // Dots are colored per provider (stable hue) so multi-provider duplicates of
     // the same model are distinguishable; hover a dot for its tooltip.
 
@@ -2780,7 +2776,7 @@
           intell: intellNum,
           ttft,
           tps,
-          speed: 1 / (ttft + 1000 / tps),
+          speed: 1 / (ttft + 600 / tps),
         });
       }
       rows.sort((a, b) => a.intell - b.intell);
@@ -2851,7 +2847,7 @@
       svg.appendChild(g);
       const info = svgEl('title', {});
       info.textContent = 'Each dot is one model/provider combination.\n' +
-        'x = speed = 1 / (TTFT + 1000 / tok/s) — faster to the right\n' +
+        'x = speed = 1 / (TTFT + 600 / tok/s) — faster to the right\n' +
         'y = Artificial Analysis Intelligence Index — smarter upward\n' +
         'Drag the edge lines to set minimums. Hover a dot for its numbers.';
       svg.appendChild(info);
@@ -3210,9 +3206,8 @@
 
       // Highlight the winning dot: a manual pin first, else the slope pick, else
       // the routed intelligence best. The same name also drives the KPI 'Current' readout
-      // (and vice versa on the next poll), so Selected and Current are always the
-      // same model — even mid-drag and when the selector falls back.
-      const pickEl = document.getElementById('sel-pick');
+      // (and vice versa on the next poll), so Current is always the same model —
+      // even mid-drag and when the selector falls back.
       const kpiBestEl = document.getElementById('kpi-best');
       if (slopeActive && !slopePick && !pinned) {
         // A slope is set but nothing clears the minimums: routing falls back to
@@ -3222,10 +3217,6 @@
           ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
           : null;
         const fbName = fbModel ? scatterShortName(fbModel) : null;
-        if (pickEl) {
-          pickEl.textContent = fbName ? `Below minimums — routing ${fbName}` : 'Below minimums — routing the intelligence best';
-          pickEl.style.color = '';
-        }
         if (kpiBestEl && fbName) kpiBestEl.textContent = fbName;
       } else if (labelRow) {
         // labelRow is either a scatter row (has .m) or a bare model object when
@@ -3237,14 +3228,7 @@
             stroke: accentColor, 'stroke-width': 2,
           }));
         }
-        if (pickEl) {
-          pickEl.textContent = (pinned ? 'Pinned · ' : 'Selected · ') + name;
-          pickEl.style.color = accentColor;
-        }
         if (kpiBestEl && name) kpiBestEl.textContent = name;
-      } else if (pickEl) {
-        pickEl.textContent = 'Below minimums — routing the intelligence best';
-        pickEl.style.color = '';
       }
     }
 
@@ -3282,8 +3266,6 @@
         selectorSlopeMax = 0;
         selectorGuaranteeSlope = 0;
         syncSelectorControls();
-        const pickEl = document.getElementById('sel-pick');
-        if (pickEl) pickEl.textContent = 'no speed data yet';
         const muted = cssVarValue('--text-muted') || '#999';
         const t = svgEl('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
         t.textContent = 'No measurements yet — TTFT and tok/s are recorded from real requests and model tests.';
@@ -3294,7 +3276,7 @@
       const scales = computeScatterScales(rows, W, H);
       scatterScales = scales;
       // Derived once, before anything is drawn: the overlay, the labels, the
-      // Selected readout, and the router all key off the same numbers.
+      // 'Current' KPI, and the router all key off the same numbers.
       selectorSlopeMax = computeSelectorSlopeMax(scales);
       selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
       const selection = getSelection(rows);
@@ -5501,6 +5483,17 @@
       return null;
     }
 
+    // The status-cell indicator: a colored dot for most states, but a clock emoji
+    // for 'timeout' — the probe simply didn't answer in time, which reads better as
+    // a waiting clock than as a hard failure's red dot.
+    function statusIndicatorHTML(m, dotColor, title = '') {
+      const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+      if (m.status === 'timeout') {
+        return `<span${titleAttr}>🕑</span>`;
+      }
+      return `<span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor}; display: inline-block; vertical-align: middle;"${titleAttr}></span>`;
+    }
+
     // Builds the status cell: dot + status text, or — when the most recent test
     // response carried a rate-limit reset time still in the future — just the clock
     // + countdown; a payment-required result shows a dollar icon + 'Paid' instead.
@@ -5556,7 +5549,7 @@
       }
       return `
             <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor}"></span>
+              ${statusIndicatorHTML(m, dotColor)}
               <span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${statusText}</span>
             </div>`;
     }
@@ -5612,7 +5605,7 @@
       const statusText = m.status === 'noauth' ? 'No Auth' : m.status;
       const errorText = m.lastError?.message ? String(m.lastError.message) : '';
       const statusTitle = errorText ? `HTTP ${m.lastError.code || m.httpCode || '?'} — ${errorText}` : '';
-      return `<span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor}; display: inline-block; vertical-align: middle;"${statusTitle ? ` title="${escapeAttr(statusTitle)}"` : ''}></span>
+      return `${statusIndicatorHTML(m, dotColor, statusTitle)}
         <span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize; vertical-align: middle;"${statusTitle ? ` title="${escapeAttr(statusTitle)}"` : ''}>${escapeHtml(statusText)}${errorText && currentStatus !== 'up' ? ` <span style="color:var(--text-muted);">· ${escapeHtml(errorText)}</span>` : ''}</span>`;
     }
 
@@ -5640,7 +5633,12 @@
           const txt = el.dataset.statusText;
           const cell = el.closest('td');
           if (cell && dot && txt) {
-            cell.innerHTML = `<div style="display:flex; align-items:center; gap:6px;"><span style="width:6px;height:6px;border-radius:50%;background:${dot}"></span><span style="font-size:0.75rem;font-weight:500;text-transform:capitalize;">${txt}</span></div>`;
+            // Same timeout-as-clock rule as statusIndicatorHTML, which this restore
+            // path bypasses (it rebuilds the cell from the stashed dot/text).
+            const indicator = txt === 'timeout'
+              ? '<span>🕑</span>'
+              : `<span style="width:6px;height:6px;border-radius:50%;background:${dot}"></span>`;
+            cell.innerHTML = `<div style="display:flex; align-items:center; gap:6px;">${indicator}<span style="font-size:0.75rem;font-weight:500;text-transform:capitalize;">${txt}</span></div>`;
           } else {
             el.remove();
           }
@@ -5877,8 +5875,8 @@
     }
 
     // Every row displays one number: the Artificial Analysis Intelligence Index.
-    // AA's own rating is shown plain; a value interpolated from an Elo (or placed by
-    // percentile from a metadata/offline score) is an estimate and gets an asterisk.
+    // AA's own rating is shown plain; a value interpolated from an Elo (or calibrated
+    // from a metadata/offline score) is an estimate and gets an asterisk.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);

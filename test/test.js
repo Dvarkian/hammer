@@ -63,6 +63,7 @@ import {
   hasUsableChatCompletionBody,
   findUpstreamSseError,
   isIncompatibleModelError,
+  isBlockedModelName,
   isLastResponseReady,
   isRateLimitedErrorText,
   selectModelBySlope,
@@ -82,10 +83,13 @@ import {
   extractLMArenaEntries,
   findLMArenaEntry,
   fitAAFromEloRegression,
+  fitAAFromScoreRegression,
   fitLinearRegression,
   getArtificialAnalysisIndex,
   lmArenaMatchScore,
+  localScoreForModel,
   predictAAFromElo,
+  predictAAFromScore,
   qualityLookupKeys,
   resolveModelQuality,
 } from '../lib/model-quality.js'
@@ -2156,8 +2160,11 @@ describe('Artificial Analysis index mapping', () => {
     assert.match(result.detail, /LMArena overall Elo 1250 \(900 votes\); AA interpolated \(n=12\)/)
   })
 
-  it('places metadata and local estimates on the AA scale by percentile', () => {
+  it('places metadata and local estimates on the AA scale by percentile when nothing can calibrate them', () => {
     const quality = buildOpenRouterQualityIndex(catalog, catalog, 1_760_000_000_000)
+    // catalog carries no scores.js entries, so there is no score-to-AA relationship
+    // to calibrate from and the percentile placement is the only reading available.
+    assert.equal(quality.aaFromScoreRegression, null)
     const metadata = resolveModelQuality(quality, 'vendor/meta-only', 0.99)
     assert.equal(metadata.source, 'metadata')
     assert.ok(metadata.score >= 0.35 && metadata.score <= 0.65)
@@ -2169,6 +2176,64 @@ describe('Artificial Analysis index mapping', () => {
     assert.equal(offline.aa, aaForPercentile(0.5, quality.aaValues))
     assert.equal(offline.aa, 50)         // the median of [20, 40, 50, 60, 80]
     assert.equal(offline.aaEstimated, true)
+  })
+
+  it('fits an AA-from-curated-score regression over the models that carry both', () => {
+    // The two anchors: gpt-oss-20b is 0.38 with a measured AA of 10, gpt-oss-120b
+    // is 0.6 with a measured AA of 21.
+    const scored = [
+      { id: 'openai/gpt-oss-20b', benchmarks: { artificial_analysis: { intelligence_index: 10 } } },
+      { id: 'openai/gpt-oss-120b', benchmarks: { artificial_analysis: { intelligence_index: 21 } } },
+    ]
+    const regression = fitAAFromScoreRegression(scored)
+    assert.equal(regression.sampleSize, 2)
+    assert.ok(Math.abs(regression.slope - 50) < 1e-9)
+    assert.ok(Math.abs(regression.intercept + 9) < 1e-9)
+    assert.equal(regression.aaMin, 10)
+    assert.equal(regression.aaMax, 21)
+    assert.equal(localScoreForModel(scored[0]), 0.38)
+    assert.equal(localScoreForModel({ id: 'unknown/nothing' }), null)
+    assert.equal(predictAAFromScore(0.5, regression), 16)
+    // A prediction must not invent an index outside the band AA actually recorded.
+    assert.equal(predictAAFromScore(0.99, regression), 21)
+    assert.equal(predictAAFromScore(0.05, regression), 10)
+    assert.equal(predictAAFromScore('nope', regression), null)
+    assert.equal(predictAAFromScore(0.5, null), null)
+    assert.equal(predictAAFromScore(0.5, { slope: 50, intercept: -9, sampleSize: 1 }), null)
+    // Fewer than two anchors is no calibration at all.
+    assert.equal(fitAAFromScoreRegression([scored[0]]), null)
+    assert.equal(fitAAFromScoreRegression([]), null)
+  })
+
+  it('reads a fallback score through the calibration instead of a percentile', () => {
+    const scored = [
+      { id: 'openai/gpt-oss-20b', benchmarks: { artificial_analysis: { intelligence_index: 10 } } },
+      { id: 'openai/gpt-oss-120b', benchmarks: { artificial_analysis: { intelligence_index: 21 } } },
+      {
+        id: 'vendor/unmeasured-flagship',
+        created: 1_755_000_000,
+        context_length: 262144,
+        supported_parameters: ['reasoning', 'tools', 'structured_outputs'],
+      },
+    ]
+    const quality = buildOpenRouterQualityIndex(scored, scored, 1_760_000_000_000)
+    const offline = resolveModelQuality(quality, 'unknown/offline', 0.5)
+    assert.equal(offline.source, 'local-fallback')
+    assert.equal(offline.aa, 16)
+    assert.equal(offline.aa, predictAAFromScore(0.5, quality.aaFromScoreRegression))
+    // The percentile reading was the bug this replaces: it read 0.5 as the middle of
+    // the observed AA range, which is how an unmeasured row outranked a measured one.
+    assert.notEqual(offline.aa, aaForPercentile(0.5, quality.aaValues))
+    assert.equal(offline.score, scoreForAa(offline.aa, quality.aaValues))
+    assert.match(offline.detail, /AA calibrated \(n=2\)/)
+    // A metadata estimate is calibrated through the same curve, so it cannot claim the
+    // top of the scale either.
+    const metadata = resolveModelQuality(quality, 'vendor/unmeasured-flagship')
+    const measured = resolveModelQuality(quality, 'openai/gpt-oss-120b')
+    assert.equal(metadata.source, 'metadata')
+    assert.equal(measured.aa, 21)
+    assert.ok(metadata.aa >= 10 && metadata.aa <= 21)
+    assert.ok(metadata.score < measured.score, `expected ${metadata.score} < ${measured.score}`)
   })
 
   it('leaves the index absent when nothing can place a model', () => {
@@ -2912,6 +2977,28 @@ describe('rankModelsForRouting', () => {
     assert.deepEqual(ranked.map(r => r.modelId), ['d'])
   })
 
+  it('never routes a model matching a blocked name, however healthy it looks', () => {
+    assert.equal(isBlockedModelName('Ising Calibration 1.5 31b'), true)
+    assert.equal(isBlockedModelName('nvidia/Ising-Calibration-1.5'), true)
+    assert.equal(isBlockedModelName('CALIBRATION-XXL'), true)
+    assert.equal(isBlockedModelName('nvidia/ising-calibration'), true)
+    assert.equal(isBlockedModelName('Saudi-Reasoner-70b'), true)
+    assert.equal(isBlockedModelName('allenai/saudi-guard'), true)
+    assert.equal(isBlockedModelName('SAUDI-XL'), true)
+    assert.equal(isBlockedModelName('nvidia/nemotron-3-super'), false)
+    assert.equal(isBlockedModelName(null), false)
+    assert.equal(isBlockedModelName(''), false)
+
+    const results = [
+      mockResult({ modelId: 'Ising Calibration 1.5 31b', label: 'Calib', status: 'up', aa: 99, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'Saudi-Reasoner-70b', label: 'Saudi', status: 'up', aa: 98, ttft: 10, tps: 500 }),
+      mockResult({ modelId: 'plain', label: 'Plain', status: 'up', aa: 20, ttft: 500, tps: 100 }),
+    ]
+    assert.deepEqual(rankModelsForRouting(results).map(r => r.modelId), ['plain'])
+    const slope = selectModelBySlope(results, { slope: 0 })
+    assert.equal(slope?.model?.modelId, 'plain')
+  })
+
   it('ranks smartest by AA index, then excludes rate-limited and non-working models', () => {
     const results = [
       mockResult({ modelId: 'highest', label: 'Highest AA', status: 'up', aa: 60, intell: 0.2 }),
@@ -2949,13 +3036,13 @@ describe('rankModelsForRouting', () => {
   })
 
   it('computes the combined speed metric from TTFT and tok/s', () => {
-    // 1 / (500 + 1000/100) = 1/510
-    assert.ok(Math.abs(computeRowSpeed({ ttft: 500, tps: 100 }) - 1 / 510) < 1e-12)
+    // 1 / (500 + 600/100) = 1/506
+    assert.ok(Math.abs(computeRowSpeed({ ttft: 500, tps: 100 }) - 1 / 506) < 1e-12)
     assert.equal(computeRowSpeed({ ttft: -1, tps: 100 }), null)
     assert.equal(computeRowSpeed({ ttft: 500, tps: 0 }), null)
     assert.equal(computeRowSpeed({}), null)
     // lastResponse fallback
-    assert.ok(Math.abs(computeRowSpeed({ lastResponse: { ttftMs: 500, tps: 100 } }) - 1 / 510) < 1e-12)
+    assert.ok(Math.abs(computeRowSpeed({ lastResponse: { ttftMs: 500, tps: 100 } }) - 1 / 506) < 1e-12)
   })
 
   it('selects the first model a slope line touches, honoring minimums', () => {
@@ -4011,7 +4098,10 @@ describe('package and entrypoint sanity', () => {
 
   it('dashboard wires the slope-line selector controls', () => {
     assert.ok(dashboardContent.includes('id="sel-slope-slider"'))
-    assert.ok(dashboardContent.includes('id="sel-pick"'))
+    // The in-plot 'Selected' label is gone — the header 'Current' KPI is the one
+    // readout, and the hint line under the slider was removed with it.
+    assert.equal(dashboardContent.includes('id="sel-pick"'), false)
+    assert.equal(dashboardContent.includes('scatter-hint'), false)
     assert.ok(dashboardContent.includes("'data-sel-drag': 'minIntell'"))
     assert.ok(dashboardContent.includes("'data-sel-drag': 'minSpeed'"))
     assert.ok(dashboardContent.includes("fetch('/api/selector'"))
@@ -4080,7 +4170,7 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes('Intelligence vs Speed'))
     assert.ok(dashboardContent.includes('function drawSpeedIntellScatter(models)'))
     assert.ok(dashboardContent.includes('drawSpeedIntellScatter(models)'))
-    assert.ok(dashboardContent.includes('speed: 1 / (ttft + 1000 / tps)'))
+    assert.ok(dashboardContent.includes('speed: 1 / (ttft + 600 / tps)'))
   })
 
   it('plots the same model set the primary table lists', () => {
@@ -5301,6 +5391,15 @@ describe('status reconciliation and bulk retest', () => {
   it('statusCellHTML honors Ready lastResponse over stale status', () => {
     assert.ok(dashboardContent.includes('const effectiveUp = m.status === \'up\' || isLastResponseReady(m.lastResponse)'))
     assert.ok(dashboardContent.includes("const dotColor = effectiveUp ? 'var(--success)'"))
+  })
+
+  it('timeout statuses show the clock emoji instead of the red dot', () => {
+    // One shared indicator helper feeds both status cells...
+    assert.ok(dashboardContent.includes('function statusIndicatorHTML(m, dotColor'))
+    assert.ok(dashboardContent.includes("if (m.status === 'timeout') {"))
+    // ...and the countdown-expiry restore path rebuilds cells from stashed data,
+    // so it carries the same rule for a stashed 'timeout' label.
+    assert.ok(dashboardContent.includes("const indicator = txt === 'timeout'"))
   })
 
   it('combinedStatusCellHTML honors Ready lastResponse', () => {

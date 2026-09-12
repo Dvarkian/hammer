@@ -53,6 +53,11 @@ export const scores = {
   // scale via eloForPercentile and flags it eloEstimated.
   "swe-1-6-slow": 0.62,
   "swe-1.6-slow": 0.62,
+  // The row the router actually serves. It used to miss this seed: scores.js was
+  // keyed only by the -slow names while sources.js lists the model as "swe-1.6",
+  // so the Devin SWE row the app exposes scored as unknown and sorted last. The
+  // gateway's catalog uses hyphens (swe-1-6), hammer's rows use dots.
+  "swe-1.6": 0.62,
   "glm-4.6": 0.7,
   "zai-glm-4.7": 0.738,
   "google/gemma-2-9b-it": 0.18,

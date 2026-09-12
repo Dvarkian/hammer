@@ -233,7 +233,7 @@ Hammer uses context data reported by the selected provider when it is available.
 
 ### Routing selection
 
-The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one interpolated from a model's Elo where AA has no rating for it (marked `*` in the dashboard). Rows with neither fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
+The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one derived where AA has no rating for a model: interpolated from its Elo (LMArena, or Design Arena for catalog entries), or, when there is no Elo either, calibrated from the curated offline score against the models that carry both. Every derived index is marked `*` in the dashboard. Rows with none of those fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
 
 Grouped-ID and `tag:<name>` routing retain their normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target is configurable in the Web UI under **Settings → QoS Latency Target (ms)** (default: 3000ms).
 
