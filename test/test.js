@@ -56,10 +56,13 @@ import {
   isPaymentRequiredError,
   isDeadModelError,
   isEmptyModelResponseText,
+  hasUsableChatCompletionBody,
+  findUpstreamSseError,
   isIncompatibleModelError,
   isLastResponseReady,
   isRateLimitedErrorText,
   selectModelBySlope,
+  selectorSlopeOf,
   computeRowSpeed,
   shouldKeepUpAfterFailedProbe,
   VERDICT_ORDER,
@@ -1058,6 +1061,31 @@ describe('provider api key resolution', () => {
 
     const freemodelsHeaders = buildProviderRequestHeaders('freemodels', { apiKey: 'ignored' })
     assert.equal(freemodelsHeaders.Authorization, undefined)
+
+    // A leaked (env/config) key must not turn keyless browser-shaped traffic into
+    // authenticated traffic: only an explicit freemodels key earns the header.
+    const freemodelsLeakedKeyHeaders = buildProviderRequestHeaders('freemodels', { apiKey: 'sk-leaked' })
+    assert.equal(freemodelsLeakedKeyHeaders.Authorization, undefined)
+    const freemodelsExplicitHeaders = buildProviderRequestHeaders('freemodels', { apiKey: 'sk-mine', isExplicitFreemodelsKey: true })
+    assert.equal(freemodelsExplicitHeaders.Authorization, 'Bearer sk-mine')
+  })
+
+  it('finds an upstream error envelope in JSON bodies and SSE transcripts', () => {
+    const jsonBody = JSON.stringify({ error: { message: 'overloaded', type: 'service_unavailable', code: 503 } })
+    assert.deepEqual(findUpstreamSseError(jsonBody), { message: 'overloaded', type: 'service_unavailable', code: 503 })
+
+    const sse = [
+      'data: {"choices":[{"delta":{"content":"fine"}}]}',
+      'data: {"error":{"message":"Service temporarily overloaded","code":503}}',
+      'data: [DONE]',
+    ].join('\n')
+    assert.deepEqual(findUpstreamSseError(sse), { message: 'Service temporarily overloaded', code: 503 })
+
+    assert.equal(findUpstreamSseError('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]'), null)
+    assert.equal(findUpstreamSseError(JSON.stringify({ choices: [{ message: { content: 'ok' } }] })), null)
+    assert.equal(findUpstreamSseError(''), null)
+    assert.equal(findUpstreamSseError(null), null)
+    assert.equal(findUpstreamSseError('definitely not json'), null)
   })
 
   it('builds a Devin Connect request and handles empty credentials safely', () => {
@@ -1338,6 +1366,51 @@ describe('provider api key resolution', () => {
     assert.equal(body.choices[0].message.content, 'HELLO_FREEMODELS')
     assert.equal(body.choices[0].finish_reason, 'stop')
     assert.equal(body.model, 'qwen3-30b-a3b')
+  })
+
+  it('converts a FreeModels 200 SSE that opens with an error frame into a retryable 503 (non-streaming)', async () => {
+    const upstream = new Response([
+      'data: {"error":{"message":"Service temporarily overloaded","type":"service_unavailable","code":503}}',
+      'data: [DONE]',
+      '',
+    ].join('\n'))
+
+    const response = await transformFreeModelsResponse(upstream, 'claude-sonnet-5', false)
+    assert.equal(response.status, 503)
+    const body = await response.json()
+    assert.equal(body.error.message, 'Service temporarily overloaded')
+    assert.equal(body.error.code, 503)
+  })
+
+  it('converts a FreeModels 200 SSE error frame into a synthetic 503 for streaming callers', async () => {
+    const upstream = new Response(
+      [
+        'data: {"error":{"message":"Service temporarily overloaded","type":"service_unavailable","code":503}}',
+        'data: [DONE]',
+        '',
+      ].join('\n')
+    )
+
+    const response = await transformFreeModelsResponse(upstream, 'claude-sonnet-5', true)
+    assert.equal(response.status, 503)
+    const body = await response.json()
+    assert.equal(body.error.code, 503)
+  })
+
+  it('passes a healthy FreeModels stream through with its first frame intact', async () => {
+    const frames = [
+      'data: {"choices":[{"delta":{"role":"assistant","content":"HE"}}]}',
+      'data: {"choices":[{"delta":{"content":"LLO"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+      '',
+    ]
+    const upstream = new Response(frames.join('\n\n'))
+
+    const response = await transformFreeModelsResponse(upstream, 'claude-sonnet-5', true)
+    assert.equal(response.status, 200)
+    const text = await response.text()
+    assert.ok(text.includes('"content":"HE"'), 'the peeked first frame must not be dropped')
+    assert.ok(text.includes('"content":"LLO"'))
   })
 
   it('parses Kiro AWS EventStream frames', () => {
@@ -2720,6 +2793,25 @@ describe('rankModelsForRouting', () => {
     // Invalid slope is inert.
     assert.equal(selectModelBySlope(results, { slope: null }), null)
     assert.equal(selectModelBySlope(results, { slope: -1 }), null)
+
+    // A slope that is merely absent (null / undefined / '') must read as "no
+    // selector". Number(null) is 0, so a bare finite-number check would turn an
+    // inert selector into slope 0 and reroute smartest requests through the
+    // plot's argmax instead of the Elo ranking.
+    assert.equal(selectorSlopeOf({ slope: null }), null)
+    assert.equal(selectorSlopeOf({}), null)
+    assert.equal(selectorSlopeOf({ slope: '' }), null)
+    assert.equal(selectorSlopeOf({ slope: -1 }), null)
+    assert.equal(selectorSlopeOf({ slope: 'nope' }), null)
+    assert.equal(selectorSlopeOf(undefined), null)
+    // ...while a configured 0 (and a numeric string) stays a real setting.
+    assert.equal(selectorSlopeOf({ slope: 0 }), 0)
+    assert.equal(selectorSlopeOf({ slope: '1234.5' }), 1234.5)
+
+    // Minimums read through the same rule: an unset minimum is not a 0 minimum.
+    const zeroMinSpeed = selectModelBySlope(results, { slope: 0, minSpeed: null })
+    assert.equal(zeroMinSpeed.model.modelId, 'slow-genius')
+    assert.equal(selectModelBySlope(results, { slope: 0, minSpeed: '' }).model.modelId, 'slow-genius')
 
     // Ineligible rows are skipped: banned, rate-limited, and down models never win.
     const mixed = [
@@ -4554,6 +4646,59 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isEmptyModelResponseText('  Ready  '), false)
   })
 
+  describe('hasUsableChatCompletionBody', () => {
+    const completion = (content) => JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] })
+
+    it('accepts a normal non-streaming completion', () => {
+      assert.equal(hasUsableChatCompletionBody(completion('hello')), true)
+      assert.equal(hasUsableChatCompletionBody(completion([{ type: 'text', text: 'hello' }])), true)
+      // Legacy completions shape carries the text on the choice itself.
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ text: 'hi' }] })), true)
+    })
+
+    it('accepts tool calls and reasoning-only responses', () => {
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ id: 'call_1', function: { name: 'f', arguments: '{}' } }] } }] })), true)
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: { content: null, function_call: { name: 'f', arguments: '{}' } } }] })), true)
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'thinking' } }] })), true)
+    })
+
+    it('rejects 200 bodies that carry no completion (the garbage-200 case)', () => {
+      assert.equal(hasUsableChatCompletionBody(''), false)
+      assert.equal(hasUsableChatCompletionBody('   '), false)
+      assert.equal(hasUsableChatCompletionBody(null), false)
+      assert.equal(hasUsableChatCompletionBody(undefined), false)
+      // Empty / missing choices, blank messages, and whitespace-only content.
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [] })), false)
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: { content: '' } }] })), false)
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: { content: '   \n ' } }] })), false)
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ choices: [{ message: {} }] })), false)
+      // An error envelope is never a usable completion.
+      assert.equal(hasUsableChatCompletionBody(JSON.stringify({ error: { message: 'nope' }, choices: [{ message: { content: 'ok' } }] })), false)
+      // HTML error pages / non-JSON payloads served with 200.
+      assert.equal(hasUsableChatCompletionBody('<html><body>Bad Gateway</body></html>'), false)
+      assert.equal(hasUsableChatCompletionBody('undefined'), false)
+    })
+
+    it('validates SSE transcripts frame by frame', () => {
+      const stream = [
+        'data: {"choices":[{"delta":{"role":"assistant"}}]}',
+        '',
+        'data: {"choices":[{"delta":{"content":"hi"}}]}',
+        '',
+        'data: [DONE]',
+        '',
+      ].join('\n')
+      assert.equal(hasUsableChatCompletionBody(stream), true)
+      // A stream that only ever emits role/finish frames carries no answer.
+      assert.equal(hasUsableChatCompletionBody('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n'), false)
+      assert.equal(hasUsableChatCompletionBody('data: [DONE]\n'), false)
+      // Reasoning-only streams still count as a real response.
+      assert.equal(hasUsableChatCompletionBody('data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}\n'), true)
+      // A completion whose text merely contains "data:" must not be mistaken for SSE.
+      assert.equal(hasUsableChatCompletionBody(completion('set data: 1')), true)
+    })
+  })
+
   it('recognizes a clean Ready lastResponse (and rejects non-ready ones)', () => {
     // Clean Ready
     assert.equal(isLastResponseReady({ ok: true, text: 'Ready', at: Date.now() }), true)
@@ -4825,10 +4970,16 @@ describe('status reconciliation and bulk retest', () => {
   const dashboardContent = readFileSync(join(ROOT, 'public/index.html'), 'utf8')
   const serverContent = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
 
-  it('forces status to up when lastResponse is Ready in GET /api/models', () => {
-    // Server-side reconcile: isLastResponseReady check in the models formatter
-    assert.ok(serverContent.includes('isLastResponseReady(usageEntry?.lastResponse)'))
-    assert.ok(serverContent.includes('out.status = \'up\''))
+  it('reconciles a Ready response into status in exactly one place, with a freshness bound', () => {
+    // Server-side reconcile lives in applyUsageDerivedMetrics — the single promotion
+    // shared by the payload, the KPI and the router — and it only counts a success
+    // within the same window the probe hysteresis trusts, so a stale success cannot
+    // hold a model whose probes all fail at 'up' (and therefore routable). The
+    // payload must not re-derive the status the row already carries.
+    // Behavior pinned by test/router-harness.test.js.
+    assert.ok(serverContent.includes('isLastResponseReady(result.lastResponse)'))
+    assert.ok(serverContent.includes('RECENT_SUCCESS_KEEP_UP_MS'))
+    assert.equal(serverContent.includes("out.status = 'up'"), false, 'the formatter must not re-derive status')
   })
 
   it('defines the same Ready check in the dashboard (isLastResponseReady in index.html)', () => {

@@ -1830,6 +1830,12 @@
       border-top: 1px solid var(--border);
       background: var(--card);
     }
+    .scatter-controls .scatter-hint {
+      flex-basis: 100%;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      line-height: 1.35;
+    }
   </style>
 </head>
 
@@ -1912,7 +1918,8 @@
             <input type="range" id="sel-slope-slider" min="0" max="1000" value="0"
               style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, 100% picks the fastest">
             <span class="kpi-value" id="sel-slope-value" style="font-size:0.72rem; min-width:34px; text-align:right;">—</span>
-            <div class="kpi-value" id="sel-pick" style="font-size:0.76rem; flex-basis:100%;">—</div>
+            <div class="kpi-value" id="sel-pick" style="font-size:0.78rem; flex-basis:100%;">—</div>
+            <div class="scatter-hint">The line settles on the model routing will pick. Drag the dashed edge lines to set minimums.</div>
           </div>
         </div>
       </div>
@@ -2445,6 +2452,18 @@
           return { ...m, qos: m.qos || 0, isRateLimited };
         });
 
+        // Providers that relay persona entries over a rotating backend (FreeModels)
+        // report the real upstream model in every response. When the router captured
+        // one that differs from the catalog id, show it as the model's name — the
+        // catalog entry is just a booking label, and the real backend can change at
+        // any time, so this follows live responses instead of a hardcoded list.
+        for (const m of allModels) {
+          if (m.realModelId && m.realModelLabel) {
+            m.label = m.realModelLabel;
+            m.personaModelId = m.modelId;
+          }
+        }
+
         setActivePinnedModel(data.pinnedModelId, data.pinnedProviderKey, data.pinnedRowKeys, data.pinningMode);
         currentBestModelId = data.best || null;
         currentBestProviderKey = data.bestProviderKey || null;
@@ -2804,78 +2823,196 @@
         txt.textContent = fmtScatterIntell(iv);
         g.appendChild(txt);
       }
-      const cap = svgEl('text', { x: pad.left + plotW / 2, y: H - 10, fill: muted, 'font-size': '10px', 'text-anchor': 'middle' });
-      cap.textContent = 'speed = 1 / (TTFT + 1000 / tok·s)  —  faster to the right';
-      g.appendChild(cap);
-      const capY = svgEl('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '10px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
+      // Plot frame: gives the field a definite edge so the two axis captions can
+      // stay tiny (the composite-speed formula lives in the SVG tooltip instead
+      // of a caption line, which was the single cluttering sentence on the plot).
+      g.appendChild(svgEl('rect', {
+        x: pad.left, y: pad.top, width: plotW, height: plotH,
+        fill: 'none', stroke: muted, 'stroke-opacity': 0.22, 'stroke-width': 1,
+      }));
+      const capX = svgEl('text', { x: pad.left + plotW, y: H - 10, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
+      capX.textContent = 'faster →';
+      g.appendChild(capX);
+      const capY = svgEl('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '9px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
       capY.textContent = 'Intelligence';
       g.appendChild(capY);
       svg.appendChild(g);
+      const info = svgEl('title', {});
+      info.textContent = 'Each dot is one model/provider combination.\n' +
+        'x = speed = 1 / (TTFT + 1000 / tok/s) — faster to the right\n' +
+        'y = intelligence (Elo scale) — smarter upward\n' +
+        'Drag the edge lines to set minimums. Hover a dot for its numbers.';
+      svg.appendChild(info);
     }
 
     function drawScatterPoints(svg, rows, scales) {
       const ring = cssVarValue('--card') || '#fff';
       const rSize = scatterDotSize(rows);
+      // Filled dots are routable; hollow dashed rings are models the router will
+      // not use (down / banned / rate-limited). The shape carries the status, so
+      // the plot needs no per-dot status labels.
       const strokeFor = (r) => {
         if (r.m.status === 'up') return { color: ring, width: 1 };
-        if (r.m.isRateLimited) return { color: cssVarValue('--warning') || '#d29922', width: 2 };
-        return { color: cssVarValue('--error') || '#e5484d', width: 2 };
+        if (r.m.isRateLimited) return { color: cssVarValue('--warning') || '#d29922', width: 1.6 };
+        return { color: cssVarValue('--error') || '#e5484d', width: 1.6 };
       };
       for (const r of rows) {
         const hue = scatterProviderHue(r.m.providerKey);
+        const up = r.m.status === 'up';
         const st = strokeFor(r);
-        const c = svgEl('circle', {
-          cx: scales.xOf(r.speed), cy: scales.yOf(r.intell), r: rSize,
-          fill: `hsl(${hue} 70% 55%)`, 'fill-opacity': 0.85,
+        const cx = scales.xOf(r.speed);
+        const cy = scales.yOf(r.intell);
+        const c = svgEl('circle', up ? {
+          cx, cy, r: rSize,
+          fill: `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
           stroke: st.color, 'stroke-width': st.width,
+        } : {
+          cx, cy, r: rSize,
+          fill: 'none', stroke: st.color, 'stroke-width': st.width, 'stroke-dasharray': '2 2',
         });
         const title = svgEl('title', {});
-        title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}\n` +
+        title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}${r.m.personaModelId ? ` (catalog: ${r.m.personaModelId})` : ''}\n` +
           `intelligence ${fmtScatterIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · speed ${fmtScatterSpeed(r.speed)}`;
         c.appendChild(title);
         svg.appendChild(c);
       }
     }
 
-    // Visible labels: the model's short display name, drawn beside each dot
-    // with a card-colored halo so grid lines never cut through the text. When
-    // the same model is offered by several providers the provider is appended
-    // so every model/provider combination stays identifiable.
-    function drawScatterLabels(svg, rows, scales) {
+    // Visible labels: the model's short display name beside a dot, with a
+    // card-colored halo so grid lines never cut through the text. Labeling every
+    // dot turned the plot into a wall of text, so labels are placed greedily by
+    // importance — the routed pick first, then the fastest / smartest rows, then
+    // the highest-scoring remainder — and any label that would collide with an
+    // already-placed label or overlap another dot is dropped (the count of
+    // dropped labels is reported once, under the plot). Hovering still reveals
+    // every dot's numbers. When the same model is offered by several providers
+    // the provider is appended so every model/provider combination stays
+    // identifiable.
+    function drawScatterLabels(svg, rows, scales, selection) {
       const rSize = scatterDotSize(rows);
-      const maxLabelChars = 18;
-      const textRightEdge = scales.pad.left + scales.plotW - 4;
+      // Real upstream names (the ones relays report for a persona entry) run
+      // longer than catalog labels, so the budget is sized for them — the
+      // collision test below, not this cap, is what keeps the plot readable.
+      const maxLabelChars = 22;
+      const plotRight = scales.pad.left + scales.plotW - 4;
       const labelFill = cssVarValue('--text') || '#444';
       const labelHalo = cssVarValue('--card') || '#fff';
+      const accentColor = cssVarValue('--accent') || '#3b82f6';
+      const pickRow = selection && selection.shownSelRow ? selection.shownSelRow : null;
+      const maxLabels = rows.length > 60 ? 9 : (rows.length > 30 ? 12 : 16);
+
       const nameCounts = {};
       for (const r of rows) {
         const n = scatterShortName(r.m);
         nameCounts[n] = (nameCounts[n] || 0) + 1;
       }
-      for (const r of rows) {
+      const labelFor = (r) => {
         const name = scatterShortName(r.m);
-        // Truncate the model name first so the disambiguating provider suffix
-        // always survives on models offered by several providers.
+        // The model name is the label. The provider suffix exists only to
+        // disambiguate a name offered by several providers, so it must never
+        // starve the name it qualifies: append it when the pair fits the budget,
+        // otherwise keep the full name and drop the suffix (the dot's hue already
+        // carries the provider, and the tooltip names both).
+        const shortName = name.length > maxLabelChars ? name.slice(0, maxLabelChars - 1) + '…' : name;
         const suffix = nameCounts[name] > 1 ? ` · ${r.m.providerKey}` : '';
-        const nameBudget = Math.max(1, maxLabelChars - suffix.length);
-        const shortLabelName = name.length > nameBudget ? name.slice(0, nameBudget - 1) + '…' : name;
-        const label = shortLabelName + suffix;
-        const dx = scales.xOf(r.speed);
-        const dy = scales.yOf(r.intell);
-        const fitsRight = dx + rSize + 6 + label.length * 4.4 <= textRightEdge;
+        if (suffix && shortName.length + suffix.length <= maxLabelChars) return shortName + suffix;
+        return shortName;
+      };
+
+      const maxIntell = Math.max(...rows.map(r => r.intell));
+      const maxSpeed = Math.max(...rows.map(r => r.speed));
+      const priority = (r) => {
+        let p = 0;
+        if (pickRow && r === pickRow) p += 1000;
+        if (r.intell >= maxIntell) p += 200;
+        if (r.speed >= maxSpeed) p += 200;
+        if (r.m.status !== 'up') p -= 400;
+        // Remaining rows: higher intelligence than speed, so the top of the
+        // field — where routing decisions actually happen — is labeled first.
+        return p + ((r.intell - scales.yMin) / scales.ySpan) * 100;
+      };
+      const ordered = rows.slice().sort((a, b) => priority(b) - priority(a));
+      // The routed pick is not a candidate like the others: it is placed first,
+      // always, and only its own collision test is relaxed below.
+      const candidates = pickRow ? [pickRow, ...ordered.filter(r => r !== pickRow)] : ordered;
+
+      // Obstacles: every plotted dot except the one a label belongs to, plus each
+      // placed label. A tiny inflation keeps labels from touching either.
+      const dots = rows.map(r => ({
+        r,
+        x0: scales.xOf(r.speed) - rSize - 2, x1: scales.xOf(r.speed) + rSize + 2,
+        y0: scales.yOf(r.intell) - rSize - 2, y1: scales.yOf(r.intell) + rSize + 2,
+      }));
+      const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+      const placed = [];
+      let dropped = 0;
+      // The "+N more" note is drawn in the bottom-right corner whenever labels had
+      // to be dropped. When the rows outnumber the label budget a drop (and so the
+      // note) is certain, so its room is reserved up front and no label can land
+      // on top of it.
+      const reserved = [];
+      if (rows.length > maxLabels) {
+        const worst = `+${rows.length} more — hover to identify`;
+        const noteY = scales.pad.top + scales.plotH - 4;
+        reserved.push({ x0: plotRight - worst.length * 4.4 - 2, x1: plotRight, y0: noteY - 8, y1: noteY + 3 });
+      }
+
+      const appendLabel = (r, rect, isPick) => {
         const t = svgEl('text', {
-          x: fitsRight ? dx + rSize + 6 : dx - rSize - 6,
-          y: dy + 2.8,
-          'font-size': '8.5px',
-          fill: labelFill,
+          x: rect.right ? rect.x0 : rect.x1,
+          y: scales.yOf(r.intell) + 3,
+          'font-size': isPick ? '9px' : '8.5px',
+          'font-weight': isPick ? 600 : 400,
+          fill: isPick ? accentColor : labelFill,
           stroke: labelHalo,
           'stroke-width': '2.5',
           'stroke-linejoin': 'round',
           'paint-order': 'stroke',
-          'text-anchor': fitsRight ? 'start' : 'end',
+          'text-anchor': rect.right ? 'start' : 'end',
         });
-        t.textContent = label;
+        t.textContent = labelFor(r);
         svg.appendChild(t);
+        placed.push(rect);
+      };
+
+      for (const r of candidates) {
+        const isPick = pickRow && r === pickRow;
+        if (!isPick && placed.length >= maxLabels) { dropped++; continue; }
+        const label = labelFor(r);
+        const w = label.length * 4.4 + 2;
+        const dx = scales.xOf(r.speed);
+        const dy = scales.yOf(r.intell);
+        const rectFor = (right) => ({
+          x0: right ? dx + rSize + 5 : dx - rSize - 5 - w,
+          x1: right ? dx + rSize + 5 + w : dx - rSize - 5,
+          y0: dy - 5, y1: dy + 5, right,
+        });
+        const fits = (rect) => rect.x0 >= scales.pad.left + 2 && rect.x1 <= plotRight
+          && !placed.some(p => overlaps(p, rect))
+          && !reserved.some(p => overlaps(p, rect))
+          && !dots.some(d => d.r !== r && overlaps(d, rect));
+        let rect = fits(rectFor(true)) ? rectFor(true) : (fits(rectFor(false)) ? rectFor(false) : null);
+        if (!rect && isPick) {
+          // The routed pick keeps its label even in a crowded or very small plot:
+          // fall back to the roomier side and clamp the text inside the frame.
+          rect = rectFor(rectFor(true).x1 <= plotRight);
+          if (rect.x1 > plotRight) rect = { ...rect, x0: plotRight - w, x1: plotRight };
+          if (rect.x0 < scales.pad.left + 2) rect = { ...rect, x0: scales.pad.left + 2, x1: scales.pad.left + 2 + w };
+        }
+        if (!rect) { dropped++; continue; }
+        appendLabel(r, rect, isPick);
+      }
+
+      if (dropped > 0) {
+        const muted = cssVarValue('--text-muted') || '#999';
+        const more = svgEl('text', {
+          x: plotRight, y: scales.pad.top + scales.plotH - 4,
+          'font-size': '8.5px', fill: muted, 'text-anchor': 'end',
+          stroke: labelHalo, 'stroke-width': '2.5', 'stroke-linejoin': 'round',
+          'paint-order': 'stroke',
+        });
+        more.textContent = `+${dropped} more — hover to identify`;
+        svg.appendChild(more);
       }
     }
 
@@ -2920,7 +3057,7 @@
       if (!(xSpan > 0) || !(ySpan > 0)) return 0;
       let minSpeedGap = Infinity;
       const eligibleSpeeds = (rows || [])
-        .filter(r => r.m && r.m.status === 'up' && !(r.m.rateLimit && r.m.rateLimit.wasRateLimited === true))
+        .filter(r => isRoutableRow(r))
         .map(r => Number(r.speed))
         .filter(v => Number.isFinite(v))
         .sort((a, b) => a - b);
@@ -2932,7 +3069,39 @@
       return 2 * ySpan / minSpeedGap;
     }
 
-    function drawSelectorOverlay(svg, rows, scales) {
+    // One definition of "what the plot shows as selected", shared by the label
+    // pass and the overlay so the highlighted dot, its label, the Selected
+    // readout, and the drawn line can never disagree. Mirrors the router's
+    // precedence: manual pin > slope-line pick (only when a slope is set) > the
+    // server-reported Elo best. Rows the router will not use are never picked, so
+    // pickSlopeModel/pickFastestRow apply the same eligibility the server does.
+    function getSelection(rows) {
+      const pinned = !!activePinnedModelId;
+      const pinnedSelRow = pinned
+        ? rows.find(r => r.m.modelId === activePinnedModelId && (!activePinnedProviderKey || r.m.providerKey === activePinnedProviderKey))
+        : null;
+      const pinnedModel = (pinned && !pinnedSelRow)
+        ? (allModels.find(x => x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
+        : null;
+      const slopeNum = Number(selectorState.slope);
+      const slopeActive = selectorState.slope != null && Number.isFinite(slopeNum);
+      const atMaxSlope = slopeActive && slopeNum >= selectorSlopeMax;
+      const slopePick = (!pinned && slopeActive) ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
+      const fallbackRow = (!pinned && !slopePick && !slopeActive && currentBestModelId)
+        ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
+        : null;
+      const fallbackModel = (!pinned && !slopePick && !slopeActive && !fallbackRow && currentBestModelId)
+        ? (allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey)) || null)
+        : null;
+      return {
+        pinned, pinnedSelRow, pinnedModel, slopeNum, slopeActive, atMaxSlope, slopePick,
+        fallbackRow, fallbackModel,
+        shownSelRow: pinnedSelRow || slopePick || fallbackRow,
+        labelRow: pinnedSelRow || pinnedModel || slopePick || fallbackRow || fallbackModel,
+      };
+    }
+
+    function drawSelectorOverlay(svg, rows, scales, selection) {
       const { pad, plotW, plotH, xMin, xMax, yMin, yMax, ySpan, xSpan, xOf, yOf } = scales;
       const muted = cssVarValue('--text-muted') || '#999';
       const labelHalo = cssVarValue('--card') || '#fff';
@@ -2943,81 +3112,59 @@
       // accent color and the pick is always what the router will select.
       const selLineColor = accentColor;
 
-      selectorSlopeMax = computeSelectorSlopeMax(scales);
-      selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
-
       const selClip = svgEl('clipPath', { id: 'sel-plot-clip' });
       selClip.appendChild(svgEl('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
       svg.appendChild(selClip);
 
-      const slopeNum = Number(selectorState.slope);
-      const atMaxSlope = Number.isFinite(slopeNum) && slopeNum >= selectorSlopeMax;
-      // The plot must always select exactly what the router will route, so the
-      // 'Selected' readout and the KPI 'Current' can never disagree. The router's
-      // precedence is: manual pin > slope-line pick (only when a slope is set) >
-      // Elo best. The client mirrors that with the same eligibility and math as
-      // selectModelBySlope(), falling back to the server-reported best row when
-      // no slope is configured (and to a plain name when the pinned / best model
-      // has no speed data to plot).
-      const pinned = !!activePinnedModelId;
-      const pinnedSelRow = pinned
-        ? rows.find(r => r.m.modelId === activePinnedModelId && (!activePinnedProviderKey || r.m.providerKey === activePinnedProviderKey))
-        : null;
-      const pinnedModel = (pinned && !pinnedSelRow)
-        ? (allModels.find(x => x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
-        : null;
-      const slopeActive = selectorState.slope != null && Number.isFinite(Number(selectorState.slope));
-      const slopePick = (!pinned && slopeActive) ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
-      const fallbackRow = (!pinned && !slopePick && !slopeActive && currentBestModelId)
-        ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
-        : null;
-      const fallbackModel = (!pinned && !slopePick && !slopeActive && !fallbackRow && currentBestModelId)
-        ? (allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey)) || null)
-        : null;
-      const shownSelRow = pinnedSelRow || slopePick || fallbackRow;
-      const labelRow = pinnedSelRow || pinnedModel || slopePick || fallbackRow || fallbackModel;
+      const { pinned, slopeNum, slopeActive, atMaxSlope, slopePick, shownSelRow, labelRow } = selection;
 
-      // Minimum intelligence: horizontal dashed line, drag up/down.
-      const miVal = selectorState.minIntell != null
-        ? Math.min(Math.max(selectorState.minIntell, yMin), yMax)
-        : yMin;
+      // Minimum intelligence: horizontal dashed line, drag up/down. Unset, it
+      // rests on the floor as a faint affordance and carries no value label —
+      // the '—' label was pure clutter on every plot that never set a minimum.
+      const miSet = selectorState.minIntell != null;
+      const miVal = miSet ? Math.min(Math.max(selectorState.minIntell, yMin), yMax) : yMin;
       const miY = yOf(miVal);
       svg.appendChild(svgEl('line', {
         x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
-        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
+        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4',
+        'stroke-opacity': miSet ? 0.9 : 0.28,
       }));
       svg.appendChild(svgEl('line', {
         x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
         stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minIntell', 'pointer-events': 'stroke',
       }));
-      const miTxt = svgEl('text', {
-        x: pad.left + plotW - 4, y: Math.min(Math.max(miY - 4, pad.top + 22), pad.top + plotH - 2),
-        'font-size': '9px', fill: selLineColor, 'text-anchor': 'end',
-        'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
-      });
-      miTxt.textContent = `min intelligence ${selectorState.minIntell != null ? fmtScatterIntell(miVal) : '—'}`;
-      svg.appendChild(miTxt);
+      if (miSet) {
+        const miTxt = svgEl('text', {
+          x: pad.left + plotW - 4, y: Math.min(Math.max(miY - 4, pad.top + 22), pad.top + plotH - 2),
+          'font-size': '9px', fill: selLineColor, 'text-anchor': 'end',
+          'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
+        });
+        miTxt.textContent = `min ${fmtScatterIntell(miVal)}`;
+        svg.appendChild(miTxt);
+      }
 
-      // Minimum speed: vertical dashed line, drag left/right.
-      const msVal = selectorState.minSpeed != null
-        ? Math.min(Math.max(selectorState.minSpeed, xMin), xMax)
-        : xMin;
+      // Minimum speed: vertical dashed line, drag left/right (same unset styling).
+      const msSet = selectorState.minSpeed != null;
+      const msVal = msSet ? Math.min(Math.max(selectorState.minSpeed, xMin), xMax) : xMin;
       const msX = xOf(msVal);
       svg.appendChild(svgEl('line', {
         x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
-        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4', 'stroke-opacity': 0.9,
+        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4',
+        'stroke-opacity': msSet ? 0.9 : 0.28,
       }));
       svg.appendChild(svgEl('line', {
         x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
         stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minSpeed', 'pointer-events': 'stroke',
       }));
-      const msTxt = svgEl('text', {
-        x: Math.min(Math.max(msX + 4, pad.left + 2), pad.left + plotW - 70), y: pad.top + plotH - 6,
-        'font-size': '9px', fill: selLineColor,
-        'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
-      });
-      msTxt.textContent = `min speed ${selectorState.minSpeed != null ? fmtScatterSpeed(msVal) : '—'}`;
-      svg.appendChild(msTxt);
+      if (msSet) {
+        const msTxt = svgEl('text', {
+          x: Math.min(Math.max(msX + 4, pad.left + 2), pad.left + plotW - 56), y: pad.top + plotH - 6,
+          'font-size': '9px', fill: selLineColor,
+          'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
+        });
+        msTxt.textContent = `min ${fmtScatterSpeed(msVal)}`;
+        svg.appendChild(msTxt);
+      }
 
       // The sloped line, lowered onto the plot: rests on the first model it
       // touches (nothing qualifies → it rests on the plot floor at bottom-left).
@@ -3064,7 +3211,7 @@
           : null;
         const fbName = fbModel ? scatterShortName(fbModel) : null;
         if (pickEl) {
-          pickEl.textContent = fbName ? `No model above the minimums — using ${fbName}` : 'No model above the minimums — Elo fallback';
+          pickEl.textContent = fbName ? `Below minimums — routing ${fbName}` : 'Below minimums — routing the Elo best';
           pickEl.style.color = '';
         }
         if (kpiBestEl && fbName) kpiBestEl.textContent = fbName;
@@ -3079,12 +3226,12 @@
           }));
         }
         if (pickEl) {
-          pickEl.textContent = (pinned ? 'Pinned: ' : 'Selected: ') + name;
+          pickEl.textContent = (pinned ? 'Pinned · ' : 'Selected · ') + name;
           pickEl.style.color = accentColor;
         }
         if (kpiBestEl && name) kpiBestEl.textContent = name;
       } else if (pickEl) {
-        pickEl.textContent = 'No model above the minimums — Elo fallback';
+        pickEl.textContent = 'Below minimums — routing the Elo best';
         pickEl.style.color = '';
       }
     }
@@ -3129,10 +3276,15 @@
 
       const scales = computeScatterScales(rows, W, H);
       scatterScales = scales;
+      // Derived once, before anything is drawn: the overlay, the labels, the
+      // Selected readout, and the router all key off the same numbers.
+      selectorSlopeMax = computeSelectorSlopeMax(scales);
+      selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
+      const selection = getSelection(rows);
       drawScatterGrid(svg, scales);
       drawScatterPoints(svg, rows, scales);
-      drawScatterLabels(svg, rows, scales);
-      drawSelectorOverlay(svg, rows, scales);
+      drawScatterLabels(svg, rows, scales, selection);
+      drawSelectorOverlay(svg, rows, scales, selection);
       syncSelectorControls();
     }
 
@@ -3142,18 +3294,29 @@
     // minimums; the pick maximizes intelligence + slope * speed, which is
     // exactly the first dot a rightward-descending line of the given slope
     // touches when lowered from above.
+    // Rows the router would consider. The server marks each row with
+    // routingEligible (its own status/rate-limit check), so the plot prefers that
+    // flag and only falls back to a local check for payloads from older servers.
+    // Using one flag keeps "what the plot selects" and "what the router routes"
+    // identical by construction instead of by two hand-synced conditions.
+    function isRoutableRow(r) {
+      const m = r && r.m;
+      if (!m) return false;
+      if (typeof m.routingEligible === 'boolean') return m.routingEligible;
+      return m.status === 'up' && !(m.rateLimit && m.rateLimit.wasRateLimited === true);
+    }
+
     function pickSlopeModel(rows) {
       const slope = Number(selectorState.slope);
       if (!Number.isFinite(slope)) return null;
       let best = null;
       let bestVal = -Infinity;
       for (const r of rows || []) {
-        const m = r.m;
-        // Same eligibility as the server's selectModelBySlope(): 'up' and not
-        // HTTP-429 rate-limited. Credit exhaustion alone does NOT exclude a row
-        // (the router only trusts the proxy's 429 signal), so the plot always
+        // Same eligibility as the server's selectModelBySlope(): status 'up' and
+        // not HTTP-429 rate-limited. Credit exhaustion alone does NOT exclude a
+        // row (the router only trusts the proxy's 429 signal), so the plot always
         // selects exactly what routing will pick.
-        if (!m || m.status !== 'up' || (m.rateLimit && m.rateLimit.wasRateLimited === true)) continue;
+        if (!isRoutableRow(r)) continue;
         if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
         if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
         const val = r.intell + slope * r.speed;
@@ -3170,9 +3333,8 @@
       let bestSpeed = -Infinity;
       let bestIntell = -Infinity;
       for (const r of rows || []) {
-        const m = r.m;
         // Same eligibility as the server's selectModelBySlope() (see pickSlopeModel).
-        if (!m || m.status !== 'up' || (m.rateLimit && m.rateLimit.wasRateLimited === true)) continue;
+        if (!isRoutableRow(r)) continue;
         if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
         if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
         if (r.speed > bestSpeed || (r.speed === bestSpeed && r.intell > bestIntell)) {
@@ -3241,15 +3403,24 @@
       }, 300);
     }
 
+    // null / undefined / '' mean "not set". Number(null) is 0, so a plain
+    // finite-number test would read an inert selector as slope 0 and make the
+    // plot claim a selection the router is not making.
+    function toSelectorOption(value) {
+      if (value == null || value === '') return null;
+      const n = Number(value);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    }
+
     async function loadSelectorState() {
       try {
         const res = await fetch('/api/selector');
         if (!res.ok) return;
         const sel = await res.json();
         selectorState = {
-          slope: Number.isFinite(Number(sel.slope)) ? Number(sel.slope) : null,
-          minSpeed: Number.isFinite(Number(sel.minSpeed)) ? Number(sel.minSpeed) : null,
-          minIntell: Number.isFinite(Number(sel.minIntell)) ? Number(sel.minIntell) : null,
+          slope: toSelectorOption(sel.slope),
+          minSpeed: toSelectorOption(sel.minSpeed),
+          minIntell: toSelectorOption(sel.minIntell),
         };
         syncSelectorControls();
         requestScatterRedraw();
@@ -4590,7 +4761,8 @@
       let filtered = allModels.filter(m =>
         m.label.toLowerCase().includes(searchTerm) ||
         m.providerKey.toLowerCase().includes(searchTerm) ||
-        m.modelId.toLowerCase().includes(searchTerm)
+        m.modelId.toLowerCase().includes(searchTerm) ||
+        (m.realModelId || '').toLowerCase().includes(searchTerm)
       );
 
       // Models without credentials remain in the unavailable table so their
@@ -4900,14 +5072,24 @@
       return escapeHtml(s).replace(/"/g, '&quot;');
     }
 
+    // A clean test response only counts as liveness while it is recent. Mirrors the
+    // server's readiness window (RECENT_SUCCESS_KEEP_UP_MS in lib/server.js): without
+    // the bound, a success from any time ago would keep a row green here while the
+    // router has long since stopped trusting it, and every stale row would look like a
+    // contradiction for scheduleContradictoryRetests() to chase.
+    const READY_FRESHNESS_MS = 60 * 60_000
+
     // True when the model's most recent test response is a clean 'Ready' (non-expired,
-    // successful, non-empty text, no error). The last real request is authoritative.
+    // successful, non-empty text, no error, recent enough). The last real request is
+    // authoritative — while the evidence is fresh.
     function isLastResponseReady(lastResponse) {
       if (!lastResponse) return false
       if (lastResponse.ok === false) return false
       if (lastResponse.error) return false
       if (!lastResponse.text || String(lastResponse.text).trim() === '') return false
       if (lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt)) return false
+      const at = Number(lastResponse.at)
+      if (Number.isFinite(at) && Date.now() - at > READY_FRESHNESS_MS) return false
       return true
     }
 
