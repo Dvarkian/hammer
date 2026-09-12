@@ -272,23 +272,18 @@ If you leave the Ollama base URL blank in the UI, hammer defaults to `https://ol
 With a valid Ollama API key, hammer will discover available Ollama models automatically.
 If you point Ollama at a local host such as `http://127.0.0.1:11434`, hammer will also auto-discover models and does not require an API key.
 
-### gpt4free (g4f) free relays
+### gpt4free (g4f)
 
-hammer can route through [gpt4free](https://g4f.dev)'s free relays, which publish OpenAI-compatible endpoints onto upstream free tiers. g4f gates anonymous traffic behind proof-of-work **cake credits**, so access works either by baking credits at [g4f.dev/chat](https://g4f.dev/chat) from this machine (credits are bound to your IP), or with a free account key from [g4f.dev/members.html](https://g4f.dev/members.html).
+hammer can route through [gpt4free](https://g4f.dev)'s gateway at `https://g4f.space/v1`, which fronts many models. g4f gates anonymous traffic behind proof-of-work credits, so it **requires a free account key**:
 
-| Provider key | Upstream |
-| --- | --- |
-| `g4f` | g4f.space hosted pool (rotating community servers) |
-| `g4f-nvidia` | NVIDIA NIM |
-| `g4f-groq` | Groq |
-| `g4f-gemini` | Google |
-| `g4f-ollama` | Ollama cloud |
-| `g4f-pollinations` | Pollinations |
+1. Get one at [g4f.dev/members.html](https://g4f.dev/members.html).
+2. Set `G4F_API_KEY=<key>`, or add `"g4f": "<key>"` to `apiKeys` in `~/.hammer.json`.
 
-- Each relay is discovered automatically from its own `/models` endpoint (typically tens to ~140 chat models each, with non-chat models such as whisper/TTS/image filtered out). Curated fallback catalogs are used before the first successful discovery.
-- The relays share a small, globally rate-limited free budget, so hammer keeps them **out of the periodic probe wave**. Their rows stay routable for explicit model requests; use **Test** on a row to probe it on demand.
-- **One account key covers every relay.** Set `G4F_API_KEY` (or `apiKeys.g4f` in the config) and all six `g4f-*` providers use it — there is no need to configure each one.
-- Without credits or a key, every g4f endpoint answers HTTP `402` with `insufficient_credits`. Any relay's base URL can be overridden in `~/.hammer.json` (see `G4F_BASE_URL` for the hosted pool) — e.g. to point at a self-hosted g4f server on `http://localhost:1337/v1`.
+Until a key is set, the provider appears under **Require setup** in the dashboard.
+
+- Models are discovered automatically from `https://g4f.space/v1/models` (non-chat models such as whisper/TTS/image are filtered out); a curated fallback catalog is used before the first successful discovery.
+- Without a key every g4f request answers HTTP `402` with `insufficient_credits`.
+- To point hammer at a self-hosted g4f server instead, set `G4F_BASE_URL` (e.g. `http://localhost:1337/v1`) or a `baseUrl` on the `g4f` provider in `~/.hammer.json`.
 
 ### OpenAI-Compatible endpoints
 

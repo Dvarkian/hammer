@@ -273,28 +273,8 @@ export const PROVIDER_QUOTAS = {
     sourceUrl: 'https://freemodels.pro/',
   },
   'g4f': {
-    source: 'gpt4free relays are keyless and shared across all users; limits are small and provider-managed',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
-  },
-  'g4f-nvidia': {
-    source: 'gpt4free relay onto NVIDIA free tier; shared, provider-managed limits',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
-  },
-  'g4f-groq': {
-    source: 'gpt4free relay onto Groq free tier; shared, provider-managed limits',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
-  },
-  'g4f-gemini': {
-    source: 'gpt4free relay onto Google free tier; shared, provider-managed limits',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
-  },
-  'g4f-ollama': {
-    source: 'gpt4free relay onto Ollama cloud; shared, provider-managed limits',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
-  },
-  'g4f-pollinations': {
-    source: 'gpt4free relay onto Pollinations; shared, provider-managed limits',
-    sourceUrl: 'https://g4f.dev/docs/ready_to_use.html',
+    source: 'gpt4free usage is credit-based: anonymous traffic needs baked proof-of-work credits, otherwise a free account key',
+    sourceUrl: 'https://g4f.dev/members.html',
   },
   devin: {
     source: 'Devin account and plan limits are provider-managed',
@@ -534,106 +514,21 @@ export const sources = {
       ["kimi-k3", "Kimi K3", "256k"]
     ]
   },
-  // --- gpt4free (g4f) free relays -------------------------------------------
-  // g4f.space publishes keyless OpenAI-compatible relays onto upstream free
-  // tiers. Each relay is its own provider because Hammer binds one base URL per
-  // provider and the remote catalogs (and their rate limits) differ per upstream.
-  // Every entry is keyless: no API key is required, and one is only sent when the
-  // user configures it (relevant only for the hosted pool). `skipAutoPing` keeps
-  // Hammer's probe wave from draining the small, globally shared request budget;
-  // rows stay routable for explicit requests and can be promoted with a manual
-  // Test. Curated `models` are fallbacks used before/if /models discovery fails —
-  // a healthy discovery replaces and prunes them. Docs:
-  // https://g4f.dev/docs/ready_to_use.html
+  // --- gpt4free (g4f) --------------------------------------------------------
+  // One provider for the whole gpt4free service. g4f.space/v1 is the hosted
+  // gateway (many models, discovered from /models). Anonymous traffic is gated
+  // behind baked proof-of-work credits, so hammer requires the free account key
+  // from https://g4f.dev/members.html — set it once as `apiKeys.g4f` or
+  // `G4F_API_KEY` and it covers the whole gateway.
+  // Docs: https://g4f.dev/docs/ready_to_use.html
   "g4f": {
-    "name": "G4F Pool",
-    // Hosted pool of community servers. Served keyless in practice; an optional
-    // free key (https://g4f.dev/api_key.html) raises the per-day limits.
+    "name": "G4F",
     "url": "https://g4f.space/v1/chat/completions",
-    "contextUrl": "https://g4f.dev/docs/ready_to_use.html",
+    "contextUrl": "https://g4f.dev/members.html",
     "discoverable": true,
-    "skipAutoPing": true,
     "models": [
-      ["auto", "Auto (G4F pool)", "128k"]
+      ["auto", "Auto (G4F)", "128k"]
     ]
-  },
-  "g4f-nvidia": {
-    "name": "G4F NVIDIA",
-    "url": "https://g4f.space/api/nvidia/chat/completions",
-    "contextUrl": "https://build.nvidia.com/models",
-    "discoverable": true,
-    "skipAutoPing": true,
-    "models": [
-      ["nvidia/nemotron-3-super-120b-a12b", "Nemotron 3 Super 120B", "128k"],
-      ["nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra 550B", "1M"],
-      ["moonshotai/kimi-k3", "Kimi K3", "256k"],
-      ["deepseek-ai/deepseek-v4-pro-0813", "DeepSeek V4 Pro", "128k"],
-      ["deepseek-ai/deepseek-v4-flash-0731", "DeepSeek V4 Flash", "128k"],
-      ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
-      ["google/gemma-4-31b-it", "Gemma 4 31B", "128k"]
-    ]
-  },
-  "g4f-groq": {
-    "name": "G4F Groq",
-    "url": "https://g4f.space/api/groq/chat/completions",
-    // Groq's relay serves /models only at the bare path, not under /v1, so it
-    // needs an explicit discovery URL (the generic builder would append /v1).
-    "modelsUrl": "https://g4f.space/api/groq/models",
-    "contextUrl": "https://console.groq.com/docs/models",
-    "discoverable": true,
-    "skipAutoPing": true,
-    "models": [
-      ["openai/gpt-oss-120b", "GPT OSS 120B", "128k"],
-      ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
-      ["qwen/qwen3.6-27b", "Qwen3.6 27B", "128k"],
-      ["qwen/qwen3.8-27b", "Qwen3.8 27B", "128k"],
-      ["groq/compound", "Groq Compound", "128k"],
-      ["groq/compound-mini", "Groq Compound Mini", "128k"],
-      ["allam-2-7b", "ALLaM 2 7B", "128k"]
-    ]
-  },
-  "g4f-gemini": {
-    "name": "G4F Gemini",
-    "url": "https://g4f.space/api/gemini/chat/completions",
-    "contextUrl": "https://ai.google.dev/gemini-api/docs/models",
-    "discoverable": true,
-    "skipAutoPing": true,
-    "models": [
-      ["models/gemini-2.5-pro", "Gemini 2.5 Pro", "1M"],
-      ["models/gemini-2.5-flash", "Gemini 2.5 Flash", "1M"],
-      ["models/gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite", "1M"],
-      ["models/gemini-3.6-flash", "Gemini 3.6 Flash", "1M"],
-      ["models/gemini-3.5-flash", "Gemini 3.5 Flash", "1M"],
-      ["models/gemma-4-31b-it", "Gemma 4 31B", "128k"],
-      ["models/gemma-4-26b-a4b-it", "Gemma 4 26B A4B", "128k"]
-    ]
-  },
-  "g4f-ollama": {
-    "name": "G4F Ollama",
-    "url": "https://g4f.space/api/ollama/chat/completions",
-    "contextUrl": "https://docs.ollama.com/cloud",
-    "discoverable": true,
-    "skipAutoPing": true,
-    "models": [
-      ["nemotron-3-ultra", "Nemotron 3 Ultra", "1M"],
-      ["nemotron-3-super", "Nemotron 3 Super", "128k"],
-      ["nemotron-3-nano:30b", "Nemotron Nano 30B", "128k"],
-      ["gemma4:31b", "Gemma 4 31B", "128k"],
-      ["minimax-m3", "MiniMax M3", "1M"],
-      ["kimi-k2.7-code", "Kimi K2.7 Code", "262k"],
-      ["gpt-oss:120b", "GPT OSS 120B", "128k"],
-      ["gpt-oss:20b", "GPT OSS 20B", "128k"]
-    ]
-  },
-  "g4f-pollinations": {
-    "name": "G4F Pollinations",
-    "url": "https://g4f.space/api/pollinations/chat/completions",
-    "contextUrl": "https://pollinations.ai/",
-    "discoverable": true,
-    "skipAutoPing": true,
-    // Pollinations exposes a large, fast-moving set of community models whose ids
-    // are author-namespaced, so the discovered list is the only authoritative one.
-    "models": []
   }
 }
 

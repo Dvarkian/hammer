@@ -2383,9 +2383,7 @@
       'groq': 'Groq', 'googleai': 'Google', 'cerebras': 'Cerebras',
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
       'scaleway': 'Scaleway', 'kilocode': 'KiloCode', 'opencode': 'OpenCode',
-      'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro',
-      'g4f': 'G4F Pool', 'g4f-nvidia': 'G4F NVIDIA', 'g4f-groq': 'G4F Groq',
-      'g4f-gemini': 'G4F Gemini', 'g4f-ollama': 'G4F Ollama', 'g4f-pollinations': 'G4F Pollinations',
+      'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
     };
 
 
@@ -3565,8 +3563,6 @@
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
         'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
         'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev',
-        'g4f-nvidia': 'g4f.dev', 'g4f-groq': 'g4f.dev', 'g4f-gemini': 'g4f.dev',
-        'g4f-ollama': 'g4f.dev', 'g4f-pollinations': 'g4f.dev',
       };
 
       // Fit the viewBox to the card's actual pixel size.
@@ -6598,7 +6594,7 @@
           return a.name.localeCompare(b.name);
         }).forEach(p => {
           const now = Date.now();
-          const KEYLESS_PROVIDER_KEYS = ['empero', 'opencode', 'ollama', 'freemodels', 'g4f', 'g4f-nvidia', 'g4f-groq', 'g4f-gemini', 'g4f-ollama', 'g4f-pollinations'];
+          const KEYLESS_PROVIDER_KEYS = ['empero', 'opencode', 'ollama', 'freemodels'];
           const providerNeedsApiKey = !KEYLESS_PROVIDER_KEYS.includes(p.key);
           const providerIsActive = p.hasKey || !providerNeedsApiKey;
 

@@ -105,28 +105,8 @@ export const MODEL_TAGS = {
   'z-ai/glm4.7': ['agentic', 'coding', 'general'],
   'zai-glm-4.7': ['agentic', 'coding', 'general'],
   'z-ai/glm5': ['agentic', 'coding', 'general'],
-  // gpt4free (g4f.space) free-relay catalogs. Ids are repeated per relay where
-  // the relay re-exposes the same upstream model, matching the existing convention.
+  // gpt4free (g4f.space) hosted gateway catalog.
   'auto': ['general'],
-  'allam-2-7b': ['general'],
-  'groq/compound': ['agentic', 'general'],
-  'groq/compound-mini': ['agentic', 'fast'],
-  'nvidia/nemotron-3-super-120b-a12b': ['general', 'reasoning'],
-  'nemotron-3-super': ['general', 'reasoning'],
-  'moonshotai/kimi-k3': ['coding', 'reasoning'],
-  'deepseek-ai/deepseek-v4-pro-0813': ['coding', 'reasoning'],
-  'deepseek-ai/deepseek-v4-flash-0731': ['fast', 'coding'],
-  'google/gemma-4-31b-it': ['general'],
-  'gemma4:31b': ['general'],
-  'qwen/qwen3.6-27b': ['coding', 'general'],
-  'qwen/qwen3.8-27b': ['coding', 'general'],
-  'models/gemini-2.5-pro': ['coding', 'reasoning'],
-  'models/gemini-2.5-flash': ['fast', 'general'],
-  'models/gemini-2.5-flash-lite': ['fast', 'general'],
-  'models/gemini-3.6-flash': ['fast', 'general'],
-  'models/gemini-3.5-flash': ['fast', 'general'],
-  'models/gemma-4-31b-it': ['general'],
-  'models/gemma-4-26b-a4b-it': ['general'],
 }
 
 export function getModelTags(modelId) {
