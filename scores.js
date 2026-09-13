@@ -67,6 +67,15 @@ export const scores = {
   "google/gemma-3n-e4b-it": 0.38,
   "grok-code-fast-1": 0.708,
   "grok-code-fast-1:optimized": 0.708,
+  // xAI Grok 4 Fast family. g4f discovers these under repo spellings
+  // (xai-z/grok-4-fast, tb/grok-4-1-fast-non-reasoning), which previously
+  // resolved to nothing because only the code-fast entry existed. Ordered per
+  // Artificial Analysis: 4.1 Fast > 4 Fast, and the reasoning variant in each
+  // pair outranks its non-reasoning sibling.
+  "grok-4-fast": 0.70,
+  "grok-4-fast-non-reasoning": 0.64,
+  "grok-4.1-fast": 0.74,
+  "grok-4.1-fast-non-reasoning": 0.68,
   // GPT-OSS offline fallback. The 120B is the larger, stronger model and must
   // always outrank the 20B; both keys (vendor-prefixed and bare) are kept in
   // sync because getScore() looks up base then unprefixed ids.

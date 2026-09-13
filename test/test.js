@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { gzipSync, gunzipSync } from 'node:zlib'
 
-import { sources, MODELS, PROVIDER_QUOTAS, canonicalizeModelId, getPreferredModelContext, getPreferredModelLabel, getScore, resolveAliasedModelId } from '../sources.js'
+import { getLatestModelFamilyKey, getModelVersionTuple, isLatestModelName, sources, MODELS, PROVIDER_QUOTAS, canonicalizeModelId, getPreferredModelContext, getPreferredModelLabel, getScore, resolveAliasedModelId } from '../sources.js'
 import { TAG_VOCABULARY, MODEL_TAGS, getModelTags as getBuiltInModelTags } from '../tags.js'
 import {
   getAvg,
@@ -98,7 +98,7 @@ import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autos
 import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
-  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
+  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, resolveQualityLookup, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
@@ -1875,6 +1875,29 @@ describe('OpenRouter model quality scoring', () => {
     assert.equal(blind.score, null)
     assert.equal(blind.source, 'default-fallback')
   })
+
+  it('scores persona rows on the backend that serves them, keeping the persona score as fallback', () => {
+    // No learned backend: the row is scored as itself.
+    assert.deepEqual(resolveQualityLookup('claude-fable-5', undefined), {
+      lookupId: 'claude-fable-5',
+      localScore: getScore('claude-fable-5'),
+    })
+    // A learned backend with a curated score is scored on the backend, not the persona.
+    assert.deepEqual(resolveQualityLookup('claude-fable-5', 'nvidia/nemotron-3-super-120b-a12b'), {
+      lookupId: 'nvidia/nemotron-3-super-120b-a12b',
+      localScore: getScore('nvidia/nemotron-3-super-120b-a12b'),
+    })
+    // A learned backend nothing has data for must not demote a scored persona to unknown.
+    assert.deepEqual(resolveQualityLookup('claude-fable-5', 'totally-unknown-backend'), {
+      lookupId: 'totally-unknown-backend',
+      localScore: getScore('claude-fable-5'),
+    })
+    // A backend id identical to the persona id changes nothing.
+    assert.deepEqual(resolveQualityLookup('glm-5.2', 'glm-5.2'), {
+      lookupId: 'glm-5.2',
+      localScore: getScore('glm-5.2'),
+    })
+  })
 })
 
 describe('LMArena Elo leaderboard parsing', () => {
@@ -2526,6 +2549,28 @@ describe('dynamic model score resolution', () => {
     assert.ok(getScore('minimax-m2') < getScore('minimax-m2.1'))
     assert.ok(getScore('minimax-m2.1') < getScore('minimax-m2.5'))
     assert.ok(getScore('minimax-m2.5') < getScore('minimax-m2.7'))
+  })
+
+  it('scores Claude 4.5 gateway variants instead of leaving them unknown', () => {
+    for (const [id, expected] of [
+      ['claude-sonnet-4.5', 0.772],
+      ['claude-sonnet-4-5', 0.772],
+      ['anthropic/claude-sonnet-4-5', 0.772],
+      ['claude-haiku-4.5', 0.733],
+      ['claude-haiku-4-5', 0.733],
+      ['anthropic/claude-haiku-4-5', 0.733],
+    ]) {
+      assert.equal(getScore(id), expected, `${id} should have a curated score`)
+    }
+
+    const sonnet = toOpenAICompatibleDiscoveredModelMeta(
+      { id: 'srv_abc123:anthropic/claude-sonnet-4-5' }, 'g4f')
+    const haiku = toOpenAICompatibleDiscoveredModelMeta(
+      { id: 'srv_abc123:anthropic/claude-haiku-4-5' }, 'g4f')
+    assert.equal(sonnet.intell, 0.772)
+    assert.equal(haiku.intell, 0.733)
+    assert.equal(sonnet.isEstimatedScore, false)
+    assert.equal(haiku.isEstimatedScore, false)
   })
 
   it('uses scores.js entry for OpenRouter models outside static sources', () => {
@@ -3866,6 +3911,60 @@ describe('model grouping and filtering', () => {
     mockResult({ modelId: 'meta/llama3.3-70b', label: 'Llama 3.3 (Meta)' }),
   ]
 
+  it('bundles Latest aliases into the newest concrete model family', () => {
+    const groups = buildModelGroups([
+      mockResult({ modelId: 'models/gemini-3.6-flash', label: 'Gemini 3.6 Flash' }),
+      mockResult({ modelId: 'models/gemini-3.8-flash', label: 'Gemini 3.8 Flash' }),
+      mockResult({ modelId: 'models/gemini-flash-latest', label: 'Gemini Flash Latest' }),
+      mockResult({ modelId: 'models/gemini-3.8-flash:free', label: 'Gemini 3.8 Flash' }),
+    ], canonicalizeModelId)
+
+    assert.equal(getLatestModelFamilyKey('models/gemini-flash-latest'), 'gemini flash')
+    assert.deepEqual(getModelVersionTuple('models/gemini-3.8-flash'), [3, 8])
+    assert.equal(groups.length, 2)
+
+    const latestGroup = groups.find(group => group.id === 'gemini-3.8-flash')
+    assert.ok(latestGroup)
+    assert.equal(latestGroup.label, 'Gemini 3.8 Flash')
+    assert.equal(latestGroup.models.length, 3)
+    assert.ok(latestGroup.models.some(model => model.modelId === 'models/gemini-flash-latest'))
+  })
+
+  it('bundles provider spellings of one model under a single heading', () => {
+    const groups = buildModelGroups([
+      mockResult({ modelId: 'qwen/qwen3.8-27b', label: 'Qwen/Qwen3.8-27B' }),
+      mockResult({ modelId: 'qwen-3.8-27b', label: 'Qwen 3.8 27b' }),
+      mockResult({ modelId: 'srv_mkom688d57c76d8a3542:qwen/qwen3.8-27b', label: 'Qwen3.8 27b' }),
+      mockResult({ modelId: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120b A12b' }),
+      mockResult({ modelId: 'nemotron-3-super', label: 'Nemotron 3 Super' }),
+      mockResult({ modelId: 'nvidia/nemotron-3.5-lightning-30b-a3b', label: 'Nemotron 3.5 Lightning 30b A3b' }),
+      mockResult({ modelId: 'srv_mt4quyfw26b0a700926a:nemotron-3.5-lightning-30b', label: 'Nemotron 3.5 Lightning 30b' }),
+      mockResult({ modelId: 'nvidia/llama-3.1-nemotron-51b-instruct', label: 'Llama 3.1 Nemotron 51b Instruct' }),
+      mockResult({ modelId: 'nvidia/llama-3.1-nemotron-70b-instruct', label: 'Llama 3.1 Nemotron 70b Instruct' }),
+    ], canonicalizeModelId)
+
+    // Every Qwen 3.8 27b spelling shares one heading.
+    const qwen = groups.filter(group => /qwen/i.test(group.label))
+    assert.equal(qwen.length, 1)
+    assert.equal(qwen[0].models.length, 3)
+
+    // Size-qualified Nemotron aliases collapse; distinct sizes must not.
+    assert.equal(groups.filter(group => /super/i.test(group.label)).length, 1)
+    assert.equal(groups.find(group => /super/i.test(group.label)).models.length, 2)
+    assert.equal(groups.filter(group => /lightning/i.test(group.label)).length, 1)
+    assert.equal(groups.find(group => /lightning/i.test(group.label)).models.length, 2)
+    assert.equal(groups.filter(group => /llama 3.1 nemotron/i.test(group.label)).length, 2)
+  })
+
+  it('keeps a Latest alias separate when no concrete family is available', () => {
+    const groups = buildModelGroups([
+      mockResult({ modelId: 'models/gemini-flash-latest', label: 'Gemini Flash Latest' }),
+    ], canonicalizeModelId)
+
+    assert.equal(groups.length, 1)
+    assert.equal(groups[0].label, 'Gemini Flash Latest')
+  })
+
   it('builds one catalog entry per normalized label group', () => {
     const groups = buildModelGroups([
       mockResult({ modelId: 'moonshotai/kimi-k2.5', label: 'Kimi K2.5' }),
@@ -4079,6 +4178,84 @@ describe('package and entrypoint sanity', () => {
     assert.ok(binContent.startsWith('#!/usr/bin/env node'))
     assert.ok(binContent.includes("from '../lib/utils.js'"))
     assert.ok(binContent.includes("from '../lib/onboard.js'"))
+  })
+
+  it('dashboard inline script compiles as valid JavaScript', () => {
+    // The server never parses public/index.html, so a typo here kills every
+    // dashboard feature on reload without failing any other test. Compile the
+    // inline script to catch syntax errors (e.g. stray doubled backslashes in
+    // regex literals) that would otherwise ship silently.
+    const scripts = [...dashboardContent.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+    assert.ok(scripts.length > 0, 'expected at least one inline script in the dashboard')
+    for (const [, code] of scripts) {
+      assert.doesNotThrow(() => new Function(code), 'dashboard inline script has a syntax error')
+    }
+  })
+
+  it('resolves network-plot model icons by leading brand token', () => {
+    const script = dashboardContent.slice(dashboardContent.indexOf('<script>'), dashboardContent.lastIndexOf('</script>'))
+    const start = script.indexOf('const MODEL_DOMAINS = {')
+    const fnStart = script.indexOf('function getModelDomain(m)', start)
+    assert.ok(start !== -1 && fnStart !== -1, 'the plot icon maps should exist in the dashboard script')
+    const brace = script.indexOf('{', fnStart)
+    let depth = 0, end = -1
+    for (let i = brace; i < script.length; i++) {
+      if (script[i] === '{') depth++
+      else if (script[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+    }
+    assert.notEqual(end, -1)
+    const { getModelDomain } = new Function(script.slice(start, end) + '; return { getModelDomain };')()
+
+    // Missing brands: Claude and Gemini rows had no icon at all before.
+    assert.equal(getModelDomain({ modelId: 'claude-sonnet-5' }), 'anthropic.com')
+    assert.equal(getModelDomain({ modelId: 'claude-fable-5.1' }), 'anthropic.com')
+    assert.equal(getModelDomain({ modelId: 'models/gemini-3.8-flash' }), 'ai.google.dev')
+    assert.equal(getModelDomain({ modelId: 'grok-4-1-fast-non-reasoning' }), 'x.ai')
+    assert.equal(getModelDomain({ modelId: 'magistral-small' }), 'mistral.ai')
+    // Namespaced/vendor-prefixed variants resolve to the same brand.
+    assert.equal(getModelDomain({ modelId: 'srv_x:@cf/qwen/qwen3.8-27b' }), 'qwen.ai')
+    assert.equal(getModelDomain({ modelId: 'srv_x:kc/nvidia/nemotron-3-ultra-550b-a55b:free' }), 'nvidia.com')
+    assert.equal(getModelDomain({ modelId: 'igenius/colosseum_355b_instruct_16k' }), 'igenius.ai')
+    // False matches that produced WRONG icons: substring lookups gave dolphin
+    // Microsoft's phi mark, phind the same, and anything containing "nova" AWS's.
+    assert.equal(getModelDomain({ modelId: 'dolphin-mistral-24b-venice-edition' }), 'cognitivecomputations.com')
+    assert.equal(getModelDomain({ modelId: 'phind-codellama-34b' }), '')
+    assert.notEqual(getModelDomain({ modelId: 'novita-llama-3.3-70b' }), 'aws.amazon.com')
+    // With a vendor prefix the model part leads, so the real brand resolves.
+    assert.equal(getModelDomain({ modelId: 'novita/llama-3.3-70b' }), 'meta.com')
+    assert.equal(getModelDomain({ modelId: 'amazon-nova-pro' }), 'aws.amazon.com')
+    assert.equal(getModelDomain({ modelId: 'phi-4-mini-instruct' }), 'microsoft.com')
+    assert.equal(getModelDomain({ modelId: 'auto' }), '')
+  })
+
+  it('treats provider rate limits as a clock status, with or without a reset time', () => {
+    const script = dashboardContent.slice(dashboardContent.indexOf('<script>'), dashboardContent.lastIndexOf('</script>'))
+    const start = script.indexOf('function isRateLimitedRow(')
+    assert.notEqual(start, -1, 'isRateLimitedRow should exist in the dashboard script')
+    const braceStart = script.indexOf('{', start)
+    let depth = 0, end = -1
+    for (let i = braceStart; i < script.length; i++) {
+      if (script[i] === '{') depth++
+      else if (script[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+    }
+    assert.notEqual(end, -1)
+    const isRateLimitedRow = new Function('return ' + script.slice(start, end))()
+    assert.equal(isRateLimitedRow({ status: 'rate-limited' }), true)
+    assert.equal(isRateLimitedRow({ status: 'down', rateLimit: { wasRateLimited: true } }), true)
+    assert.equal(isRateLimitedRow({ status: 'down', lastResponse: { error: 'Rate limit exceeded. Please try again later.' } }), true)
+    assert.equal(isRateLimitedRow({ status: 'up' }), false)
+    assert.equal(isRateLimitedRow({ status: 'down', lastResponse: { error: 'model not found' } }), false)
+    // A limit with no reset time must still render the clock, not 'Down'.
+    assert.ok(dashboardContent.includes('🕑 Rate limited'))
+  })
+
+  it('treats Latest aliases as delimited tokens, including spaced labels', () => {
+    assert.equal(isLatestModelName('models/gemini-flash-latest'), true)
+    assert.equal(isLatestModelName('Gemini Flash Latest'), true)
+    assert.equal(isLatestModelName('gemini-3.8-flash:latest'), true)
+    assert.equal(isLatestModelName('gemini-3.8-flash'), false)
+    assert.equal(isLatestModelName('latestcoder'), false)
+    assert.equal(isLatestModelName(''), false)
   })
 
   it('labels dashboard scores by the current intelligence source', () => {
@@ -4935,14 +5112,21 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(parseContextLimitFromError("This model's maximum context length is 128000 tokens. However, your messages resulted in 128005 tokens."), 128_000)
     assert.equal(parseContextLimitFromError('prompt is too long: 216102 tokens > 200000 maximum'), 200_000)
     assert.equal(parseContextLimitFromError('context_length_exceeded: maximum is 131072'), 131_072)
-    // A max_tokens cap also reveals a hard limit, even when catalog data exists
-    assert.equal(parseContextLimitFromError('`max_tokens` must be less than or equal to `8192`, the maximum value for `max_tokens` is less than the `context_window` for this model'), 8192)
-    assert.equal(parseContextLimitFromError('max_tokens must be less than or equal to 4096'), 4096)
+    // A max_tokens cap is an OUTPUT limit, never a context window. Reading it as
+    // context made large-context providers (Groq's 131k-token gpt-oss models)
+    // report "≤8k / Micro" and get benched; the cap stays the retry path's job.
+    assert.equal(parseContextLimitFromError('`max_tokens` must be less than or equal to `8192`, the maximum value for `max_tokens` is less than the `context_window` for this model'), null)
+    assert.equal(parseContextLimitFromError('max_tokens must be less than or equal to 4096'), null)
+    assert.equal(parseMaxTokensCapFromError('max_tokens must be less than or equal to 4096'), 4096)
     const vllmLimitError = JSON.stringify({ error: { message: 'max_tokens=16384 cannot be greater than max_model_len=max_total_tokens=8192. Please request fewer output tokens. (parameter=max_tokens, value=16384)', type: 'BadRequestError', param: 'max_tokens', code: 400 } })
     assert.equal(parseContextLimitFromError(vllmLimitError), 8192)
     assert.equal(parseMaxTokensCapFromError(vllmLimitError), 8192)
-    // A "Request too large ... Limit X, Requested Y" cap reveals the same
-    assert.equal(parseContextLimitFromError('Request too large for model `openai/gpt-oss-20b` in organization `org_01krf909wkear9a6bw9d7bxkn8` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 16463, please reduce your message size and try again.'), 8000)
+    // A throughput quota phrased like a size cap is still a RATE limit: Groq
+    // answers over-quota probes with this exact body, so it must not bind the
+    // context window (its gpt-oss rows were showing "≤8k / Micro").
+    assert.equal(parseContextLimitFromError('Request too large for model `openai/gpt-oss-20b` in organization `org_01krf909wkear9a6bw9d7bxkn8` service tier `on_demand` on tokens per minute (TPM): Limit 8000, Requested 16463, please reduce your message size and try again.'), null)
+    // The same wording without rate-limit context still states a real size cap.
+    assert.equal(parseContextLimitFromError('Request too large: Limit 32000, Requested 98000, please reduce your message size'), 32_000)
     assert.equal(parseContextLimitFromError('Limit 1,500, Requested 3,000, retry later'), 1500)
     assert.equal(parseContextLimitFromError('This request would exceed your organization rate limit of 20000 input tokens per minute. This request would use 25000 input tokens'), null)
     assert.equal(parseContextLimitFromError('some unrelated error'), null)
@@ -5149,6 +5333,13 @@ describe('context window bounds (known + observed)', () => {
     assert.equal(isIncompatibleModelError(scalewayWireMsg, 422), true)
     // Relays sometimes forward only the error field, so the bare phrasing must stand alone.
     assert.equal(isIncompatibleModelError('ROUTE NOT SUPPORTED', 422), true)
+    // Groq's terms-gated models (Orpheus TTS, ALLaM) are permanently unavailable
+    // to this org until an admin accepts the licence: 'Incompatible', not a red
+    // 'Down' that keeps being re-probed as a transient failure.
+    const groqTermsMsg = JSON.stringify({ error: { message: 'The model `canopylabs/orpheus-v1-english` requires terms acceptance. Please have the org admin accept the terms at https://console.groq.com/playground?model=canopylabs%2Forpheus-v1-english', type: 'invalid_request_error', code: 'model_terms_required' } })
+    assert.equal(isIncompatibleModelError(groqTermsMsg, 400), true)
+    assert.equal(isIncompatibleModelError('canopylabs/orpheus-arabic-saudi requires terms acceptance', 400), true)
+    assert.equal(isIncompatibleModelError('model_terms_required', 400), true)
     // ...but a vague 'not supported' policy line with no route/model framing stays a
     // generic error rather than being swept into Incompatible.
     assert.equal(isIncompatibleModelError('This feature is not supported on the free plan', 422), false)

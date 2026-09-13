@@ -1488,6 +1488,20 @@
       visibility: visible;
     }
 
+    /* Secondary line under a provider name: the concrete model id this provider
+       row serves. A model heading can list the same provider key several times
+       (e.g. multiple g4f backends or freemodels personas), so the id is what
+       tells those rows apart. */
+    .provider-subtext {
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .pin-row-btn.pinned {
       opacity: 1;
     }
@@ -2374,6 +2388,25 @@
     const CHAT_MODEL_STORAGE_KEY = 'hammer-chat-model-v1';
     const MODEL_ID_ALIASES = {
       'mimo-v2-omni-free': 'xiaomi/mimo-v2-omni:free',
+      // g4f backends serve these under their own repo spellings; they are the same
+      // models the catalogs list, so every provider must share one dashboard row.
+      'zai-z/zai-org-glm-5-3-flash': 'glm-5.3-flash',
+      'zai-org/glm-5.3-flash': 'glm-5.3-flash',
+      'glm-5.3': 'z-ai/glm-5.3',
+      // Grok 4 Fast family: g4f repo spellings and hyphenated version numbers
+      // (mirrors sources.js so grouping, labels and scores agree client-side).
+      'xai-z/grok-4-fast': 'grok-4-fast',
+      'tb/grok-4-fast': 'grok-4-fast',
+      'x-ai/grok-4-fast': 'grok-4-fast',
+      'xai-z/grok-4-fast-reasoning': 'grok-4-fast',
+      'xai-z/grok-4-fast-non-reasoning': 'grok-4-fast-non-reasoning',
+      'xai-z/grok-4-1-fast': 'grok-4.1-fast',
+      'grok-4-1-fast': 'grok-4.1-fast',
+      'x-ai/grok-4-1-fast': 'grok-4.1-fast',
+      'xai-z/grok-4-1-fast-reasoning': 'grok-4.1-fast',
+      'xai-z/grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
+      'grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
+      'x-ai/grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
     };
     const PROVIDER_NAMES = {
       'groq': 'Groq', 'googleai': 'Google', 'cerebras': 'Cerebras',
@@ -2644,7 +2677,11 @@
 
     function canonicalizeClientModelId(modelId) {
       const raw = typeof modelId === 'string' ? modelId.trim() : '';
-      const resolved = MODEL_ID_ALIASES[raw] || raw;
+      // The g4f per-server namespace ("srv_ab12:model") is routing info, not model
+      // identity — strip it so discovered rows share the group key their catalog
+      // siblings use, then resolve the model part through the alias map.
+      const unnamespaced = raw.replace(/^srv_[a-z0-9]+:/i, '');
+      const resolved = MODEL_ID_ALIASES[unnamespaced] || unnamespaced;
       const base = resolved.replace(/(?::[a-z0-9-]+)+$/i, '');
       const unprefixed = base.includes('/') ? base.split('/').pop() : base;
       return { base, unprefixed };
@@ -3525,38 +3562,75 @@
       // defined across sources.js / tags.js so the plot can resolve a brand icon for each.
       const MODEL_DOMAINS = {
         // --- Chinese open-weight labs ---
-        'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com', 'deepseek-v3': 'deepseek.com', 'deepseek-v4': 'deepseek.com',
-        'qwen': 'qwen.ai', 'qwen3': 'qwen.ai', 'qwen3.5': 'qwen.ai', 'qwen3-vl': 'qwen.ai', 'qwen3-coder': 'qwen.ai', 'qwen3-next': 'qwen.ai',
+        'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com',
+        'qwen': 'qwen.ai', 'qwq': 'qwen.ai',
         'glm': 'zhipuai.cn', 'z-ai': 'zhipuai.cn', 'zai': 'zhipuai.cn',
-        'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai', 'kimi-k2': 'moonshot.ai', 'kimi-k3': 'moonshot.ai',
+        'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
         'minimax': 'minimax.chat', 'minimaxai': 'minimax.chat',
         'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
         'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
         'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
-        'bytedance': 'bytedance.com', 'bytedance-seed': 'bytedance.com', 'dola-seed': 'bytedance.com',
-        'hy3': 'hunyuan.cloud.tencent.com', 'tencent': 'hunyuan.cloud.tencent.com',
-        'cogito': 'deepinfra.com',
+        'bytedance': 'bytedance.com', 'bytedance-seed': 'bytedance.com', 'seed': 'bytedance.com', 'dola': 'bytedance.com',
+        'hy3': 'hunyuan.cloud.tencent.com', 'hunyuan': 'hunyuan.cloud.tencent.com', 'tencent': 'hunyuan.cloud.tencent.com',
+        'cogito': 'deepcogito.com',
+        'swe': 'cognition.ai',
         // --- Western labs / providers ---
-        'gemma': 'ai.google.dev', 'google': 'ai.google.dev',
+        'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
+        'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
         'llama': 'meta.com', 'meta': 'meta.com',
         'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
-        'gpt-oss': 'openai.com', 'openai': 'openai.com',
-        'mistral': 'mistral.ai', 'ministral': 'mistral.ai', 'codestral': 'mistral.ai', 'devstral': 'mistral.ai', 'mistral-large': 'mistral.ai', 'mistral-medium': 'mistral.ai',
+        'gpt': 'openai.com', 'openai': 'openai.com',
+        'mistral': 'mistral.ai', 'magistral': 'mistral.ai', 'ministral': 'mistral.ai', 'codestral': 'mistral.ai',
+        'devstral': 'mistral.ai', 'pixtral': 'mistral.ai', 'mixtral': 'mistral.ai',
         'grok': 'x.ai', 'x-ai': 'x.ai',
         'phi': 'microsoft.com',
         'command': 'cohere.com', 'north': 'cohere.com', 'cohere': 'cohere.com',
-        'aria': 'ai21.com',
-        'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com',
+        'aria': 'ai21.com', 'jamba': 'ai21.com',
+        'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com', 'titan': 'aws.amazon.com',
         'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
         'laguna': 'poolside.ai', 'poolside': 'poolside.ai',
-        'granite': 'ibm.com', 'ibm': 'ibm.com',
+        'granite': 'ibm.com', 'ibm': 'ibm.com', 'allam': 'sdaia.gov.sa',
         'stockmark': 'stockmark.com',
-        'igenius': 'igenius.ai',
+        'colosseum': 'igenius.ai', 'igenius': 'igenius.ai',
+        'orpheus': 'canopylabs.ai', 'canopylabs': 'canopylabs.ai',
+        'compound': 'groq.com',
+        'solar': 'upstage.ai', 'upstage': 'upstage.ai',
+        'dolphin': 'cognitivecomputations.com',
+        'falcon': 'tii.ae', 'olmo': 'allenai.org', 'exaone': 'lgai.research',
       };
+      // Token-aware brand lookup. A key only matches when it names the model's
+      // LEADING word(s), so "dolphin-mistral" no longer borrows Microsoft's "phi"
+      // icon and "novita" no longer borrows Amazon's "nova". A trailing version
+      // suffix is allowed ("qwen" matches qwen3, "gemma" matches gemma3), but
+      // arbitrary trailing letters are not. The full id is tried first so vendor
+      // names still resolve (igenius/colosseum→), then the model part alone
+      // (z-ai/glm5 → glm5, @cf/qwen/qwen3.8-27b → qwen3.8-27b).
+      const DOMAIN_SPLIT_RE = /[-_./:\s]+/;
+      function domainTokens(value) {
+        return String(value || '')
+          .toLowerCase()
+          .replace(/(?::(?:free|optimized|cloud))+$/i, '')
+          .split(DOMAIN_SPLIT_RE)
+          .filter(Boolean);
+      }
+      function isDomainKeyPrefix(keyTokens, modelTokens) {
+        if (!keyTokens.length || keyTokens.length > modelTokens.length) return false;
+        for (let i = 0; i < keyTokens.length; i++) {
+          const key = keyTokens[i], token = modelTokens[i];
+          if (key === token) continue;
+          const suffix = token.startsWith(key) ? token.slice(key.length) : null;
+          if (i !== keyTokens.length - 1 || suffix == null || !/^\d[\d.-]*$/.test(suffix)) return false;
+        }
+        return true;
+      }
       function getModelDomain(m) {
-        const raw = (m.modelId || m.label || '').toLowerCase();
-        for (const [prefix, domain] of Object.entries(MODEL_DOMAINS)) {
-          if (raw.includes(prefix)) return domain;
+        const raw = String(m.modelId || m.label || '').toLowerCase().replace(/^srv_[a-z0-9]+:/i, '');
+        if (!raw) return '';
+        const segments = raw.split('/');
+        const candidates = [domainTokens(raw), domainTokens(segments[segments.length - 1])];
+        for (const [key, domain] of Object.entries(MODEL_DOMAINS)) {
+          const keyTokens = String(key).split(DOMAIN_SPLIT_RE).filter(Boolean);
+          if (candidates.some(tokens => isDomainKeyPrefix(keyTokens, tokens))) return domain;
         }
         return '';
       }
@@ -3566,7 +3640,10 @@
         'groq': 'groq.com', 'googleai': 'ai.google.dev', 'cerebras': 'cerebras.ai',
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
         'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
-        'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev',
+        'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
+        // 'freemodels' is intentionally absent: its only domain is a workers.dev
+        // subdomain, whose favicon is Cloudflare's logo — the monogram fallback
+        // is more honest than a wrong brand mark.
       };
 
       // Fit the viewBox to the card's actual pixel size.
@@ -4527,6 +4604,85 @@
       return (c.unprefixed || m.modelId || '').toLowerCase();
     }
 
+    // Mirrors the identity helpers in sources.js so dashboard grouping matches
+    // the server: provider spelling, routing namespaces and runtime tags are
+    // ignored, while model identity (family + version) is preserved.
+    function clientResolvedModelId(modelId) {
+      const raw = typeof modelId === 'string' ? modelId.trim() : '';
+      if (!raw) return '';
+      if (MODEL_ID_ALIASES[raw]) return MODEL_ID_ALIASES[raw];
+      const lower = raw.toLowerCase();
+      if (MODEL_ID_ALIASES[lower]) return MODEL_ID_ALIASES[lower];
+      const stripped = raw.replace(/^srv_[a-z0-9]+:/i, '');
+      if (stripped !== raw) return clientResolvedModelId(stripped);
+      return raw;
+    }
+
+    function normalizedModelIdentityName(modelId) {
+      let value = clientResolvedModelId(modelId).toLowerCase();
+      if (!value) return '';
+      value = value.replace(/^models\//, '');
+      const segments = value.split('/');
+      value = segments[segments.length - 1];
+      value = value.replace(/(?::(?:free|optimized|cloud))+$/i, '');
+      return value.replace(/[-_:/\\.\s]+/g, ' ').trim();
+    }
+
+    function getModelIdentityKey(modelId) {
+      return normalizedModelIdentityName(modelId).replace(/\s+/g, '');
+    }
+
+    function isModelSizeToken(token) {
+      return /^(?:a\d+b|\d+(?:\.\d+)?x\d+[bemt]|\d+[bemt]|q\d+(?:[_-][a-z0-9]+)*|fp\d+|int\d+|bf16|awq|gptq|gguf)$/i.test(String(token || ''));
+    }
+
+    function isSameModelIdentity(a, b) {
+      const keyA = getModelIdentityKey(a);
+      const keyB = getModelIdentityKey(b);
+      if (!keyA || !keyB) return false;
+      if (keyA === keyB) return true;
+      const nameA = normalizedModelIdentityName(a).split(' ').filter(Boolean);
+      const nameB = normalizedModelIdentityName(b).split(' ').filter(Boolean);
+      if (!nameA.length || !nameB.length) return false;
+      const [shortTokens, longTokens] = nameA.length <= nameB.length ? [nameA, nameB] : [nameB, nameA];
+      if (shortTokens.length === longTokens.length) return false;
+      for (let i = 0; i < shortTokens.length; i++) {
+        if (shortTokens[i] !== longTokens[i]) return false;
+      }
+      if (/^\d+$/.test(shortTokens[shortTokens.length - 1])) return false;
+      const extra = longTokens.slice(shortTokens.length);
+      return extra.every((token, index) => isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)));
+    }
+
+    function isLatestModelName(modelId) {
+      return /(?:^|[-_/:\s])latest(?:$|[-_/:\s])/i.test(String(modelId || ''));
+    }
+
+    function latestModelFamilyKey(modelId) {
+      let value = String(modelId || '').trim().toLowerCase();
+      value = value.replace(/^srv_[a-z0-9]+:/i, '').replace(/^models\//, '');
+      value = value.replace(/^[^/]+\//, '').replace(/(?::(?:free|optimized|cloud))+$/i, '');
+      value = value.replace(/\b(?:latest|current|default)\b/g, ' ');
+      value = value.replace(/\b\d+(?:\.\d+)+\b/g, ' ');
+      value = value.replace(/\b\d+\b/g, ' ');
+      return value.replace(/[-_:/\\.]+/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function modelVersionTuple(modelId) {
+      const matches = String(modelId || '').match(/\d+(?:\.\d+)+|\d+/g) || [];
+      return matches.flatMap(part => part.split('.').map(Number)).filter(Number.isFinite);
+    }
+
+    function compareModelVersions(a, b) {
+      const left = modelVersionTuple(a), right = modelVersionTuple(b);
+      const length = Math.max(left.length, right.length);
+      for (let i = 0; i < length; i++) {
+        const av = left[i] == null ? -1 : left[i], bv = right[i] == null ? -1 : right[i];
+        if (av !== bv) return av - bv;
+      }
+      return left.length - right.length;
+    }
+
     // Strip the provider prefix (before '/') and runtime suffix (after ':') from
     // heading model names so discovered ids like "nvidia/model:free" read cleanly.
     function cleanHeadingModelName(name) {
@@ -4592,7 +4748,56 @@
           byLabel.set(labelKey, g);
         }
       }
-      return [...byLabel.values()];
+      // Merge groups that are the same model under different provider spellings
+      // (qwen/qwen3.8-27b vs qwen-3.8-27b, or a size-qualified alias such as
+      // nemotron-3-super vs nvidia/nemotron-3-super-120b-a12b). Matching uses
+      // each group's ids, its learned real backend id, and its heading label, so
+      // g4f/freemodels mirrors land under the manufacturer's row.
+      let mergedGroups = [...byLabel.values()];
+      const identityBuckets = [];
+      for (const group of mergedGroups) {
+        const ids = [];
+        for (const member of group.members) {
+          if (member && member.modelId) ids.push(member.modelId);
+          if (member && member.realModelId) ids.push(member.realModelId);
+        }
+        if (group.canonicalId) ids.push(group.canonicalId);
+        if (group.label) ids.push(group.label);
+        const target = ids.length
+          ? identityBuckets.find(bucket => bucket.ids.some(a => ids.some(b => isSameModelIdentity(a, b))))
+          : null;
+        if (!target) { identityBuckets.push({ group, ids }); continue; }
+        const targetSize = target.group.members.length;
+        target.group.members.push(...group.members);
+        // The heading keeps the label of whichever group brings the most
+        // providers, so a single persona row cannot rename a shared catalogue row.
+        if (group.members.length > targetSize) target.group.label = group.label;
+        target.ids.push(...ids);
+      }
+      mergedGroups = identityBuckets.map(bucket => bucket.group);
+      const latestGroups = new Set();
+      const concreteByFamily = new Map();
+      for (const group of mergedGroups) {
+        const modelsWithIds = group.members.filter(member => member && member.modelId);
+        if (modelsWithIds.some(member => isLatestModelName(member.modelId) || isLatestModelName(member.label))) {
+          latestGroups.add(group);
+          continue;
+        }
+        const family = latestModelFamilyKey(modelsWithIds[0]?.modelId || group.label);
+        if (!family) continue;
+        const current = concreteByFamily.get(family);
+        if (!current || compareModelVersions(modelsWithIds[0].modelId, current.members[0]?.modelId) > 0) {
+          concreteByFamily.set(family, group);
+        }
+      }
+
+      for (const group of latestGroups) {
+        const modelsWithIds = group.members.filter(member => member && member.modelId);
+        const target = concreteByFamily.get(latestModelFamilyKey(modelsWithIds[0]?.modelId || group.label));
+        if (target && target !== group) target.members.push(...group.members);
+      }
+
+      return mergedGroups.filter(group => !latestGroups.has(group) || !concreteByFamily.has(latestModelFamilyKey(group.members[0]?.modelId || group.label)) || concreteByFamily.get(latestModelFamilyKey(group.members[0]?.modelId || group.label)) === group);
     }
 
     // Providers within a model group sorted by: Ready first, paid last, then faster first.
@@ -4693,7 +4898,7 @@
       const statusColor = s.upCount === 0 ? 'var(--error)' : (s.upCount === members.length ? 'var(--success)' : 'var(--warning)');
       const statusText = members.length === 1
         ? (first.status === 'up' ? 'Up' : (first.status === 'noauth' ? 'No Auth' : 'Down'))
-        : (s.upCount === members.length ? 'All Up' : `${s.upCount}/${members.length} Up`);
+        : (s.upCount === members.length ? 'All providers up' : `${s.upCount}/${members.length} providers`);
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
         : `<div style="display: flex; align-items: center; gap: 6px;"><span style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span><span style="font-size: 0.75rem; font-weight: 500;">${statusText}</span></div>`;
@@ -4909,6 +5114,14 @@
         pinBtn.onclick = (e) => { e.stopPropagation(); pinModel(isPinnedRow ? '' : m.modelId, m.providerKey); };
         pinBtn.title = isPinnedRow ? 'Unpin model' : 'Pin model';
       }
+      // Refresh the provider subtext: discovery can learn a real model id later,
+      // and the subtext is what distinguishes repeated rows of one provider.
+      const subtextEl = modelCell.querySelector('.provider-subtext');
+      if (subtextEl) {
+        const realId = m.realModelId && m.realModelId !== m.modelId ? m.realModelId : '';
+        subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
+        subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
+      }
       modelCell.onclick = () => openDrawer(m);
 
       // Update context window (known limit or observed bounds)
@@ -4936,7 +5149,7 @@
       const pingCell = row.cells[2];
       const pingTextEl = pingCell.querySelector('div[style*="text-align"]') || pingCell.querySelector('div:last-child');
       if (hasPing) {
-        const rateTxt = (m.status === 'up' && m.isRateLimited) ? ' 🕑' : '';
+        const rateTxt = m.isRateLimited ? ' 🕑' : '';
         if (pingTextEl) pingTextEl.innerHTML = `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${rateTxt}</div>`;
       } else {
         if (pingTextEl) pingTextEl.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted);">OFFLINE</span>';
@@ -5381,6 +5594,30 @@
 
     // Epoch-ms reset time: from the most recent test response first, otherwise
     // a reset captured by the proxy path (retryDelay/x-ratelimit headers).
+    // A row is rate-limited when the provider said so — whether that arrived as
+    // a 429 status, a text-only limit body, or the dedicated 'rate-limited'
+    // probe status. Detection is deliberately independent of any reset timing,
+    // because many gateways ("Rate limit exceeded. Please try again later.")
+    // refuse to say when the window reopens.
+    function isRateLimitedRow(m) {
+      if (!m) return false;
+      if (String(m.status || '').toLowerCase() === 'rate-limited') return true;
+      if (m.rateLimit && m.rateLimit.wasRateLimited === true) return true;
+      if (Number(m.lastResponse?.status) === 429) return true;
+      const errorText = String(m.lastResponse?.error || '');
+      let bodyCode = null;
+      try {
+        const parsed = JSON.parse(errorText);
+        const bodyError = Array.isArray(parsed) ? parsed[0]?.error : parsed?.error;
+        bodyCode = Number(bodyError?.code);
+      } catch {
+        // The persisted error may be plain text rather than JSON.
+      }
+      const bodyRateLimited = bodyCode === 429
+        || /resource_exhausted|quota exceeded|rate limit exceeded|too many requests/i.test(errorText);
+      return bodyRateLimited;
+    }
+
     function getRateLimitResetAt(m) {
       const errorText = String(m?.lastResponse?.error || '');
       let bodyError = null;
@@ -5390,12 +5627,8 @@
       } catch {
         // The persisted error may be plain text rather than JSON.
       }
-      const bodyRateLimited = Number(bodyError?.code) === 429
-        || /resource_exhausted|quota exceeded|rate limit exceeded|too many requests/i.test(errorText);
-      const limited = m?.rateLimit?.wasRateLimited === true
-        || (m?.rateLimit?.creditLimit > 0 && m?.rateLimit?.creditRemaining != null && m.rateLimit.creditRemaining <= 0)
-        || Number(m?.lastResponse?.status) === 429
-        || bodyRateLimited;
+      const limited = isRateLimitedRow(m)
+        || (m?.rateLimit?.creditLimit > 0 && m?.rateLimit?.creditRemaining != null && m.rateLimit.creditRemaining <= 0);
       if (!limited) return null;
       const bodyReset = bodyError?.metadata?.headers?.['X-RateLimit-Reset']
         ?? bodyError?.metadata?.headers?.['x-ratelimit-reset']
@@ -5547,6 +5780,16 @@
               <span class="rl-countdown" data-reset-at="${resetAt}" data-status-dot="${dotColor}" data-status-text="${statusText}" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>
             </div>`;
       }
+      // Rate limited but the provider withheld a reset time: still a clock
+      // status, never a red 'Down'.
+      if (isRateLimitedRow(m)) {
+        const quota = quotaLabel(m);
+        const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
+        return `
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span style="color: var(--warning);" title="${escapeHtml(title)}">🕑 Rate limited</span>
+            </div>`;
+      }
       return `
             <div style="display: flex; align-items: center; gap: 6px;">
               ${statusIndicatorHTML(m, dotColor)}
@@ -5587,6 +5830,12 @@
         const quota = quotaLabel(m);
         const title = `Rate limited — ${quota ? `${quota} — ` : ''}resets ${formatClockTime(resetAt)}`;
         return `<span class="rl-countdown" data-reset-at="${resetAt}" data-status-dot="${dotColor}" data-status-text="${statusText}" style="display:inline-flex;align-items:center;gap:6px;" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>`;
+      }
+      // Rate limited with no reset time supplied: clock status, not 'Down'.
+      if (isRateLimitedRow(m)) {
+        const quota = quotaLabel(m);
+        const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
+        return `<span style="color: var(--warning); display:inline-flex;align-items:center;gap:6px;" title="${escapeHtml(title)}">🕑 Rate limited</span>`;
       }
       // Test response exists? Show it
       const hasAuth = m.status !== 'noauth';
@@ -5808,6 +6057,7 @@
               <span style="font-weight: 600;" title="${escapeHtml(m.providerKey)}">${m.providerKey}</span>
               <span class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinnedRow ? '' : m.modelId}', '${m.providerKey}')" title="${isPinnedRow ? 'Unpin model' : 'Pin model'}">📌</span>
             </div>
+            <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           <td class="text-right">

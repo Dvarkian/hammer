@@ -24,6 +24,33 @@ export const MODEL_ID_ALIASES = {
   'glm-4.6': 'glm-4.6',
   'glm-5': 'z-ai/glm5',
   'glm-5.2': 'z-ai/glm-5.2',
+  'glm-5.3': 'z-ai/glm-5.3',
+  // Provider gateways commonly normalize Claude's dotted version to hyphens
+  // (e.g. anthropic/claude-sonnet-4-5). Keep those wire ids mapped to the
+  // curated 4.5 benchmark entries rather than treating them as unknown models.
+  'claude-sonnet-4-5': 'claude-sonnet-4.5',
+  'anthropic/claude-sonnet-4-5': 'claude-sonnet-4.5',
+  'claude-haiku-4-5': 'claude-haiku-4.5',
+  'anthropic/claude-haiku-4-5': 'claude-haiku-4.5',
+  // g4f backends serve the GLM 5.3 Flash family under their own repo spelling;
+  // it is the same model the empero/nvidia catalogs list as glm-5.3-flash.
+  'zai-z/zai-org-glm-5-3-flash': 'glm-5.3-flash',
+  'zai-org/glm-5.3-flash': 'glm-5.3-flash',
+  // The Grok 4 Fast family reaches Hammer through g4f under backend-specific
+  // repo spellings (xai-z/..., tb/...) and with hyphenated version numbers.
+  // Everything below maps onto the curated grok-4-fast / grok-4.1-fast entries.
+  'xai-z/grok-4-fast': 'grok-4-fast',
+  'tb/grok-4-fast': 'grok-4-fast',
+  'x-ai/grok-4-fast': 'grok-4-fast',
+  'xai-z/grok-4-fast-reasoning': 'grok-4-fast',
+  'xai-z/grok-4-fast-non-reasoning': 'grok-4-fast-non-reasoning',
+  'xai-z/grok-4-1-fast': 'grok-4.1-fast',
+  'grok-4-1-fast': 'grok-4.1-fast',
+  'x-ai/grok-4-1-fast': 'grok-4.1-fast',
+  'xai-z/grok-4-1-fast-reasoning': 'grok-4.1-fast',
+  'xai-z/grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
+  'grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
+  'x-ai/grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
   'kimi-k2': 'moonshotai/kimi-k2-instruct',
   'kimi-k2-thinking': 'moonshotai/kimi-k2-thinking',
   'kimi-k2.5': 'moonshotai/kimi-k2.5',
@@ -103,6 +130,8 @@ export const MODEL_LABEL_OVERRIDES = {
   'glm-5': 'GLM 5',
   'glm-5.1': 'GLM 5.1',
   'glm-5.2': 'GLM 5.2',
+  'z-ai/glm-5.3': 'GLM 5.3',
+  'glm-5.3-flash': 'GLM 5.3 Flash',
   'hy3-free': 'Hy3',
   'kimi-k2': 'Kimi K2',
   'kimi-k2-thinking': 'Kimi K2 Thinking',
@@ -168,10 +197,130 @@ export const MODEL_CONTEXT_OVERRIDES = {
   'tencent/hy3': '262k',
 }
 
+/**
+ * The per-server routing namespace g4f discovery prefixes catalog ids with
+ * ("srv_ab12:vendor/model"). It selects which backend serves the row but carries
+ * no model identity, so alias resolution, scores, labels, and dashboard grouping
+ * all see through it. The full id is still what goes upstream when routing.
+ */
+export function stripRoutingNamespace(modelId) {
+  return String(modelId || '').replace(/^srv_[a-z0-9]+:/i, '')
+}
+
+/**
+ * Returns whether a model name is a provider alias for its current/latest
+ * iteration. This matches a delimited token, so names such as "latestcoder"
+ * are not accidentally treated as aliases.
+ */
+export function isLatestModelName(modelId) {
+  return /(?:^|[-_:/\s])latest(?:$|[-_:/\s])/i.test(String(modelId || ''))
+}
+
+/**
+ * Produces a version-independent family key for matching a `*-latest` model to
+ * a concrete version. Provider namespaces, runtime suffixes, version numbers,
+ * and the latest marker are ignored; the remaining words identify the family.
+ *
+ * Examples:
+ *   gemini-flash-latest -> gemini flash
+ *   gemini-3.8-flash    -> gemini flash
+ *   claude-3-7-sonnet-latest -> claude sonnet
+ */
+export function getLatestModelFamilyKey(modelId) {
+  let value = stripRoutingNamespace(String(modelId || '').trim().toLowerCase())
+  if (!value) return ''
+  value = value.replace(/^models\//, '')
+  value = value.replace(/^[^/]+\//, '')
+  value = value.replace(/(?::(?:free|optimized|cloud))+$/i, '')
+  value = value.replace(/\b(?:latest|current|default)\b/g, ' ')
+  value = value.replace(/\b\d+(?:\.\d+)+\b/g, ' ')
+  value = value.replace(/\b\d+\b/g, ' ')
+  return value.replace(/[-_:\/.]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/** Returns numeric version components used to select the newest concrete family member. */
+export function getModelVersionTuple(modelId) {
+  const value = stripRoutingNamespace(String(modelId || '').toLowerCase())
+  const matches = value.match(/\d+(?:\.\d+)+|\d+/g) || []
+  return matches.flatMap(part => part.split('.').map(Number)).filter(Number.isFinite)
+}
+
+/**
+ * Normalized model name used for identity comparisons: routing namespaces
+ * ("srv_ab12:"), vendor prefixes ("qwen/"), runtime tags (":free") and every
+ * separator spelling are folded away, so one model advertised under several id
+ * spellings compares equal. Version digits are preserved (3.5 != 3.8).
+ */
+function normalizedModelIdentityName(modelId) {
+  let value = stripRoutingNamespace(resolveAliasedModelId(modelId)).toLowerCase()
+  if (!value) return ''
+  value = value.replace(/^models\//, '')
+  const segments = value.split('/')
+  value = segments[segments.length - 1]
+  value = value.replace(/(?::(?:free|optimized|cloud))+$/i, '')
+  return value.replace(/[-_:./\s]+/g, ' ').trim()
+}
+
+/**
+ * Separator-insensitive identity key for grouping dashboard/API rows: the same
+ * model reached through different provider spellings collapses to one key.
+ *
+ * Examples:
+ *   qwen/qwen3.8-27b              -> qwen3827b
+ *   qwen-3.8-27b                  -> qwen3827b
+ *   srv_ab12:@cf/qwen/qwen3.8-27b -> qwen3827b
+ *   qwen/qwen3.6-27b              -> qwen3627b  (a different model)
+ */
+export function getModelIdentityKey(modelId) {
+  return normalizedModelIdentityName(modelId).replace(/\s+/g, '')
+}
+
+/**
+ * True for tokens that only describe a model's size or quantization ("120b",
+ * "a12b", "30b", "8x22b", "q4_k_m", "gguf") — never for meaningful variants
+ * such as "lite", "omni", "instruct" or "reasoning".
+ */
+export function isModelSizeToken(token) {
+  return /^(?:a\d+b|\d+(?:\.\d+)?x\d+[bemt]|\d+[bemt]|q\d+(?:[_-][a-z0-9]+)*|fp\d+|int\d+|bf16|awq|gptq|gguf)$/i.test(String(token || ''))
+}
+
+/**
+ * Whether two model ids name the same model: an exact identity-key match or a
+ * size-qualified alias of it. This is what merges "nemotron-3-super" with
+ * "nvidia/nemotron-3-super-120b-a12b" and g4f's "...-30b" variants, while
+ * keeping genuinely different siblings apart — two sizes of one instruct
+ * family, "flash" vs "flash-lite", or "nano" vs "nano-omni".
+ */
+export function isSameModelIdentity(a, b) {
+  const keyA = getModelIdentityKey(a)
+  const keyB = getModelIdentityKey(b)
+  if (!keyA || !keyB) return false
+  if (keyA === keyB) return true
+  const nameA = normalizedModelIdentityName(a).split(' ').filter(Boolean)
+  const nameB = normalizedModelIdentityName(b).split(' ').filter(Boolean)
+  if (!nameA.length || !nameB.length) return false
+  const [shortTokens, longTokens] = nameA.length <= nameB.length ? [nameA, nameB] : [nameB, nameA]
+  if (shortTokens.length === longTokens.length) return false
+  for (let i = 0; i < shortTokens.length; i++) {
+    if (shortTokens[i] !== longTokens[i]) return false
+  }
+  // A bare number only ever trails a g4f duplicate marker ("...-30b - 1"), and
+  // must not be read as a version — so it is ignorable only after a named token.
+  if (/^\d+$/.test(shortTokens[shortTokens.length - 1])) return false
+  const extra = longTokens.slice(shortTokens.length)
+  return extra.every((token, index) => isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)))
+}
+
 export function resolveAliasedModelId(modelId) {
   const raw = typeof modelId === 'string' ? modelId.trim() : ''
   if (!raw) return ''
-  return MODEL_ID_ALIASES[raw] || MODEL_ID_ALIASES[raw.toLowerCase()] || raw
+  if (MODEL_ID_ALIASES[raw]) return MODEL_ID_ALIASES[raw]
+  const lower = raw.toLowerCase()
+  if (MODEL_ID_ALIASES[lower]) return MODEL_ID_ALIASES[lower]
+  // A namespaced id resolves to its model part, which may itself be aliased.
+  const stripped = stripRoutingNamespace(raw)
+  if (stripped !== raw) return resolveAliasedModelId(stripped)
+  return raw
 }
 
 export function cleanModelDisplayLabel(label) {

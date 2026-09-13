@@ -118,13 +118,14 @@ const OVERLENGTH_ERROR = {
 // mode: 'ok' | 'empty-200' | 'overlength-once' | 'hang' | 'freemodels-503-then-ok'
 //     | 'freemodels-error-always' | 'error-envelope-200' | 'model-not-found'
 //     | 'no-usage-stream' | 'model-not-allowed' | 'model-not-allowed-test'
-const stubState = { mode: 'ok', chatCalls: [], overlengthFired: false, heldResponses: [], freemodelsErrorsFired: 0 }
+const stubState = { mode: 'ok', chatCalls: [], overlengthFired: false, heldResponses: [], freemodelsErrorsFired: 0, reportedModel: null }
 
 function resetStub(mode = 'ok') {
   stubState.mode = mode
   stubState.chatCalls = []
   stubState.overlengthFired = false
   stubState.freemodelsErrorsFired = 0
+  stubState.reportedModel = null
 }
 
 const stubServer = createServer((req, res) => {
@@ -245,9 +246,13 @@ const stubServer = createServer((req, res) => {
       const frame = payload => res.write(`data: ${JSON.stringify(payload)}\n\n`)
       // The FreeModels relay reports the real upstream model in every frame; the
       // 'freemodels-503-then-ok' mode carries one so the router's real-name capture
-      // can be pinned end to end.
-      const firstDelta = stubState.mode === 'freemodels-503-then-ok'
-        ? { role: 'assistant', model: 'stub-real-backend' }
+      // can be pinned end to end. stubState.reportedModel lets a test choose which
+      // backend the relay claims on any streaming mode (defaults to the neutral stub
+      // name in the freemodels mode).
+      const reportedModel = stubState.reportedModel
+        || (stubState.mode === 'freemodels-503-then-ok' ? 'stub-real-backend' : null)
+      const firstDelta = reportedModel
+        ? { role: 'assistant', model: reportedModel }
         : { role: 'assistant' }
       frame({ choices: [{ index: 0, delta: firstDelta }] })
       if (stubState.mode !== 'empty-200') frame({ choices: [{ index: 0, delta: { content: 'pong' } }] })
@@ -671,6 +676,31 @@ describe('router harness', () => {
     assert.ok(rowsWithReal.length >= 1, 'the serving row must report the captured real model id')
     assert.equal(rowsWithReal[0].realModelLabel, 'Stub Real Backend')
     assert.ok(rowsWithReal[0].modelId !== 'stub-real-backend', 'the catalog id stays untouched')
+  })
+
+  it('scores a persona row by the real backend it reports, not the persona name', async () => {
+    // The backend the live FreeModels relay actually reports today. scores.js seeds
+    // it at 0.377 while the persona id itself has no score anywhere, so the row must
+    // flip from "unknown" to the backend's intelligence once the relay is used.
+    resetStub('ok')
+    stubState.reportedModel = 'nvidia/nemotron-3-super-120b-a12b'
+
+    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: FREEMODELS_ROW, stream: true, messages: [{ role: 'user', content: 'hi' }] }),
+    })
+    await response.text()
+
+    // The persona row itself must have served (no retry): the stub answered cleanly.
+    assert.equal(stubState.chatCalls[0]?.modelId, FREEMODELS_ROW)
+    const row = await modelById(FREEMODELS_ROW)
+    assert.equal(row?.realModelId, 'nvidia/nemotron-3-super-120b-a12b')
+    assert.equal(row?.intell, 0.377)
+    assert.equal(row?.qualitySource, 'local-fallback')
+    // The harness has no OpenRouter catalog, so there is no measured AA index to
+    // display: the table and the plot both read the 0-1 score scaled up (intell*100).
+    assert.equal(row?.aa, null)
   })
 
   it('does not mark a model incompatible over a FreeModels 200 SSE error frame', async () => {
