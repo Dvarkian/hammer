@@ -7,7 +7,8 @@
 import { parseArgs } from '../lib/utils.js'
 import { loadConfig, saveConfig, exportConfigToken, importConfigToken } from '../lib/config.js'
 import { runOnboard } from '../lib/onboard.js'
-import { getAutostartStatus, installAutostart, startAutostart, uninstallAutostart } from '../lib/autostart.js'
+import { getAutostartStatus, installAutostart, startAutostart, stopAutostart, uninstallAutostart } from '../lib/autostart.js'
+import { stopExistingHammerProcesses } from '../lib/instances.js'
 import { runUpdateCommand } from '../lib/update.js'
 import chalk from 'chalk'
 
@@ -15,7 +16,7 @@ function printHelp() {
   console.log('hammer')
   console.log('')
   console.log('Usage:')
-  console.log('  hammer [--port <port>] [--log] [--ban <model1,model2>]')
+  console.log('  hammer [--port <port>] [--log] [--verbose] [--ban <model1,model2>]')
   console.log('  hammer onboard [--port <port>]')
   console.log('  hammer install --autostart')
   console.log('  hammer start --autostart')
@@ -40,6 +41,7 @@ function printHelp() {
   console.log('  --host <address>   Listen address. Loopback 127.0.0.1 by default (local only).')
   console.log('                     Use --host 0.0.0.0 to expose on the LAN (requires access token)')
   console.log('  --no-log           Disable request payload logging in terminal (legacy/override)')
+  console.log('  --verbose, -v        Show detailed startup diagnostics')
   console.log('  --ban <ids>        Comma-separated model IDs to keep banned')
   console.log('  --onboard          Same as the onboard subcommand')
   console.log('  --autostart        Manage start-on-login behavior for the router')
@@ -434,11 +436,31 @@ async function main() {
     if (!shouldStartRouter) return
   }
 
+  if (process.env.HAMMER_SKIP_INSTANCE_STOP !== '1') {
+    const autostartStatus = getAutostartStatus()
+    if (autostartStatus?.configured) {
+      const supervisorStop = stopAutostart()
+      if (!supervisorStop.ok) {
+        console.error(`Unable to stop the Hammer autostart supervisor: ${supervisorStop.message}`)
+        process.exit(1)
+      }
+      console.log(chalk.dim(`  ℹ ${supervisorStop.message} This instance takes over.`))
+    }
+    try {
+      const instanceStop = await stopExistingHammerProcesses()
+      if (instanceStop.stopped.length > 0) console.log(chalk.dim(`  ℹ ${instanceStop.message}`))
+      else if (instanceStop.message && process.env.HAMMER_DEBUG_STARTUP === '1') console.log(chalk.dim(`  ℹ ${instanceStop.message}`))
+    } catch (err) {
+      console.error(`Unable to stop existing Hammer processes: ${err?.message || err}`)
+      process.exit(1)
+    }
+  }
+
   const config = loadConfig()
 
   const { runServer } = await import('../lib/server.js')
 
-  await runServer(config, cliArgs.portValue || 7352, cliArgs.enableLog, cliArgs.bannedModels, cliArgs.hostValue)
+  await runServer(config, cliArgs.portValue || 7352, cliArgs.enableLog, cliArgs.bannedModels, cliArgs.hostValue, cliArgs.verbose)
 }
 
 main().catch(err => {

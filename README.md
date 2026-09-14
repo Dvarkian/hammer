@@ -117,7 +117,7 @@ If you want manual setup, merge this into `~/.openclaw/openclaw.json`:
 ## CLI
 
 ```bash
-hammer [--port <number>] [--host <address>] [--log] [--ban <model1,model2>]
+hammer [--port <number>] [--host <address>] [--log] [--verbose] [--ban <model1,model2>]
 hammer onboard [--port <number>]
 hammer install --autostart
 hammer start --autostart
@@ -130,7 +130,7 @@ hammer config export
 hammer config import <token>
 ```
 
-Request terminal logging is disabled by default. Use `--log` to enable it.
+Request terminal logging is disabled by default. Use `--log` to enable it. Startup waits for model discovery and probes before binding the web UI; use `--verbose` (or `HAMMER_DEBUG_STARTUP=1`) for detailed diagnostics.
 
 ## Security
 

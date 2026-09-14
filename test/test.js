@@ -95,6 +95,8 @@ import {
 } from '../lib/model-quality.js'
 import { getConfiguredTagNames, getModelTagKey, getModelTags as getUserModelTags, normalizeTag, normalizeTags, setModelTags } from '../lib/tags.js'
 import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autostart.js'
+import { isHammerProcessCommandLine } from '../lib/instances.js'
+import { formatStartupProviderResult, shouldEmitKiroOAuthWarning } from '../lib/startup.js'
 import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
@@ -3597,6 +3599,27 @@ describe('parseContextSize', () => {
     assert.equal(parseContextSize(0), null)
   })
 })
+describe('startup UX helpers', () => {
+  it('matches Hammer processes without matching look-alikes or its own discovery command', () => {
+    assert.equal(isHammerProcessCommandLine('/usr/bin/node /home/murray/.local/bin/hammer'), true)
+    assert.equal(isHammerProcessCommandLine('/opt/hammer/bin/hammer.js --port 7352'), true)
+    assert.equal(isHammerProcessCommandLine('hammering.txt'), false)
+    assert.equal(isHammerProcessCommandLine('pgrep -af hammer'), false)
+    assert.equal(isHammerProcessCommandLine('/opt/hammerdb/server'), false)
+  })
+
+  it('throttles identical Kiro OAuth warnings', () => {
+    const previous = { key: '401:bad credentials', at: 10_000 }
+    assert.equal(shouldEmitKiroOAuthWarning(401, 'bad credentials', 10_000 + 60_000, previous), false)
+    assert.equal(shouldEmitKiroOAuthWarning(401, 'bad credentials', 10_000 + 6 * 60_000, previous), true)
+    assert.equal(shouldEmitKiroOAuthWarning(401, 'different', 10_000 + 60_000, previous), true)
+  })
+
+  it('formats compact provider startup results', () => {
+    assert.equal(formatStartupProviderResult('NIM', { count: 69 }), '✓ NIM — 69 models')
+    assert.equal(formatStartupProviderResult('OpenRouter', { ok: false, error: 'fetch failed' }), '✗ OpenRouter — fetch failed')
+  })
+})
 
 describe('parseArgs', () => {
   const argv = (...args) => ['node', 'script', ...args]
@@ -3611,6 +3634,11 @@ describe('parseArgs', () => {
   it('parses --host and falls back to loopback when absent', () => {
     assert.equal(parseArgs(argv('--host', '0.0.0.0')).hostValue, '0.0.0.0')
     assert.equal(parseArgs(argv()).hostValue, null)
+  })
+
+  it('parses verbose startup diagnostics', () => {
+    assert.equal(parseArgs(argv('--verbose')).verbose, true)
+    assert.equal(parseArgs(argv('-v')).verbose, true)
   })
 
   it('rejects invalid ports instead of silently accepting them', () => {
