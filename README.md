@@ -22,7 +22,7 @@
 
 - 💸 **Completely Free:** Stop paying for API usage. We seamlessly provide access to robust free models.
 - 🧠 **State-of-the-Art (SOTA) Models:** Out-of-the-box availability for top-tier models including **Kimi K2.5, Minimax M2.5, GLM 5, Deepseek V3.2**, and more.
-- 🏢 **Reliable Providers:** We route requests securely through trusted, high-performance platforms like **NVIDIA, Groq, OpenRouter, OpenCode Zen, Ollama, Kiro, and Google**.
+- 🏢 **Reliable Providers:** We route requests securely through trusted, high-performance platforms like **NVIDIA, Groq, OpenRouter, OpenCode Zen, Ollama, Kiro, Google, GitHub Copilot, and OpenAI Codex**.
 - ⚡ **Lightning Fast:** The built-in benchmark continually evaluates metrics to pick the fastest and most capable LLM for your request.
 - 🔄 **OpenAI-Compatible:** A perfect drop-in replacement that works seamlessly with your existing tools, scripts, and workflows.
 
@@ -257,6 +257,8 @@ Grouped-ID and `tag:<name>` routing retain their normal QoS behavior. For those 
   - `KIRO_OAUTH_CLIENT_ID` (optional, for AWS Builder/IDC refresh flow)
   - `KIRO_OAUTH_CLIENT_SECRET` (optional, for AWS Builder/IDC refresh flow)
   - `GOOGLE_API_KEY`
+  - `GITHUB_COPILOT_TOKEN` (GitHub OAuth token from the Copilot device flow; the dashboard sign-in normally writes this for you)
+  - `OPENAI_CODEX_REFRESH_TOKEN` (ChatGPT OAuth refresh token; the dashboard sign-in normally writes this for you)
   - `G4F_API_KEY` (optional — the g4f relays are keyless)
   - `G4F_BASE_URL` (optional — point the hosted g4f pool at a self-hosted server)
 
@@ -284,6 +286,41 @@ Until a key is set, the provider appears under **Require setup** in the dashboar
 - Models are discovered automatically from `https://g4f.space/v1/models` (non-chat models such as whisper/TTS/image are filtered out); a curated fallback catalog is used before the first successful discovery.
 - Without a key every g4f request answers HTTP `402` with `insufficient_credits`.
 - To point hammer at a self-hosted g4f server instead, set `G4F_BASE_URL` (e.g. `http://localhost:1337/v1`) or a `baseUrl` on the `g4f` provider in `~/.hammer.json`.
+
+### GitHub Copilot
+
+GitHub Copilot is available as a provider, so a Copilot (including free) plan can back the router instead of an API key. Copilot has no static API keys — it authenticates with a GitHub OAuth token obtained from the device flow:
+
+1. Open the Web UI, go to **Settings → GitHub Copilot**, and click **Sign in with GitHub**.
+2. Approve the code on `github.com/login/device`.
+3. Hammer stores the resulting GitHub token in `~/.hammer.json` and routes Copilot's models (discovered from the account's own `/models` list) through `https://api.githubcopilot.com`.
+
+Details that matter:
+
+- The device flow uses a minimal `read:user` consent. The token is long-lived, so there is no periodic refresh.
+- Prefer a headless setup? Set `GITHUB_COPILOT_TOKEN`, or paste a GitHub token into the provider's key field — both are used exactly like a signed-in token.
+- Business/Enterprise plans answer on their own API host; Hammer discovers and remembers it at sign-in. GitHub Enterprise Server accounts can point the provider at their instance with a `baseUrl` on `providers["github-copilot"]`.
+- Usage is billed against the account's Copilot plan rather than per token. The dashboard's Quota column reads the plan's remaining premium requests.
+- Hammer sends `X-Initiator: agent` for automated agent turns (a trailing tool/assistant turn) and `X-Initiator: user` for user-driven chat, the same distinction the Copilot CLI makes; only user-initiated turns draw down premium requests.
+- Chat requests default to the `copilot-chat` client identity because some Business organizations gate the CLI surface, and are retried once as the `copilot-developer-cli` identity when a plan denies chat instead.
+- Models a plan gates behind a policy (Claude, Grok, the GPT-5 coding family) are enabled automatically whenever a token is configured — sign-in, `GITHUB_COPILOT_TOKEN`, or a pasted token.
+
+### OpenAI Codex
+
+OpenAI Codex lets a ChatGPT plan back the router instead of an API key. It is the one provider that is *not* OpenAI-compatible: calls go to the Responses API on the ChatGPT backend, authenticated with a short-lived ChatGPT access token plus the workspace id header, and always stream SSE. Hammer translates both directions, so clients keep speaking `/v1/chat/completions`.
+
+1. Open the Web UI, go to **Settings → OpenAI Codex**, and click **Sign in with ChatGPT**.
+2. Approve the code on `auth.openai.com/codex/device`.
+3. Hammer stores the resulting OAuth refresh token in `~/.hammer.json`, exchanges it for access tokens on demand, and lists the models the account's own `/codex/models` reports.
+
+Details that matter:
+
+- Only the refresh token is stored; access tokens are minted per request and cached until shortly before they expire. Hammer never sees the account password.
+- Prefer a headless setup? Set `OPENAI_CODEX_REFRESH_TOKEN`, or paste a refresh token into the provider's key field. Multiple refresh tokens are supported as an account pool.
+- Requests are translated: system/developer turns become `instructions`, tool calls and tool results become the Responses `function_call` / `function_call_output` items, and sampling controls (`temperature`, `top_p`, `max_tokens`, …) are dropped because the backend rejects them. Streaming clients get chat.completion chunks; non-streaming clients get one assembled body.
+- The model list is account-scoped, so rows a plan may not serve are hidden rather than offered and then refused. Before sign-in, a small curated list keeps the provider visible.
+- Usage counts against the ChatGPT plan's rolling windows rather than token billing. The dashboard's Quota column reads the account usage endpoint.
+- A per-account `baseUrl` on `providers["openai-codex"]` points the provider at another backend root (or a full `/codex/responses` URL) when needed.
 
 ### OpenAI-Compatible endpoints
 

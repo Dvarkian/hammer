@@ -97,10 +97,11 @@ import { getConfiguredTagNames, getModelTagKey, getModelTags as getUserModelTags
 import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autostart.js'
 import { isHammerProcessCommandLine } from '../lib/instances.js'
 import { formatStartupProviderResult, shouldEmitKiroOAuthWarning } from '../lib/startup.js'
-import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled } from '../lib/config.js'
+import { exportConfigToken, getApiKey, getApiKeyPool, getMaxTurns, getPinningMode, getProviderBaseUrl, getProviderModelId, getProviderPingIntervalMs, hasMultipleKeys, importConfigToken, normalizeConfigShape, isOpenAICompatibleInstanceKey, getBaseProviderKey, getOpenAICompatibleInstanceId, buildOpenAICompatibleInstanceKey, listOpenAICompatibleEndpoints, upsertOpenAICompatibleEndpoint, removeOpenAICompatibleEndpoint, isProviderEnabled, getProviderAccounts, getProviderAccountSecrets, getLegacyProviderAccountSecret, addOrUpdateProviderAccount, removeProviderAccount, setProviderAccounts } from '../lib/config.js'
+import { buildCodexRequestPayload, transformCodexResponse, extractCodexAccountIdentity, extractCodexModelRecords, parseCodexRateLimits } from '../lib/openai-codex.js'
 import { buildNpmInstallInvocation, buildWindowsPostUpdateRestartCommand, getForcedUpdateVersion, getLocalUpdateTarballPath, getLocalUpdateVersion, isRunningFromSource, shouldStopAutostartBeforeUpdate } from '../lib/update.js'
 import {  buildKiroRequestPayload,
-  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, resolveQualityLookup, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState } from '../lib/server.js'
+  buildProviderRequestBody, buildKiroSocialLoginUrl, buildOpencodeHeaders, buildOpencodeProjectId, buildProviderRequestHeaders, exchangeKiroSocialAuthFlow, exchangeKiroSocialCode, extractKiroEmailFromAccessToken, extractOllamaModelRecords, extractOpenAICompatibleModelRecords, buildOpenAICompatibleModelsListUrl, getAccountStatus, getKiroRefreshToken, hasKiroAuthConfigured, getPinnedModelCandidate, getPinnedModelMatches,  isProviderAuthOptional, isProviderBearerAuthEnabled, parseKiroEventFrame, parseConnectFrames, pollKiroBuilderIdToken, providerWantsBearerAuth, resolveKiroOAuthAccessToken, shouldRetryOptionalProviderWithBearer, startKiroBuilderIdDeviceAuth, startKiroSocialAuthFlow, toOllamaModelMeta, toOpenAICompatibleDiscoveredModelMeta, toOpenCodeModelMeta, toOpenRouterModelMeta, toKiloCodeModelMeta, decodeDevinChatResponsePayload, decodeDevinModelConfigsPayload, fetchDevinModelConfigs, transformDevinResponse, transformFreeModelsResponse, transformKiroResponse, resolveQualityLookup, buildDevinOAuthLoginUrl, cancelDevinOAuthFlow, exchangeDevinOAuthCode, exchangeDevinOAuthFlow, getDevinOAuthFlowStatus, startDevinOAuthFlow, _setKeyPoolState, buildCopilotChatUrl, buildCopilotIdentityHeaders, getCopilotConfiguredToken, hasGitHubCopilotAuthConfigured, inferCopilotInitiator, isCopilotIdentityDenied, toGitHubCopilotModelMeta, buildCodexIdentityHeaders, buildCodexResponsesUrl, hasOpenAICodexAuthConfigured, toOpenAICodexModelMeta } from '../lib/server.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, '..')
 
@@ -5677,5 +5678,372 @@ describe('status reconciliation and bulk retest', () => {
     assert.equal(isLastResponseReady({ ...ready, status: 'down' }), true)
     // A Ready with an expired window is treated as not-ready
     assert.equal(isLastResponseReady({ ...ready, expiresAt: Date.now() - 1000 }), false)
+  })
+})
+
+describe('github copilot provider', () => {
+  it('registers the provider with a chat endpoint and a pre-sign-in fallback catalog', () => {
+    const source = sources['github-copilot']
+    assert.ok(source, 'github-copilot must be registered in sources.js')
+    assert.equal(source.name, 'GitHub Copilot')
+    assert.equal(source.url, 'https://api.githubcopilot.com/chat/completions')
+    // Copilot serves /models at the host root behind its own client-identity
+    // headers, so it must not ride the generic OpenAI-style /v1/models path.
+    assert.notEqual(source.discoverable, true)
+    const ids = source.models.map(([modelId]) => modelId)
+    assert.ok(ids.includes('gpt-5.5'))
+    assert.ok(ids.includes('claude-sonnet-4.5'))
+    assert.ok(PROVIDER_QUOTAS['github-copilot'])
+  })
+
+  it('normalizes a configured base URL to the chat endpoint', () => {
+    assert.equal(buildCopilotChatUrl('https://api.githubcopilot.com'), 'https://api.githubcopilot.com/chat/completions')
+    assert.equal(buildCopilotChatUrl('https://copilot-api.acme.ghe.com/'), 'https://copilot-api.acme.ghe.com/chat/completions')
+    assert.equal(buildCopilotChatUrl('https://api.githubcopilot.com/chat/completions'), 'https://api.githubcopilot.com/chat/completions')
+    assert.equal(buildCopilotChatUrl('api.githubcopilot.com'), null)
+    assert.equal(buildCopilotChatUrl(''), null)
+  })
+
+  it('sends the Copilot client identity on chat requests', () => {
+    const headers = buildProviderRequestHeaders('github-copilot', {
+      apiKey: 'gho_token',
+      messages: [{ role: 'user', content: 'hi' }],
+    })
+    assert.equal(headers.Authorization, 'Bearer gho_token')
+    assert.equal(headers['Copilot-Integration-Id'], 'copilot-chat')
+    assert.equal(headers['Editor-Version'], 'copilot/1.0.82')
+    assert.equal(headers['Copilot-Harness-Id'], 'copilot-sdk')
+    assert.equal(headers['Openai-Intent'], 'conversation-agent')
+    assert.equal(headers['X-Initiator'], 'user')
+    assert.equal(headers['X-Interaction-Type'], 'conversation-user')
+  })
+
+  it('marks agent turns and image requests', () => {
+    const headers = buildProviderRequestHeaders('github-copilot', {
+      apiKey: 'gho_token',
+      messages: [
+        { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] },
+        { role: 'tool', content: '{}' },
+      ],
+    })
+    assert.equal(headers['X-Initiator'], 'agent')
+    assert.equal(headers['X-Interaction-Type'], 'conversation-agent')
+    assert.equal(headers['Copilot-Vision-Request'], 'true')
+  })
+
+  it('honours an explicit CLI identity for the business-org retry', () => {
+    const headers = buildProviderRequestHeaders('github-copilot', {
+      apiKey: 'gho_token',
+      copilotIntegrationId: 'copilot-developer-cli',
+      messages: [],
+    })
+    assert.equal(headers['Copilot-Integration-Id'], 'copilot-developer-cli')
+  })
+
+  it('infers the initiator the way the Copilot CLI does', () => {
+    assert.equal(inferCopilotInitiator([{ role: 'user', content: 'hi' }]), 'user')
+    assert.equal(inferCopilotInitiator([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }]), 'agent')
+    assert.equal(inferCopilotInitiator([{ role: 'user', content: [{ type: 'tool_result', content: 'ok' }] }]), 'agent')
+    assert.equal(inferCopilotInitiator([]), 'agent')
+    assert.equal(inferCopilotInitiator(undefined), 'agent')
+  })
+
+  it('recognizes client-identity denials', () => {
+    assert.equal(isCopilotIdentityDenied(403, ''), true)
+    assert.equal(isCopilotIdentityDenied(400, JSON.stringify({ error: { code: 'model_not_supported' } })), true)
+    assert.equal(isCopilotIdentityDenied(400, JSON.stringify({ error: { code: 'something_else' } })), false)
+    assert.equal(isCopilotIdentityDenied(429, ''), false)
+    assert.equal(isCopilotIdentityDenied(400, 'not json'), false)
+  })
+
+  it('maps /models records onto router rows', () => {
+    const meta = toGitHubCopilotModelMeta({
+      id: 'gpt-5.5',
+      name: 'GPT-5.5',
+      capabilities: { type: 'chat', limits: { max_context_window_tokens: 400000 } },
+      policy: { state: 'enabled' },
+    })
+    assert.equal(meta.modelId, 'gpt-5.5')
+    assert.equal(meta.label, 'GPT 5.5')
+    assert.equal(meta.providerKey, 'github-copilot')
+    assert.equal(meta.ctx, '400k')
+    assert.equal(meta.ctxSource, 'provider-reported')
+    assert.equal(meta.providerUrl, 'https://api.githubcopilot.com/chat/completions')
+    // Non-chat capability rows and transcription models are not routable.
+    assert.equal(toGitHubCopilotModelMeta({ id: 'text-embedding-3-small', capabilities: { type: 'embeddings' } }), null)
+    assert.equal(toGitHubCopilotModelMeta({ id: 'whisper-1' }), null)
+    assert.equal(toGitHubCopilotModelMeta({}), null)
+  })
+
+  it('reads the token from config or the GITHUB_COPILOT_TOKEN env override', () => {
+    assert.equal(getCopilotConfiguredToken({ apiKeys: { 'github-copilot': 'gho_cfg' } }), 'gho_cfg')
+    assert.equal(getCopilotConfiguredToken({ apiKeys: {}, providers: { 'github-copilot': { oauthToken: 'gho_oauth' } } }), 'gho_oauth')
+    assert.equal(hasGitHubCopilotAuthConfigured({ apiKeys: {} }), false)
+
+    const original = process.env.GITHUB_COPILOT_TOKEN
+    try {
+      process.env.GITHUB_COPILOT_TOKEN = 'gho_env'
+      assert.equal(getCopilotConfiguredToken({ apiKeys: {} }), 'gho_env')
+      assert.equal(hasGitHubCopilotAuthConfigured({ apiKeys: {} }), true)
+    } finally {
+      if (original === undefined) delete process.env.GITHUB_COPILOT_TOKEN
+      else process.env.GITHUB_COPILOT_TOKEN = original
+    }
+  })
+
+  it('passes the OpenAI request body through unchanged', () => {
+    const body = { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }], stream: true }
+    assert.equal(buildProviderRequestBody('github-copilot', body, 'gpt-5.5'), body)
+  })
+})
+
+describe('openai codex provider', () => {
+  const encodeJwtSegment = (value) => Buffer.from(JSON.stringify(value), 'utf8').toString('base64url')
+  const makeJwt = (payload) => `${encodeJwtSegment({ alg: 'none', typ: 'JWT' })}.${encodeJwtSegment(payload)}.signature`
+  const sseBody = (events) => events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('')
+  const sseResponseFrom = (body) => new Response(body, {
+    status: 200,
+    headers: { 'Content-Type': 'text/event-stream' },
+  })
+  const sseResponse = (events) => sseResponseFrom(sseBody(events))
+
+  it('registers the provider with the Responses endpoint and a pre-sign-in catalog', () => {
+    const source = sources['openai-codex']
+    assert.ok(source, 'openai-codex must be registered in sources.js')
+    assert.equal(source.name, 'OpenAI Codex')
+    assert.equal(source.url, 'https://chatgpt.com/backend-api/codex/responses')
+    // Codex serves its model list from the account backend behind its own identity
+    // headers, so it must not ride the generic OpenAI-style /v1/models path.
+    assert.notEqual(source.discoverable, true)
+    const ids = source.models.map(([modelId]) => modelId)
+    assert.ok(ids.includes('gpt-5.1-codex'))
+    assert.ok(PROVIDER_QUOTAS['openai-codex'])
+  })
+
+  it('normalizes a configured base URL to the responses endpoint', () => {
+    assert.equal(buildCodexResponsesUrl('https://chatgpt.com/backend-api'), 'https://chatgpt.com/backend-api/codex/responses')
+    assert.equal(buildCodexResponsesUrl('https://chatgpt.com/backend-api/'), 'https://chatgpt.com/backend-api/codex/responses')
+    assert.equal(buildCodexResponsesUrl('https://chatgpt.com/backend-api/codex/responses'), 'https://chatgpt.com/backend-api/codex/responses')
+    assert.equal(buildCodexResponsesUrl('chatgpt.com/backend-api'), null)
+    assert.equal(buildCodexResponsesUrl(''), null)
+  })
+
+  it('sends the ChatGPT identity headers instead of a plain bearer', () => {
+    const headers = buildProviderRequestHeaders('openai-codex', { apiKey: 'access-token', codexAccountId: 'ws_123', codexResidency: 'eu' })
+    assert.equal(headers.Authorization, 'Bearer access-token')
+    assert.equal(headers['chatgpt-account-id'], 'ws_123')
+    assert.equal(headers.originator, 'codex_cli_rs')
+    assert.equal(headers['OpenAI-Beta'], 'responses=experimental')
+    assert.equal(headers['x-openai-internal-codex-residency'], 'eu')
+    assert.ok(headers.version)
+    // Without a token the request is anonymous rather than carrying "Bearer null".
+    assert.equal(buildProviderRequestHeaders('openai-codex', {}).Authorization, undefined)
+  })
+
+  it('translates a chat request into a Responses request', () => {
+    const payload = buildCodexRequestPayload({
+      model: 'gpt-5.1-codex',
+      temperature: 0.2,
+      max_tokens: 512,
+      messages: [
+        { role: 'system', content: 'be terse' },
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', function: { name: 'read', arguments: '{"p":"a"}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: 'file body' },
+      ],
+      tools: [{ type: 'function', function: { name: 'read', description: 'read a file', parameters: { type: 'object' } } }],
+      tool_choice: { type: 'function', function: { name: 'read' } },
+    }, 'gpt-5.1-codex')
+    assert.equal(payload.model, 'gpt-5.1-codex')
+    assert.equal(payload.instructions, 'be terse')
+    assert.equal(payload.store, false)
+    assert.equal(payload.stream, true)
+    // The backend rejects sampling controls outright, so they never reach the wire.
+    assert.equal(payload.temperature, undefined)
+    assert.equal(payload.max_tokens, undefined)
+    assert.deepEqual(payload.input[0], { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] })
+    assert.deepEqual(payload.input[1], { type: 'function_call', call_id: 'call_1', name: 'read', arguments: '{"p":"a"}' })
+    assert.deepEqual(payload.input[2], { type: 'function_call_output', call_id: 'call_1', output: 'file body' })
+    assert.deepEqual(payload.tools, [{ type: 'function', name: 'read', description: 'read a file', parameters: { type: 'object' } }])
+    assert.deepEqual(payload.tool_choice, { type: 'function', name: 'read' })
+  })
+
+  it('routes the router body builder through the Responses translation', () => {
+    const translated = buildProviderRequestBody('openai-codex', {
+      model: 'gpt-5-codex',
+      messages: [{ role: 'user', content: 'hi' }],
+    }, 'gpt-5-codex')
+    assert.equal(translated.object, undefined)
+    assert.equal(translated.store, false)
+    assert.deepEqual(translated.input[0], { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] })
+  })
+
+  it('aggregates a Codex SSE stream into one chat completion', async () => {
+    const response = await transformCodexResponse(sseResponse([
+      { type: 'response.output_text.delta', delta: 'Hel' },
+      { type: 'response.output_text.delta', delta: 'lo' },
+      { type: 'response.output_item.done', item: { type: 'function_call', call_id: 'call_9', name: 'read', arguments: '{"p":"a"}' } },
+      { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 11, output_tokens: 5, total_tokens: 16, output_tokens_details: { reasoning_tokens: 2 } } } },
+    ]), 'gpt-5.1-codex', false)
+    const completion = await response.json()
+    assert.equal(completion.object, 'chat.completion')
+    assert.equal(completion.model, 'gpt-5.1-codex')
+    assert.equal(completion.choices[0].message.content, 'Hello')
+    assert.equal(completion.choices[0].message.tool_calls[0].id, 'call_9')
+    assert.equal(completion.choices[0].finish_reason, 'tool_calls')
+    assert.equal(completion.usage.prompt_tokens, 11)
+    assert.equal(completion.usage.completion_tokens, 5)
+    assert.equal(completion.usage.completion_tokens_details.reasoning_tokens, 2)
+  })
+
+  it('streams Codex deltas as chat.completion chunks', async () => {
+    const response = await transformCodexResponse(sseResponse([
+      { type: 'response.output_text.delta', delta: 'hi' },
+      { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+    ]), 'gpt-5-codex', true)
+    const text = await response.text()
+    assert.ok(text.includes('"object":"chat.completion.chunk"'))
+    assert.ok(text.includes('"content":"hi"'))
+    assert.ok(text.includes('"finish_reason":"stop"'))
+    assert.ok(text.trimEnd().endsWith('data: [DONE]'))
+  })
+
+  it('reads CRLF-framed and LF-framed streams identically', async () => {
+    const events = [
+      { type: 'response.output_text.delta', delta: 'Hel' },
+      { type: 'response.output_text.delta', delta: 'lo' },
+      { type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 2, output_tokens: 2, total_tokens: 4 } } },
+    ]
+    // The SSE spec defines CRLF line endings, so a backend may frame events either way.
+    const body = (eol) => events.map(event => `event: ${event.type}${eol}data: ${JSON.stringify(event)}${eol}${eol}`).join('')
+    for (const eol of ['\r\n', '\n']) {
+      const aggregated = await (await transformCodexResponse(sseResponseFrom(body(eol)), 'gpt-5.1-codex', false)).json()
+      assert.equal(aggregated.choices[0].message.content, 'Hello', `aggregate must parse ${JSON.stringify(eol)} framing`)
+      assert.equal(aggregated.usage.total_tokens, 4)
+      const streamed = await (await transformCodexResponse(sseResponseFrom(body(eol)), 'gpt-5.1-codex', true)).text()
+      assert.ok(streamed.includes('"content":"Hel"') && streamed.includes('"content":"lo"'), `stream must parse ${JSON.stringify(eol)} framing`)
+      assert.ok(streamed.trimEnd().endsWith('data: [DONE]'))
+    }
+    // A chunk boundary can land between a CR and its LF: the frame must still parse.
+    const crlfBody = body('\r\n')
+    const encoder = new TextEncoder()
+    const split = crlfBody.indexOf('\r\n') + 1
+    const chunked = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(crlfBody.slice(0, split)))
+        controller.enqueue(encoder.encode(crlfBody.slice(split)))
+        controller.close()
+      },
+    })
+    const splitText = await (await transformCodexResponse(new Response(chunked, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }), 'gpt-5.1-codex', true)).text()
+    assert.equal((splitText.match(/"content":"/g) || []).length, 2)
+  })
+
+  it('surfaces a Codex failure event as an error body', async () => {
+    const response = await transformCodexResponse(sseResponse([
+      { type: 'response.failed', response: { error: { message: 'quota exceeded', code: 'usage_limit_reached' } } },
+    ]), 'gpt-5.1-codex', false)
+    assert.equal(response.status, 502)
+    const payload = await response.json()
+    assert.equal(payload.error.message, 'quota exceeded')
+    assert.equal(payload.error.code, 'usage_limit_reached')
+  })
+
+  it('passes a non-OK upstream response through untouched', async () => {
+    const upstream = new Response('{"error":"bad token"}', { status: 401, headers: { 'Content-Type': 'application/json' } })
+    const response = await transformCodexResponse(upstream, 'gpt-5.1-codex', false)
+    assert.equal(response, upstream)
+  })
+
+  it('reads the workspace identity from the access token claims', () => {
+    const token = makeJwt({
+      'https://api.openai.com/auth': { chatgpt_account_id: 'ws_abc', chatgpt_plan_type: 'Plus' },
+      'https://api.openai.com/profile': { email: 'Dev@Example.com' },
+    })
+    const identity = extractCodexAccountIdentity(token)
+    assert.equal(identity.accountId, 'ws_abc')
+    assert.equal(identity.email, 'dev@example.com')
+    assert.equal(identity.planType, 'plus')
+    assert.equal(identity.residency, null)
+    // A token that is not a JWT is not an identity.
+    assert.deepEqual(extractCodexAccountIdentity('not-a-jwt'), { accountId: null, email: null, planType: null, residency: null })
+  })
+
+  it('reads the quota snapshot from the response headers', () => {
+    const headers = new Headers({
+      'x-codex-primary-used-percent': '42',
+      'x-codex-primary-window-minutes': '300',
+      'x-codex-primary-reset-at': '1700000000',
+    })
+    const limits = parseCodexRateLimits(headers)
+    assert.equal(limits.primary.usedPercent, 42)
+    assert.equal(limits.primary.windowMinutes, 300)
+    assert.equal(limits.primary.resetsAt, 1700000000000)
+    assert.equal(limits.secondary, null)
+    // Absent headers are not a zero-percent reading.
+    assert.equal(parseCodexRateLimits(new Headers()), null)
+  })
+
+  it('accepts the model list in either backend shape', () => {
+    assert.deepEqual(extractCodexModelRecords({ models: [{ slug: 'a' }] }), [{ slug: 'a' }])
+    assert.deepEqual(extractCodexModelRecords({ data: [{ id: 'b' }] }), [{ id: 'b' }])
+    assert.deepEqual(extractCodexModelRecords([{ slug: 'c' }]), [{ slug: 'c' }])
+    assert.deepEqual(extractCodexModelRecords(null), [])
+  })
+
+  it('accepts configuration from the account pool, the legacy field, or the env override', () => {
+    assert.equal(hasOpenAICodexAuthConfigured({ apiKeys: {}, providers: { 'openai-codex': { accounts: [{ secret: 'rt_pool' }] } } }), true)
+    assert.equal(hasOpenAICodexAuthConfigured({ apiKeys: {}, providers: { 'openai-codex': { refreshToken: 'rt_legacy' } } }), true)
+    assert.equal(hasOpenAICodexAuthConfigured({ apiKeys: {} }), false)
+    // An apiKeys entry is NOT a Codex credential: the bearer is minted, not stored.
+    assert.equal(getApiKeyPool({ apiKeys: { 'openai-codex': 'rt_wrong' } }, 'openai-codex').length, 1)
+    assert.equal(hasOpenAICodexAuthConfigured({ apiKeys: { 'openai-codex': 'rt_wrong' } }), false)
+
+    const original = process.env.OPENAI_CODEX_REFRESH_TOKEN
+    try {
+      process.env.OPENAI_CODEX_REFRESH_TOKEN = 'rt_env'
+      assert.equal(hasOpenAICodexAuthConfigured({ apiKeys: {} }), true)
+      // The env refresh token must never be picked up as a bearer API key.
+      assert.deepEqual(getApiKeyPool({ apiKeys: {} }, 'openai-codex'), [])
+    } finally {
+      if (original === undefined) delete process.env.OPENAI_CODEX_REFRESH_TOKEN
+      else process.env.OPENAI_CODEX_REFRESH_TOKEN = original
+    }
+  })
+
+  it('keeps one pool entry per signed-in account and drops the superseded secret', () => {
+    const config = { apiKeys: {} }
+    addOrUpdateProviderAccount(config, 'openai-codex', { secret: 'rt_1', email: 'a@example.com', planType: 'plus' })
+    addOrUpdateProviderAccount(config, 'openai-codex', { secret: 'rt_2', email: 'b@example.com', planType: 'pro' })
+    assert.deepEqual(getProviderAccountSecrets(config, 'openai-codex'), ['rt_1', 'rt_2'])
+    // Re-signing in the same account (matched by email) refreshes it in place.
+    addOrUpdateProviderAccount(config, 'openai-codex', { secret: 'rt_1b', email: 'a@example.com' })
+    assert.deepEqual(getProviderAccountSecrets(config, 'openai-codex'), ['rt_1b', 'rt_2'])
+    assert.equal(getProviderAccounts(config, 'openai-codex')[0].planType, 'plus')
+    // Rotation replaces the stored secret outright.
+    removeProviderAccount(config, 'openai-codex', 'rt_1b')
+    assert.deepEqual(getProviderAccountSecrets(config, 'openai-codex'), ['rt_2'])
+    setProviderAccounts(config, 'openai-codex', [])
+    assert.deepEqual(getProviderAccountSecrets(config, 'openai-codex'), [])
+    assert.equal(getLegacyProviderAccountSecret({ providers: { 'openai-codex': { refreshToken: 'rt_legacy' } } }, 'openai-codex'), 'rt_legacy')
+  })
+
+  it('maps account model records onto router rows', () => {
+    const meta = toOpenAICodexModelMeta({
+      slug: 'gpt-5.1-codex',
+      display_name: 'gpt-5.1-codex',
+      visibility: 'list',
+      max_context_window: 400000,
+    })
+    assert.equal(meta.modelId, 'gpt-5.1-codex')
+    assert.equal(meta.label, 'GPT 5.1 Codex')
+    assert.equal(meta.providerKey, 'openai-codex')
+    assert.equal(meta.ctx, '400k')
+    assert.equal(meta.ctxSource, 'provider-reported')
+    assert.equal(meta.providerUrl, 'https://chatgpt.com/backend-api/codex/responses')
+    // Rows a plan hides are not offered, and non-chat rows are not routable.
+    assert.equal(toOpenAICodexModelMeta({ slug: 'gpt-5.1-codex', visibility: 'hidden' }), null)
+    assert.equal(toOpenAICodexModelMeta({ slug: 'text-embedding-3-small' }), null)
+    assert.equal(toOpenAICodexModelMeta({}), null)
   })
 })

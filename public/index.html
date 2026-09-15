@@ -2381,6 +2381,12 @@
     let devinOAuthState = null;
     let devinOAuthPollTimer = null;
     let devinUiMessage = null;
+    let copilotDeviceAuthState = null;
+    let copilotDevicePollTimer = null;
+    let copilotUiMessage = null;
+    let codexDeviceAuthState = null;
+    let codexDevicePollTimer = null;
+    let codexUiMessage = null;
     let chatMessages = [];
     let chatInFlight = false;
     let chatSelectedModel = 'best';
@@ -2413,6 +2419,8 @@
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
       'scaleway': 'Scaleway', 'kilocode': 'KiloCode', 'opencode': 'OpenCode',
       'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
+      'github-copilot': 'GitHub Copilot',
+      'openai-codex': 'OpenAI Codex',
     };
 
 
@@ -3641,6 +3649,7 @@
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
         'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
         'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
+        'github-copilot': 'github.com', 'openai-codex': 'chatgpt.com',
         // 'freemodels' is intentionally absent: its only domain is a workers.dev
         // subdomain, whose favicon is Cloudflare's logo — the monogram fallback
         // is more honest than a wrong brand mark.
@@ -7073,6 +7082,172 @@
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
           }
+          if (p.key === 'github-copilot') {
+            const copilotConnected = p.hasKey;
+            const copilotStatusBg = copilotConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
+            const copilotStatusColor = copilotConnected ? 'var(--status-success-text)' : 'var(--status-warning-text)';
+            let copilotStatusText = 'Not signed in';
+            if (p.authMode === 'device-flow') {
+              copilotStatusText = p.authEmail ? `Signed in · ${p.authEmail}` : 'Signed in with GitHub';
+            } else if (p.authMode === 'manual-token') {
+              copilotStatusText = p.authEmail ? `Token · ${p.authEmail}` : 'GitHub token configured';
+            } else if (copilotConnected) {
+              copilotStatusText = 'GitHub token configured';
+            }
+
+            const copilotMessageHtml = copilotUiMessage
+              ? `<div id="copilot-ui-message" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.8rem; border:1px solid ${copilotUiMessage.tone === 'error' ? 'var(--status-error-border)' : copilotUiMessage.tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}; background:${copilotUiMessage.tone === 'error' ? 'var(--status-error-bg)' : copilotUiMessage.tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)'}; color:${copilotUiMessage.tone === 'error' ? 'var(--status-error-text)' : copilotUiMessage.tone === 'success' ? 'var(--status-success-text)' : 'var(--text)'};">${escapeHtml(copilotUiMessage.text)}</div>`
+              : '<div id="copilot-ui-message" style="display:none;"></div>';
+
+            const copilotDeviceAuthHtml = copilotDeviceAuthState ? `
+              <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
+                <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">GitHub sign-in in progress</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Open the verification page on any device and enter the code. Hammer finishes the connection automatically.</div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                  <input type="text" id="copilot-device-verify-url" readonly value="${escapeHtml(copilotDeviceAuthState.verificationUriComplete || copilotDeviceAuthState.verificationUri || '')}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
+                  <button onclick="copyCopilotVerificationUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                  <div style="padding:8px 12px; border-radius:8px; border:1px dashed var(--border-subtle); background:var(--card); color:var(--text); font-size:0.85rem; font-weight:700; letter-spacing:0.08em;">${escapeHtml(copilotDeviceAuthState.userCode || '')}</div>
+                  <button onclick="copyCopilotUserCode()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Copy Code</button>
+                  <span style="font-size:0.74rem; color:var(--text-muted);">Polling every ${escapeHtml(String(copilotDeviceAuthState.interval || 5))}s</span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <button data-verify-url="${escapeHtml(copilotDeviceAuthState.verificationUriComplete || copilotDeviceAuthState.verificationUri || '')}" onclick="window.open(this.dataset.verifyUrl || '', 'copilot_device_verify')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
+                  <button onclick="cancelCopilotDeviceAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
+                </div>
+              </div>
+            ` : '';
+
+            const copilotActionsHtml = copilotConnected
+              ? '<button onclick="disconnectCopilot()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect</button>'
+              : '<button onclick="startCopilotDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with GitHub</button>';
+
+            section.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="background:${copilotStatusBg}; color:${copilotStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${copilotConnected ? '✅' : '⚠️'} ${escapeHtml(copilotStatusText)}</span>
+                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Manage GitHub Copilot" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                      <polyline points="21 3 21 9 15 9"></polyline>
+                    </svg>
+                    <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
+                  </button>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
+                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
+                    Enabled
+                  </label>
+                </div>
+              </div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the GitHub account that has Copilot. Hammer stores the resulting GitHub token locally and uses it as the Copilot credential — model traffic is billed against that account's Copilot plan, with no per-token cost.</div>
+              <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
+                <b>Sign in with GitHub</b> opens the GitHub device page and waits for approval, which is the same supported path the Copilot CLI uses. Free plans keep working here; models your plan gates (Claude, Grok, the GPT‑5 coding family) are enabled automatically once a token is configured (sign-in or a pasted token).
+              </div>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                ${copilotActionsHtml}
+              </div>
+              <div class="form-group" style="display:flex; gap:8px; align-items:center;">
+                <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (GitHub token configured)' : 'Or paste a GitHub token (gho_…)'}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
+                <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide token" aria-label="Show or hide token" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
+                <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
+              </div>
+              ${copilotDeviceAuthHtml}
+              ${copilotMessageHtml}
+              ${providerErrorHtml}
+              ${rateLimitHtml}
+            `;
+            (providerIsActive ? activeContainer : setupContainer).appendChild(section);
+            return;
+          }
+          if (p.key === 'openai-codex') {
+            const codexConnected = p.hasKey;
+            const codexStatusBg = codexConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
+            const codexStatusColor = codexConnected ? 'var(--status-success-text)' : 'var(--status-warning-text)';
+            const codexAccount = Array.isArray(p.accounts) && p.accounts.length > 0 ? p.accounts[0] : null;
+            let codexStatusText = 'Not signed in';
+            if (p.authMode === 'device-flow') {
+              codexStatusText = p.authEmail ? `Signed in · ${p.authEmail}` : 'Signed in with ChatGPT';
+            } else if (p.authMode === 'manual-token') {
+              codexStatusText = 'Refresh token configured';
+            } else if (codexConnected) {
+              codexStatusText = 'ChatGPT account connected';
+            }
+            if (codexConnected && codexAccount && codexAccount.planType) {
+              codexStatusText = `${codexStatusText} · ${codexAccount.planType}`;
+            }
+
+            const codexMessageHtml = codexUiMessage
+              ? `<div id="codex-ui-message" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.8rem; border:1px solid ${codexUiMessage.tone === 'error' ? 'var(--status-error-border)' : codexUiMessage.tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}; background:${codexUiMessage.tone === 'error' ? 'var(--status-error-bg)' : codexUiMessage.tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)'}; color:${codexUiMessage.tone === 'error' ? 'var(--status-error-text)' : codexUiMessage.tone === 'success' ? 'var(--status-success-text)' : 'var(--text)'};">${escapeHtml(codexUiMessage.text)}</div>`
+              : '<div id="codex-ui-message" style="display:none;"></div>';
+
+            const codexDeviceAuthHtml = codexDeviceAuthState ? `
+              <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
+                <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">ChatGPT sign-in in progress</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Open the verification page on any device and enter the code. Hammer finishes the connection automatically.</div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+                  <input type="text" id="codex-device-verify-url" readonly value="${escapeHtml(codexDeviceAuthState.verificationUri || '')}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
+                  <button onclick="copyCodexVerificationUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                  <div style="padding:8px 12px; border-radius:8px; border:1px dashed var(--border-subtle); background:var(--card); color:var(--text); font-size:0.85rem; font-weight:700; letter-spacing:0.08em;">${escapeHtml(codexDeviceAuthState.userCode || '')}</div>
+                  <button onclick="copyCodexUserCode()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Copy Code</button>
+                  <span style="font-size:0.74rem; color:var(--text-muted);">Polling every ${escapeHtml(String(codexDeviceAuthState.interval || 5))}s</span>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                  <button data-verify-url="${escapeHtml(codexDeviceAuthState.verificationUri || '')}" onclick="window.open(this.dataset.verifyUrl || '', 'codex_device_verify')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
+                  <button onclick="cancelCodexDeviceAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
+                </div>
+              </div>
+            ` : '';
+
+            const codexActionsHtml = codexConnected
+              ? '<button onclick="disconnectCodex()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect</button>'
+              : '<button onclick="startCodexDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with ChatGPT</button>';
+
+            section.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="background:${codexStatusBg}; color:${codexStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${codexConnected ? '✅' : '⚠️'} ${escapeHtml(codexStatusText)}</span>
+                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Manage the ChatGPT plan behind Codex" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                      <polyline points="21 3 21 9 15 9"></polyline>
+                    </svg>
+                    <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
+                  </button>
+                </div>
+                <div style="display:flex; align-items:center; gap:10px;">
+                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
+                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
+                    Enabled
+                  </label>
+                </div>
+              </div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing.</div>
+              <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
+                Codex is not an OpenAI-compatible endpoint: traffic is translated to the Responses API, and only the models your plan may serve are listed. Your ChatGPT password is never seen by Hammer — the device flow only ever returns a token.
+              </div>
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                ${codexActionsHtml}
+              </div>
+              <div class="form-group" style="display:flex; gap:8px; align-items:center;">
+                <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (refresh token configured)' : 'Or paste a ChatGPT refresh token'}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
+                <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide token" aria-label="Show or hide token" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
+                <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
+              </div>
+              ${codexDeviceAuthHtml}
+              ${codexMessageHtml}
+              ${providerErrorHtml}
+              ${rateLimitHtml}
+            `;
+            (providerIsActive ? activeContainer : setupContainer).appendChild(section);
+            return;
+          }
           if (p.key === 'devin') {
             const devinConnected = p.hasKey;
             const devinStatusBg = devinConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
@@ -7780,6 +7955,331 @@
         await fetchData();
       } catch (err) {
         setKiroUiMessage(err.message || 'Failed to complete Kiro browser OAuth.', 'error');
+      }
+    }
+
+    function clearCopilotDevicePollTimer() {
+      if (copilotDevicePollTimer) {
+        clearTimeout(copilotDevicePollTimer);
+        copilotDevicePollTimer = null;
+      }
+    }
+
+    function setCopilotUiMessage(text, tone = 'info') {
+      copilotUiMessage = text ? { text, tone } : null;
+      const el = document.getElementById('copilot-ui-message');
+      if (!el) return;
+      if (!copilotUiMessage) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = copilotUiMessage.text;
+      el.style.border = `1px solid ${tone === 'error' ? 'var(--status-error-border)' : tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}`;
+      el.style.background = tone === 'error' ? 'var(--status-error-bg)' : tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)';
+      el.style.color = tone === 'error' ? 'var(--status-error-text)' : tone === 'success' ? 'var(--status-success-text)' : 'var(--text)';
+      el.style.marginTop = '12px';
+      el.style.padding = '10px 12px';
+      el.style.borderRadius = '8px';
+      el.style.fontSize = '0.8rem';
+    }
+
+    async function copyCopilotVerificationUrl() {
+      const input = document.getElementById('copilot-device-verify-url');
+      const value = input ? input.value.trim() : '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setCopilotUiMessage('Copied the GitHub verification link.', 'success');
+      } catch {
+        setCopilotUiMessage('Clipboard copy failed. Copy the GitHub verification link manually.', 'error');
+      }
+    }
+
+    async function copyCopilotUserCode() {
+      const value = copilotDeviceAuthState && copilotDeviceAuthState.userCode ? copilotDeviceAuthState.userCode : '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setCopilotUiMessage('Copied the GitHub device code.', 'success');
+      } catch {
+        setCopilotUiMessage('Clipboard copy failed. Copy the GitHub device code manually.', 'error');
+      }
+    }
+
+    function cancelCopilotDeviceAuth() {
+      clearCopilotDevicePollTimer();
+      copilotDeviceAuthState = null;
+      setCopilotUiMessage('Cancelled GitHub sign-in.', 'info');
+      loadSettings();
+    }
+
+    async function startCopilotDeviceAuth() {
+      clearCopilotDevicePollTimer();
+      try {
+        setCopilotUiMessage('Preparing GitHub device authorization...', 'info');
+        const res = await fetch('/api/oauth/github-copilot/device-code');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to start GitHub device authorization.');
+        }
+
+        copilotDeviceAuthState = {
+          flowId: data.flowId,
+          userCode: data.userCode,
+          verificationUri: data.verificationUri,
+          verificationUriComplete: data.verificationUriComplete,
+          interval: Math.max(3, Number(data.interval || 5)),
+          expiresAt: Date.now() + (Math.max(60, Number(data.expiresIn || 900)) * 1000),
+        };
+        await loadSettings();
+
+        const verifyUrl = data.verificationUriComplete || data.verificationUri;
+        if (verifyUrl) {
+          window.open(verifyUrl, 'copilot_device_verify');
+        }
+        setCopilotUiMessage('Opened the GitHub verification page. Enter the code there and Hammer will finish the connection automatically.', 'info');
+        pollCopilotDeviceAuth().catch(err => {
+          setCopilotUiMessage(err.message || 'Failed while polling GitHub device authorization.', 'error');
+        });
+      } catch (err) {
+        copilotDeviceAuthState = null;
+        setCopilotUiMessage(err.message || 'Failed to start GitHub device authorization.', 'error');
+      }
+    }
+
+    async function pollCopilotDeviceAuth() {
+      if (!copilotDeviceAuthState) return;
+
+      const now = Date.now();
+      if (copilotDeviceAuthState.expiresAt && now >= copilotDeviceAuthState.expiresAt) {
+        clearCopilotDevicePollTimer();
+        copilotDeviceAuthState = null;
+        setCopilotUiMessage('GitHub device authorization expired. Start it again to get a new code.', 'error');
+        await loadSettings();
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/oauth/github-copilot/poll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ flowId: copilotDeviceAuthState.flowId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed while polling GitHub device authorization.');
+        }
+
+        if (data.success) {
+          clearCopilotDevicePollTimer();
+          copilotDeviceAuthState = null;
+          setCopilotUiMessage(data.login ? `Connected GitHub Copilot as ${data.login}.` : 'Connected GitHub Copilot.', 'success');
+          await loadSettings();
+          await fetchData();
+          return;
+        }
+
+        if (data.pending) {
+          const nextInterval = data.error === 'slow_down'
+            ? Math.max(5, Number(copilotDeviceAuthState.interval || 5) + 5)
+            : Math.max(3, Number(copilotDeviceAuthState.interval || 5));
+          copilotDeviceAuthState = { ...copilotDeviceAuthState, interval: nextInterval };
+          clearCopilotDevicePollTimer();
+          copilotDevicePollTimer = setTimeout(() => {
+            pollCopilotDeviceAuth().catch(err => {
+              setCopilotUiMessage(err.message || 'Failed while polling GitHub device authorization.', 'error');
+            });
+          }, nextInterval * 1000);
+          return;
+        }
+
+        clearCopilotDevicePollTimer();
+        copilotDeviceAuthState = null;
+        setCopilotUiMessage(data.errorDescription || data.error || 'GitHub device authorization failed.', 'error');
+        await loadSettings();
+      } catch (err) {
+        clearCopilotDevicePollTimer();
+        copilotDeviceAuthState = null;
+        setCopilotUiMessage(err.message || 'Failed while polling GitHub device authorization.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function disconnectCopilot() {
+      try {
+        const res = await fetch('/api/oauth/github-copilot/disconnect', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to disconnect GitHub Copilot.');
+        clearCopilotDevicePollTimer();
+        copilotDeviceAuthState = null;
+        setCopilotUiMessage('Disconnected GitHub Copilot and removed the stored token.', 'success');
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        setCopilotUiMessage(err.message || 'Failed to disconnect GitHub Copilot.', 'error');
+      }
+    }
+
+    function clearCodexDevicePollTimer() {
+      if (codexDevicePollTimer) {
+        clearTimeout(codexDevicePollTimer);
+        codexDevicePollTimer = null;
+      }
+    }
+
+    function setCodexUiMessage(text, tone = 'info') {
+      codexUiMessage = text ? { text, tone } : null;
+      const el = document.getElementById('codex-ui-message');
+      if (!el) return;
+      if (!codexUiMessage) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = codexUiMessage.text;
+      el.style.border = `1px solid ${tone === 'error' ? 'var(--status-error-border)' : tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}`;
+      el.style.background = tone === 'error' ? 'var(--status-error-bg)' : tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)';
+      el.style.color = tone === 'error' ? 'var(--status-error-text)' : tone === 'success' ? 'var(--status-success-text)' : 'var(--text)';
+      el.style.marginTop = '12px';
+      el.style.padding = '10px 12px';
+      el.style.borderRadius = '8px';
+      el.style.fontSize = '0.8rem';
+    }
+
+    async function copyCodexVerificationUrl() {
+      const input = document.getElementById('codex-device-verify-url');
+      const value = input ? input.value.trim() : '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setCodexUiMessage('Copied the ChatGPT verification link.', 'success');
+      } catch {
+        setCodexUiMessage('Clipboard copy failed. Copy the ChatGPT verification link manually.', 'error');
+      }
+    }
+
+    async function copyCodexUserCode() {
+      const value = codexDeviceAuthState && codexDeviceAuthState.userCode ? codexDeviceAuthState.userCode : '';
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        setCodexUiMessage('Copied the ChatGPT device code.', 'success');
+      } catch {
+        setCodexUiMessage('Clipboard copy failed. Copy the ChatGPT device code manually.', 'error');
+      }
+    }
+
+    function cancelCodexDeviceAuth() {
+      clearCodexDevicePollTimer();
+      codexDeviceAuthState = null;
+      setCodexUiMessage('Cancelled ChatGPT sign-in.', 'info');
+      loadSettings();
+    }
+
+    async function startCodexDeviceAuth() {
+      clearCodexDevicePollTimer();
+      try {
+        setCodexUiMessage('Preparing ChatGPT device authorization...', 'info');
+        const res = await fetch('/api/oauth/openai-codex/device-code');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to start ChatGPT device authorization.');
+        }
+
+        codexDeviceAuthState = {
+          flowId: data.flowId,
+          userCode: data.userCode,
+          verificationUri: data.verificationUri,
+          interval: Math.max(3, Number(data.interval || 5)),
+          expiresAt: Date.now() + (Math.max(60, Number(data.expiresIn || 900)) * 1000),
+        };
+        await loadSettings();
+
+        if (data.verificationUri) {
+          window.open(data.verificationUri, 'codex_device_verify');
+        }
+        setCodexUiMessage('Opened the ChatGPT verification page. Enter the code there and Hammer will finish the connection automatically.', 'info');
+        pollCodexDeviceAuth().catch(err => {
+          setCodexUiMessage(err.message || 'Failed while polling ChatGPT device authorization.', 'error');
+        });
+      } catch (err) {
+        codexDeviceAuthState = null;
+        setCodexUiMessage(err.message || 'Failed to start ChatGPT device authorization.', 'error');
+      }
+    }
+
+    async function pollCodexDeviceAuth() {
+      if (!codexDeviceAuthState) return;
+
+      const now = Date.now();
+      if (codexDeviceAuthState.expiresAt && now >= codexDeviceAuthState.expiresAt) {
+        clearCodexDevicePollTimer();
+        codexDeviceAuthState = null;
+        setCodexUiMessage('ChatGPT device authorization expired. Start it again to get a new code.', 'error');
+        await loadSettings();
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/oauth/openai-codex/poll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ flowId: codexDeviceAuthState.flowId })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed while polling ChatGPT device authorization.');
+        }
+
+        if (data.success) {
+          clearCodexDevicePollTimer();
+          codexDeviceAuthState = null;
+          const identity = data.email ? ` as ${data.email}` : '';
+          const plan = data.planType ? ` (${data.planType} plan)` : '';
+          setCodexUiMessage(`Connected OpenAI Codex${identity}${plan}.`, 'success');
+          await loadSettings();
+          await fetchData();
+          return;
+        }
+
+        if (data.pending) {
+          const nextInterval = Math.max(3, Number(codexDeviceAuthState.interval || 5));
+          clearCodexDevicePollTimer();
+          codexDevicePollTimer = setTimeout(() => {
+            pollCodexDeviceAuth().catch(err => {
+              setCodexUiMessage(err.message || 'Failed while polling ChatGPT device authorization.', 'error');
+            });
+          }, nextInterval * 1000);
+          return;
+        }
+
+        clearCodexDevicePollTimer();
+        codexDeviceAuthState = null;
+        setCodexUiMessage(data.error || 'ChatGPT device authorization failed.', 'error');
+        await loadSettings();
+      } catch (err) {
+        clearCodexDevicePollTimer();
+        codexDeviceAuthState = null;
+        setCodexUiMessage(err.message || 'Failed while polling ChatGPT device authorization.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function disconnectCodex() {
+      try {
+        const res = await fetch('/api/oauth/openai-codex/disconnect', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to disconnect OpenAI Codex.');
+        clearCodexDevicePollTimer();
+        codexDeviceAuthState = null;
+        setCodexUiMessage('Disconnected OpenAI Codex and removed the stored credentials.', 'success');
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        setCodexUiMessage(err.message || 'Failed to disconnect OpenAI Codex.', 'error');
       }
     }
 

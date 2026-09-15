@@ -103,6 +103,10 @@ export const MODEL_ID_ALIASES = {
   'qwen3-next:80b': 'qwen/qwen3-next-80b-a3b-instruct',
   'qwen3.5:397b': 'qwen/qwen3.5-397b-a17b',
   'rnj-1:8b': 'rnj-1:8b',
+  // GitHub Copilot advertises a hyphenated spelling for a few families whose
+  // scored/curated entries use the dotted version.
+  'grok-4-5': 'grok-4.5',
+  'claude-sonnet-5-0': 'claude-sonnet-5',
   'stepfun/step-3.7-flash:free': 'stepfun-ai/step-3.7-flash',
   'trinity-large-preview-free': 'arcee-ai/trinity-large-preview',
 }
@@ -132,6 +136,15 @@ export const MODEL_LABEL_OVERRIDES = {
   'glm-5.2': 'GLM 5.2',
   'z-ai/glm-5.3': 'GLM 5.3',
   'glm-5.3-flash': 'GLM 5.3 Flash',
+  'gpt-4.1': 'GPT 4.1',
+  'gpt-5.1-codex': 'GPT 5.1 Codex',
+  'gpt-5.1-codex-max': 'GPT 5.1 Codex Max',
+  'gpt-5.1-codex-mini': 'GPT 5.1 Codex Mini',
+  'gpt-5.5': 'GPT 5.5',
+  'gemini-3.1-pro-preview': 'Gemini 3.1 Pro',
+  'gemini-3-flash-preview': 'Gemini 3 Flash',
+  'grok-4.5': 'Grok 4.5',
+  'grok-code-fast-1': 'Grok Code Fast',
   'hy3-free': 'Hy3',
   'kimi-k2': 'Kimi K2',
   'kimi-k2-thinking': 'Kimi K2 Thinking',
@@ -421,6 +434,18 @@ export const PROVIDER_QUOTAS = {
     source: 'FreeModels usage limits are provider-managed; no public universal quota',
     sourceUrl: 'https://freemodels.pro/',
   },
+  'github-copilot': {
+    window: 'month',
+    limitScope: 'account',
+    source: 'GitHub Copilot premium-request quota is plan-managed and resets monthly; the dashboard reads it from the account quota endpoint',
+    sourceUrl: 'https://docs.github.com/en/copilot/managing-copilot/monitoring-usage-and-entitlements',
+  },
+  'openai-codex': {
+    window: 'rolling',
+    limitScope: 'account',
+    source: 'ChatGPT plan limits are subscription-managed rolling windows; the dashboard reads the remaining primary/secondary windows from the account usage endpoint',
+    sourceUrl: 'https://developers.openai.com/codex/',
+  },
   'g4f': {
     source: 'gpt4free usage is credit-based: anonymous traffic needs baked proof-of-work credits, otherwise a free account key',
     sourceUrl: 'https://g4f.dev/members.html',
@@ -647,6 +672,59 @@ export const sources = {
       ["gemma-3-27b-it", "Gemma 3 27B", "128k"],
       ["gemma-3-12b-it", "Gemma 3 12B", "128k"],
       ["gemma-3-4b-it", "Gemma 3 4B", "128k"]
+    ]
+  },
+  // --- GitHub Copilot ---------------------------------------------------------
+  // Copilot is OpenAI-compatible on the wire (api.githubcopilot.com/chat/completions)
+  // but has no API keys: it authenticates with a GitHub OAuth token obtained from
+  // the device flow, carried as a bearer plus Copilot client-identity headers, and
+  // it charges against the account's plan-based premium-request quota. The catalog
+  // below is only the pre-sign-in fallback; once a token is configured the live
+  // /models endpoint replaces it and reports real context limits.
+  // Identity + endpoint behavior mirrors oh-my-pi's github-copilot provider.
+  // Deliberately NOT flagged `discoverable`: that path assumes an OpenAI-style
+  // /v1/models probe, while Copilot serves /models at the host root behind its
+  // own client-identity headers. lib/server.js refreshes it through the
+  // Copilot-specific path instead.
+  "github-copilot": {
+    "name": "GitHub Copilot",
+    "url": "https://api.githubcopilot.com/chat/completions",
+    "contextUrl": "https://docs.github.com/en/copilot/managing-copilot/monitoring-usage-and-entitlements",
+    "models": [
+      ["gpt-5.5", "GPT 5.5", "400k"],
+      ["gpt-5.1-codex", "GPT 5.1 Codex", "400k"],
+      ["gpt-5.1-codex-max", "GPT 5.1 Codex Max", "400k"],
+      ["gpt-5.1-codex-mini", "GPT 5.1 Codex Mini", "400k"],
+      ["gpt-4.1", "GPT 4.1", "128k"],
+      ["claude-sonnet-5", "Claude Sonnet 5", "200k"],
+      ["claude-sonnet-4.5", "Claude Sonnet 4.5", "200k"],
+      ["claude-haiku-4.5", "Claude Haiku 4.5", "200k"],
+      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", "1M"],
+      ["gemini-3-flash-preview", "Gemini 3 Flash", "1M"],
+      ["grok-4.5", "Grok 4.5", "256k"],
+      ["grok-code-fast-1", "Grok Code Fast", "256k"]
+    ]
+  },
+  // --- OpenAI Codex --------------------------------------------------------
+  // The ChatGPT subscription surface. It is *not* OpenAI-compatible: calls go to
+  // the Responses API (/codex/responses), authenticate with a short-lived ChatGPT
+  // OAuth access token plus a `chatgpt-account-id` workspace header, and always
+  // stream SSE. lib/openai-codex.js owns the translation in both directions and
+  // lib/server.js exchanges the stored refresh token for an access token on demand.
+  // The catalog below is only the pre-sign-in fallback; once an account is signed
+  // in the account's own /codex/models list replaces it. Deliberately NOT flagged
+  // `discoverable`: that path assumes an OpenAI-style /v1/models probe, while Codex
+  // serves its own model list from the account-authenticated backend.
+  "openai-codex": {
+    "name": "OpenAI Codex",
+    "url": "https://chatgpt.com/backend-api/codex/responses",
+    "contextUrl": "https://developers.openai.com/codex/",
+    "models": [
+      ["gpt-5.1-codex", "GPT 5.1 Codex", "400k"],
+      ["gpt-5.1-codex-max", "GPT 5.1 Codex Max", "400k"],
+      ["gpt-5.1-codex-mini", "GPT 5.1 Codex Mini", "400k"],
+      ["gpt-5-codex", "GPT 5 Codex", "400k"],
+      ["codex-mini-latest", "Codex Mini", "192k"]
     ]
   },
   "freemodels": {
