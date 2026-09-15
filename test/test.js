@@ -7,7 +7,6 @@ import { tmpdir } from 'node:os'
 import { gzipSync, gunzipSync } from 'node:zlib'
 
 import { getLatestModelFamilyKey, getModelVersionTuple, isLatestModelName, sources, MODELS, PROVIDER_QUOTAS, canonicalizeModelId, getPreferredModelContext, getPreferredModelLabel, getScore, resolveAliasedModelId } from '../sources.js'
-import { TAG_VOCABULARY, MODEL_TAGS, getModelTags as getBuiltInModelTags } from '../tags.js'
 import {
   getAvg,
   getVerdict,
@@ -26,6 +25,7 @@ import {
   isQuotaExhaustionError,
   computeFailedRefreshRetryAt,
   pruneDiscoverableRows,
+  isDiscoverableProbeAuthRefusal,
   parseContextSize,
   parseArgs,
   parseOpenRouterKeyRateLimit,
@@ -44,6 +44,7 @@ import {
   computeContextDisplay,
   computeUsageAverages,
   resolveCompletionTokens,
+  resolveReportedOutputTokens,
   roundMeasuredRate,
   parseAllowedModelNamesFromRefusal,
   isKnownChatModelName,
@@ -93,7 +94,6 @@ import {
   qualityLookupKeys,
   resolveModelQuality,
 } from '../lib/model-quality.js'
-import { getConfiguredTagNames, getModelTagKey, getModelTags as getUserModelTags, normalizeTag, normalizeTags, setModelTags } from '../lib/tags.js'
 import { resolveAutostartExecPath, resolveAutostartNodePath } from '../lib/autostart.js'
 import { isHammerProcessCommandLine } from '../lib/instances.js'
 import { formatStartupProviderResult, shouldEmitKiroOAuthWarning } from '../lib/startup.js'
@@ -525,40 +525,6 @@ describe('provider usage reports', () => {
     assert.equal(reports[0].used, null)
     assert.equal(reports[0].resetAt, 1893456000000)
     assert.equal(reports[1].remaining, 27)
-  })
-})
-
-describe('tags data integrity', () => {
-  const knownModelIds = new Set(MODELS.map(([modelId]) => modelId))
-
-  it('has no duplicate entries in TAG_VOCABULARY', () => {
-    assert.equal(TAG_VOCABULARY.length, new Set(TAG_VOCABULARY).size)
-  })
-
-  it('only assigns tags that are in TAG_VOCABULARY', () => {
-    for (const [modelId, tags] of Object.entries(MODEL_TAGS)) {
-      for (const tag of tags) {
-        assert.ok(TAG_VOCABULARY.includes(tag), `Unknown tag "${tag}" on ${modelId}`)
-      }
-    }
-  })
-
-  it('does not assign duplicate tags to the same model', () => {
-    for (const [modelId, tags] of Object.entries(MODEL_TAGS)) {
-      assert.equal(tags.length, new Set(tags).size, `Duplicate tag on ${modelId}`)
-    }
-  })
-
-  it('only keys MODEL_TAGS by model IDs that exist in sources.js', () => {
-    for (const modelId of Object.keys(MODEL_TAGS)) {
-      assert.ok(knownModelIds.has(modelId), `MODEL_TAGS has a stale key: ${modelId}`)
-    }
-  })
-
-  it('assigns at least one tag to every model in sources.js', () => {
-    for (const modelId of knownModelIds) {
-      assert.ok(getBuiltInModelTags(modelId).length > 0, `No tags assigned to ${modelId}`)
-    }
   })
 })
 
@@ -1601,6 +1567,36 @@ describe('provider api key resolution', () => {
   })
 })
 
+describe('discoverable provider discovery auth gate', () => {
+  const serverContent = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+
+  it('treats only a refused keyless probe as "auth is not set up"', () => {
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: null, httpStatus: 401 }), true)
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: '', httpStatus: 403 }), true)
+    // Anything else keeps discovery running: a key was sent, the endpoint answered,
+    // it failed for an unrelated reason, or there is no response at all.
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: 'sk-live', httpStatus: 401 }), false)
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: null, httpStatus: 200 }), false)
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: null, httpStatus: 500 }), false)
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: null, httpStatus: 404 }), false)
+    assert.equal(isDiscoverableProbeAuthRefusal({ apiKey: null, httpStatus: null }), false)
+  })
+
+  it('stops probing a provider only after its own probe proved it needs a key', () => {
+    // The gate is decided by the response, never by a missing key on its own, so a
+    // keyless-but-working catalog (the g4f relays, self-hosted gateways) keeps being
+    // discovered. The server must route the decision through the shared rule, remember
+    // the provider, and say so once instead of once per refresh cycle.
+    assert.ok(serverContent.includes('isDiscoverableProbeAuthRefusal({ apiKey, httpStatus })'))
+    assert.ok(serverContent.includes('const discoveryAuthRequired = new Set()'))
+    assert.ok(serverContent.includes('discoveryAuthRequired.add(providerKey)'))
+    assert.ok(serverContent.includes('discoveryAuthRequired.has(providerKey) && !force'))
+    assert.ok(serverContent.includes('no API key configured (HTTP ${httpStatus}), using hardcoded list'))
+    // A configured key clears the verdict, so adding one needs no restart.
+    assert.ok(serverContent.includes('discoveryAuthRequired.delete(providerKey)'))
+  })
+})
+
 describe('Devin browser OAuth', () => {
   it('builds the omp-style Devin authorize URL', () => {
     const url = buildDevinOAuthLoginUrl({
@@ -1682,97 +1678,31 @@ describe('Devin browser OAuth', () => {
   })
 })
 
-describe('user-defined model tags', () => {
-  it('normalizes and deduplicates tag input', () => {
-    assert.equal(normalizeTag(' Code Review! '), 'code-review')
-    assert.deepEqual(normalizeTags(['Fast', 'fast', 'agentic']), ['fast', 'agentic'])
-  })
-
-  it('stores tags under the canonical model id shared by providers', () => {
-    const config = {}
-    const updated = setModelTags(config, 'minimax-m2.5-free', ['Coding', 'agentic'])
-    assert.equal(updated.key, 'minimax/minimax-m2.5')
-    assert.deepEqual(getUserModelTags(config, 'minimax/minimax-m2.5:free'), ['coding', 'agentic'])
-    assert.deepEqual(getConfiguredTagNames(config), ['agentic', 'coding'])
-    assert.equal(getModelTagKey('minimax-m2.5-free'), 'minimax/minimax-m2.5')
-  })
-
-  it('clears persisted entries when the last tag is removed', () => {
-    const config = { modelTags: { 'openai/gpt-oss-120b': ['general'] } }
-    setModelTags(config, 'openai/gpt-oss-120b:free', [])
-    assert.deepEqual(config.modelTags, {})
-  })
-
-  it('routes tag requests across all matching provider rows', () => {
+describe('min_ctx request modifier', () => {
+  it('filters best and smartest by min_ctx (issue #42)', () => {
     const results = [
-      mockResult({ modelId: 'one', tags: ['coding'] }),
-      mockResult({ modelId: 'two', tags: ['fast', 'coding'] }),
-      mockResult({ modelId: 'three', tags: ['reasoning'] }),
-    ]
-    assert.deepEqual(filterModelsByRequested(results, 'tag:coding').map(model => model.modelId), ['one', 'two'])
-    assert.deepEqual(filterModelsByRequested(results, 'tag:missing'), [])
-    assert.deepEqual(filterModelsByRequested(results, 'tag:'), [])
-  })
-
-  it('filters tag requests by a min_ctx modifier', () => {
-    const results = [
-      mockResult({ modelId: 'small', tags: ['general'], ctx: '8k' }),
-      mockResult({ modelId: 'medium', tags: ['general'], ctx: '32k' }),
-      mockResult({ modelId: 'large', tags: ['general'], ctx: '1m' }),
-      mockResult({ modelId: 'maximum-only', tags: ['general'], ctx: '1m', ctxSource: 'model-maximum' }),
-      mockResult({ modelId: 'no-ctx', tags: ['general'], ctx: null }),
-      mockResult({ modelId: 'wrong-tag', tags: ['coding'], ctx: '1m' }),
+      mockResult({ modelId: 'small', ctx: '8k' }),
+      mockResult({ modelId: 'medium', ctx: '128k' }),
+      mockResult({ modelId: 'large', ctx: '1m' }),
     ]
 
     assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+min_ctx:32000').map(m => m.modelId),
+      filterModelsByRequested(results, 'best+min_ctx:128k').map(m => m.modelId),
       ['medium', 'large'],
     )
-    // Exact boundary: a 32k model satisfies a 32000-token floor.
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+min_ctx:32001').map(m => m.modelId),
-      ['large'],
-    )
-    // Shorthand k/m suffixes on the modifier value itself.
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+min_ctx:1m').map(m => m.modelId),
-      ['large'],
-    )
-    // No modifier -- unchanged plain tag behavior, unparseable/missing ctx included.
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general').map(m => m.modelId),
-      ['small', 'medium', 'large', 'maximum-only', 'no-ctx'],
-    )
-  })
-
-  it('ignores unknown or malformed tag modifiers instead of rejecting the request', () => {
-    const results = [mockResult({ modelId: 'one', tags: ['general'], ctx: '128k' })]
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+unknown_modifier:whatever').map(m => m.modelId),
-      ['one'],
-    )
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+min_ctx:not-a-number').map(m => m.modelId),
-      ['one'],
-    )
-    assert.deepEqual(
-      filterModelsByRequested(results, 'tag:general+').map(m => m.modelId),
-      ['one'],
-    )
-  })
-
-  it('filters smartest by min_ctx regardless of capability tags (issue #42)', () => {
-    const results = [
-      mockResult({ modelId: 'small', tags: ['general'], ctx: '8k' }),
-      mockResult({ modelId: 'medium', tags: ['coding'], ctx: '128k' }),
-      mockResult({ modelId: 'large', ctx: '1m' }), // no tags at all -- still eligible
-    ]
-
     assert.deepEqual(
       filterModelsByRequested(results, 'smartest+min_ctx:128k').map(m => m.modelId),
       ['medium', 'large'],
     )
-    // Plain smartest is untouched -- still returns everything for the ranking stage.
+    // A context that is only an inferred upper bound can't be proven to fit.
+    assert.equal(
+      filterModelsByRequested(
+        [mockResult({ modelId: 'maximum-only', ctx: '1m', ctxSource: 'model-maximum' })],
+        'smartest+min_ctx:1m',
+      ).length,
+      0,
+    )
+    // Plain best/smartest is untouched -- still returns everything for the ranking stage.
     assert.deepEqual(
       filterModelsByRequested(results, 'smartest').map(m => m.modelId),
       ['small', 'medium', 'large'],
@@ -1784,14 +1714,49 @@ describe('user-defined model tags', () => {
     )
   })
 
-  it('normalizes persisted model tags safely', () => {
-    const normalized = normalizeConfigShape({
-      modelTags: {
-        ' Model/One ': [' Fast ', 'fast', 'Code Review!', null],
-        broken: 'not-an-array',
-      },
-    })
-    assert.deepEqual(normalized.modelTags, { 'model/one': ['fast', 'code-review'] })
+  it('honours exact min_ctx boundaries and k/m shorthand', () => {
+    const results = [
+      mockResult({ modelId: 'small', ctx: '8k' }),
+      mockResult({ modelId: 'medium', ctx: '32k' }),
+      mockResult({ modelId: 'large', ctx: '1m' }),
+      mockResult({ modelId: 'no-ctx', ctx: null }),
+    ]
+
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best+min_ctx:32000').map(m => m.modelId),
+      ['medium', 'large'],
+    )
+    // Exact boundary: a 32k model satisfies a 32000-token floor.
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best+min_ctx:32001').map(m => m.modelId),
+      ['large'],
+    )
+    // Shorthand k/m suffixes on the modifier value itself.
+    assert.deepEqual(
+      filterModelsByRequested(results, 'smartest+min_ctx:1m').map(m => m.modelId),
+      ['large'],
+    )
+    // No modifier -- unchanged plain best behavior, unparseable/missing ctx included.
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best').map(m => m.modelId),
+      ['small', 'medium', 'large', 'no-ctx'],
+    )
+  })
+
+  it('ignores unknown or malformed modifiers instead of rejecting the request', () => {
+    const results = [mockResult({ modelId: 'one', ctx: '128k' })]
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best+unknown_modifier:whatever').map(m => m.modelId),
+      ['one'],
+    )
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best+min_ctx:not-a-number').map(m => m.modelId),
+      ['one'],
+    )
+    assert.deepEqual(
+      filterModelsByRequested(results, 'best+').map(m => m.modelId),
+      ['one'],
+    )
   })
 })
 
@@ -4112,44 +4077,6 @@ describe('model grouping and filtering', () => {
   })
 })
 
-describe('model tag routing', () => {
-  // moonshotai/kimi-k2.7-code -> ['coding'], qwen-qwq-32b -> ['reasoning'], z-ai/glm5 -> ['agentic', 'coding', 'general']
-  const taggedResults = [
-    mockResult({ modelId: 'moonshotai/kimi-k2.7-code', label: 'Kimi K2.7 Code' }),
-    mockResult({ modelId: 'qwen-qwq-32b', label: 'QwQ 32B' }),
-    mockResult({ modelId: 'z-ai/glm5', label: 'GLM 5' }),
-  ]
-
-  it('routes tag: requests to models carrying that tag', () => {
-    const filtered = filterModelsByRequested(taggedResults, 'tag:reasoning', canonicalizeModelId)
-    assert.deepEqual(filtered.map(r => r.modelId), ['qwen-qwq-32b'])
-  })
-
-  it('matches a model tagged with multiple tags under each of its tags', () => {
-    const codingMatches = filterModelsByRequested(taggedResults, 'tag:coding', canonicalizeModelId)
-    assert.ok(codingMatches.some(r => r.modelId === 'moonshotai/kimi-k2.7-code'))
-    assert.ok(codingMatches.some(r => r.modelId === 'z-ai/glm5'))
-
-    const agenticMatches = filterModelsByRequested(taggedResults, 'tag:agentic', canonicalizeModelId)
-    assert.deepEqual(agenticMatches.map(r => r.modelId), ['z-ai/glm5'])
-  })
-
-  it('is case-insensitive for tag names', () => {
-    const filtered = filterModelsByRequested(taggedResults, 'TAG:Reasoning', canonicalizeModelId)
-    assert.deepEqual(filtered.map(r => r.modelId), ['qwen-qwq-32b'])
-  })
-
-  it('returns no models for an unknown tag', () => {
-    const filtered = filterModelsByRequested(taggedResults, 'tag:nonexistent', canonicalizeModelId)
-    assert.equal(filtered.length, 0)
-  })
-
-  it('returns no models when no result carries the requested tag', () => {
-    const filtered = filterModelsByRequested([mockResult({ modelId: 'moonshotai/kimi-k2.7-code' })], 'tag:reasoning', canonicalizeModelId)
-    assert.equal(filtered.length, 0)
-  })
-})
-
 describe('pinned model routing', () => {
   const results = [
     mockResult({ modelId: 'nvidia/glm4.7', label: 'GLM 4.7', providerKey: 'nvidia', pings: [{ ms: 90, code: '200' }], intell: 0.7 }),
@@ -4317,6 +4244,20 @@ describe('package and entrypoint sanity', () => {
     assert.equal(dashboardContent.includes('id="sel-enabled"'), false)
   })
 
+  it('treats a slope of zero as the smartest pick, not an unset selector', () => {
+    // The far-left slider position stores slope 0 (the flat line that picks the
+    // smartest row). Storing null there made the router fall back to the Elo ranking,
+    // so the one position that promises the smartest model could not express it.
+    assert.ok(dashboardContent.includes('selectorState.slope = 0;'))
+    assert.equal(dashboardContent.includes('(selectorSlopeMax > 0 && v > 0)'), false)
+    assert.ok(dashboardContent.includes("slopeValue === 0 ? '0%'"))
+    // A vertical line means 'fastest row', which only a positive slope asks for.
+    // selectorSlopeMax is legitimately 0 when the plotted rows share one speed or the
+    // plot has no scale yet, and slope 0 must not read as 'max slope' there: the plot
+    // would highlight the fastest row while the router routes to the smartest one.
+    assert.ok(dashboardContent.includes('const atMaxSlope = slopeActive && slopeNum > 0 && slopeNum >= selectorSlopeMax;'))
+  })
+
   it('removes the main-table filter controls', () => {
     assert.equal(dashboardContent.includes('toggleFilterBar'), false)
     assert.equal(dashboardContent.includes('class="filter-bar"'), false)
@@ -4324,12 +4265,6 @@ describe('package and entrypoint sanity', () => {
     assert.equal(dashboardContent.includes('id="filter-ping-group"'), false)
     assert.equal(dashboardContent.includes('id="filter-avail-group"'), false)
     assert.equal(dashboardContent.includes('id="filter-status-group"'), false)
-  })
-
-  it('includes the model tag editor and tag-routing guidance', () => {
-    assert.ok(dashboardContent.includes('id="model-tags-input"'))
-    assert.ok(dashboardContent.includes("fetch('/api/models/tags'"))
-    assert.ok(dashboardContent.includes('Use <code>tag:name</code>'))
   })
 
   it('formats context sizes for display without changing routing data', () => {
@@ -4470,14 +4405,38 @@ describe('package and entrypoint sanity', () => {
 
   it('keeps the group Test button for single-provider models', () => {
     assert.ok(dashboardContent.includes("members.length === 1\n        ? (first.status === 'up' ? 'Up' : (first.status === 'noauth' ? 'No Auth' : 'Down'))"))
-    assert.ok(dashboardContent.includes("if (hasAuth) {\n              const expired = lastR && lastR.expiresAt"))
-    assert.ok(dashboardContent.includes("responseCellHTML(lastR, { rowKey: 'g:' + g.key, members: g.members, hasAuth: true, status: first.status })"))
+    assert.ok(dashboardContent.includes("const showable = hasAuth && lastR && !expired && (lastR.text != null || lastR.error != null)"))
+    assert.ok(dashboardContent.includes("responseCellHTML(showable, { rowKey: 'g:' + g.key, members: g.members, hasAuth, status: first.status })"))
     assert.ok(dashboardContent.includes("const hideGroupError = isGroupTest && opts.members.length > 1 && lastResponse.error"))
     assert.ok(dashboardContent.includes('const collapsedModelGroups = new Set()'))
     assert.ok(dashboardContent.includes('function toggleModelGroup(groupKey)'))
     assert.ok(dashboardContent.includes("g.members.length > 1 && !collapsedModelGroups.has(g.key)"))
     assert.ok(dashboardContent.includes("lr.error == null && lr.text != null"))
     assert.ok(dashboardContent.includes("text: 'Ready', _groupReady: true"))
+  })
+
+  it('keeps a Test button on a heading row whose last result went stale', () => {
+    // An expired timeout (or an empty result) used to fall through to a bare empty
+    // Response cell, so the heading row — and, for a single-provider model, its only row
+    // — lost its Test button with no way to re-test. Every case now renders through
+    // responseCellHTML(), which supplies the button or the no-auth placeholder dash.
+    const groupResponseCell = dashboardContent.slice(
+      dashboardContent.indexOf('// Group response: the most recent successful test'),
+      dashboardContent.indexOf('// A heading row'),
+    )
+    assert.ok(groupResponseCell.length > 0, 'the group Response cell was not found')
+    assert.ok(groupResponseCell.includes('responseCellHTML(showable'))
+    assert.equal(groupResponseCell.includes(`'<div class="test-cell"></div>'`), false)
+  })
+
+  it('routes a model heading click to expand/collapse instead of the drawer', () => {
+    assert.ok(dashboardContent.includes('function applyGroupRowClick(row, g)'))
+    assert.ok(dashboardContent.includes('if (g.members.length > 1) toggleModelGroup(g.key)'))
+    // Single-provider headings have nothing to expand, so they still open the drawer
+    // rather than becoming a dead click.
+    assert.ok(dashboardContent.includes('else openDrawer(g.members[0])'))
+    assert.ok(dashboardContent.includes('applyGroupRowClick(tr, g)'))
+    assert.ok(dashboardContent.includes('applyGroupRowClick(row, g)'))
   })
 
   it('removes the quota column while preserving status and response columns', () => {
@@ -4487,7 +4446,7 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes('>Response</th>'))
   })
 
-  it('keeps unavailable models collapsed with the main table columns', () => {
+  it('keeps unavailable models collapsed and ungrouped, with the main table columns', () => {
     assert.match(dashboardContent, /<details class="graveyard-details" id="graveyard-details">/)
     assert.equal(dashboardContent.includes('id="graveyard-details" open'), false)
     for (const header of ['Model', 'Intelligence', 'Ping', 'TTFT', 'Tok/s', 'Context', 'Status', 'Response']) {
@@ -4495,11 +4454,18 @@ describe('package and entrypoint sanity', () => {
     }
     assert.ok(dashboardContent.includes('function graveyardRowHTMLInner(g)'))
     assert.ok(dashboardContent.includes("|| m.status === 'noauth';"))
-    assert.ok(dashboardContent.includes('const noAuthCount = members.filter(m => m.status === \'noauth\').length'))
+    assert.ok(dashboardContent.includes('function unavailableReasonLabel(m)'))
+    // Ungrouped: every struck provider becomes its own single-member row keyed by
+    // that provider row, so one model's paid/dead/no-auth providers are never
+    // collapsed into a single count under the model's name.
+    assert.ok(dashboardContent.includes('graveyardGroups.push({ ...g, key: getModelRowKey(m), members: [m] })'))
+    assert.equal(dashboardContent.includes('const noAuthCount = members.filter'), false)
+    assert.ok(dashboardContent.includes('const statusText = unavailableReasonLabel(first)'))
+    assert.ok(dashboardContent.includes('${escapeHtml(PROVIDER_NAMES[first.providerKey] || first.providerKey)}</div>'))
     assert.ok(dashboardContent.includes("getBenchmarkTableDisplayValue(s.bestIntellMember.intell"))
     assert.ok(dashboardContent.includes("formatTtftCell(s.minTtft, 'ttft')"))
     assert.ok(dashboardContent.includes("formatTpsCell(s.maxTps, 'tok/s')"))
-    assert.ok(dashboardContent.includes("hasAuth\n            ? responseCellHTML(lastResponse, { rowKey: 'g:' + g.key, members, hasAuth: true, status: first.status })"))
+    assert.ok(dashboardContent.includes("hasAuth\n            ? responseCellHTML(lastResponse, { rowKey: getModelRowKey(first), providerKey: first.providerKey, modelId: first.modelId, hasAuth: true, status: first.status })"))
   })
 })
 
@@ -5041,6 +5007,30 @@ describe('usage stats (ttft / tokens per second)', () => {
     assert.equal(resolveCompletionTokens(0, null), null)
     // A provider that reports 0 tokens while returning text is still measurable.
     assert.equal(resolveCompletionTokens(0, 'x'.repeat(48)), 12)
+  })
+
+  it('never reports a zeroed usage block as a token count', () => {
+    const serverSource = readFileSync(join(ROOT, 'lib/server.js'), 'utf8')
+    const dashboardContent = readFileSync(join(ROOT, 'public/index.html'), 'utf8')
+    // The result cell's "N tokens" is the provider's own report, and a zero is not a
+    // report of anything: g4f's hosted pool answers 200 with usage {0,0,0} while
+    // returning text, so printing "0 tokens" beside a tok/s measured from that same
+    // text would state two contradictory things about one answer — and quietly
+    // substituting the estimate there would pass an estimate off as a real report.
+    assert.equal(resolveReportedOutputTokens(2, 4), 2)
+    assert.equal(resolveReportedOutputTokens('7', 9), 7)
+    assert.equal(resolveReportedOutputTokens(0, 0), null)
+    // A zeroed output count is not repaired with the total: prompt tokens are not
+    // output tokens, and the provider said nothing about what it generated.
+    assert.equal(resolveReportedOutputTokens(0, 9), null)
+    // A relay that reports only a total still gets a label for it.
+    assert.equal(resolveReportedOutputTokens(null, 9), 9)
+    assert.equal(resolveReportedOutputTokens(null, 0), null)
+    assert.equal(resolveReportedOutputTokens(undefined, null), null)
+    // The Test path stores this (not the raw report), and the dashboard drops a zero
+    // persisted by an older build so a stale row stops printing one too.
+    assert.ok(serverSource.includes('body.tokens = resolveReportedOutputTokens('))
+    assert.ok(dashboardContent.includes('reportedTokens > 0'))
   })
 
   it('computes token-weighted averages', () => {
@@ -5609,8 +5599,19 @@ describe('status reconciliation and bulk retest', () => {
   })
 
   it('statusCellHTML honors Ready lastResponse over stale status', () => {
-    assert.ok(dashboardContent.includes('const effectiveUp = m.status === \'up\' || isLastResponseReady(m.lastResponse)'))
+    // The Ready-over-status rule lives in one shared helper so the combined model
+    // heading and the provider rows beneath it agree on what 'up' means.
+    assert.ok(dashboardContent.includes("function isRowUp(m) {\n      return m.status === 'up' || isLastResponseReady(m.lastResponse);"))
+    assert.ok(dashboardContent.includes('const effectiveUp = isRowUp(m)'))
     assert.ok(dashboardContent.includes("const dotColor = effectiveUp ? 'var(--success)'"))
+  })
+
+  it('greens a combined model heading when any provider under it is up', () => {
+    // The heading dot answers 'can this model be used at all?', so it is green with
+    // even one live provider; how many are up is spelled out in the subtitle.
+    assert.ok(dashboardContent.includes("const statusColor = s.upCount > 0 ? 'var(--success)' : 'var(--error)'"))
+    assert.ok(dashboardContent.includes('const upCount = members.filter(isRowUp).length'))
+    assert.ok(dashboardContent.includes('${s.upCount}/${members.length} providers`'))
   })
 
   it('timeout statuses show the clock emoji instead of the red dot', () => {
@@ -5623,7 +5624,7 @@ describe('status reconciliation and bulk retest', () => {
   })
 
   it('combinedStatusCellHTML honors Ready lastResponse', () => {
-    assert.ok(dashboardContent.includes('const isUp = m.status === \'up\' || isLastResponseReady(m.lastResponse)'))
+    assert.ok(dashboardContent.includes('const isUp = isRowUp(m)'))
     assert.ok(dashboardContent.includes("paymentRequired === true && !isUp"))
     assert.ok(dashboardContent.includes("incompatible === true && !isUp"))
     assert.ok(dashboardContent.includes('microContext === true && !isUp'))

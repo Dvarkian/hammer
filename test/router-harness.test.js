@@ -70,8 +70,13 @@ const FAST_MODEL = 'microsoft/phi-3.5-mini-instruct'  // lower score, seeded muc
 // response carried no metrics, and one with a real measurement too slow to survive a
 // single-decimal round. Both are inert for routing (no catalog rating).
 const MEASURELESS_MODEL = 'stub-null-metrics'
+// A dedicated row for the zero-usage relay mode below: real text back, no reported
+// count. It has no catalog rating and no seeded samples, so nothing else reads it.
+const ZERO_USAGE_MODEL = 'stub-zero-usage'
+// "pong" is 4 characters, which the text-based estimate counts as one token.
+const ZERO_USAGE_ESTIMATED_TOKENS = 1
 const SLOW_RATE_MODEL = 'stub-tiny-rate'
-const STUB_MODELS = ['stub-alpha', 'stub-beta', 'stub-gamma', 'stub-delta', 'stub-epsilon', 'stub-zeta', SMART_MODEL, FAST_MODEL, MEASURELESS_MODEL, SLOW_RATE_MODEL]
+const STUB_MODELS = ['stub-alpha', 'stub-beta', 'stub-gamma', 'stub-delta', 'stub-epsilon', 'stub-zeta', ZERO_USAGE_MODEL, SMART_MODEL, FAST_MODEL, MEASURELESS_MODEL, SLOW_RATE_MODEL]
 // Seeded with clean test responses to pin the readiness promotion's freshness
 // window: one far outside it, one inside. Both are then contradicted by a probe, so
 // the only thing that can still mark them up is the readiness promotion itself.
@@ -238,6 +243,19 @@ const stubServer = createServer((req, res) => {
       frame({ choices: [{ index: 0, delta: { content: NO_USAGE_CONTENT } }] })
       frame({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: null })
       res.end('data: [DONE]\n\n')
+      return
+    }
+
+    if (stubState.mode === 'zero-usage') {
+      // g4f's hosted pool: a real completion wrapped in a usage block that reports
+      // nothing at all. The text is the answer, and a speed has to come from it, but
+      // the relay's own count is a zero — one the dashboard must never print as "0
+      // tokens" next to the tok/s measured from that same text.
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        ...OK_COMPLETION,
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+      }))
       return
     }
 
@@ -1112,6 +1130,34 @@ describe('router harness', () => {
       NO_USAGE_ESTIMATED_TOKENS,
       'a Test against a no-usage relay must be counted the same way',
     )
+  })
+
+  it('never prints a relay\'s zeroed usage block as a token count on a Test', async () => {
+    // The result cell's "N tokens" is the provider's own report, so a zeroed usage
+    // block reads as "this model returned nothing" — while the tok/s beside it is
+    // measured from the text the model just returned. One of the two has to go, and
+    // it is the zero: a count of nothing is not a count, and swapping in the estimate
+    // would pass an estimate off as the provider's number.
+    resetStub('zero-usage')
+    assert.ok(await modelById(ZERO_USAGE_MODEL), 'control: the row must be listed before it is tested')
+    const tokensBefore = recordedCompletionTokens(STUB_INSTANCE_KEY, ZERO_USAGE_MODEL)
+
+    const tested = await api('/api/test-model', {
+      method: 'POST',
+      body: JSON.stringify({ providerKey: STUB_INSTANCE_KEY, modelId: ZERO_USAGE_MODEL }),
+    })
+
+    assert.equal(tested.json?.ok, true, 'control: the test itself succeeded')
+    assert.equal(tested.json?.tokens, null, 'a zeroed usage block must not be reported as a count')
+    assert.ok(tested.json?.tps > 0, `the returned text still has to measure, got ${tested.json?.tps}`)
+    assert.equal(
+      recordedCompletionTokens(STUB_INSTANCE_KEY, ZERO_USAGE_MODEL) - tokensBefore,
+      ZERO_USAGE_ESTIMATED_TOKENS,
+      'the text the model returned is still counted',
+    )
+    const row = await modelById(ZERO_USAGE_MODEL)
+    assert.equal(row?.lastResponse?.tokens, null, 'the persisted response carries no zeroed count')
+    assert.equal(row?.lastResponse?.text, 'pong', 'the response itself is still shown')
   })
 
   it('never reports a fabricated speed for a row with no measurement', async () => {

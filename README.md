@@ -181,8 +181,7 @@ hammer config export | hammer config import
 - Use `model: "best"` to route to the highest-intelligence working model
 - Use a grouped model ID such as `minimax-m2.5`, `kimi-k2.5`, or `glm4.7` to route within that model group
 - For grouped IDs, hammer selects the provider with the best current QoS for that group
-- Use `model: "tag:<name>"` (e.g. `tag:coding`) to route to the best currently available model carrying that tag — either a curated capability tag or a custom tag you've assigned in the Web UI (see [Model tags](#model-tags)). This is useful because the free models behind hammer come and go as availability changes — routing by tag survives a given model disappearing, where routing by a specific model/group ID does not.
-- Append `+min_ctx:<size>` to `tag:<name>` or `best` to additionally require a minimum context window, e.g. `tag:general+min_ctx:32000` or `best+min_ctx:128k`. `<size>` accepts a raw token count or a `k`/`m` suffix. Models whose context window can't be determined, or is smaller than the requirement, are excluded. See [Model tags](#model-tags).
+- Append `+min_ctx:<size>` to `best` to additionally require a minimum context window, e.g. `best+min_ctx:128k`. `<size>` accepts a raw token count or a `k`/`m` suffix. Models whose context window can't be determined, or is smaller than the requirement, are excluded. See [Minimum context window](#minimum-context-window-min_ctx).
 - In the Web UI, pinned models can now use either `Canonical Group` mode (default, pins the same model across providers) or `Exact Provider Row` mode from `Settings`
 - Streaming and non-streaming requests are both supported
 
@@ -194,7 +193,6 @@ hammer config export | hammer config import
 - Each grouped ID can represent the same model across multiple providers
 - When you select one of these IDs in `/v1/chat/completions`, hammer routes the request to the provider with the best current QoS for that model group
 - `best` is also exposed and routes to the highest-intelligence working model
-- Each entry includes a `tags` array combining curated capability tags with any user-defined tags (see [Model tags](#model-tags))
 
 Example:
 
@@ -203,31 +201,21 @@ Example:
   "object": "list",
   "data": [
     { "id": "best", "object": "model", "owned_by": "router" },
-    { "id": "minimax-m2.5", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "general", "coding"] },
-    { "id": "kimi-k2.5", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "coding", "general"] },
-    { "id": "glm4.7", "object": "model", "owned_by":"Hammer", "tags": ["agentic", "coding", "general"] }
+    { "id": "minimax-m2.5", "object": "model", "owned_by":"Hammer" },
+    { "id": "kimi-k2.5", "object": "model", "owned_by":"Hammer" },
+    { "id": "glm4.7", "object": "model", "owned_by":"Hammer" }
   ]
 }
 ```
 
-### Model tags
+### Minimum context window (`min_ctx`)
 
-Every model carries one or more capability tags, combined from two sources:
+Naming a model doesn't guarantee it can fit your prompt — the same model group can span providers with very different context windows. Append `+min_ctx:<size>` to `best` to filter those out before the normal ranking runs:
 
-- **Curated tags** come from a fixed vocabulary — `coding`, `reasoning`, `general`, `fast`, `agentic` — maintained by project maintainers in `tags.js`.
-- **Custom tags** are freeform labels you assign yourself. In the Web UI, open a model row and edit **Custom Routing Tags**. Assignments are keyed to the canonical model, shared across its providers, and stored in `~/.hammer.json`.
+- `best+min_ctx:1m` — highest-intelligence working model with at least 1,000,000 tokens of context
+- `best+min_ctx:32000` — same, with a minimum of 32,000 tokens
 
-Use `model: "tag:<name>"` in `/v1/chat/completions` to route to the best currently available model carrying that tag — curated or custom — instead of naming a specific model. For example, assign `coding` to a few models in the UI, then request `model: "tag:coding"`; normal QoS ranking, availability filtering, and retry behavior choose the best currently eligible tagged model.
-
-#### Minimum context window (`min_ctx`)
-
-Tag membership alone doesn't guarantee a model can fit your prompt — a tag can span models with very different context windows. Append `+min_ctx:<size>` to filter those out before the tag route's normal QoS ranking runs:
-
-- `tag:general+min_ctx:32000` — best available `general`-tagged model with at least 32,000 tokens of context
-- `tag:coding+min_ctx:128k` — same, for `coding`, using the `k` shorthand
-- `best+min_ctx:1m` — highest-intelligence working model with at least 1,000,000 tokens of context, no tag restriction
-
-`<size>` accepts a plain token count (`32000`) or a `k`/`m` suffix (`32k`, `1m`). Models with no known context window, or a smaller one than requested, are excluded from consideration. An unparseable or unrecognized modifier is ignored, falling back to the unmodified `tag:<name>` or `best` behavior rather than erroring.
+`<size>` accepts a plain token count (`32000`) or a `k`/`m` suffix (`32k`, `1m`). Models with no known context window, or a smaller one than requested, are excluded from consideration. An unparseable or unrecognized modifier is ignored, falling back to the unmodified `best` behavior rather than erroring.
 
 Hammer uses context data reported by the selected provider when it is available. Otherwise, it uses a provider-specific curated value from `sources.js`. It does not copy a context size between providers. It also keeps the context unknown when neither source has a value. For Ollama, the allocated or configured context is usable for this filter. The model maximum alone is not sufficient.
 
@@ -235,7 +223,7 @@ Hammer uses context data reported by the selected provider when it is available.
 
 The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one derived where AA has no rating for a model: interpolated from its Elo (LMArena, or Design Arena for catalog entries), or, when there is no Elo either, calibrated from the curated offline score against the models that carry both. Every derived index is marked `*` in the dashboard. Rows with none of those fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
 
-Grouped-ID and `tag:<name>` routing retain their normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target is configurable in the Web UI under **Settings → QoS Latency Target (ms)** (default: 3000ms).
+Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target is configurable in the Web UI under **Settings → QoS Latency Target (ms)** (default: 3000ms).
 
 ## Config
 

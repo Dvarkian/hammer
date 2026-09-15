@@ -167,21 +167,6 @@
       letter-spacing: 0.02em;
     }
 
-    .model-tag-row { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
-    .model-tag {
-      display:inline-flex; align-items:center; gap:4px; padding:2px 7px;
-      border:1px solid var(--border); border-radius:999px; background:var(--surface-alt);
-      color:var(--text-dim); font-family:monospace; font-size:0.66rem; line-height:1.35;
-    }
-    button.model-tag { cursor:pointer; transition:border-color 120ms ease,color 120ms ease,transform 120ms ease; }
-    button.model-tag:hover { border-color:var(--status-error-border); color:var(--status-error-text); transform:translateY(-1px); }
-    .tag-workbench { margin-bottom:30px; padding:16px; border:1px solid var(--border); border-radius:12px; background:var(--chat-bg); }
-    .tag-input-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; margin-top:12px; }
-    .tag-input-row input {
-      min-width:0; padding:9px 11px; border:1px solid var(--border); border-radius:7px;
-      background:var(--input-bg); color:var(--text); font-family:monospace; font-size:0.78rem;
-    }
-
     body {
       margin: 0;
       font-family: "Geist", "Inter", sans-serif;
@@ -984,6 +969,10 @@
     }
 
     /* Grouped table: each model gets a heading row above its provider rows */
+    tr.model-group-row {
+      cursor: pointer;
+    }
+
     tr.model-group-row td {
       background: var(--surface-alt);
       padding-top: 10px;
@@ -1885,6 +1874,7 @@
     </div>
 
     <div class="kpi-grid">
+      <div id="proxy-error-banner" style="display:none; margin-bottom:12px; padding:10px 14px; border:1px solid var(--status-error-border); border-radius:8px; background:var(--status-error-bg); color:var(--status-error-text); font-size:0.82rem;"></div>
       <div class="plots-grid">
         <div class="kpi-card topology-card">
         <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
@@ -2345,6 +2335,9 @@
     let openDrawerModelId = null;
     let currentRenderedOrder = [];
     let graveyardCurrentOrder = [];
+    // Unavailable rows are only built while the graveyard panel is open; this holds the
+    // latest groups so opening it can build them on demand.
+    let pendingGraveyardGroups = [];
     // Row keys with a 'Test' request currently in flight (guards the Response cell
     // against being clobbered by live polling re-renders while the test runs).
     let inflightTests = new Set();
@@ -2363,6 +2356,7 @@
     let selectorSaveTimer = null;
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
+    let proxyErrorState = null;
     let scatterDrag = null;       // active threshold-line drag
     let scatterScales = null;     // plot extents, refreshed by every draw
     let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
@@ -2423,6 +2417,22 @@
       'openai-codex': 'OpenAI Codex',
     };
 
+    function updateProxyErrorBanner(error) {
+      const el = document.getElementById('proxy-error-banner');
+      if (!el) return;
+      if (!error || !error.message) {
+        el.style.display = 'none';
+        el.textContent = '';
+        proxyErrorState = null;
+        return;
+      }
+      const fallback = error.fallback ? ' Fallback routing is active.' : '';
+      const target = error.provider && error.model ? ` (${error.provider}/${error.model})` : '';
+      el.textContent = `Router: ${error.message}${target}.${fallback}`;
+      el.style.display = 'block';
+      proxyErrorState = error;
+    }
+
 
 
     async function switchTab(tab) {
@@ -2459,6 +2469,7 @@
         ]);
         const data = await modelsRes.json();
         const providers = await configRes.json();
+        updateProxyErrorBanner(data.proxyError);
 
         // Calculate QoS for each model. Quota reports are already attached by
         // /api/models; avoid a second usage request on every dashboard refresh.
@@ -2484,6 +2495,7 @@
                 rateLimitResetMs = Math.max(rateLimitResetMs, m.rateLimit.creditResetAt - now);
               }
             }
+
           }
 
           return { ...m, qos: m.qos || 0, isRateLimited };
@@ -2514,7 +2526,7 @@
         updateRerunButtonVisibility();
         if (openDrawerModelId) {
           const m = allModels.find(x => x.modelId === openDrawerModelId);
-          if (m && document.activeElement?.id !== 'model-tags-input') updateDrawerContent(m);
+          if (m) updateDrawerContent(m);
         }
         // Live-update logs if that tab is currently active
         if (document.getElementById('logs-view').style.display !== 'none') {
@@ -2528,6 +2540,7 @@
         return true;
       } catch (e) {
         console.error('Fetch error:', e);
+        updateProxyErrorBanner({ message: e?.message || 'Could not refresh Hammer status.', fallback: false });
         return false;
       }
     }
@@ -3138,7 +3151,13 @@
         : null;
       const slopeNum = Number(selectorState.slope);
       const slopeActive = selectorState.slope != null && Number.isFinite(slopeNum);
-      const atMaxSlope = slopeActive && slopeNum >= selectorSlopeMax;
+      // A vertical line means "the fastest row", which is only what a positive slope
+      // asks for. Slope 0 is the flat line whose argmax is the smartest row at any
+      // scale — and selectorSlopeMax is legitimately 0 (no speed or intelligence
+      // spread yet, or before the first draw), which would otherwise make slope 0 look
+      // like "max slope" and highlight the fastest row while the router, which treats
+      // slope 0 as the argmax, routes to the smartest one.
+      const atMaxSlope = slopeActive && slopeNum > 0 && slopeNum >= selectorSlopeMax;
       const slopePick = (!pinned && slopeActive) ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
       const fallbackRow = (!pinned && !slopePick && !slopeActive && currentBestModelId)
         ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
@@ -3402,11 +3421,22 @@
     function syncSelectorControls() {
       const slider = document.getElementById('sel-slope-slider');
       const valEl = document.getElementById('sel-slope-value');
-      const frac = (selectorState.slope != null && selectorSlopeMax > 0)
-        ? Math.min(1, Math.atan(Number(selectorState.slope) * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX)
+      const slopeValue = selectorState.slope != null && Number.isFinite(Number(selectorState.slope))
+        ? Number(selectorState.slope)
+        : null;
+      const scaled = slopeValue != null && selectorSlopeMax > 0;
+      const frac = scaled
+        ? Math.min(1, Math.atan(slopeValue * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX)
         : 0;
       if (slider) slider.value = String(Math.round(frac * 1000));
-      if (valEl) valEl.textContent = (selectorState.slope != null && selectorSlopeMax > 0) ? `${Math.round(frac * 100)}%` : '—';
+      if (valEl) {
+        // Slope 0 is a real setting — the flat line that picks the smartest row — so it
+        // reads as '0%'. Only a missing slope, or a positive one the plot has no scale
+        // to position yet, shows as unset.
+        valEl.textContent = slopeValue == null
+          ? '—'
+          : (slopeValue === 0 ? '0%' : (scaled ? `${Math.round(frac * 100)}%` : '—'));
+      }
     }
 
     function onSlopeSliderInput() {
@@ -3420,11 +3450,20 @@
       // slope when it is larger, i.e. when two rows have near-identical speeds)
       // so the vertical-line branch and its fastest-model pick are exact, and the
       // router selects the same fastest row the plot highlights.
-      selectorState.slope = (selectorSlopeMax > 0 && v > 0)
-        ? (v >= 1
-            ? Math.max(selectorSlopeMax, selectorGuaranteeSlope)
-            : selectorSlopeMax * Math.tan(v * SLOPE_SLIDER_ANGLE_MAX) / SLOPE_SLIDER_ANGLE_TAN)
-        : null;
+      // 0% is the scale-free end: slope 0 is meaningful to the router (the flat line
+      // picks the highest-intelligence eligible row), so the leftmost position stores 0.
+      // Clearing it to null instead made the router fall back to the Elo ranking, so the
+      // one pick the slider promises at 0% was the one position that could not express
+      // it. Above 0% a position still needs a plot scale to become a data slope.
+      if (!(v > 0)) {
+        selectorState.slope = 0;
+      } else if (selectorSlopeMax > 0) {
+        selectorState.slope = v >= 1
+          ? Math.max(selectorSlopeMax, selectorGuaranteeSlope)
+          : selectorSlopeMax * Math.tan(v * SLOPE_SLIDER_ANGLE_MAX) / SLOPE_SLIDER_ANGLE_TAN;
+      } else {
+        selectorState.slope = null;
+      }
       scheduleSelectorSave();
       requestScatterRedraw();
     }
@@ -3434,7 +3473,7 @@
       selectorSaveTimer = setTimeout(async () => {
         selectorSaveTimer = null;
         try {
-          await fetch('/api/selector', {
+          const res = await fetch('/api/selector', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -3443,7 +3482,13 @@
               minIntell: selectorState.minIntell,
             }),
           });
-        } catch { /* retried on the next change */ }
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.error || `Selector update failed (HTTP ${res.status}).`);
+          }
+        } catch (err) {
+          updateProxyErrorBanner({ message: err?.message || 'Selector update failed.', fallback: false });
+        }
       }, 300);
     }
 
@@ -3567,7 +3612,7 @@
       // Model-family → favicon domain (model's own brand, not the provider hosting it).
       // Matched by prefix (raw.includes(prefix)); first matching key wins, so overlapping
       // prefixes are ordered to prefer the more specific brand. Covers every model family
-      // defined across sources.js / tags.js so the plot can resolve a brand icon for each.
+      // defined in sources.js so the plot can resolve a brand icon for each.
       const MODEL_DOMAINS = {
         // --- Chinese open-weight labs ---
         'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com',
@@ -4481,6 +4526,7 @@
         setActivePinnedModel(previousPinnedModelId, previousPinnedProviderKey, previousPinnedRowKeys, previousPinningMode);
         render(true);
         console.error('Failed to pin model', e);
+        updateProxyErrorBanner({ message: e?.message || 'Could not change the selected model.', fallback: false });
       }
     }
 
@@ -4627,7 +4673,28 @@
       return raw;
     }
 
+    // Both of these are pure functions of the id string, yet grouping calls them
+    // hundreds of thousands of times per pass — every pairwise identity comparison
+    // re-derives both sides from scratch — while a catalogue only holds a few hundred
+    // distinct ids. Memoizing them is what takes a full grouping from seconds to
+    // milliseconds. Non-string ids bypass the cache so they can never be conflated
+    // with their string equivalents.
+    const identityNameCache = new Map();
+    const identityKeyCache = new Map();
+    const identityTokenCache = new Map();
+
     function normalizedModelIdentityName(modelId) {
+      if (typeof modelId === 'string') {
+        const cached = identityNameCache.get(modelId);
+        if (cached !== undefined) return cached;
+        const value = computeNormalizedModelIdentityName(modelId);
+        identityNameCache.set(modelId, value);
+        return value;
+      }
+      return computeNormalizedModelIdentityName(modelId);
+    }
+
+    function computeNormalizedModelIdentityName(modelId) {
       let value = clientResolvedModelId(modelId).toLowerCase();
       if (!value) return '';
       value = value.replace(/^models\//, '');
@@ -4638,6 +4705,33 @@
     }
 
     function getModelIdentityKey(modelId) {
+      if (typeof modelId === 'string') {
+        const cached = identityKeyCache.get(modelId);
+        if (cached !== undefined) return cached;
+        const key = computeModelIdentityKey(modelId);
+        identityKeyCache.set(modelId, key);
+        return key;
+      }
+      return computeModelIdentityKey(modelId);
+    }
+
+    // The leading family token of an id ('nvidia/nemotron-3-super-120b-a12b' →
+    // 'nemotron'). A size-qualified alias can only match when the shorter name is a
+    // token-wise prefix of the longer one, so two ids for the same model always agree
+    // here (or on their identity key) — which is what lets groupModels skip the
+    // pairwise identity test for buckets that cannot possibly match.
+    function modelIdentityFirstToken(modelId) {
+      const cacheable = typeof modelId === 'string';
+      if (cacheable) {
+        const cached = identityTokenCache.get(modelId);
+        if (cached !== undefined) return cached;
+      }
+      const token = normalizedModelIdentityName(modelId).split(' ').filter(Boolean)[0] || '';
+      if (cacheable) identityTokenCache.set(modelId, token);
+      return token;
+    }
+
+    function computeModelIdentityKey(modelId) {
       return normalizedModelIdentityName(modelId).replace(/\s+/g, '');
     }
 
@@ -4772,16 +4866,34 @@
         }
         if (group.canonicalId) ids.push(group.canonicalId);
         if (group.label) ids.push(group.label);
+        // isSameModelIdentity can only be true when the two ids share an identity key
+        // (after normalization) or a leading family token, so buckets that share
+        // neither are skipped outright. The full pairwise test still decides the
+        // outcome, and the scan order is unchanged, so the merge result is identical.
+        const keys = new Set();
+        const tokens = new Set();
+        for (const id of ids) {
+          keys.add(getModelIdentityKey(id));
+          tokens.add(modelIdentityFirstToken(id));
+        }
         const target = ids.length
-          ? identityBuckets.find(bucket => bucket.ids.some(a => ids.some(b => isSameModelIdentity(a, b))))
+          ? identityBuckets.find(bucket => {
+              let plausible = false;
+              for (const key of keys) if (bucket.keys.has(key)) { plausible = true; break; }
+              if (!plausible) for (const token of tokens) if (bucket.tokens.has(token)) { plausible = true; break; }
+              if (!plausible) return false;
+              return bucket.ids.some(a => ids.some(b => isSameModelIdentity(a, b)));
+            })
           : null;
-        if (!target) { identityBuckets.push({ group, ids }); continue; }
+        if (!target) { identityBuckets.push({ group, ids, keys, tokens }); continue; }
         const targetSize = target.group.members.length;
         target.group.members.push(...group.members);
         // The heading keeps the label of whichever group brings the most
         // providers, so a single persona row cannot rename a shared catalogue row.
         if (group.members.length > targetSize) target.group.label = group.label;
         target.ids.push(...ids);
+        for (const key of keys) target.keys.add(key);
+        for (const token of tokens) target.tokens.add(token);
       }
       mergedGroups = identityBuckets.map(bucket => bucket.group);
       const latestGroups = new Set();
@@ -4877,7 +4989,7 @@
       let minTtft = null, maxTps = null, bestCtx = null;
       let bestCtxMember = null;
       let bestIntellMember = members[0];
-      const upCount = members.filter(m => m.status === 'up').length;
+      const upCount = members.filter(isRowUp).length;
       for (const m of members) {
         const q = Number(m.qos) || 0;
         if (q > bestQos) bestQos = q;
@@ -4904,24 +5016,29 @@
       const isPinned = members.length > 0 && members.every(m => activePinnedRowKeys.includes(getModelRowKey(m)));
       const fastest = s.fastest;
       const hasPing = fastest !== null && fastest !== Infinity;
-      const statusColor = s.upCount === 0 ? 'var(--error)' : (s.upCount === members.length ? 'var(--success)' : 'var(--warning)');
+      // The heading dot answers one question — can this model be used at all? — so it
+      // is green as soon as ANY provider under it is up, and red only when none are.
+      // How many of them are up is spelled out in the subtitle below the model name.
+      const statusColor = s.upCount > 0 ? 'var(--success)' : 'var(--error)';
       const statusText = members.length === 1
         ? (first.status === 'up' ? 'Up' : (first.status === 'noauth' ? 'No Auth' : 'Down'))
         : (s.upCount === members.length ? 'All providers up' : `${s.upCount}/${members.length} providers`);
+      // Multi-provider groups show only the health dot here: the up/total count now
+      // sits under the model name, next to the other provider count, so the two
+      // numbers read together instead of competing with the dot.
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
-        : `<div style="display: flex; align-items: center; gap: 6px;"><span style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span><span style="font-size: 0.75rem; font-weight: 500;">${statusText}</span></div>`;
+        : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>`;
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
-          <td style="cursor:pointer;" onclick='openDrawer(${JSON.stringify(first).replace(/'/g, "&apos;")})'>
+          <td>
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${emoji}${escapeHtml(cleanHeadingModelName(g.label))}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <span class="pin-row-btn ${isPinned ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinned ? '' : first.modelId}', '')" title="${isPinned ? 'Unpin model' : 'Pin model'}">📌</span>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${members.length} providers`}</div>
-            <div class="model-tag-row">${renderModelTagChips(first.tags)}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
           </td>
           <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           <td class="text-right">
@@ -4943,15 +5060,29 @@
             // Group response: the most recent successful test across the group's providers
             const lastR = groupLastResponse(g);
             const hasAuth = g.members.some(m => m.status !== 'noauth');
-            if (hasAuth) {
-              const expired = lastR && lastR.expiresAt != null && Date.now() > Number(lastR.expiresAt);
-              if (!expired && (!lastR || lastR.text != null || lastR.error != null)) {
-                return responseCellHTML(lastR, { rowKey: 'g:' + g.key, members: g.members, hasAuth: true, status: first.status });
-              }
-            }
-            return '<div class="test-cell"></div>';
+            const expired = lastR && lastR.expiresAt != null && Date.now() > Number(lastR.expiresAt);
+            // responseCellHTML() treats an expired timeout as absent by itself, so it is
+            // given the response whenever one is worth showing and null otherwise — either
+            // way it renders the Test button (or the no-auth placeholder). Returning a bare
+            // empty cell for the other cases left a heading row — and with it the only row
+            // of a single-provider model — with no way to test or re-test it at all.
+            const showable = hasAuth && lastR && !expired && (lastR.text != null || lastR.error != null)
+              ? lastR
+              : null;
+            return responseCellHTML(showable, { rowKey: 'g:' + g.key, members: g.members, hasAuth, status: first.status });
           })()}</td>
         `;
+    }
+
+    // A heading row's click belongs to the table, not to the drawer: with providers
+    // to show, it expands or collapses; a single-provider heading has nothing beneath
+    // it, so it stands in for that provider and opens the drawer. Pin, chevron and
+    // Test buttons stop propagation, so they keep their own jobs.
+    function applyGroupRowClick(row, g) {
+      row.onclick = () => {
+        if (g.members.length > 1) toggleModelGroup(g.key);
+        else openDrawer(g.members[0]);
+      };
     }
 
     function createGroupRow(g) {
@@ -4960,11 +5091,14 @@
       tr.dataset.rowType = 'group';
       tr.dataset.rowKey = 'g:' + g.key;
       tr.innerHTML = groupRowInnerHTML(g);
+      applyGroupRowClick(tr, g);
       return tr;
     }
 
     function updateGroupRow(row, g) {
       row.innerHTML = groupRowInnerHTML(g);
+      // Rebind so the handler closes over the freshly rendered member data.
+      applyGroupRowClick(row, g);
     }
 
     function render(isUserAction = false) {
@@ -5275,10 +5409,15 @@
       const ageMs = lastResponse.at ? Date.now() - Number(lastResponse.at) : null;
       const stale = !expired && okText && ageMs != null && ageMs > 10 * 60_000
         && opts && opts.status && opts.status !== 'up';
-      // Show the number of tokens the model actually returned; nothing else.
+      // Show the number of tokens the model actually returned; nothing else. A zero
+      // is never that count: it is a provider's zeroed usage block (the server's
+      // resolveReportedOutputTokens refuses to record one) or a response persisted
+      // before it did, so it stays hidden rather than contradicting the tok/s
+      // measured from the same answer.
       const metaBits = [];
-      if (!expired && lastResponse.tokens != null) {
-        metaBits.push(`${lastResponse.tokens} token${lastResponse.tokens === 1 ? '' : 's'}`);
+      const reportedTokens = Number(lastResponse.tokens);
+      if (!expired && Number.isFinite(reportedTokens) && reportedTokens > 0) {
+        metaBits.push(`${reportedTokens} token${reportedTokens === 1 ? '' : 's'}`);
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -5315,6 +5454,14 @@
       const at = Number(lastResponse.at)
       if (Number.isFinite(at) && Date.now() - at > READY_FRESHNESS_MS) return false
       return true
+    }
+
+    // The single definition of a green row: the server says it is up, or its most
+    // recent test response is a clean, still-fresh 'Ready'. Every dot, up-count and
+    // ratio in the dashboard goes through this, so a combined model heading can never
+    // disagree with the provider rows underneath it.
+    function isRowUp(m) {
+      return m.status === 'up' || isLastResponseReady(m.lastResponse);
     }
 
     // Compact "1h ago" / "2d ago" label for stale test responses.
@@ -5736,6 +5883,19 @@
       return `<span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor}; display: inline-block; vertical-align: middle;"${titleAttr}></span>`;
     }
 
+    // A dot already reads as up (green) or down (red), so those two words are
+    // dropped next to it and the dot carries them as a tooltip instead. The other
+    // states keep their label because it says something the color can't.
+    function plainStatusLabel(m, isUp) {
+      if (isUp || m.status === 'down') return '';
+      return m.status === 'noauth' ? 'No Auth' : m.status;
+    }
+
+    // Title for a bare status dot, so the hidden word is still available on hover.
+    function plainStatusTitle(m, isUp) {
+      return isUp ? 'Up' : (m.status === 'noauth' ? 'No Auth' : m.status);
+    }
+
     // Builds the status cell: dot + status text, or — when the most recent test
     // response carried a rate-limit reset time still in the future — just the clock
     // + countdown; a payment-required result shows a dollar icon + 'Paid' instead.
@@ -5744,7 +5904,7 @@
     function statusCellHTML(m) {
       // A clean Ready lastResponse means the model is up — the last real request is
       // authoritative over whatever stale status the ping cycle says.
-      const effectiveUp = m.status === 'up' || isLastResponseReady(m.lastResponse);
+      const effectiveUp = isRowUp(m);
       const dotColor = effectiveUp ? 'var(--success)'
         : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
         : 'var(--error)';
@@ -5799,10 +5959,11 @@
               <span style="color: var(--warning);" title="${escapeHtml(title)}">🕑 Rate limited</span>
             </div>`;
       }
+      const statusLabel = plainStatusLabel(m, effectiveUp);
       return `
             <div style="display: flex; align-items: center; gap: 6px;">
-              ${statusIndicatorHTML(m, dotColor)}
-              <span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${statusText}</span>
+              ${statusIndicatorHTML(m, dotColor, plainStatusTitle(m, effectiveUp))}
+              ${statusLabel ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(statusLabel)}</span>` : ''}
             </div>`;
     }
 
@@ -5811,7 +5972,7 @@
     // response text → plain status dot + label.
     function combinedStatusCellHTML(m) {
       const currentStatus = String(m.status || '').toLowerCase();
-      const isUp = m.status === 'up' || isLastResponseReady(m.lastResponse);
+      const isUp = isRowUp(m);
       // Paid: show dollar icon + 'Paid'
       if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp || m.status === 'paid' && !isUp) {
         return `<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>`;
@@ -5860,11 +6021,14 @@
       const dotColor = m.status === 'up' ? 'var(--success)'
         : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
         : 'var(--error)';
-      const statusText = m.status === 'noauth' ? 'No Auth' : m.status;
+      const statusLabel = plainStatusLabel(m, isUp);
       const errorText = m.lastError?.message ? String(m.lastError.message) : '';
-      const statusTitle = errorText ? `HTTP ${m.lastError.code || m.httpCode || '?'} — ${errorText}` : '';
+      const statusTitle = errorText ? `HTTP ${m.lastError.code || m.httpCode || '?'} — ${errorText}` : plainStatusTitle(m, isUp);
+      const errorHtml = errorText && currentStatus !== 'up'
+        ? `${statusLabel ? ' · ' : ''}<span style="color:var(--text-muted);">${escapeHtml(errorText)}</span>`
+        : '';
       return `${statusIndicatorHTML(m, dotColor, statusTitle)}
-        <span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize; vertical-align: middle;"${statusTitle ? ` title="${escapeAttr(statusTitle)}"` : ''}>${escapeHtml(statusText)}${errorText && currentStatus !== 'up' ? ` <span style="color:var(--text-muted);">· ${escapeHtml(errorText)}</span>` : ''}</span>`;
+        ${statusLabel || errorHtml ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize; vertical-align: middle;"${statusTitle ? ` title="${escapeAttr(statusTitle)}"` : ''}>${escapeHtml(statusLabel)}${errorHtml}</span>` : ''}`;
     }
 
     // Runs once per second: ticks rate-limit countdowns, restores plain status on
@@ -5896,7 +6060,10 @@
             const indicator = txt === 'timeout'
               ? '<span>🕑</span>'
               : `<span style="width:6px;height:6px;border-radius:50%;background:${dot}"></span>`;
-            cell.innerHTML = `<div style="display:flex; align-items:center; gap:6px;">${indicator}<span style="font-size:0.75rem;font-weight:500;text-transform:capitalize;">${txt}</span></div>`;
+            // Restore the same shape statusCellHTML builds: no 'up'/'down' words
+            // beside the dot, other statuses keep their label.
+            const label = (txt === 'up' || txt === 'down') ? '' : `<span style="font-size:0.75rem;font-weight:500;text-transform:capitalize;">${escapeHtml(txt)}</span>`;
+            cell.innerHTML = `<div style="display:flex;align-items:center; gap:6px;">${indicator}${label}</div>`;
           } else {
             el.remove();
           }
@@ -5920,10 +6087,25 @@
         || m.status === 'noauth';
     }
 
+    // The single reason a provider row is unavailable, for the graveyard's Status
+    // cell. Checked in the same order as isRowStruck so the two agree on the cause.
+    function unavailableReasonLabel(m) {
+      if (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)) return 'Paid';
+      if ((m.lastResponse && m.lastResponse.dead === true) || m.status === 'dead') return 'Dead';
+      if ((m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible') return 'Incompatible';
+      if (m.microContext === true) return 'Micro';
+      if (m.status === 'noauth') return 'No Auth';
+      return m.status ? m.status.charAt(0).toUpperCase() + m.status.slice(1) : 'Unavailable';
+    }
+
     // Split display groups into the main table (usable rows only) and the
     // graveyard (paid / dead / incompatible / micro / no-auth rows). A struck row — paid
     // above all — never appears in the main table, even inside a group that also
     // has usable providers; it is moved to the graveyard instead.
+    // The graveyard is deliberately NOT grouped by model: collapsing a model's
+    // providers into one row would hide which provider is paid, dead or missing
+    // auth, so every struck provider becomes its own single-member group and shows
+    // its own reason. Each entry gets the member's row key so the rows stay unique.
     function splitDisplayGroups(allGroups) {
       const mainGroups = [];
       const graveyardGroups = [];
@@ -5931,17 +6113,25 @@
         const usable = g.members.filter(m => !isRowStruck(m));
         const struck = g.members.filter(m => isRowStruck(m));
         if (usable.length > 0) mainGroups.push({ ...g, members: usable });
-        if (struck.length > 0) graveyardGroups.push({ ...g, members: struck });
+        for (const m of struck) {
+          graveyardGroups.push({ ...g, key: getModelRowKey(m), members: [m] });
+        }
       }
       return { mainGroups, graveyardGroups };
     }
 
-    // Renders the graveyard table: all groups whose provider rows are unavailable.
-    // Auto-hides the entire <details> panel when there's nothing to show.
+    // Renders the graveyard table: one row per unavailable provider (ungrouped, see
+    // splitDisplayGroups). Auto-hides the entire <details> panel when there's nothing
+    // to show.
     function renderGraveyard(groups) {
       const details = document.getElementById('graveyard-details');
       const tbody = document.getElementById('graveyard-body');
       const summary = document.getElementById('graveyard-summary');
+
+      // The panel starts collapsed and its rows cost more to build than the whole main
+      // table, so they are built when it is opened instead (see the toggle listener
+      // below). Until then only the always-visible summary count is refreshed.
+      pendingGraveyardGroups = groups;
 
       if (!groups.length) {
         details.style.display = 'none';
@@ -5950,16 +6140,18 @@
       }
 
       details.style.display = '';
-      const orderKeys = groups.map(g => 'gv:' + g.key);
       const totalModels = groups.reduce((sum, g) => sum + g.members.length, 0);
       summary.textContent = `Unavailable models (${totalModels})`;
+      if (!details.open) return;
+
+      const orderKeys = groups.map(g => 'gv:' + g.key);
 
       // Fast path: same order, update in place
       const currentRows = Array.from(tbody.rows);
       if (currentRows.length === groups.length &&
           currentRows.every((row, i) => row.dataset.rowKey === orderKeys[i])) {
         for (let i = 0; i < groups.length; i++) {
-          currentRows[i].innerHTML = graveyardRowHTMLInner(groups[i]);
+          setGraveyardRowHtml(currentRows[i], groups[i]);
         }
         graveyardCurrentOrder = orderKeys;
         return;
@@ -5975,13 +6167,13 @@
         const g = groups[i];
         let row = existing.get(key);
         if (row) {
-          row.innerHTML = graveyardRowHTMLInner(g);
+          setGraveyardRowHtml(row, g);
           removed.delete(key);
         } else {
           row = document.createElement('tr');
           row.className = 'row-struck';
           row.dataset.rowKey = key;
-          row.innerHTML = graveyardRowHTMLInner(g);
+          setGraveyardRowHtml(row, g);
         }
         if (anchor === null) {
           if (tbody.firstChild !== row) tbody.insertBefore(row, tbody.firstChild);
@@ -5997,36 +6189,40 @@
       graveyardCurrentOrder = orderKeys;
     }
 
-    // Like the main model-group row, but with unavailable-state labels in Status.
-    // Keeping the same eight cells makes the unavailable table directly comparable.
+    // Writes one graveyard row and wires its name cell to the detail drawer. Taking the
+    // member from here instead of serialising it into an onclick attribute keeps about
+    // 1.5 KB of JSON out of the DOM per row.
+    function setGraveyardRowHtml(row, g) {
+      row.innerHTML = graveyardRowHTMLInner(g);
+      const nameCell = row.cells[0];
+      if (nameCell) nameCell.onclick = () => openDrawer(g.members[0]);
+    }
+
+    // Opening the panel builds the rows that renderGraveyard skipped while it was closed.
+    document.getElementById('graveyard-details').addEventListener('toggle', (event) => {
+      if (event.target.open) renderGraveyard(pendingGraveyardGroups);
+    });
+
+    // One unavailable provider row. Like the main model row it keeps the same eight
+    // cells so the two tables stay comparable, but the Status cell names this one
+    // provider's reason instead of counting reasons across a model's providers.
     function graveyardRowHTMLInner(g) {
       const members = g.members;
       const first = members[0];
       const s = getGroupSummary(g);
       const fastest = s.fastest;
       const hasPing = fastest !== null && fastest !== Infinity;
-      const paidCount = members.filter(m => m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)).length;
-      const deadCount = members.filter(m => (m.lastResponse && m.lastResponse.dead === true) || m.status === 'dead').length;
-      const incompatCount = members.filter(m => (m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible').length;
-      const microCount = members.filter(m => m.microContext === true).length;
-      const noAuthCount = members.filter(m => m.status === 'noauth').length;
-      const statusParts = [];
-      if (paidCount > 0) statusParts.push(`${paidCount} paid`);
-      if (deadCount > 0) statusParts.push(`${deadCount} dead`);
-      if (incompatCount > 0) statusParts.push(`${incompatCount} incompatible`);
-      if (microCount > 0) statusParts.push(`${microCount} Micro`);
-      if (noAuthCount > 0) statusParts.push(`${noAuthCount} No Auth`);
-      const statusText = statusParts.join(' / ') || 'Unavailable';
+      const statusText = unavailableReasonLabel(first);
       const hasAuth = members.some(m => m.status !== 'noauth');
 
       const lastResponse = groupLastResponse(g);
 
       return `
-          <td style="cursor:pointer;" onclick='openDrawer(${JSON.stringify(first).replace(/'/g, "&apos;")})'>
+          <td style="cursor:pointer;">
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${escapeHtml(cleanHeadingModelName(g.label))}</span>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${members.length} providers`}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(PROVIDER_NAMES[first.providerKey] || first.providerKey)}</div>
           </td>
           <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           <td class="text-right">
@@ -6045,7 +6241,7 @@
           </td>
           <td><div style="font-size:0.75rem;font-weight:600;">${escapeHtml(statusText)}</div></td>
           <td>${hasAuth
-            ? responseCellHTML(lastResponse, { rowKey: 'g:' + g.key, members, hasAuth: true, status: first.status })
+            ? responseCellHTML(lastResponse, { rowKey: getModelRowKey(first), providerKey: first.providerKey, modelId: first.modelId, hasAuth: true, status: first.status })
             : '<div class="test-cell"></div>'}</td>`;
     }
 
@@ -6061,7 +6257,7 @@
       tr.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
         && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
       tr.innerHTML = `
-          <td style="cursor:pointer;" onclick='openDrawer(${JSON.stringify(m).replace(/'/g, "&apos;")})'>
+          <td style="cursor:pointer;">
             <div style="display:flex; align-items:center; gap:8px;">
               <span style="font-weight: 600;" title="${escapeHtml(m.providerKey)}">${m.providerKey}</span>
               <span class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinnedRow ? '' : m.modelId}', '${m.providerKey}')" title="${isPinnedRow ? 'Unpin model' : 'Pin model'}">📌</span>
@@ -6086,6 +6282,9 @@
           <td><div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div></td>
           <td>${responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status })}</td>
         `;
+      // The name cell opens the drawer directly rather than through a serialised
+      // onclick payload; updateRowCells rebinds this on every refresh.
+      tr.cells[0].onclick = () => openDrawer(m);
       return tr;
     }
 
@@ -6121,16 +6320,6 @@
         case 'default-fallback': return { short: 'Default*', label: 'Default fallback' };
         default: return { short: 'Estimate*', label: 'Estimated intelligence score' };
       }
-    }
-
-    function renderModelTagChips(tags, editable = false) {
-      const normalized = Array.isArray(tags) ? tags : [];
-      if (normalized.length === 0) return editable
-        ? '<span style="font-size:0.75rem;color:var(--text-muted);">No tags yet</span>'
-        : '';
-      return normalized.map(tag => editable
-        ? `<button class="model-tag" onclick="removeModelTag(${jsStringAttr(tag)})" title="Remove ${escapeHtml(tag)}">${escapeHtml(tag)} ×</button>`
-        : `<span class="model-tag">${escapeHtml(tag)}</span>`).join('');
     }
 
     // Every row displays one number: the Artificial Analysis Intelligence Index.
@@ -9298,72 +9487,11 @@
             <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 6px;">${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'Unknown — will fill in as the model is used')}</div>
           </div>
         </div>
-        <div class="tag-workbench">
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
-            <div>
-              <div style="font-size:0.75rem;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;">Custom Routing Tags</div>
-              <div style="font-size:0.72rem;color:var(--text-muted);margin-top:4px;">Use <code>tag:name</code> as the model ID to route across matching models.</div>
-            </div>
-            <span style="font-size:0.68rem;color:var(--text-muted);white-space:nowrap;">shared across providers</span>
-          </div>
-          <div style="font-size:0.68rem;color:var(--text-muted);margin-top:12px;">Built in</div>
-          <div class="model-tag-row" style="margin-top:6px;">${renderModelTagChips(m.builtInTags)}</div>
-          <div style="font-size:0.68rem;color:var(--text-muted);margin-top:12px;">Your tags</div>
-          <div class="model-tag-row" style="margin-top:6px;">${renderModelTagChips(m.userTags, true)}</div>
-          <div class="tag-input-row">
-            <input id="model-tags-input" value="${escapeHtml((m.userTags || []).join(', ')).replace(/"/g, '&quot;')}" placeholder="private, local, favorite" onkeydown="if(event.key === 'Enter'){ event.preventDefault(); saveModelTags(); }">
-            <button class="btn" onclick="saveModelTags()">Save tags</button>
-          </div>
-          <div id="model-tags-status" style="min-height:16px;margin-top:7px;font-size:0.7rem;color:var(--text-muted);"></div>
-        </div>
         <div style="margin-top: auto; padding-top: 40px;">
           <h4 style="margin-bottom: 12px; font-size: 0.875rem;">Recent Telemetry <span style="font-weight:400; color:var(--text-muted);">(last ${pings.length} ping${pings.length !== 1 ? 's' : ''})</span></h4>
           ${chartHtml}
         </div>
       `;
-    }
-
-    async function saveModelTags() {
-      const input = document.getElementById('model-tags-input');
-      const status = document.getElementById('model-tags-status');
-      if (!input || !openDrawerModelId) return;
-      const tags = input.value.split(',').map(tag => tag.trim()).filter(Boolean);
-      if (status) {
-        status.style.color = 'var(--text-muted)';
-        status.textContent = 'Saving…';
-      }
-      try {
-        const response = await fetch('/api/models/tags', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modelId: openDrawerModelId, tags }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || 'Unable to save tags.');
-        await fetchData();
-        const refreshedStatus = document.getElementById('model-tags-status');
-        if (refreshedStatus) {
-          refreshedStatus.style.color = 'var(--success)';
-          refreshedStatus.textContent = payload.tags.length ? `Saved ${payload.tags.length} tag${payload.tags.length === 1 ? '' : 's'}.` : 'Tags cleared.';
-        }
-      } catch (error) {
-        const currentStatus = document.getElementById('model-tags-status');
-        if (currentStatus) {
-          currentStatus.style.color = 'var(--error)';
-          currentStatus.textContent = error.message || 'Unable to save tags.';
-        }
-      }
-    }
-
-    function removeModelTag(tag) {
-      const input = document.getElementById('model-tags-input');
-      if (!input) return;
-      input.value = input.value
-        .split(',')
-        .map(value => value.trim())
-        .filter(value => value && value.toLowerCase() !== String(tag).toLowerCase())
-        .join(', ');
-      saveModelTags();
     }
 
     function closeDrawer() {
