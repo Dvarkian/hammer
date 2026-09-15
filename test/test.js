@@ -4467,6 +4467,17 @@ describe('package and entrypoint sanity', () => {
     assert.ok(dashboardContent.includes("formatTpsCell(s.maxTps, 'tok/s')"))
     assert.ok(dashboardContent.includes("hasAuth\n            ? responseCellHTML(lastResponse, { rowKey: getModelRowKey(first), providerKey: first.providerKey, modelId: first.modelId, hasAuth: true, status: first.status })"))
   })
+
+  it('does not crash render() when a refresh fires while the table is hovered', () => {
+    // Hover-locked refresh must rebuild row data from live models using the
+    // last rendered key order (values refresh in place, order stays locked).
+    // Previously expanded was left undefined on the hover-locked path, so
+    // expanded.map() threw and the throw was misreported as a Router error.
+    assert.ok(dashboardContent.includes("if (!hoverLocked) {"))
+    assert.ok(dashboardContent.includes("const keySet = new Set(currentRenderedOrder)"))
+    assert.ok(dashboardContent.includes("expanded = (allGroups ?? []).flatMap"))
+    assert.ok(dashboardContent.includes("try { render(); } catch (e) { console.error('Render error:', e); }"))
+  })
 })
 
 describe('multi-account round-robin', () => {
@@ -5199,10 +5210,18 @@ describe('context window bounds (known + observed)', () => {
     // OpenAI-compatible providers: structured model_not_found errors are permanent
     // model/access failures even when the provider returns HTTP 400.
     assert.equal(isDeadModelError('{"message":"Model does not exist or you do not have access to it.","type":"not_found_error","param":"model","code":"model_not_found"}', 400), true)
+    // GitHub Copilot refuses to serve the model at all — "The requested model
+    // is not supported." (HTTP 400, code model_not_supported). Dead, not Down.
+    assert.equal(isDeadModelError('The requested model is not supported.', 400), true)
+    assert.equal(isDeadModelError('{"error":{"code":"model_not_supported","message":"The requested model is not supported."}}', 400), true)
+    assert.equal(isDeadModelError('Requested model is not supported', 400), true)
     // NVIDIA NIM: generic "Model not found" with 404
     assert.equal(isDeadModelError('{"error":{"message":"Model not found","type":"Not Found","code":404}}', 404), true)
     // "Model not found" without 404 is not treated as dead (could be transient)
     assert.equal(isDeadModelError('Model not found', 500), false)
+    // Guardrail: capability-specific "not supported" lines are feature territory
+    // (incompatible), not the Copilot model-framed refusal.
+    assert.equal(isDeadModelError('The model does not support image inputs.', 400), false)
     // Non-dead failures stay non-dead
     assert.equal(isDeadModelError('Rate limit exceeded', 429), false)
     assert.equal(isDeadModelError('Request timed out', 503), false)

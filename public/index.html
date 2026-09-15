@@ -71,6 +71,7 @@
       --tier-c-bg: #fef2f2;
       --tier-c-text: #991b1b;
       --tier-c-border: #fee2e2;
+      --title-glow: rgba(59, 130, 246, 0.16);
     }
 
     [data-theme="dark"] {
@@ -118,6 +119,7 @@
       --update-badge-hover: #166534;
       --progress-bg: #23262f;
       --spinner-track: #23262f;
+      --title-glow: rgba(96, 165, 250, 0.3);
       --tier-splus-bg: #052e16;
       --tier-splus-text: #34d399;
       --tier-splus-border: #166534;
@@ -184,27 +186,72 @@
 
     .dashboard-header {
       display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
+      justify-content: center;
+      align-items: center;
       gap: 20px;
-      margin-bottom: 32px;
-      padding-bottom: 16px;
+      margin-bottom: 36px;
+      padding-bottom: 24px;
       border-bottom: 1px solid var(--border);
+    }
+
+    .dashboard-header-inner {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
     }
 
     .dashboard-eyebrow {
       margin: 0;
       font-size: 0.72rem;
       text-transform: uppercase;
-      letter-spacing: 0.08em;
+      letter-spacing: 0.22em;
+      text-indent: 0.22em;
       color: var(--accent);
       font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .dashboard-eyebrow::before,
+    .dashboard-eyebrow::after {
+      content: "";
+      height: 1px;
+      width: 44px;
+      flex: none;
+    }
+
+    .dashboard-eyebrow::before {
+      background: linear-gradient(90deg, transparent, var(--accent));
+    }
+
+    .dashboard-eyebrow::after {
+      background: linear-gradient(90deg, var(--accent), transparent);
     }
 
     .dashboard-heading {
-      margin: 8px 0 0;
-      font-size: clamp(1.45rem, 2.2vw, 2rem);
-      letter-spacing: -0.03em;
+      margin: 14px 0 0 -0.18em;
+      font-size: clamp(2.5rem, 6vw, 3.5rem);
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      line-height: 1.08;
+      background: linear-gradient(135deg, var(--accent) 0%, var(--text) 52%, var(--accent) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      filter: drop-shadow(0 8px 28px var(--title-glow));
+    }
+
+    .dashboard-heading::after {
+      content: "";
+      display: block;
+      width: 76px;
+      height: 3px;
+      border-radius: 999px;
+      margin: 16px auto 0;
+      background: linear-gradient(90deg, var(--accent), var(--success));
     }
 
     .dashboard-subtitle {
@@ -308,6 +355,8 @@
     .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--accent)); }
     .topo-model.best { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); animation: topo-best-pulse 2s ease-in-out infinite; }
 
+    .topo-model.selected { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); animation: topo-selected-pulse 2s ease-in-out infinite; }
+
     .topo-model-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
     .topo-model-img.best { opacity: 1; }
 
@@ -356,6 +405,11 @@
     @keyframes topo-best-pulse {
       0%, 100% { filter: drop-shadow(0 0 4px var(--accent)); }
       50% { filter: drop-shadow(0 0 10px var(--accent)); }
+    }
+
+    @keyframes topo-selected-pulse {
+      0%, 100% { filter: drop-shadow(0 0 4px var(--accent)); }
+      50% { filter: drop-shadow(0 0 12px var(--accent)); }
     }
 
     .topo-provider-ring { fill: none; stroke-width: 1.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
@@ -746,7 +800,7 @@
       }
 
       .dashboard-header {
-        align-items: flex-start;
+        align-items: center;
       }
 
       #settings-view, #setup-view {
@@ -781,7 +835,13 @@
       }
 
       .dashboard-heading {
-        font-size: clamp(1.2rem, 5vw, 1.45rem);
+        font-size: clamp(1.7rem, 7vw, 2.2rem);
+        letter-spacing: 0.12em;
+      }
+
+      .dashboard-eyebrow::before,
+      .dashboard-eyebrow::after {
+        width: 28px;
       }
 
       #settings-view, #setup-view {
@@ -1104,56 +1164,6 @@
       border-color: var(--tier-c-border);
     }
 
-
-    /* Switch Component */
-    .switch {
-      position: relative;
-      display: inline-block;
-      width: 36px;
-      height: 20px;
-    }
-
-    .switch input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
-
-    .slider {
-      position: absolute;
-      cursor: pointer;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: var(--border-subtle);
-      transition: .4s;
-      border-radius: 20px;
-    }
-
-    .slider:before {
-      position: absolute;
-      content: "";
-      height: 14px;
-      width: 14px;
-      left: 3px;
-      bottom: 3px;
-      background-color: var(--input-bg);
-      transition: .4s;
-      border-radius: 50%;
-    }
-
-    input:checked+.slider {
-      background-color: var(--accent);
-    }
-
-    input:focus+.slider {
-      box-shadow: 0 0 1px var(--accent);
-    }
-
-    input:checked+.slider:before {
-      transform: translateX(16px);
-    }
 
     .text-right {
       text-align: right;
@@ -1859,12 +1869,10 @@
 
   <div class="container">
     <div class="dashboard-header">
-      <div>
+      <div class="dashboard-header-inner">
         <p class="dashboard-eyebrow">Router Control Center</p>
-        <h1 class="dashboard-heading">Dashboard</h1>
-        <p class="dashboard-subtitle">Live model telemetry, provider health, and routing controls in one place.
-        </p>
-        <p style="margin: 8px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h1 class="dashboard-heading">Hammer</h1>
+        <p style="margin: 14px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
           <span id="update-pill" style="display:none;"></span>
           <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <span id="theme-icon">🌙</span>
@@ -1953,12 +1961,6 @@
                 style="display:none; background:var(--warning); color:#1a0a00; padding:4px 8px; border-radius:6px; font-size:0.7rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; align-items:center; gap:4px;"
                 title="Values keep updating; row order is locked while you hover.">
                 ⏸ Layout locked</div>
-              <span style="font-size:0.8rem; color:var(--text-muted); cursor:pointer; user-select:none;"
-                onclick="document.getElementById('live-sort-toggle').click()">Live Sort</span>
-              <label class="switch">
-                <input type="checkbox" id="live-sort-toggle" checked onchange="render(true)">
-                <span class="slider"></span>
-              </label>
             </div>
             <button id="sort-reset-btn" onclick="resetSort()"
               style="display:none; border:none; background:none; cursor:pointer; font-size:0.8rem; color:var(--text-muted); padding:4px 8px; border-radius:6px; white-space:nowrap; transition:all 0.15s;"
@@ -2518,7 +2520,7 @@
         currentBestProviderKey = data.bestProviderKey || null;
         updateChatModelOptions(allModels);
 
-        render(); // triggers automatic (non-user) layout pass
+        try { render(); } catch (e) { console.error('Render error:', e); }
         scheduleContradictoryRetests();
         updateKPIs(allModels, data.best);
         // Show the 'Rerun Tests' button when there are models whose last response
@@ -2761,7 +2763,7 @@
       document.getElementById('kpi-providers').textContent = onlineProviders.size;
 
       const bestModel = bestModelId ? models.find(m => m.modelId === bestModelId) : null;
-      document.getElementById('kpi-best').textContent = bestModel ? bestModel.label : 'None Online';
+      document.getElementById('kpi-best').textContent = bestModel ? kpiBestText(bestModel) : 'None Online';
 
       drawBipartiteTopology(models, bestModel);
       drawSpeedIntellScatter(models);
@@ -2802,6 +2804,16 @@
       return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '') || m.modelId || '?';
     };
     const scatterDotSize = (rows) => rows.length > 220 ? 3 : 4.5;
+
+    // The KPI 'Current' readout names the model and the provider offering it,
+    // so identical model names from different providers stay distinguishable.
+    // Hoisted as a function declaration because updateKPIs (textually earlier)
+    // calls it from the poll callback.
+    function kpiBestText(model) {
+      const name = scatterShortName(model);
+      const provider = PROVIDER_NAMES[model.providerKey] || model.providerKey || '';
+      return provider ? `${name} · ${provider}` : name;
+    }
 
     // One row per measurable model/provider combination, using the same
     // numbers behind the main table's Intelligence / TTFT / Tok-s columns.
@@ -3280,19 +3292,19 @@
         const fbModel = currentBestModelId
           ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
           : null;
-        const fbName = fbModel ? scatterShortName(fbModel) : null;
-        if (kpiBestEl && fbName) kpiBestEl.textContent = fbName;
+        const fbText = fbModel ? kpiBestText(fbModel) : null;
+        if (kpiBestEl && fbText) kpiBestEl.textContent = fbText;
       } else if (labelRow) {
         // labelRow is either a scatter row (has .m) or a bare model object when
         // the pinned/best model has no speed data to plot.
-        const name = scatterShortName(labelRow.m || labelRow);
+        const kpiText = kpiBestText(labelRow.m || labelRow);
         if (shownSelRow) {
           svg.appendChild(svgEl('circle', {
             cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
             stroke: accentColor, 'stroke-width': 2,
           }));
         }
-        if (kpiBestEl && name) kpiBestEl.textContent = name;
+        if (kpiBestEl && kpiText) kpiBestEl.textContent = kpiText;
       }
     }
 
@@ -3559,6 +3571,16 @@
 
       const slider = document.getElementById('sel-slope-slider');
       if (slider) slider.addEventListener('input', onSlopeSliderInput);
+
+      // Redraw when the SVG's own box changes (window resize, the grid stretching
+      // this card to match the topology card, fonts settling): the viewBox is set
+      // from the measured box, so a stale viewBox letterboxes the plot inside the
+      // card until the next poll. The hash guard makes this a no-op when the box
+      // didn't actually change, so the plot always fills the space it's given.
+      if (typeof ResizeObserver !== 'undefined') {
+        const ro = new ResizeObserver(() => requestScatterRedraw());
+        ro.observe(svg);
+      }
 
       loadSelectorState();
     }
@@ -4921,8 +4943,27 @@
       return mergedGroups.filter(group => !latestGroups.has(group) || !concreteByFamily.has(latestModelFamilyKey(group.members[0]?.modelId || group.label)) || concreteByFamily.get(latestModelFamilyKey(group.members[0]?.modelId || group.label)) === group);
     }
 
-    // Providers within a model group sorted by: Ready first, paid last, then faster first.
+    // Health tier for ordering provider sub-rows, mirroring exactly what the
+    // status cell shows: 0 = green dot (up), 1 = clock or 🕑 indicator (rate
+    // limited / timed out), 2 = everything else (down). The clock is shown even
+    // when the ping status is a stale 'up', so a green tier also requires the row
+    // not to be rate-limited or clocked. Defined with the sort so the visual
+    // states in statusCellHTML and the sub-row order can't drift apart.
+    function providerHealthTier(m) {
+      const clocked = getRateLimitResetAt(m) != null;
+      const rateLimited = isRateLimitedRow(m);
+      if (isRowUp(m) && !clocked && !rateLimited) return 0;
+      if (m.status === 'timeout' || clocked || rateLimited) return 1;
+      return 2;
+    }
+
+    // Providers within a model group sorted by: health tier first (green dot
+    // above rate-limited/timed-out above down), then Ready, paid last, then faster first.
     function compareProviders(a, b) {
+      // Health tier first — same states the status dot/clock displays (see
+      // providerHealthTier), so the visual grouping matches the order.
+      const tierDelta = providerHealthTier(a) - providerHealthTier(b);
+      if (tierDelta !== 0) return tierDelta;
       // Ready (has a successful test result) sorts first — uses the same definition
       // as isLastResponseReady so the sort matches the dashboard status display.
       const aReady = isLastResponseReady(a.lastResponse);
@@ -4958,14 +4999,26 @@
     // provider in the heading and keep the model to one compact row.
     const collapsedModelGroups = new Set();
     let modelGroupsInitialized = false;
+    // The heading rows of the last render, so the accordion toggle knows which
+    // other multi-provider groups to collapse when one is expanded.
+    let lastMainGroups = [];
 
     function toggleModelGroup(groupKey) {
-      if (collapsedModelGroups.has(groupKey)) collapsedModelGroups.delete(groupKey);
-      else collapsedModelGroups.add(groupKey);
+      if (collapsedModelGroups.has(groupKey)) {
+        collapsedModelGroups.delete(groupKey);
+        // Accordion: expanding this heading collapses every other multi-provider
+        // group, so only one model's providers are visible at a time.
+        for (const g of lastMainGroups) {
+          if (g.key !== groupKey && g.members.length > 1) collapsedModelGroups.add(g.key);
+        }
+      } else {
+        collapsedModelGroups.add(groupKey);
+      }
       render(true);
     }
 
     function buildExpanded(groups) {
+      lastMainGroups = groups;
       if (!modelGroupsInitialized) {
         for (const g of groups) {
           if (g.members.length > 1) collapsedModelGroups.add(g.key);
@@ -5028,7 +5081,7 @@
       // numbers read together instead of competing with the dot.
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
-        : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>`;
+        : (s.upCount > 0 ? `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>` : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}">🕑 ${updateRateLimitCountdowns(first)}</span></div>`);
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
@@ -5046,7 +5099,7 @@
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
                 ${hasPing
           ? `<div style="font-size:0.82rem;">${fastest}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${s.bestUptime}%</div>`
-          : '<span style="font-size: 0.75rem; color: var(--text-muted);">OFFLINE</span>'}
+          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
               </div>
             </div>
           </td>
@@ -5085,11 +5138,23 @@
       };
     }
 
+    // The currently routed model (pin > slope-line pick > intelligence). One
+    // predicate drives every highlight in the main table so the group header
+    // and the provider sub-row it contains always agree on which one is lit.
+    function isCurrentBestRow(m) {
+      return !!currentBestModelId && m.modelId === currentBestModelId
+        && (!currentBestProviderKey || m.providerKey === currentBestProviderKey);
+    }
+    function isCurrentBestGroup(g) {
+      return !!currentBestModelId && g.members.some(isCurrentBestRow);
+    }
+
     function createGroupRow(g) {
       const tr = document.createElement('tr');
       tr.className = 'model-group-row';
       tr.dataset.rowType = 'group';
       tr.dataset.rowKey = 'g:' + g.key;
+      tr.classList.toggle('row-best', isCurrentBestGroup(g));
       tr.innerHTML = groupRowInnerHTML(g);
       applyGroupRowClick(tr, g);
       return tr;
@@ -5097,6 +5162,7 @@
 
     function updateGroupRow(row, g) {
       row.innerHTML = groupRowInnerHTML(g);
+      row.classList.toggle('row-best', isCurrentBestGroup(g));
       // Rebind so the handler closes over the freshly rendered member data.
       applyGroupRowClick(row, g);
     }
@@ -5132,43 +5198,29 @@
         });
       }
 
-      const liveSortOn = document.getElementById('live-sort-toggle').checked;
       let expanded;
       let graveyardGroups = [];
 
-      // When the user acts OR liveSort is checked OR it's the first paint, sort properly.
-      // While hovering we also lock the order (values still refresh in place).
-      if (!hoverLocked && (isUserAction || liveSortOn || currentRenderedOrder.length === 0)) {
+      // Live sort is always on: re-sort on every render. While hovering we lock
+      // the order (values still refresh in place).
+      if (!hoverLocked) {
         const allGroups = sortedGroups(groupModels(filtered));
         const { mainGroups, graveyardGroups: grave } = splitDisplayGroups(allGroups);
         expanded = buildExpanded(mainGroups);
         graveyardGroups = grave;
       } else {
-        // Live sort is OFF: lock groups/rows to their previously rendered positions,
-        // but allow new data updates. New models/groups fall to the bottom.
-        const orderMap = new Map(currentRenderedOrder.map((key, i) => [key, i]));
-        const allGroups = groupModels(filtered);
-        allGroups.forEach(g => {
-          g.members.sort((a, b) => {
-            const idxA = orderMap.get(getModelRowKey(a)) ?? Infinity;
-            const idxB = orderMap.get(getModelRowKey(b)) ?? Infinity;
-            if (idxA !== Infinity && idxB !== Infinity) return idxA - idxB;
-            if (idxA !== Infinity) return -1;
-            if (idxB !== Infinity) return 1;
-            return compareProviders(a, b);
-          });
-        });
-        allGroups.sort((a, b) => {
-          const idxA = orderMap.get('g:' + a.key) ?? Infinity;
-          const idxB = orderMap.get('g:' + b.key) ?? Infinity;
-          if (idxA !== Infinity && idxB !== Infinity) return idxA - idxB;
-          if (idxA !== Infinity) return -1;
-          if (idxB !== Infinity) return 1;
-          return compareByChain(a.members[0], b.members[0], DEFAULT_SORT_CHAIN);
-        });
-        const { mainGroups, graveyardGroups: grave } = splitDisplayGroups(allGroups);
-        expanded = buildExpanded(mainGroups);
-        graveyardGroups = grave;
+        // Hover-locked: rebuild row data from current models but preserve
+        // last rendered key order so rows never reorder under the cursor.
+        const keySet = new Set(currentRenderedOrder);
+        expanded = (allGroups ?? []).flatMap(g => {
+          const key = 'g:' + g.key;
+          if (!keySet.has(key)) return [];
+          return [Object.assign({ type: 'group', key: g.key }, g)];
+        }).concat(
+          filtered.filter(m => keySet.has(getModelRowKey(m))).map(m => ({
+            type: 'model', m, key: getModelRowKey(m)
+          }))
+        );
       }
 
       const newOrderKeys = expanded.map(e => e.type === 'group' ? 'g:' + e.key : getModelRowKey(e.m));
@@ -5237,8 +5289,7 @@
 
       // Mark the currently routed model (pin > slope-line pick > intelligence) so the
       // table always shows the same model the KPI, topology and scatter plot do.
-      row.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
-        && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
+      row.classList.toggle('row-best', isCurrentBestRow(m));
 
       // Paid / dead rows stay struck through even as other values refresh
       row.classList.toggle('row-struck', isRowStruck(m));
@@ -5295,7 +5346,7 @@
         const rateTxt = m.isRateLimited ? ' 🕑' : '';
         if (pingTextEl) pingTextEl.innerHTML = `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${rateTxt}</div>`;
       } else {
-        if (pingTextEl) pingTextEl.innerHTML = '<span style="font-size: 0.75rem; color: var(--text-muted);">OFFLINE</span>';
+        if (pingTextEl) pingTextEl.innerHTML = '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>';
       }
 
       // Update TTFT and tokens/sec (real usage stats)
@@ -6230,7 +6281,7 @@
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
                 ${hasPing
           ? `<div style="font-size:0.82rem;">${fastest}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${s.bestUptime}%</div>`
-          : '<span style="font-size: 0.75rem; color: var(--text-muted);">OFFLINE</span>'}
+          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
               </div>
             </div>
           </td>
@@ -6254,8 +6305,7 @@
       const hasPing = m.avg !== Infinity && m.avg !== null;
 
       const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
-      tr.classList.toggle('row-best', !!currentBestModelId && m.modelId === currentBestModelId
-        && (!currentBestProviderKey || m.providerKey === currentBestProviderKey));
+      tr.classList.toggle('row-best', isCurrentBestRow(m));
       tr.innerHTML = `
           <td style="cursor:pointer;">
             <div style="display:flex; align-items:center; gap:8px;">
@@ -6270,7 +6320,7 @@
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
                 ${hasPing
           ? `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${m.status === 'up' && m.isRateLimited ? ' 🕑' : ''}</div>`
-          : '<span style="font-size: 0.75rem; color: var(--text-muted);">OFFLINE</span>'}
+          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
               </div>
             </div>
           </td>
