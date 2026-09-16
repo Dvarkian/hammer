@@ -2870,11 +2870,20 @@
     // The axis maximum the field supports, plus how many rows sit past it. Walking the
     // speeds downwards, the first row that more than doubles the next one marks the end
     // of the field; everything above it is off-scale (and keeps its real speed for the
-    // tooltip, the selection and the router — only its position is capped).
+    // tooltip, the selection and the router — only its position is capped). A cut only
+    // counts while the rows above the gap stay a strict minority: a 2x ratio between two
+    // small speeds is ordinary jitter at the slow end of the field — and a lone slow row
+    // leaves the same signature — so without this guard the walk cut deep into the list,
+    // capped the axis at whichever small speed tripped the factor, and flagged nearly
+    // every dot as off-scale. Once the rows above a gap outnumber the rows the cut
+    // would keep on the axis, they are the field, not its outliers.
     function scatterAxisLimit(speeds) {
       const sorted = speeds.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => b - a);
       for (let i = 1; i < sorted.length; i++) {
         if (sorted[i - 1] > sorted[i] * SCATTER_OUTLIER_FACTOR) {
+          // Off-scale rows must stay the exception, never more than the field the axis
+          // keeps. Deeper gaps only stack more rows above them, so the walk can stop.
+          if (i >= sorted.length - i) break;
           return { limit: sorted[i], offScale: i };
         }
       }
