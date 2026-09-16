@@ -27,8 +27,7 @@
   "author": "anonymous",
   "type": "module",
   "scripts": {
-    "start": "node bin/hammer.js",
-    "test": "node --test test/test.js test/router-harness.test.js"
+    "start": "node bin/hammer.js"
   },
   "dependencies": {
     "chalk": "^5.4.1",

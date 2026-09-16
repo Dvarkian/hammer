@@ -2829,8 +2829,8 @@
         // when the row has one, otherwise the raw score mapped onto that same scale.
         const aaNum = Number(m.aa);
         const intellNum = (Number.isFinite(aaNum) && aaNum > 0) ? aaNum : Number(m.intell) * 100;
-        const ttft = m.ttft != null ? Number(m.ttft) : (m.lastResponse && m.lastResponse.ttftMs != null ? Number(m.lastResponse.ttftMs) : null);
-        const tps = m.tps != null ? Number(m.tps) : (m.lastResponse && m.lastResponse.tps != null ? Number(m.lastResponse.tps) : null);
+        const ttft = rowTtft(m);
+        const tps = rowTps(m);
         // A dot needs both axes: an honest position needs a rating and a speed.
         const plottable = Number.isFinite(intellNum) && intellNum > 0
           && ttft != null && Number.isFinite(ttft) && ttft >= 0
@@ -5035,8 +5035,16 @@
       return expanded;
     }
 
-    function getGroupSummary(g) {
+    // `opts.onlyUsable` (the default) restricts the *measured* columns to providers the
+    // router would actually use right now. A model heading must not advertise the speed,
+    // context or 'Ready' result of a provider that is rate-limited or timed out: that is
+    // how a heading could read "0/7 providers" while still showing 0.35s / 24.1 tok/s /
+    // Ready from rows that cannot answer. The graveyard opts out — there the row's own
+    // history is the point, and a struck row is never "usable" in the first place.
+    function getGroupSummary(g, opts = {}) {
       const members = g.members;
+      const usable = members.filter(isRowUsable);
+      const measured = opts.onlyUsable === false ? members : usable;
       let bestQos = 0, bestIntell = 0, bestUptime = 0;
       let fastest = Infinity;
       let minTtft = null, maxTps = null, bestCtx = null;
@@ -5044,22 +5052,27 @@
       let bestIntellMember = members[0];
       const upCount = members.filter(isRowUp).length;
       for (const m of members) {
-        const q = Number(m.qos) || 0;
-        if (q > bestQos) bestQos = q;
+        // Intelligence rates the model, not a provider, so it is read from every row:
+        // the heading still says what the model is even when none of its providers can
+        // currently serve it.
         const i = Number(m.intell) || 0;
         if (i > bestIntell) { bestIntell = i; bestIntellMember = m; }
+      }
+      for (const m of measured) {
+        const q = Number(m.qos) || 0;
+        if (q > bestQos) bestQos = q;
         const u = Number(m.uptime) || 0;
         if (u > bestUptime) bestUptime = u;
         const p = m.avg;
         if (p !== null && p !== Infinity && (fastest === Infinity || p < fastest)) fastest = p;
-        const memberTtft = m.ttft ?? m.lastResponse?.ttftMs ?? null;
-        const memberTps = m.tps ?? m.lastResponse?.tps ?? null;
+        const memberTtft = rowTtft(m);
+        const memberTps = rowTps(m);
         if (memberTtft != null && (minTtft === null || memberTtft < minTtft)) minTtft = memberTtft;
         if (memberTps != null && (maxTps === null || memberTps > maxTps)) maxTps = memberTps;
         const ctx = m.contextTokens;
         if (ctx != null && (bestCtx === null || ctx > bestCtx)) { bestCtx = ctx; bestCtxMember = m; }
       }
-      return { bestQos, bestIntell, bestUptime, fastest, minTtft, maxTps, bestCtx, upCount, bestIntellMember, bestCtxMember };
+      return { bestQos, bestIntell, bestUptime, fastest, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember };
     }
 
     function groupRowInnerHTML(g) {
@@ -5078,10 +5091,14 @@
         : (s.upCount === members.length ? 'All providers up' : `${s.upCount}/${members.length} providers`);
       // Multi-provider groups show only the health dot here: the up/total count now
       // sits under the model name, next to the other provider count, so the two
-      // numbers read together instead of competing with the dot.
+      // numbers read together instead of competing with the dot. The dot also carries
+      // availability on its own — it used to be replaced by a clock built from
+      // updateRateLimitCountdowns(), which is a void, interval-driven DOM updater rather
+      // than a formatter, so any group with nothing up printed the literal
+      // "🕑 undefined". `statusColor` is already red for exactly that case.
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
-        : (s.upCount > 0 ? `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>` : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}">🕑 ${updateRateLimitCountdowns(first)}</span></div>`);
+        : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>`;
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
@@ -5093,7 +5110,16 @@
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
           </td>
-          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
+          <td><div style="font-weight: 600;">${(() => {
+            const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
+            // The rating describes the model rather than any one provider, so it stays
+            // readable when nothing is available — but beside a "0/N providers" subtitle
+            // it must not read as live capacity, so it is muted and labelled for what it
+            // is. Every measured cell next to it is blank by then (see getGroupSummary).
+            return s.usable.length === 0
+              ? `<span style="opacity:0.55;" title="No provider available — this is the model's rating, not a live measurement">${rating}</span>`
+              : rating;
+          })()}</div></td>
           <td class="text-right">
             <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
@@ -5110,8 +5136,9 @@
           </td>
           <td>${groupStatusHtml}</td>
           <td>${(() => {
-            // Group response: the most recent successful test across the group's providers
-            const lastR = groupLastResponse(g);
+            // Group response: the most recent successful test across the providers that
+            // could actually serve it (see groupLastResponse)
+            const lastR = groupLastResponse(s.usable);
             const hasAuth = g.members.some(m => m.status !== 'noauth');
             const expired = lastR && lastR.expiresAt != null && Date.now() > Number(lastR.expiresAt);
             // responseCellHTML() treats an expired timeout as absent by itself, so it is
@@ -5350,11 +5377,11 @@
       }
 
       // Update TTFT and tokens/sec (real usage stats)
-      const displayTtft = m.ttft ?? m.lastResponse?.ttftMs ?? null;
-      const displayTps = m.tps ?? m.lastResponse?.tps ?? null;
+      const displayTtft = rowTtft(m);
+      const displayTps = rowTps(m);
       const ttftCell = row.cells[3];
       ttftCell.innerHTML = displayTtft != null
-        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(displayTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">avg</div>`
+        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(displayTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowTtftLabel(m)}</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
       const tpsCell = row.cells[4];
       tpsCell.innerHTML = displayTps != null
@@ -5398,15 +5425,19 @@
       </td>`;
     }
 
-    // Returns the most recent test response across a group's members. For a
-    // multi-provider group, any successful text response wins so the heading can
-    // show that at least one provider is ready.
-    function groupLastResponse(g) {
+    // Returns the most recent test response across the providers given — a model heading
+    // passes only the usable ones, so it can no longer advertise a stale 'Ready' from a
+    // row that is currently rate-limited, timed out or down. Returns null when nothing
+    // is usable, which leaves the Test button in the cell: the honest offer when the
+    // group has no demonstrable answer. The graveyard passes its own member (a struck
+    // row is by definition never usable, and its history is exactly what it must show).
+    function groupLastResponse(members) {
+      const providers = members || [];
       let latest = null;
-      for (const m of g.members) {
+      for (const m of providers) {
         const lr = m.lastResponse;
         if (!lr) continue;
-        if (g.members.length > 1 && lr.error == null && lr.text != null && String(lr.text).trim() !== '') {
+        if (providers.length > 1 && lr.error == null && lr.text != null && String(lr.text).trim() !== '') {
           return { ...lr, text: 'Ready', _groupReady: true };
         }
         if (!latest || (lr.at || 0) > (latest.at || 0)) latest = lr;
@@ -5515,6 +5546,44 @@
       return m.status === 'up' || isLastResponseReady(m.lastResponse);
     }
 
+    // Stricter than isRowUp: a row can only lend its numbers to a heading when it could
+    // actually take a request right now. The router itself decides that, so a row the
+    // server reports as not routing-eligible (rate-limited, banned, filtered) never
+    // contributes a speed or a context bound to its model's heading.
+    function isRowUsable(m) {
+      return isRowUp(m) && m.routingEligible !== false;
+    }
+
+    // A response that actually answered. TTFT and tok/s may only come from one of these:
+    // a failed call measures how long the provider took to refuse, and publishing that as
+    // the model's speed is how a rate-limited row came to read "0.35s avg" for a request
+    // that returned nothing. The server gates its own payload the same way; this keeps
+    // the last-response fallback (and payloads from an older server) to that rule.
+    function servedResponse(lastResponse) {
+      if (!lastResponse || lastResponse.ok === false || lastResponse.error) return null;
+      if (lastResponse.text == null || String(lastResponse.text).trim() === '') return null;
+      return lastResponse;
+    }
+
+    function rowTtft(m) {
+      if (m && m.ttft != null) return Number(m.ttft);
+      const served = servedResponse(m && m.lastResponse);
+      return served && served.ttftMs != null ? Number(served.ttftMs) : null;
+    }
+
+    function rowTps(m) {
+      if (m && m.tps != null) return Number(m.tps);
+      const served = servedResponse(m && m.lastResponse);
+      return served && served.tps != null ? Number(served.tps) : null;
+    }
+
+    // Which kind of sample the TTFT column is showing: a window average, or the single
+    // most recent measurement. Calling a lone measurement an average is a claim the data
+    // cannot support, so the sublabel follows the source the server reports.
+    function rowTtftLabel(m) {
+      return m && m.ttftSource === 'average' ? 'avg' : 'ttft';
+    }
+
     // Compact "1h ago" / "2d ago" label for stale test responses.
     function fmtAgo(ms) {
       const m = Math.max(1, Math.floor(ms / 60000));
@@ -5567,11 +5636,13 @@
       if (!row) return;
       const ttftCell = row.cells[3];
       const tpsCell = row.cells[4];
-      if (ttftCell) ttftCell.innerHTML = model.ttft != null
-        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(model.ttft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowKey.startsWith('g:') ? 'ttft' : 'avg'}</div>`
+      const visibleTtft = rowTtft(model);
+      const visibleTps = rowTps(model);
+      if (ttftCell) ttftCell.innerHTML = visibleTtft != null
+        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(visibleTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowKey.startsWith('g:') ? 'ttft' : rowTtftLabel(model)}</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-      if (tpsCell) tpsCell.innerHTML = model.tps != null
-        ? `<div style="font-size:0.82rem;">${model.tps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
+      if (tpsCell) tpsCell.innerHTML = visibleTps != null
+        ? `<div style="font-size:0.82rem;">${visibleTps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
     }
 
@@ -5967,12 +6038,12 @@
               <span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>
             </div>`;
       }
-      // Model can't accept text chat (image/video only): 'Incompatible' so it
+      // Model can't accept text chat (audio/image/video only): 'Incompatible' so it
       // moves to the unavailable list rather than reading as a plain 'Down'.
       if ((m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible') {
         return `
             <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="color: var(--text-muted);" title="Model does not support text chat (image/video only)">Incompatible</span>
+              <span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>
             </div>`;
       }
       // Context experimentally bounded at ≤16k by provider errors: 'Micro' so it
@@ -6028,9 +6099,9 @@
       if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp || m.status === 'paid' && !isUp) {
         return `<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>`;
       }
-      // Incompatible: model can't accept text chat (image/video only)
+      // Incompatible: model can't accept text chat (audio/image/video only)
       if ((m.lastResponse && m.lastResponse.incompatible === true && !isUp) || currentStatus === 'incompatible') {
-        return `<span style="color: var(--text-muted);" title="Model does not support text chat (image/video only)">Incompatible</span>`;
+        return `<span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>`;
       }
       // Micro: context experimentally bounded at ≤16k by provider errors
       if (m.microContext === true && !isUp) {
@@ -6260,13 +6331,15 @@
     function graveyardRowHTMLInner(g) {
       const members = g.members;
       const first = members[0];
-      const s = getGroupSummary(g);
+      // Graveyard rows keep their own history: they are struck by definition, so
+      // "usable only" would blank every measured cell the panel exists to show.
+      const s = getGroupSummary(g, { onlyUsable: false });
       const fastest = s.fastest;
       const hasPing = fastest !== null && fastest !== Infinity;
       const statusText = unavailableReasonLabel(first);
       const hasAuth = members.some(m => m.status !== 'noauth');
 
-      const lastResponse = groupLastResponse(g);
+      const lastResponse = groupLastResponse(members);
 
       return `
           <td style="cursor:pointer;">
@@ -6324,8 +6397,8 @@
               </div>
             </div>
           </td>
-          ${formatTtftCell(m.ttft, 'avg')}
-          ${formatTpsCell(m.tps, 'tok/s')}
+          ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
+          ${formatTpsCell(rowTps(m), 'tok/s')}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
