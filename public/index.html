@@ -351,6 +351,9 @@
     .topo-model.up { fill: var(--success); opacity: 0.7; filter: drop-shadow(0 0 1.5px var(--success)); }
     .topo-model.down { fill: var(--error); opacity: 0.4; }
     .topo-model.disabled { fill: var(--text-muted); opacity: 0.2; }
+    /* Waiting on a provider window (rate-limited or timed out): the table's clock
+       colour, so the picture and the rows never disagree about 'waiting' vs 'broken'. */
+    .topo-model.benched { fill: var(--warning); opacity: 0.45; }
     .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--accent)); }
     .topo-model.best { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); animation: topo-best-pulse 2s ease-in-out infinite; }
 
@@ -365,15 +368,18 @@
     .topo-model-mono { fill: var(--surface-alt); stroke: var(--text-muted); stroke-width: 0.4; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
     .topo-model-mono.up { stroke: var(--success); }
     .topo-model-mono.down { stroke: var(--error); }
+    .topo-model-mono.benched { stroke: var(--warning); }
     .topo-model-mono.best { stroke: var(--accent); }
     .topo-model-glyph { fill: var(--text-muted); font-size: 4.5px; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; dominant-baseline: middle; opacity: 0.55; transition: all 1.5s ease-in-out; pointer-events: none; }
     .topo-model-glyph.up { fill: var(--success); opacity: 0.7; }
     .topo-model-glyph.down { fill: var(--error); opacity: 0.6; }
+    .topo-model-glyph.benched { fill: var(--warning); opacity: 0.65; }
     .topo-model-glyph.best { fill: var(--accent); opacity: 0.85; }
 
     .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
     .topo-model-label.up { fill: var(--success); opacity: 0.55; }
     .topo-model-label.down { fill: var(--error); opacity: 0.35; }
+    .topo-model-label.benched { fill: var(--warning); opacity: 0.45; }
     .topo-model-label.best { fill: var(--accent); opacity: 0.7; }
 
     /* While the spring layout is settling, geometry is driven by JS every frame —
@@ -2345,6 +2351,11 @@
     // Contradictory status/result pairs that have already received an automatic
     // re-test. The signature changes when the server reports a new result/state.
     let automaticRetestSignatures = new Map();
+    // Automatic re-tests are trivial to schedule and expensive to run, so a row is held
+    // to this cooldown however its signature changes: a model that keeps answering a
+    // test with the same class of failure must not be re-tested every poll.
+    const AUTOMATIC_RETEST_COOLDOWN_MS = 10 * 60_000;
+    let automaticRetestAt = new Map();
     let activePinnedModelId = null; // tracks the current pinned selection key
     let activePinnedProviderKey = null;
     let activePinnedRowKeys = []; // resolved pinned rows from server/client
@@ -2473,33 +2484,12 @@
 
         // Calculate QoS for each model. Quota reports are already attached by
         // /api/models; avoid a second usage request on every dashboard refresh.
-        allModels = data.models.map(m => {
-          let isRateLimited = false;
-          let rateLimitResetMs = 0;
-          if (m.rateLimit) {
-            const now = Date.now();
-            // Flag as rate-limited when the actual proxied prompt got a 429
-            if (m.rateLimit.wasRateLimited === true) {
-              isRateLimited = true;
-              rateLimitResetMs = Math.max(
-                m.rateLimit.resetRequestsAt ? Math.max(0, m.rateLimit.resetRequestsAt - now) : 0,
-                m.rateLimit.resetTokensAt ? Math.max(0, m.rateLimit.resetTokensAt - now) : 0
-              );
-            }
-            // Also flag when credits are exhausted (e.g. OpenRouter free tier).
-            // Credits are an account-level balance (not a sliding window), so
-            // creditRemaining <= 0 is an authoritative signal.
-            if (m.rateLimit.creditLimit > 0 && m.rateLimit.creditRemaining != null && m.rateLimit.creditRemaining <= 0) {
-              isRateLimited = true;
-              if (m.rateLimit.creditResetAt && m.rateLimit.creditResetAt > now) {
-                rateLimitResetMs = Math.max(rateLimitResetMs, m.rateLimit.creditResetAt - now);
-              }
-            }
-
-          }
-
-          return { ...m, qos: m.qos || 0, isRateLimited };
-        });
+        // `isRateLimited` is left exactly as the server sent it: it is that row's own
+        // statement (wasRateLimited / exhausted credits), and the dashboard's reading —
+        // which also carries the window a test response describes — is derived at the
+        // point of use by rateLimitEvidence(). Re-deriving it into the field here would
+        // feed a snapshot back into the rule that produced it.
+        allModels = data.models.map(m => ({ ...m, qos: m.qos || 0 }));
 
         // Providers that relay persona entries over a rotating backend (FreeModels)
         // report the real upstream model in every response. When the router captured
@@ -2690,7 +2680,9 @@
     }
 
     function calculateBestModel(models) {
-      const candidates = models.filter(m => m.status === 'up' && m.avg !== Infinity);
+      // Same verdict as the dots and the KPIs: the highlighted model is one that can
+      // actually take a request, not one whose last test hit a quota wall.
+      const candidates = models.filter(m => isRowUp(m) && m.avg !== Infinity);
       if (candidates.length === 0) return null;
 
       return [...candidates].sort((a, b) => (b.qos || 0) - (a.qos || 0))[0];
@@ -2746,15 +2738,15 @@
     }
 
     function updateKPIs(models, bestModelId) {
-      // Count unique model groups, not provider rows, so shared models are only
-      // counted once even when multiple providers host them.
-      const onlineModelCount = groupModels(models.filter(m => m.status === 'up')).length;
+      // Both counts read the same verdict the table's dots do — a model is 'active' when
+      // something can actually serve it right now (see rowVerdict). One definition, or the
+      // KPIs and the rows they summarise disagree.
+      // Unique model groups, not provider rows, so shared models are counted once.
+      const onlineModelCount = groupModels(models.filter(isRowUp)).length;
 
       const onlineProviders = new Set();
       models.forEach(m => {
-        if (m.status === 'up' && !m.isRateLimited) {
-          if (m.lastPing !== 'TIMEOUT' || m.uptime > 0) onlineProviders.add(m.providerKey);
-        }
+        if (isRowUp(m)) onlineProviders.add(m.providerKey);
       });
 
       document.getElementById('kpi-active').textContent = onlineModelCount;
@@ -2974,16 +2966,20 @@
       const plotRight = scales.pad.left + scales.plotW - 4;
       const axisLimit = scales.xMax;
       // Filled dots are routable; hollow dashed rings are models the router will
-      // not use (down / banned / rate-limited). The shape carries the status, so
-      // the plot needs no per-dot status labels.
+      // not use (down / banned / rate-limited). The shape carries the verdict and the
+      // ring carries its colour, both from rowVerdict, so a dot can no longer be drawn
+      // healthy while its table row reads 'Rate limited'. The plot needs no per-dot
+      // status labels.
       const strokeFor = (r) => {
-        if (r.m.status === 'up') return { color: ring, width: 1 };
-        if (r.m.isRateLimited) return { color: cssVarValue('--warning') || '#d29922', width: 1.6 };
+        const kind = rowVerdict(r.m);
+        if (kind === 'up') return { color: ring, width: 1 };
+        if (BENCHED_VERDICTS.has(kind)) return { color: cssVarValue('--warning') || '#d29922', width: 1.6 };
+        if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return { color: cssVarValue('--text-muted') || '#8b949e', width: 1.4 };
         return { color: cssVarValue('--error') || '#e5484d', width: 1.6 };
       };
       for (const r of rows) {
         const hue = scatterProviderHue(r.m.providerKey);
-        const up = r.m.status === 'up';
+        const up = isRowUp(r.m);
         const st = strokeFor(r);
         const cx = scales.xOf(r.speed);
         const cy = scales.yOf(r.intell);
@@ -3063,7 +3059,7 @@
         if (pickRow && r === pickRow) p += 1000;
         if (r.intell >= maxIntell) p += 200;
         if (r.speed >= maxSpeed) p += 200;
-        if (r.m.status !== 'up') p -= 400;
+        if (!isRowUp(r.m)) p -= 400;
         // Remaining rows: higher intelligence than speed, so the top of the
         // field — where routing decisions actually happen — is labeled first.
         return p + ((r.intell - scales.yMin) / scales.ySpan) * 100;
@@ -3444,7 +3440,9 @@
       const m = r && r.m;
       if (!m) return false;
       if (typeof m.routingEligible === 'boolean') return m.routingEligible;
-      return m.status === 'up' && !(m.rateLimit && m.rateLimit.wasRateLimited === true);
+      // Older payloads carry no flag: fall back to the dashboard's own verdict, which is
+      // the same set of conditions the server applies.
+      return isRowUp(m);
     }
 
     function pickSlopeModel(rows) {
@@ -3849,7 +3847,7 @@
           const um = uniqueModels[i];
           const connectedKeys = um._providers.map(p => p.key);
           // Anchor on the provider that's up when there is one.
-          const bestProv = um._providers.find(p => p.model.status === 'up') || um._providers[0];
+          const bestProv = um._providers.find(p => isRowUp(p.model)) || um._providers[0];
           const anchorProv = provNodes.find(p => p.providerKey === bestProv.key);
           const angle = lcg() * 2 * Math.PI;
           const dist = 5 + lcg() * 14;
@@ -4105,15 +4103,21 @@
       const providerHealth = {};
       for (const pk of plotProviders) {
         const provModels = primaryModels.filter(m => m.providerKey === pk);
-        const upCount = provModels.filter(m => m.status === 'up').length;
+        const upCount = provModels.filter(isRowUp).length;
         providerHealth[pk] = { upCount, total: provModels.length };
       }
 
-      // Model status: best status across all providers for this unique model
+      // Model status: the same verdict the table colours its dots with, so the picture
+      // cannot claim a model is up while its row shows a clock or a red dot. A model whose
+      // providers are all merely waiting on a provider window is 'benched' — the plot has
+      // to tell that apart from 'broken' for the same reason the table does.
       function modelStatusCls(um, isBest) {
-        const anyUp = um._providers.some(p => p.model.status === 'up');
-        const anyDown = um._providers.some(p => p.model.status === 'down' || p.model.status === 'noauth');
-        return `${anyUp ? ' up' : (anyDown ? ' down' : ' disabled')}${isBest ? ' best' : ''}`;
+        const kinds = um._providers.map(p => rowVerdict(p.model));
+        const anyUp = kinds.includes('up');
+        const anyBenched = kinds.some(kind => BENCHED_VERDICTS.has(kind));
+        const allInert = kinds.length > 0
+          && kinds.every(kind => STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded');
+        return `${anyUp ? ' up' : (allInert ? ' disabled' : (anyBenched ? ' benched' : ' down'))}${isBest ? ' best' : ''}`;
       }
       function isModelBest(um) {
         return bestModel && um._providers.some(p => p.model.modelId === bestModel.modelId && p.model.providerKey === bestModel.providerKey);
@@ -4179,7 +4183,7 @@
           if (!um) { line.setAttribute('class', 'topo-link'); return; }
           const pk = line.dataset.pkey;
           const anyUp = providerHealth[pk] && providerHealth[pk].upCount > 0;
-          const modelUp = um._providers.some(p => p.key === pk && p.model.status === 'up');
+          const modelUp = um._providers.some(p => p.key === pk && isRowUp(p.model));
           const cls = `topo-link${modelUp ? ' active' : (anyUp ? ' warn' : '')}`;
           if (line.getAttribute('class') !== cls) line.setAttribute('class', cls);
         }
@@ -4670,11 +4674,11 @@
     // Returns a comparable value for each column (lower = sorts first in asc)
     function colValue(m, col) {
       switch (col) {
-        case 'status': return m.status === 'up' ? 0 : 1;
+        case 'status': return isRowUp(m) ? 0 : 1;
         case 'ping': return (m.avg === Infinity || m.avg === null) ? Infinity : m.avg;
         case 'qos': return m.qos || 0;
         case 'intell': return getBenchmarkSortValue(m.intell);
-        case 'rate': return m.isRateLimited ? 1 : 0;
+        case 'rate': return isRateLimitedRow(m) ? 1 : 0;
         case 'health': return m.qos || 0; // fallback just in case
         case 'model': return (m.label || '').toLowerCase();
         case 'ctx': return m.contextTokens || 0;
@@ -5009,18 +5013,14 @@
       return mergedGroups.filter(group => !latestGroups.has(group) || !concreteByFamily.has(latestModelFamilyKey(group.members[0]?.modelId || group.label)) || concreteByFamily.get(latestModelFamilyKey(group.members[0]?.modelId || group.label)) === group);
     }
 
-    // Health tier for ordering provider sub-rows, mirroring exactly what the
-    // status cell shows: 0 = green dot (up), 1 = clock or 🕑 indicator (rate
-    // limited / timed out), 2 = everything else (down). The clock is shown even
-    // when the ping status is a stale 'up', so a green tier also requires the row
-    // not to be rate-limited or clocked. Defined with the sort so the visual
-    // states in statusCellHTML and the sub-row order can't drift apart.
+    // Health tier for ordering provider sub-rows, read off the same verdict the status
+    // cell draws: 0 = the green dot, 1 = the clock (benched: rate-limited or timed out),
+    // 2 = everything else. Sharing the verdict is what keeps the colours and the order
+    // from drifting apart.
     function providerHealthTier(m) {
-      const clocked = getRateLimitResetAt(m) != null;
-      const rateLimited = isRateLimitedRow(m);
-      if (isRowUp(m) && !clocked && !rateLimited) return 0;
-      if (m.status === 'timeout' || clocked || rateLimited) return 1;
-      return 2;
+      const kind = rowVerdict(m);
+      if (kind === 'up') return 0;
+      return BENCHED_VERDICTS.has(kind) ? 1 : 2;
     }
 
     // Providers within a model group sorted by: health tier first (green dot
@@ -5037,8 +5037,8 @@
       if (aReady && !bReady) return -1;
       if (!aReady && bReady) return 1;
       // Paid sorts last
-      const aPaid = a.status === 'paid' || (a.lastResponse && a.lastResponse.paymentRequired === true);
-      const bPaid = b.status === 'paid' || (b.lastResponse && b.lastResponse.paymentRequired === true);
+      const aPaid = rowVerdict(a) === 'paid';
+      const bPaid = rowVerdict(b) === 'paid';
       if (aPaid && !bPaid) return 1;
       if (!aPaid && bPaid) return -1;
       // Faster ping first (Infinity = offline, sorts last)
@@ -5148,23 +5148,23 @@
       const isPinned = members.length > 0 && members.every(m => activePinnedRowKeys.includes(getModelRowKey(m)));
       const fastest = s.fastest;
       const hasPing = fastest !== null && fastest !== Infinity;
-      // The heading dot answers one question — can this model be used at all? — so it
-      // is green as soon as ANY provider under it is up, and red only when none are.
-      // How many of them are up is spelled out in the subtitle below the model name.
-      const statusColor = s.upCount > 0 ? 'var(--success)' : 'var(--error)';
-      const statusText = members.length === 1
-        ? (first.status === 'up' ? 'Up' : (first.status === 'noauth' ? 'No Auth' : 'Down'))
-        : (s.upCount === members.length ? 'All providers up' : `${s.upCount}/${members.length} providers`);
-      // Multi-provider groups show only the health dot here: the up/total count now
-      // sits under the model name, next to the other provider count, so the two
-      // numbers read together instead of competing with the dot. The dot also carries
-      // availability on its own — it used to be replaced by a clock built from
-      // updateRateLimitCountdowns(), which is a void, interval-driven DOM updater rather
-      // than a formatter, so any group with nothing up printed the literal
-      // "🕑 undefined". `statusColor` is already red for exactly that case.
+      // The heading answers one question — can this model be used at all? — in the same
+      // verdict vocabulary as the provider rows underneath it: green as soon as any
+      // provider can serve, and otherwise the most recoverable reason among them, so a
+      // model whose providers are all waiting on a quota reads as the clock its own rows
+      // show rather than as a red 'broken' dot. How many are up stays in the subtitle
+      // under the model name, next to the other provider count.
+      const groupKind = members.length === 1 ? rowVerdict(first) : bestGroupVerdict(members);
+      const groupStatusText = members.length === 1
+        ? plainStatusTitle(groupKind)
+        : (groupKind === 'up'
+          ? (s.upCount === members.length ? 'All providers up' : `${s.upCount}/${members.length} providers up`)
+          : `Nothing can serve right now — ${verdictLabel(groupKind).toLowerCase()} (${s.upCount}/${members.length} up)`);
+      // Multi-provider groups show only the indicator here: the up/total count sits under
+      // the model name, so the two numbers read together instead of competing with it.
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
-        : `<div style="display: flex; align-items: center; gap: 6px;"><span title="${escapeHtml(statusText)}" style="width: 6px; height: 6px; border-radius: 50%; background: ${statusColor}"></span></div>`;
+        : `<div style="display: flex; align-items: center; gap: 6px;">${verdictIndicatorHTML(groupKind, groupStatusText)}</div>`;
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
@@ -5202,9 +5202,9 @@
           </td>
           <td>${groupStatusHtml}</td>
           <td>${(() => {
-            // Group response: the most recent successful test across the providers that
-            // could actually serve it (see groupLastResponse)
-            const lastR = groupLastResponse(s.usable);
+            // Group response: the most recent test across every provider under this
+            // heading, judged against the row it came from (see groupLastResponse)
+            const lastR = groupLastResponse(g.members);
             const hasAuth = g.members.some(m => m.status !== 'noauth');
             const expired = lastR && lastR.expiresAt != null && Date.now() > Number(lastR.expiresAt);
             // responseCellHTML() treats an expired timeout as absent by itself, so it is
@@ -5215,7 +5215,7 @@
             const showable = hasAuth && lastR && !expired && (lastR.text != null || lastR.error != null)
               ? lastR
               : null;
-            return responseCellHTML(showable, { rowKey: 'g:' + g.key, members: g.members, hasAuth, status: first.status });
+            return responseCellHTML(showable, { rowKey: 'g:' + g.key, members: g.members, hasAuth, owner: lastR && lastR._owner ? lastR._owner : null });
           })()}</td>
         `;
     }
@@ -5436,7 +5436,7 @@
       const pingCell = row.cells[2];
       const pingTextEl = pingCell.querySelector('div[style*="text-align"]') || pingCell.querySelector('div:last-child');
       if (hasPing) {
-        const rateTxt = m.isRateLimited ? ' 🕑' : '';
+        const rateTxt = isRateLimitedRow(m) ? ' 🕑' : '';
         if (pingTextEl) pingTextEl.innerHTML = `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${rateTxt}</div>`;
       } else {
         if (pingTextEl) pingTextEl.innerHTML = '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>';
@@ -5491,24 +5491,39 @@
       </td>`;
     }
 
-    // Returns the most recent test response across the providers given — a model heading
-    // passes only the usable ones, so it can no longer advertise a stale 'Ready' from a
-    // row that is currently rate-limited, timed out or down. Returns null when nothing
-    // is usable, which leaves the Test button in the cell: the honest offer when the
-    // group has no demonstrable answer. The graveyard passes its own member (a struck
-    // row is by definition never usable, and its history is exactly what it must show).
-    function groupLastResponse(members) {
+    // The test response a model heading should show, plus the row it came from (so the
+    // cell can annotate it against that row's verdict rather than the heading's).
+    //
+    // One rule for the members it is given: the newest response wins, and a clean success
+    // is only shown when the row behind it can serve right now — a 'Ready' from a row that
+    // is rate-limited, timed out or down is exactly the stale evidence a heading must not
+    // advertise. A failure is always passed through (the response cell then decides whether
+    // it is the same statement the clock beside it is already making).
+    //
+    // Returns null when there is nothing honest to show, which leaves the Test button in
+    // the cell. The graveyard passes opts.allowStale: a struck row is never usable, and
+    // its history is exactly what that row exists to show.
+    function groupLastResponse(members, opts = {}) {
       const providers = members || [];
       let latest = null;
+      let latestOwner = null;
+      let latestUsable = false;
       for (const m of providers) {
         const lr = m.lastResponse;
         if (!lr) continue;
-        if (providers.length > 1 && lr.error == null && lr.text != null && String(lr.text).trim() !== '') {
-          return { ...lr, text: 'Ready', _groupReady: true };
+        const clean = lr.error == null && lr.text != null && String(lr.text).trim() !== '';
+        if (clean && providers.length > 1 && isRowUsable(m)) {
+          return { ...lr, text: 'Ready', _groupReady: true, _owner: m };
         }
-        if (!latest || (lr.at || 0) > (latest.at || 0)) latest = lr;
+        if (!latest || (lr.at || 0) > (latest.at || 0)) {
+          latest = lr;
+          latestOwner = m;
+          latestUsable = isRowUsable(m);
+        }
       }
-      return latest;
+      if (!latest) return null;
+      if (latest.error == null && !latestUsable && !opts.allowStale) return null;
+      return { ...latest, _owner: latestOwner };
     }
 
     // Removes reasoning content wrapped in <thought>/<thinking> tags from test
@@ -5531,7 +5546,9 @@
     }
 
     // Builds the Response cell: the Test button plus the latest response text.
-    // opts: { rowKey, providerKey?, modelId?, members? }
+    // opts: { rowKey, providerKey?, modelId?, members?, owner? } — `owner` is the row a
+    // shared response came from (a group heading), so the cell can judge that response
+    // against the row that produced it instead of against the heading.
     function responseCellHTML(lastResponse, opts) {
       // Models with no API key / auth configured show a placeholder.
       if (opts && opts.hasAuth === false) {
@@ -5542,21 +5559,36 @@
       // Timeout errors carry an expiry; once it passes, treat the result as absent
       // so a stale timeout no longer populates the test result field.
       const expired = lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt);
-      // A row currently showing the rate-limit clock (exhausted) already communicates
-      // the 429 — the raw quota/error dump in the Response cell is redundant next to
-      // it, so suppress the error text while the clock is up. Looked up by rowKey so
-      // every render path (initial build, live poll, post-test) stays consistent.
-      const clockedModel = (opts && opts.rowKey) ? allModels.find(mm => getModelRowKey(mm) === opts.rowKey) : null;
-      const clocked = clockedModel ? getRateLimitResetAt(clockedModel) != null : false;
+      // The row this response belongs to: a group heading passes its owner explicitly
+      // (the member the response came from), every other path is looked up by row key, so
+      // the initial build, the poll refresh and the post-test paint all judge the same
+      // response against the same row.
+      const owner = (opts && opts.owner) || ((opts && opts.rowKey) ? allModels.find(mm => getModelRowKey(mm) === opts.rowKey) : null);
+      const ownerVerdict = owner ? rowVerdict(owner) : null;
+      const ownerUp = ownerVerdict == null ? null : ownerVerdict === 'up';
+      // A row showing the rate-limit clock is already saying this: when the response on
+      // screen is the rate-limit statement that put the clock up, its raw dump would only
+      // repeat it — the countdown and the quota tooltip carry the detail — so it waits
+      // until that window closes. A *different* failure on the same row (a 500 behind a
+      // rate limit) is not the same statement and still shows.
+      const clocked = owner ? isRateLimitedRow(owner) && testRateLimitWindow(owner) != null : false;
       const errText = !clocked && !expired && lastResponse.error ? String(lastResponse.error) : '';
       const okText = !errText && !expired && lastResponse.ok !== false && lastResponse.text != null ? String(lastResponse.text) : '';
       const text = stripThoughtTags(errText || okText);
-      // A successful response that outlives the provider's current health (the row
-      // is no longer 'up') is stale evidence — annotate its age so a persisted
-      // "Ready" doesn't masquerade as a fresh, live result next to a timeout.
+      // A result that outlives the state of the row it came from is history, not a live
+      // verdict — a 'Ready' on a row that cannot serve now, or a failure the row has since
+      // recovered from. Annotating its age is what keeps a green dot beside red error text
+      // (or the reverse) from reading as a contradiction.
+      //
+      // Two ways to become history: the row's state moved past it, or a probe has succeeded
+      // since it spoke. The second needs no waiting period — a failure a later probe already
+      // outlived is superseded the moment that probe lands, however recent it is.
       const ageMs = lastResponse.at ? Date.now() - Number(lastResponse.at) : null;
-      const stale = !expired && okText && ageMs != null && ageMs > 10 * 60_000
-        && opts && opts.status && opts.status !== 'up';
+      const disagrees = ownerUp != null
+        && ((okText !== '' && !ownerUp) || (errText !== '' && ownerUp));
+      const superseded = !!(owner && !testIsNewestEvidence(owner));
+      const stale = !expired && disagrees
+        && ((ageMs != null && ageMs > 10 * 60_000) || superseded);
       // Show the number of tokens the model actually returned; nothing else. A zero
       // is never that count: it is a provider's zeroed usage block (the server's
       // resolveReportedOutputTokens refuses to record one) or a response persisted
@@ -5569,7 +5601,8 @@
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
-        metaBits.push(`<span title="Last successful test: ${escapeAttr(when)}" style="opacity:.8;">${fmtAgo(ageMs)}</span>`);
+        const what = errText !== '' ? 'Last failed test' : 'Last successful test';
+        metaBits.push(`<span title="${what}: ${escapeAttr(when)}" style="opacity:.8;">${fmtAgo(ageMs)}</span>`);
       }
       const meta = metaBits.length > 0 ? `<div class="test-meta">${metaBits.join(' · ')}</div>` : '';
       const expAttr = lastResponse.expiresAt != null ? ` data-expires-at="${lastResponse.expiresAt}"` : '';
@@ -5604,12 +5637,88 @@
       return true
     }
 
-    // The single definition of a green row: the server says it is up, or its most
-    // recent test response is a clean, still-fresh 'Ready'. Every dot, up-count and
-    // ratio in the dashboard goes through this, so a combined model heading can never
-    // disagree with the provider rows underneath it.
+    // ---- The one row verdict -------------------------------------------------
+    // Every availability indicator in the dashboard reads rowVerdict(), so the status
+    // dot, the model heading, the up counts, the measured columns, the ordering, the
+    // plot and the graveyard cannot disagree with each other — or with the two kinds of
+    // evidence they are all drawn from.
+    //
+    // Precedence, strongest statement first:
+    //   banned / excluded  the router refuses the row by policy
+    //   noauth             no credential, so it cannot even be tried
+    //   paid               billing or plan wall (probe, proxy 402, or a test)
+    //   dead               the provider's catalog no longer serves the model
+    //   incompatible       the model cannot serve text chat
+    //   micro              context bounded below the usable floor
+    //   rate-limited       benched on a provider window or quota
+    //   up                 usable now
+    //   timeout            the last probe got no answer within its budget
+    //   pending            not probed yet (a row that has just appeared)
+    //   down               a real failure with no better explanation
+    //
+    // A test response and a probe answer are the same kind of claim — what the provider
+    // did with one request — so the *fresher* one wins. A failure the test saw outranks
+    // the probe status only until a probe succeeds again, which is exactly the point at
+    // which the router starts routing there again; a rate limit additionally expires
+    // with the window it describes (see rateLimitEvidence). An older test is history:
+    // it stays visible in the Test column, annotated with its age, instead of
+    // overruling a row that works.
+    const STRUCK_VERDICTS = new Set(['paid', 'dead', 'incompatible', 'micro', 'noauth']);
+    const BENCHED_VERDICTS = new Set(['rate-limited', 'timeout']);
+    // How long a rate limit stands when the provider names no window at all: the same
+    // grace the server applies before it clears its own wasRateLimited flag.
+    const RATE_LIMIT_UNSTATED_GRACE_MS = 60_000;
+
+    // When this row last answered a probe successfully, in epoch ms (0 when never).
+    // A successful manual test counts too: the server records it in the same history.
+    function lastProbeSuccessAt(m) {
+      const pings = Array.isArray(m?.pings) ? m.pings : [];
+      for (let i = pings.length - 1; i >= 0; i--) {
+        if (String(pings[i]?.code) === '200') return Number(pings[i].ts) || 0;
+      }
+      return 0;
+    }
+
+    // True while no probe has seen this row work since the test last spoke — i.e. the
+    // test response is still the newest evidence about it.
+    function testIsNewestEvidence(m) {
+      const at = Number(m?.lastResponse?.at);
+      if (!Number.isFinite(at) || at <= 0) return true;
+      return at >= lastProbeSuccessAt(m);
+    }
+
+    function rowVerdict(m) {
+      if (!m) return 'down';
+      const status = String(m.status || '').toLowerCase();
+      if (status === 'banned' || status === 'excluded') return status;
+      if (status === 'noauth') return 'noauth';
+      const test = testIsNewestEvidence(m) ? (m.lastResponse || null) : null;
+      // The server's own status first: it is its classification of the newest probe, and
+      // it is the same verdict the router reads when it decides whether the row may serve
+      // (isModelEligibleForRouting). The flags a *test* response carries were computed when
+      // that test ran, so they only fill in the states the status does not already name —
+      // otherwise a stored 'dead' from before the surface-refusal split would keep a row
+      // labelled Dead while every fresh probe classifies it Incompatible.
+      if (status === 'paid') return 'paid';
+      if (status === 'dead') return 'dead';
+      if (status === 'incompatible') return 'incompatible';
+      if (test?.paymentRequired === true) return 'paid';
+      if (test?.dead === true) return 'dead';
+      if (test?.incompatible === true) return 'incompatible';
+      if (m.microContext === true) return 'micro';
+      if (isRateLimitedRow(m)) return 'rate-limited';
+      // A clean, fresh test outranks a status that says nothing was learned: 'timeout' is
+      // a probe that got no answer within its budget, and 'pending' is a row nobody has
+      // probed yet. The server promotes the same evidence the same way
+      // (applyUsageDerivedMetrics), so routing and this highlight agree.
+      if (status === 'up' || isLastResponseReady(m.lastResponse)) return 'up';
+      if (status === 'timeout') return 'timeout';
+      if (status === 'pending') return 'pending';
+      return 'down';
+    }
+
     function isRowUp(m) {
-      return m.status === 'up' || isLastResponseReady(m.lastResponse);
+      return rowVerdict(m) === 'up';
     }
 
     // Stricter than isRowUp: a row can only lend its numbers to a heading when it could
@@ -5618,6 +5727,66 @@
     // contributes a speed or a context bound to its model's heading.
     function isRowUsable(m) {
       return isRowUp(m) && m.routingEligible !== false;
+    }
+
+    // The verdicts in the order a model heading prefers them when nothing is up: the
+    // states that come back on their own first, then the ones the user has to fix.
+    const VERDICT_RECOVERABILITY = [
+      'up', 'pending', 'rate-limited', 'timeout', 'noauth', 'paid', 'incompatible', 'dead', 'micro', 'down', 'banned', 'excluded',
+    ];
+
+    // Rank for the heading's pick. An unrecognised state ranks last rather than first:
+    // indexOf() returns -1, which would otherwise make a verdict nobody accounted for
+    // outrank every real one.
+    function verdictRank(kind) {
+      const index = VERDICT_RECOVERABILITY.indexOf(kind);
+      return index === -1 ? VERDICT_RECOVERABILITY.length : index;
+    }
+
+    // The heading's own verdict: green when any provider can serve, and otherwise the
+    // most recoverable reason among them, so a model whose providers are all waiting on
+    // a quota reads as the clock its provider rows show rather than as a red dot.
+    function bestGroupVerdict(members) {
+      let best = null;
+      for (const m of members || []) {
+        const kind = rowVerdict(m);
+        if (best === null || verdictRank(kind) < verdictRank(best)) best = kind;
+      }
+      return best || 'down';
+    }
+
+    function verdictLabel(kind) {
+      switch (kind) {
+        case 'noauth': return 'No Auth';
+        case 'rate-limited': return 'Rate limited';
+        case 'incompatible': return 'Incompatible';
+        case 'micro': return 'Micro';
+        case 'dead': return 'Dead';
+        case 'paid': return 'Paid';
+        case 'timeout': return 'Timeout';
+        case 'pending': return 'Pending';
+        case 'up': return 'Up';
+        default: return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : 'Down';
+      }
+    }
+
+    // The dot's colour. Waiting on a provider window is its own colour — a rate-limited
+    // or timed-out row is not a failure, and painting it red reads as broken.
+    function verdictDotColor(kind) {
+      if (kind === 'up') return 'var(--success)';
+      if (BENCHED_VERDICTS.has(kind)) return 'var(--warning)';
+      if (kind === 'banned' || kind === 'excluded') return 'var(--text-muted)';
+      return 'var(--error)';
+    }
+
+    // The one indicator: a clock for the states that mean "waiting on the provider", a
+    // dot for everything else.
+    function verdictIndicatorHTML(kind, title = '') {
+      const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+      if (BENCHED_VERDICTS.has(kind)) {
+        return `<span style="color: var(--warning);"${titleAttr}>🕑</span>`;
+      }
+      return `<span style="width: 6px; height: 6px; border-radius: 50%; background: ${verdictDotColor(kind)}; display: inline-block; vertical-align: middle;"${titleAttr}></span>`;
     }
 
     // A response that actually answered. TTFT and tok/s may only come from one of these:
@@ -5661,33 +5830,32 @@
 
     // Compact "1h ago" / "2d ago" label for stale test responses.
     function fmtAgo(ms) {
-      const m = Math.max(1, Math.floor(ms / 60000));
+      if (ms < 60_000) return 'just now';
+      const m = Math.floor(ms / 60000);
       if (m < 60) return `${m}m ago`;
       const h = Math.floor(m / 60);
       if (h < 24) return `${h}h ago`;
       return `${Math.floor(h / 24)}d ago`;
     }
 
-    // In-place refresher for the Response cell during live polling; never clobbers
-    // a Test request that is currently in flight.
-    function updateResponseCellIfIdle(cell, m) {
-      if (inflightTests.has(getModelRowKey(m))) return;
-      cell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${combinedStatusCellHTML(m)}</div>`;
-    }
-
+    // A live contradiction between the two kinds of evidence, worth one automatic
+    // re-test: a failure the row's own verdict has already moved past — a row the
+    // dashboard calls up whose last test said something failed.
+    //
+    // The other direction needs no chase: a fresh clean 'Ready' *is* the up verdict
+    // (see rowVerdict), and the server promotes the same evidence the same way, so a
+    // Ready that outranks a stale probe status is agreement rather than disagreement.
+    //
+    // The signature has to be *stable*: it used to carry the response timestamp, so
+    // every re-test produced a new signature and a row that kept failing was re-tested
+    // on every poll — a slow way to spend a provider's quota. Volatile numbers in the
+    // error text are masked for the same reason, and scheduleContradictoryRetests()
+    // holds each row to a cooldown on top of this.
     function contradictoryRetestSignature(m) {
       const response = m?.lastResponse;
-      if (!response) return null;
-      // If lastResponse is a clean Ready but status is down, that's a contradiction
-      // (shouldn't happen after the server-side reconcile, but belt-and-suspenders).
-      if (isLastResponseReady(response) && m.status !== 'up') {
-        return `${m.status}|${response.at || 0}|ready|${String(response.text)}`;
-      }
-      // If lastResponse has an error but status is up, also a contradiction.
-      if (response.error && m.status === 'up') {
-        return `${m.status}|${response.at || 0}|error|${String(response.error)}`;
-      }
-      return null;
+      if (!response || !response.error) return null;
+      if (rowVerdict(m) !== 'up') return null;
+      return `up|error|${String(response.error).replace(/\d+/g, '#').slice(0, 160)}`;
     }
 
     function scheduleContradictoryRetests() {
@@ -5699,7 +5867,11 @@
           continue;
         }
         if (automaticRetestSignatures.get(rowKey) === signature || inflightTests.has(rowKey)) continue;
+        // The cooldown is what bounds the chase: without it, a row whose test keeps
+        // disagreeing with its probes is re-tested as fast as the poll re-renders.
+        if (Date.now() - (automaticRetestAt.get(rowKey) || 0) < AUTOMATIC_RETEST_COOLDOWN_MS) continue;
         automaticRetestSignatures.set(rowKey, signature);
+        automaticRetestAt.set(rowKey, Date.now());
         const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
         const button = row?.querySelector('.test-btn:not([disabled])');
         if (button) testModelButton(button, { rowKey, providerKey: m.providerKey, modelId: m.modelId });
@@ -5945,34 +6117,9 @@
       fetchData().catch(() => {});
     }
 
-    // Epoch-ms reset time: from the most recent test response first, otherwise
-    // a reset captured by the proxy path (retryDelay/x-ratelimit headers).
-    // A row is rate-limited when the provider said so — whether that arrived as
-    // a 429 status, a text-only limit body, or the dedicated 'rate-limited'
-    // probe status. Detection is deliberately independent of any reset timing,
-    // because many gateways ("Rate limit exceeded. Please try again later.")
-    // refuse to say when the window reopens.
-    function isRateLimitedRow(m) {
-      if (!m) return false;
-      if (String(m.status || '').toLowerCase() === 'rate-limited') return true;
-      if (m.rateLimit && m.rateLimit.wasRateLimited === true) return true;
-      if (Number(m.lastResponse?.status) === 429) return true;
-      const errorText = String(m.lastResponse?.error || '');
-      let bodyCode = null;
-      try {
-        const parsed = JSON.parse(errorText);
-        const bodyError = Array.isArray(parsed) ? parsed[0]?.error : parsed?.error;
-        bodyCode = Number(bodyError?.code);
-      } catch {
-        // The persisted error may be plain text rather than JSON.
-      }
-      const bodyRateLimited = bodyCode === 429
-        || /resource_exhausted|quota exceeded|rate limit exceeded|too many requests/i.test(errorText);
-      return bodyRateLimited;
-    }
-
-    function getRateLimitResetAt(m) {
-      const errorText = String(m?.lastResponse?.error || '');
+    // The provider's own reset header inside a JSON error body, when it names one.
+    function rateLimitResetFromBody(errorText) {
+      if (!errorText) return null;
       let bodyError = null;
       try {
         const parsed = JSON.parse(errorText);
@@ -5980,46 +6127,96 @@
       } catch {
         // The persisted error may be plain text rather than JSON.
       }
-      const limited = isRateLimitedRow(m)
-        || (m?.rateLimit?.creditLimit > 0 && m?.rateLimit?.creditRemaining != null && m.rateLimit.creditRemaining <= 0);
-      if (!limited) return null;
       const bodyReset = bodyError?.metadata?.headers?.['X-RateLimit-Reset']
         ?? bodyError?.metadata?.headers?.['x-ratelimit-reset']
         ?? bodyError?.headers?.['X-RateLimit-Reset']
         ?? bodyError?.headers?.['x-ratelimit-reset'];
-      const parsedBodyReset = Number(bodyReset);
-      const bodyResetAt = Number.isFinite(parsedBodyReset) && parsedBodyReset > 0
-        ? Math.round(parsedBodyReset >= 1e12 ? parsedBodyReset : parsedBodyReset * 1000)
-        : null;
-      const now = Date.now();
-      const values = [
-        m?.lastResponse?.rateLimitResetAt,
-        bodyResetAt,
-        m?.rateLimit?.resetRequestsAt,
-        m?.rateLimit?.resetTokensAt,
-        m?.rateLimit?.creditResetAt,
-      ];
-      const future = values
-        .map(Number)
-        .filter(value => Number.isFinite(value) && value > now);
-      if (future.length > 0) return Math.max(...future);
+      const parsedReset = Number(bodyReset);
+      if (!Number.isFinite(parsedReset) || parsedReset <= 0) return null;
+      return Math.round(parsedReset >= 1e12 ? parsedReset : parsedReset * 1000);
+    }
 
-      // Older persisted test responses may contain the provider's retry delay
-      // but predate rateLimitResetAt. Recover the countdown from that diagnostic
-      // instead of displaying a misleading plain Down status — but only while the
-      // window it describes is still open. A "retry in 12s" from a test that ran an
-      // hour ago describes a window that closed long ago; returning it printed a clock
-      // stuck at 00:00, which the second-by-second ticker then degraded into a bare
-      // 'rate-limited' word beside a red dot. A window that has passed is not a reset
-      // time: return null and let the cell say what it actually knows.
-      if (limited) {
-        const retry = errorText.match(/(?:please\s+)?retry\s+in\s+(\d+(?:\.\d+)?)\s*s/i);
-        const delayMs = retry ? Number(retry[1]) * 1000 : 0;
-        const responseAt = Number(m?.lastResponse?.at) || now;
-        const recovered = responseAt + delayMs;
-        if (delayMs > 0 && Number.isFinite(responseAt) && recovered > now) return recovered;
+    // The window a *test response* describes, when that response is itself the rate
+    // limit statement — a 429 status, or a quota/limit body (Google's
+    // RESOURCE_EXHAUSTED, "quota exceeded", Anthropic's FreeUsageLimitError, ...).
+    //
+    // `until` is when that claim stops being live evidence: the reset the response
+    // carries, the "retry in Ns" it states, or — when the provider names no window at
+    // all, which many of them refuse to do — the same short grace the server applies
+    // before it clears its own flag. Returns null when the response is not a rate-limit
+    // statement in the first place.
+    function testRateLimitWindow(m) {
+      const lr = m && m.lastResponse;
+      if (!lr) return null;
+      const errorText = String(lr.error || '');
+      const statusIs429 = Number(lr.status) === 429;
+      const textSaysLimited = /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errorText);
+      if (!statusIs429 && !textSaysLimited) return null;
+      const at = Number(lr.at);
+      const atMs = Number.isFinite(at) && at > 0 ? at : Date.now();
+      const stated = [Number(lr.rateLimitResetAt), rateLimitResetFromBody(errorText)]
+        .filter(value => Number.isFinite(value) && value > 0);
+      if (stated.length > 0) {
+        const resetAt = Math.max(...stated);
+        return { until: resetAt, resetAt };
       }
-      return null;
+      // Older persisted responses predate rateLimitResetAt but still carry the
+      // provider's own retry delay, which names the window just as well.
+      const retry = errorText.match(/(?:please\s+)?retry\s+in\s+(\d+(?:\.\d+)?)\s*s/i);
+      if (retry) {
+        const until = atMs + Number(retry[1]) * 1000;
+        return { until, resetAt: until };
+      }
+      return { until: atMs + RATE_LIMIT_UNSTATED_GRACE_MS, resetAt: null };
+    }
+
+    // Whether a row is benched on a provider window or quota — and until when that is
+    // still a live verdict. Two sources say it, and they expire differently:
+    //
+    //   - the server's own flags (`status: 'rate-limited'`, `isRateLimited`,
+    //     `rateLimit.wasRateLimited`, exhausted credits) are cleared by its own ping
+    //     cycle, so they are taken as given rather than second-guessed here;
+    //   - a test response is the dashboard's evidence, so its window has to be read off
+    //     the response (see testRateLimitWindow). Once that window closes, the test
+    //     output is history, not a verdict: the row goes back to what its probes say,
+    //     exactly as the router does with the same evidence.
+    function rateLimitEvidence(m) {
+      if (!m) return { limited: false, resetAt: null };
+      const now = Date.now();
+      const status = String(m.status || '').toLowerCase();
+      const creditExhausted = Number(m.rateLimit?.creditLimit) > 0
+        && m.rateLimit?.creditRemaining != null && Number(m.rateLimit.creditRemaining) <= 0;
+      const serverSaysLimited = m.isRateLimited === true
+        || status === 'rate-limited'
+        || m.rateLimit?.wasRateLimited === true
+        || creditExhausted;
+      const window = testRateLimitWindow(m);
+      const liveWindow = window && window.until > now ? window : null;
+      if (!serverSaysLimited && !liveWindow) return { limited: false, resetAt: null };
+      const stated = [
+        m.lastResponse?.rateLimitResetAt,
+        rateLimitResetFromBody(String(m.lastResponse?.error || '')),
+        m.rateLimit?.resetRequestsAt,
+        m.rateLimit?.resetTokensAt,
+        m.rateLimit?.creditResetAt,
+      ].map(Number).filter(value => Number.isFinite(value) && value > now);
+      const statedReset = stated.length > 0 ? Math.max(...stated) : null;
+      // A countdown only when something actually states when the window reopens;
+      // otherwise the cell shows the bare clock rather than a clock stuck at 00:00.
+      return {
+        limited: true,
+        resetAt: statedReset != null ? statedReset : (liveWindow ? liveWindow.resetAt : null),
+      };
+    }
+
+    function isRateLimitedRow(m) {
+      return rateLimitEvidence(m).limited;
+    }
+
+    // Epoch-ms reset time for the countdown, or null when the row is benched but the
+    // provider withheld when the window reopens.
+    function getRateLimitResetAt(m) {
+      return rateLimitEvidence(m).resetAt;
     }
 
     // Human-ish label for a quota failure, e.g. "generate quotum: 20" ->
@@ -6076,159 +6273,64 @@
       return null;
     }
 
-    // The status-cell indicator: a colored dot for most states, but a clock emoji
-    // for 'timeout' — the probe simply didn't answer in time, which reads better as
-    // a waiting clock than as a hard failure's red dot.
-    function statusIndicatorHTML(m, dotColor, title = '') {
-      const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
-      if (m.status === 'timeout') {
-        return `<span${titleAttr}>🕑</span>`;
-      }
-      return `<span style="width: 6px; height: 6px; border-radius: 50%; background: ${dotColor}; display: inline-block; vertical-align: middle;"${titleAttr}></span>`;
-    }
-
     // A dot already reads as up (green) or down (red), so those two words are
     // dropped next to it and the dot carries them as a tooltip instead. The other
-    // states keep their label because it says something the color can't.
-    function plainStatusLabel(m, isUp) {
-      if (isUp || m.status === 'down') return '';
-      return m.status === 'noauth' ? 'No Auth' : m.status;
+    // states keep their label because it says something the colour cannot — including
+    // 'pending', which the bare red dot would otherwise leave unnamed.
+    function plainStatusLabel(kind) {
+      if (kind === 'up' || kind === 'down') return '';
+      return kind === 'noauth' ? 'No Auth' : verdictLabel(kind);
     }
 
     // Title for a bare status dot, so the hidden word is still available on hover.
-    function plainStatusTitle(m, isUp) {
-      return isUp ? 'Up' : (m.status === 'noauth' ? 'No Auth' : m.status);
+    function plainStatusTitle(kind) {
+      return kind === 'up' ? 'Up' : verdictLabel(kind);
     }
 
-    // Builds the status cell: dot + status text, or — when the most recent test
-    // response carried a rate-limit reset time still in the future — just the clock
-    // + countdown; a payment-required result shows a dollar icon + 'Paid' instead.
-    // The status text is suppressed while these special states show, so 'down'
-    // never sits next to them; the plain status is restored when they clear.
-    function statusCellHTML(m) {
-      // A clean Ready lastResponse means the model is up — the last real request is
-      // authoritative over whatever stale status the ping cycle says.
-      const effectiveUp = isRowUp(m);
-      const dotColor = effectiveUp ? 'var(--success)'
-        : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
-        : 'var(--error)';
-      // Payment required (402 from a test or probe): dollar icon + 'Paid', persists via lastResponse
-      if (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)) {
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>
-            </div>`;
+    // The states a status cell spells out rather than leaving to a dot's colour, because
+    // they say something the colour cannot. Returns the cell's inner markup, or null for
+    // the ordinary up / down / no-auth rows that the dot alone describes.
+    function specialStatusHTML(m, kind) {
+      if (kind === 'paid') {
+        return '<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>';
       }
-      // Model can't accept text chat (audio/image/video only): 'Incompatible' so it
-      // moves to the unavailable list rather than reading as a plain 'Down'.
-      if ((m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible') {
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>
-            </div>`;
+      if (kind === 'incompatible') {
+        return '<span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>';
       }
-      // Context bounded at ≤16k by a provider-stated limit: 'Micro' so it reads as
-      // unusable rather than a plain 'Down'. Bounds inferred from failed prompt sizes
-      // never reach here, so this always names evidence the provider actually stated.
-      if (m.microContext === true) {
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="color: var(--text-muted);" title="${escapeHtml(microContextTitle(m))}">Micro</span>
-            </div>`;
-      }
-      // Model is gone (410 Gone / end-of-life): persistent 'Dead' status, not 'Down'
-      if ((m.lastResponse && m.lastResponse.dead === true) || m.status === 'dead') {
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--error)"></span>
-              <span style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase;">Dead</span>
-            </div>`;
-      }
-      const resetAt = getRateLimitResetAt(m);
-      if (resetAt != null) {
-        const quota = quotaLabel(m);
-        const title = `Rate limited — ${quota ? `${quota} — ` : ''}resets ${formatClockTime(resetAt)}`;
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span class="rl-countdown" data-reset-at="${resetAt}" data-provider-key="${escapeAttr(m.providerKey || '')}" data-model-id="${escapeAttr(m.modelId || '')}" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>
-            </div>`;
-      }
-      // Rate limited but the provider withheld a reset time: still a clock
-      // status, never a red 'Down'.
-      if (isRateLimitedRow(m)) {
-        const quota = quotaLabel(m);
-        const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
-        return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span style="color: var(--warning);" title="${escapeHtml(title)}">🕑 Rate limited</span>
-            </div>`;
-      }
-      const statusLabel = plainStatusLabel(m, effectiveUp);
-      return `
-            <div style="display: flex; align-items: center; gap: 6px;">
-              ${statusIndicatorHTML(m, dotColor, plainStatusTitle(m, effectiveUp))}
-              ${statusLabel ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(statusLabel)}</span>` : ''}
-            </div>`;
-    }
-
-    // Combined Status + Response column — one cell that picks the most useful
-    // thing to show. Priority: paid/dead status → rate-limit countdown → test
-    // response text → plain status dot + label.
-    function combinedStatusCellHTML(m) {
-      const currentStatus = String(m.status || '').toLowerCase();
-      const isUp = isRowUp(m);
-      // Paid: show dollar icon + 'Paid'
-      if (m.lastResponse && m.lastResponse.paymentRequired === true && !isUp || m.status === 'paid' && !isUp) {
-        return `<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>`;
-      }
-      // Incompatible: model can't accept text chat (audio/image/video only)
-      if ((m.lastResponse && m.lastResponse.incompatible === true && !isUp) || currentStatus === 'incompatible') {
-        return `<span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>`;
-      }
-      // Micro: context bounded at ≤16k by a provider-stated limit
-      if (m.microContext === true && !isUp) {
+      if (kind === 'micro') {
         return `<span style="color: var(--text-muted);" title="${escapeHtml(microContextTitle(m))}">Micro</span>`;
       }
-      // Dead: show red dot + 'DEAD'
-      if ((m.lastResponse && m.lastResponse.dead === true && !isUp) || currentStatus === 'dead') {
+      if (kind === 'dead') {
         return `<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--error); display: inline-block; vertical-align: middle;"></span>
-          <span style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase; vertical-align: middle;">Dead</span>`;
+              <span style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase;">Dead</span>`;
       }
-      // Rate-limited: show countdown
-      const resetAt = getRateLimitResetAt(m);
-      if (resetAt != null) {
+      if (kind === 'rate-limited') {
         const quota = quotaLabel(m);
-        const title = `Rate limited — ${quota ? `${quota} — ` : ''}resets ${formatClockTime(resetAt)}`;
-        return `<span class="rl-countdown" data-reset-at="${resetAt}" data-provider-key="${escapeAttr(m.providerKey || '')}" data-model-id="${escapeAttr(m.modelId || '')}" style="display:inline-flex;align-items:center;gap:6px;" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>`;
-      }
-      // Rate limited with no reset time supplied: clock status, not 'Down'.
-      if (isRateLimitedRow(m)) {
-        const quota = quotaLabel(m);
-        const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
-        return `<span style="color: var(--warning); display:inline-flex;align-items:center;gap:6px;" title="${escapeHtml(title)}">🕑 Rate limited</span>`;
-      }
-      // Test response exists? Show it
-      const hasAuth = m.status !== 'noauth';
-      if (hasAuth && m.lastResponse) {
-        const expired = m.lastResponse.expiresAt != null && Date.now() > Number(m.lastResponse.expiresAt);
-        if (!expired && (m.lastResponse.text != null || m.lastResponse.error != null)) {
-          const r = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: true, status: m.status });
-          // If responseCellHTML returned something non-empty, use it
-          if (r && r !== '<div class="test-cell"></div>') return r;
+        const resetAt = getRateLimitResetAt(m);
+        if (resetAt != null) {
+          const title = `Rate limited — ${quota ? `${quota} — ` : ''}resets ${formatClockTime(resetAt)}`;
+          return `<span class="rl-countdown" data-reset-at="${resetAt}" data-provider-key="${escapeAttr(m.providerKey || '')}" data-model-id="${escapeAttr(m.modelId || '')}" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>`;
         }
+        const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
+        return `<span style="color: var(--warning);" title="${escapeHtml(title)}">🕑 Rate limited</span>`;
       }
-      // Fall back to plain status dot + label
-      const dotColor = m.status === 'up' ? 'var(--success)'
-        : (m.status === 'disabled' || m.status === 'banned' || m.status === 'excluded') ? 'var(--text-muted)'
-        : 'var(--error)';
-      const statusLabel = plainStatusLabel(m, isUp);
-      const errorText = m.lastError?.message ? String(m.lastError.message) : '';
-      const statusTitle = errorText ? `HTTP ${m.lastError.code || m.httpCode || '?'} — ${errorText}` : plainStatusTitle(m, isUp);
-      const errorHtml = errorText && currentStatus !== 'up'
-        ? `${statusLabel ? ' · ' : ''}<span style="color:var(--text-muted);">${escapeHtml(errorText)}</span>`
-        : '';
-      return `${statusIndicatorHTML(m, dotColor, statusTitle)}
-        ${statusLabel || errorHtml ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize; vertical-align: middle;"${statusTitle ? ` title="${escapeAttr(statusTitle)}"` : ''}>${escapeHtml(statusLabel)}${errorHtml}</span>` : ''}`;
+      return null;
+    }
+
+    // Builds the status cell from the row's one verdict: the special states spelled out,
+    // otherwise the indicator plus a label for the kinds whose colour is not the whole
+    // story. Every render path calls this, so the cell cannot drift between them.
+    function statusCellHTML(m) {
+      const kind = rowVerdict(m);
+      const special = specialStatusHTML(m, kind);
+      const label = plainStatusLabel(kind);
+      const inner = special != null
+        ? special
+        : `${verdictIndicatorHTML(kind, plainStatusTitle(kind))}${label ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(label)}</span>` : ''}`;
+      return `
+            <div style="display: flex; align-items: center; gap: 6px;">
+              ${inner}
+            </div>`;
     }
 
     // Runs once per second: ticks rate-limit countdowns, restores plain status on
@@ -6338,26 +6440,19 @@
     }
 
     // Rows whose model is paid-walled, dead, incompatible, micro-context-bounded,
-    // or missing authentication get every cell struck through in Unavailable.
+    // or missing authentication get every cell struck through in Unavailable. The set
+    // comes from the row verdict, so the strike-through and the status indicator name
+    // the same cause by construction instead of by two hand-synced condition lists.
     function isRowStruck(m) {
-      return (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true))
-        || (m.lastResponse && m.lastResponse.dead === true)
-        || m.status === 'dead'
-        || (m.lastResponse && m.lastResponse.incompatible === true)
-        || m.status === 'incompatible'
-        || m.microContext === true
-        || m.status === 'noauth';
+      return STRUCK_VERDICTS.has(rowVerdict(m));
     }
 
-    // The single reason a provider row is unavailable, for the graveyard's Status
-    // cell. Checked in the same order as isRowStruck so the two agree on the cause.
+    // The single reason a provider row is unavailable, for the graveyard's Status cell —
+    // the same verdict the strike-through is drawn from.
     function unavailableReasonLabel(m) {
-      if (m.status === 'paid' || (m.lastResponse && m.lastResponse.paymentRequired === true)) return 'Paid';
-      if ((m.lastResponse && m.lastResponse.dead === true) || m.status === 'dead') return 'Dead';
-      if ((m.lastResponse && m.lastResponse.incompatible === true) || m.status === 'incompatible') return 'Incompatible';
-      if (m.microContext === true) return 'Micro';
-      if (m.status === 'noauth') return 'No Auth';
-      return m.status ? m.status.charAt(0).toUpperCase() + m.status.slice(1) : 'Unavailable';
+      const kind = rowVerdict(m);
+      if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return verdictLabel(kind);
+      return 'Unavailable';
     }
 
     // Split display groups into the main table (usable rows only) and the
@@ -6479,7 +6574,7 @@
       const statusText = unavailableReasonLabel(first);
       const hasAuth = members.some(m => m.status !== 'noauth');
 
-      const lastResponse = groupLastResponse(members);
+      const lastResponse = groupLastResponse(members, { allowStale: true });
 
       return `
           <td style="cursor:pointer;">
@@ -6532,7 +6627,7 @@
             <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
               <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
                 ${hasPing
-          ? `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${m.status === 'up' && m.isRateLimited ? ' 🕑' : ''}</div>`
+          ? `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${isRateLimitedRow(m) ? ' 🕑' : ''}</div>`
           : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
               </div>
             </div>
@@ -7481,12 +7576,6 @@
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
                 </div>
-                <div style="display:flex; align-items:center; gap:10px;">
-                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
-                    Enabled
-                  </label>
-                </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Connect Kiro with AWS Builder ID device authorization, import a token from the AWS SSO cache, or paste a refresh token manually.</div>
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
@@ -7564,12 +7653,6 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
-                </div>
-                <div style="display:flex; align-items:center; gap:10px;">
-                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
-                    Enabled
-                  </label>
                 </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the GitHub account that has Copilot. Hammer stores the resulting GitHub token locally and uses it as the Copilot credential — model traffic is billed against that account's Copilot plan, with no per-token cost.</div>
@@ -7650,12 +7733,6 @@
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
                 </div>
-                <div style="display:flex; align-items:center; gap:10px;">
-                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
-                    Enabled
-                  </label>
-                </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing.</div>
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
@@ -7720,12 +7797,6 @@
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
                 </div>
-                <div style="display:flex; align-items:center; gap:10px;">
-                  <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                    <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
-                    Enabled
-                  </label>
-                </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with your Cognition (Devin) account — the same browser flow the Devin CLI uses. Hammer stores the session token locally and uses it for the swe-1.6 / swe-1.5 models.</div>
               ${devinFlowHtml}
@@ -7753,12 +7824,6 @@
                   </svg>
                   <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                 </button>
-              </div>
-              <div style="display:flex; align-items:center; gap:10px;">
-                <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; cursor:pointer;">
-                  <input type="checkbox" id="enable-${p.key}" ${p.enabled ? 'checked' : ''} onchange="updateProvider(${jsStringAttr(p.key)})">
-                  Enabled
-                </label>
               </div>
             </div>
             <div class="form-group" style="display:flex; gap:8px; align-items:center;">
@@ -7796,16 +7861,6 @@
         });
         restoreInputState();
       } catch (err) { console.error(err); }
-    }
-
-    async function updateProvider(key) {
-      const enabled = document.getElementById(`enable-${key}`).checked;
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providerKey: key, enabled })
-      });
-      scheduleKeySaveRefetch();
     }
 
     // Saving a provider key/enable state makes the server refresh that

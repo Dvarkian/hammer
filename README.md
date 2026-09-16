@@ -346,7 +346,7 @@ hammer supports configuring multiple OpenAI-compatible upstream endpoints (vLLM,
 ### Config migration (CLI + Web UI)
 
 - In the Web UI, open `Settings` -> `Configuration Transfer` to export/copy/import a token.
-- The token includes your full config (including API keys, provider toggles, pinning mode, bans, filter rules, and auto-update settings).
+- The token includes your full config (including API keys, pinning mode, bans, filter rules, and auto-update settings).
 - Treat tokens as secrets. Anyone with the token can import your keys/settings.
 - Alternative: copy the config file directly from `~/.hammer.json` to the other machine at the same path (`~/.hammer.json`).
 
