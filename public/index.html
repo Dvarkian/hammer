@@ -5162,9 +5162,17 @@
           : `Nothing can serve right now — ${verdictLabel(groupKind).toLowerCase()} (${s.upCount}/${members.length} up)`);
       // Multi-provider groups show only the indicator here: the up/total count sits under
       // the model name, so the two numbers read together instead of competing with it.
+      // A provider outage is a provider-level fact, so the heading carries it as well: the rows
+      // under it keep their own verdicts, and this is where a user sees that the router is
+      // deliberately looking elsewhere. A single-provider heading gets it through
+      // statusCellHTML(), which reads the same fields.
+      const groupOutageTitle = members
+        .map(member => providerOutageTitle(member))
+        .filter(Boolean)
+        .join(' \u00b7 ');
       const groupStatusHtml = members.length === 1
         ? statusCellHTML(first)
-        : `<div style="display: flex; align-items: center; gap: 6px;">${verdictIndicatorHTML(groupKind, groupStatusText)}</div>`;
+        : `<div style="display: flex; align-items: center; gap: 6px;">${verdictIndicatorHTML(groupKind, groupOutageTitle ? `${groupStatusText} \u00b7 ${groupOutageTitle}` : groupStatusText)}</div>`;
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
@@ -6067,7 +6075,10 @@
           }
           const job = data.job;
           const btn = document.getElementById('rerun-tests-btn');
-          if (job.status === 'done' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled') {
+          // 'interrupted' is what the server writes when it restarted mid-job. The work is gone
+          // server-side, so this has to end the poll instead of spinning forever on a job that can
+          // never advance (the restart-under-an-open-tab case).
+          if (job.status === 'done' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted') {
             finishRerun(job.status);
           } else {
             // Update button to show progress
@@ -6098,6 +6109,9 @@
         } else if (status === 'cancelled') {
           btn.textContent = '&#x21bb; Cancelled';
           btn.style.background = 'var(--text-muted)';
+        } else if (status === 'interrupted') {
+          btn.textContent = '\u26a0\ufe0f Interrupted';
+          btn.style.background = 'var(--warning)';
         } else {
           btn.textContent = '↻ Rerun Tests';
           btn.style.background = 'var(--success)';
@@ -6317,6 +6331,22 @@
       return null;
     }
 
+    // Why a row is not the one answering, said in the cell that already carries the row's own
+    // verdict. Those are two different questions: a provider the outage ledger has benched leaves
+    // the model's probe verdict alone — the model may well be fine — while requests go elsewhere
+    // until it answers again (see providerBenched / providerOutage in /api/models).
+    function providerOutageTitle(m) {
+      const outage = m && m.providerOutage;
+      if (!m || m.providerBenched !== true || !outage) return '';
+      const parts = [`Provider outage - ${Number(outage.consecutive) || 0} failed attempts`];
+      const models = Number(outage.distinctModels) || 0;
+      if (models > 0) parts.push(`across ${models} model${models === 1 ? '' : 's'}`);
+      const until = Number(outage.until);
+      if (Number.isFinite(until) && until > 0) parts.push(`retrying ${formatClockTime(until)}`);
+      if (outage.reason) parts.push(String(outage.reason));
+      return parts.join(' · ');
+    }
+
     // Builds the status cell from the row's one verdict: the special states spelled out,
     // otherwise the indicator plus a label for the kinds whose colour is not the whole
     // story. Every render path calls this, so the cell cannot drift between them.
@@ -6327,8 +6357,9 @@
       const inner = special != null
         ? special
         : `${verdictIndicatorHTML(kind, plainStatusTitle(kind))}${label ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(label)}</span>` : ''}`;
+      const outageTitle = providerOutageTitle(m);
       return `
-            <div style="display: flex; align-items: center; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 6px;"${outageTitle ? ` title="${escapeAttr(outageTitle)}"` : ''}>
               ${inner}
             </div>`;
     }
