@@ -219,11 +219,21 @@ Naming a model doesn't guarantee it can fit your prompt — the same model group
 
 Hammer uses context data reported by the selected provider when it is available. Otherwise, it uses a provider-specific curated value from `sources.js`. It does not copy a context size between providers. It also keeps the context unknown when neither source has a value. For Ollama, the allocated or configured context is usable for this filter. The model maximum alone is not sufficient.
 
+### Learned context bounds
+
+Besides the two sources above, hammer learns bounds from real requests: a successful request raises a lower bound, and a rejection that is genuinely about context lowers an upper bound. Only a provider-stated ceiling may become an *exact* bound, and only an exact bound may override the catalog or mark a row `Micro` in the dashboard. Throughput quotas ("…on output tokens per minute (OTPM): Limit 1000, Requested 1413") and output-token caps ("`max_tokens` must be less than or equal to `8192`") are refused: they describe this request's budget, not the model's window. A bound inferred from the size of a failed prompt is shown as a range (`>22, <1649`) and never benches a row.
+
+Every bound keeps the error body it was read from, and is re-checked against the current rules on startup, so a parser fix withdraws the numbers an older build wrote. To withdraw one by hand, use **🧹 Clear learned context** in a model's drawer, `hammer context reset [--provider <key>] [--model <id>]`, or `POST /api/context-bounds/reset` with `{providerKey, modelId}`.
+
+### Learned output caps
+
+An output-token cap is refused as a context window, but it is not ignored: it is a fact about the model that the router needs to serve it at all. Groq answers "`max_tokens` must be less than or equal to `16384`, the maximum value for `max_tokens` is less than the `context_window` for this model" to every request above that ceiling, so the cap is learned per provider/model row and the **same** model is asked again with a legal budget instead of failing over — the row then serves instead of quietly handing every turn to another provider. The cap is stored with its error body, re-checked against the current rules on startup exactly like a context bound, and only ever applied downwards: a request already inside the ceiling is sent untouched, a model with no stated cap keeps the caller's full budget, and automated tests learn the ceiling too so a row tested before it is proxied starts out legal.
+
 ### Routing selection
 
 The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one derived where AA has no rating for a model: interpolated from its Elo (LMArena, or Design Arena for catalog entries), or, when there is no Elo either, calibrated from the curated offline score against the models that carry both. Every derived index is marked `*` in the dashboard. Rows with none of those fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
 
-Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target is configurable in the Web UI under **Settings → QoS Latency Target (ms)** (default: 3000ms).
+Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target defaults to 3000ms and can be tuned per deployment via the `qosLatencyTargetMs` key in `~/.hammer.json`.
 
 ## Config
 

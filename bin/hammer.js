@@ -4,7 +4,10 @@
  * @description Web dashboard and OpenAI-compatible router for coding LLM models.
  */
 
-import { parseArgs } from '../lib/utils.js'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { parseArgs, clearContextBound, parseUsageStatKey } from '../lib/utils.js'
 import { loadConfig, saveConfig, exportConfigToken, importConfigToken } from '../lib/config.js'
 import { runOnboard } from '../lib/onboard.js'
 import { getAutostartStatus, installAutostart, startAutostart, stopAutostart, uninstallAutostart } from '../lib/autostart.js'
@@ -35,6 +38,7 @@ function printHelp() {
   console.log('  hammer config set-maxturns <provider> 0')
   console.log('  hammer autoupdate [--enable|--disable|--status] [--interval <hours>]')
   console.log('  hammer autostart [--install|--start|--uninstall|--status]')
+  console.log('  hammer context reset [--provider <key>] [--model <id>]')
   console.log('')
   console.log('Flags:')
   console.log('  --port <number>    Router HTTP port (default: 7352)')
@@ -143,6 +147,72 @@ function runAutostartAction(action) {
   return getAutostartStatus()
 }
 
+// Drops learned context bounds (see the context-observation rules in lib/utils.js),
+// either through the running router or, when nothing is listening, in the persisted
+// stats file. A bound is a conclusion drawn from one error body; the user needs a way
+// to withdraw one without editing ~/.hammer-usage.json by hand.
+async function runContextReset(cliArgs) {
+  const providerKey = cliArgs.contextProvider || null
+  const modelId = cliArgs.contextModel || null
+  const scope = [providerKey ? `provider ${providerKey}` : null, modelId ? `model ${modelId}` : null]
+    .filter(Boolean).join(', ')
+
+  // The running router owns the in-memory copy of these bounds and would write it back
+  // on its next save, so ask it first.
+  try {
+    const response = await fetch(`http://127.0.0.1:${cliArgs.portValue || 7352}/api/context-bounds/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerKey, modelId }),
+    })
+    if (response.ok) {
+      const body = await response.json().catch(() => ({}))
+      const count = Array.isArray(body.cleared) ? body.cleared.length : 0
+      return { ok: true, message: `Cleared learned context bounds for ${count} row${count === 1 ? '' : 's'}${scope ? ` (${scope})` : ''}.` }
+    }
+    // 404 means the router is up but predates this endpoint. Editing the file behind its
+    // back would look like it worked and then be overwritten by the next save, so say so.
+    if (response.status === 404) {
+      return {
+        ok: false,
+        message: `The router on port ${cliArgs.portValue || 7352} is running a build without context-bound resets. Restart it, then run this again.`,
+      }
+    }
+    return { ok: false, message: `The router answered HTTP ${response.status} to the context reset.` }
+  } catch {
+    // No router on that port — fall through to the file.
+  }
+
+  const usagePath = join(homedir(), '.hammer-usage.json')
+  if (!existsSync(usagePath)) {
+    return { ok: true, message: 'No learned context bounds to clear (no usage stats file).' }
+  }
+  let stats
+  try {
+    stats = JSON.parse(readFileSync(usagePath, 'utf8'))
+  } catch (err) {
+    return { ok: false, message: `Could not read ${usagePath}: ${err?.message || err}` }
+  }
+
+  const cleared = []
+  for (const [key, entry] of Object.entries(stats && typeof stats === 'object' ? stats : {})) {
+    const next = clearContextBound(entry)
+    if (next === entry) continue
+    const row = parseUsageStatKey(key)
+    if (providerKey && row.providerKey !== providerKey) continue
+    if (modelId && row.modelId !== modelId) continue
+    stats[key] = next
+    cleared.push(key)
+  }
+  if (cleared.length > 0) {
+    writeFileSync(usagePath, JSON.stringify(stats, null, 2), { mode: 0o600 })
+  }
+  return {
+    ok: true,
+    message: `Cleared learned context bounds for ${cleared.length} row${cleared.length === 1 ? '' : 's'}${scope ? ` (${scope})` : ''}${cleared.length > 0 ? ` in ${usagePath}` : ''}.`,
+  }
+}
+
 async function main() {
   const cliArgs = parseArgs(process.argv)
 
@@ -209,6 +279,20 @@ async function main() {
       console.log(chalk.yellow(`Warning: ${failure.providerKey} discovery failed: ${failure.error}`));
     }
     return;
+  }
+
+  if (cliArgs.command === 'context') {
+    if (cliArgs.contextAction && cliArgs.contextAction !== 'reset') {
+      console.error(`Unknown context action: ${cliArgs.contextAction}. Use: hammer context reset [--provider <key>] [--model <id>]`)
+      process.exit(1)
+    }
+    const result = await runContextReset(cliArgs)
+    if (result.ok) {
+      console.log(result.message)
+      return
+    }
+    console.error(result.message)
+    process.exit(1)
   }
 
   if (cliArgs.command === 'config') {

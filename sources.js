@@ -63,6 +63,8 @@ export const MODEL_ID_ALIASES = {
   'kimi-k3': 'moonshotai/kimi-k3',
   'laguna-s-2.1-free': 'poolside/laguna-s-2.1',
   'ling-3.0-flash-free': 'inclusionai/ling-3.0-flash',
+  // OpenCode Zen's fin variant of the same InclusionAI model.
+  'ling-3.0-flash-fin-free': 'inclusionai/ling-3.0-flash',
   'poolside/laguna-s-2.1:free': 'poolside/laguna-s-2.1',
   'hy3-free': 'tencent/hy3',
   'inclusionai/ring-2.6-1t:free': 'inclusionai/ring-2.6-1t',
@@ -114,6 +116,7 @@ export const MODEL_ID_ALIASES = {
 export const MODEL_LABEL_OVERRIDES = {
   'deepseek-v3.1:671b': 'DeepSeek V3.1',
   'deepseek-v3.2': 'DeepSeek V3.2',
+  'deepseek-v4-flash-free': 'DeepSeek V4 Flash',
   'devstral-2:123b': 'Devstral 2 123B',
   'devstral-small-2': 'Devstral Small 2 24B',
   'devstral-small-2:24b': 'Devstral Small 2 24B',
@@ -160,6 +163,7 @@ export const MODEL_LABEL_OVERRIDES = {
   'ling-2.6-flash-free': 'Ling 2.6 Flash',
   'inclusionai/ling-3.0-flash': 'Ling 3.0 Flash',
   'ling-3.0-flash-free': 'Ling 3.0 Flash',
+  'ling-3.0-flash-fin-free': 'Ling 3.0 Flash Fin',
   'poolside/laguna-s-2.1': 'Laguna S 2.1',
   'laguna-s-2.1-free': 'Laguna S 2.1',
   'mimo-v2-flash-free': 'MiMo V2 Flash',
@@ -561,6 +565,12 @@ export const sources = {
       // raising this.
       ["zai-glm-4.7", "GLM 4.7", "8192"],
       ["llama3.1-8b", "Llama 3.1 8B", "128k"],
+      // What this catalog row advertises is not what this account can use. Verified live
+      // 2026-09-16: `qwen-3-235b-a22b-instruct-2507` answers 404 "Model does not exist or
+      // you do not have access to it.", and the discovered `qwen-3.8-27b` answers 402
+      // payment-required. The row is kept rather than deleted because keepStaticOnDiscovery
+      // would never put it back, and another account's tier can serve it; the dashboard
+      // reports the provider's own verdict (Dead / Paid) instead of pretending otherwise.
       ["qwen-3-235b-a22b-instruct-2507", "Qwen3 235B", "128k"],
       ["gpt-oss-120b", "GPT OSS 120B", "128k"]
     ]
