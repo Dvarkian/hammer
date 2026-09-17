@@ -1998,7 +1998,7 @@
                   id="arrow-ctx">↕</i></th>
               <th class="sortable" onclick="setSort('status')" id="th-status" title="Model health from pings and tests">Status <i class="sort-arrow"
                   id="arrow-status">↕</i></th>
-              <th title="Click Test to ask the model to respond with the word Ready; the full response (or error) is shown here">Response</th>
+              <th title="Click Test to ask the model for a short answer; the full response (or error) is shown here">Response</th>
             </tr>
           </thead>
           <tbody id="table-body">
@@ -2806,6 +2806,19 @@
       return provider ? `${name} · ${provider}` : name;
     }
 
+    // The answered length every dot is scored at, in output tokens. Mirrors
+    // SPEED_REFERENCE_TOKENS in lib/utils.js, and it is a copy only because the browser
+    // cannot import the server's module: the scatter and the router lower the *same* line
+    // onto the plot, and a line drawn from a different constant would highlight a row the
+    // router would not pick.
+    //
+    // One fixed reference for the whole table is what makes the score comparable at all:
+    // the same model answering a model test's short reply and a long chat turn has one
+    // prefill latency and one generation rate, but the *effective* rate between them
+    // depends on how long that answer happened to be. Scoring every row at this length
+    // makes the score a property of the row rather than of whoever measured it.
+    const SPEED_REFERENCE_TOKENS = 500;
+
     // One row per measurable model/provider combination, using the same
     // numbers behind the main table's Intelligence / TTFT / Tok-s columns.
     // Returns those rows plus how many primary-table rows had no speed to plot,
@@ -2822,15 +2835,15 @@
         const intellNum = (Number.isFinite(aaNum) && aaNum > 0) ? aaNum : Number(m.intell) * 100;
         const ttft = rowTtft(m);
         const tps = rowTps(m);
-        // The response length the speed is measured over: the row's mean answered length,
-        // or the single measured response when no average exists yet. A row that has
-        // never produced output has no length to divide by, so it has no speed.
+        // The row's own mean answered length. It is no longer what the score divides by
+        // (that is the fixed reference above) — it rides along for the tooltip, so the user
+        // can still see how much output the row's own numbers were measured over.
         const answeredTokens = rowSpeedTokens(m);
-        // A dot needs both axes: an honest position needs a rating and a speed.
+        // A dot needs both axes: an honest position needs a rating and a speed. The rate and
+        // the prefill latency are the measurements; the answer length is the reference.
         const plottable = Number.isFinite(intellNum) && intellNum > 0
           && ttft != null && Number.isFinite(ttft) && ttft >= 0
-          && tps != null && Number.isFinite(tps) && tps > 0
-          && answeredTokens != null && Number.isFinite(answeredTokens) && answeredTokens > 0;
+          && tps != null && Number.isFinite(tps) && tps > 0;
         if (!plottable) {
           // Count only rows the main table shows, so the number matches what the user
           // can count for themselves (graveyard rows are not omissions from the table).
@@ -2843,10 +2856,10 @@
           ttft,
           tps,
           tokens: answeredTokens,
-          // S = N / (TTFT + N/TPS) = N / total seconds, in tokens per second — the same
-          // expression lib/utils.js computeRowSpeed() gives the router, so the line the
-          // slider draws is the line the router lowers onto the plot.
-          speed: answeredTokens / (ttft / 1000 + answeredTokens / tps),
+          // S = R / (TTFT + R/TPS), in tokens per second, with R = SPEED_REFERENCE_TOKENS —
+          // the same expression lib/utils.js computeRowSpeed() gives the router, so the line
+          // the slider draws is the line the router lowers onto the plot.
+          speed: SPEED_REFERENCE_TOKENS / (ttft / 1000 + SPEED_REFERENCE_TOKENS / tps),
         });
       }
       rows.sort((a, b) => a.intell - b.intell);
@@ -2953,7 +2966,7 @@
       svg.appendChild(g);
       const info = svgEl('title', {});
       info.textContent = 'Each dot is one model/provider combination.\n' +
-        'x = speed = answered tokens / (TTFT + answered tokens / tok/s) — faster to the right\n' +
+        `x = speed = ${SPEED_REFERENCE_TOKENS} tokens / (TTFT + ${SPEED_REFERENCE_TOKENS} / tok/s) — every row scored at the same answer length, faster to the right\n` +
         'a dot marked ➤ is faster than the axis shows: its position is capped, its speed is not\n' +
         'y = Artificial Analysis Intelligence Index — smarter upward\n' +
         'Drag the edge lines to set minimums. Hover a dot for its numbers.';
@@ -2995,7 +3008,8 @@
         const offAxis = r.speed > axisLimit;
         title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}${r.m.personaModelId ? ` (catalog: ${r.m.personaModelId})` : ''}\n` +
           `intelligence ${fmtScatterIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · ` +
-          `${r.tokens} tokens answered · speed ${fmtScatterSpeed(r.speed)} tok/s` +
+          `speed ${fmtScatterSpeed(r.speed)} tok/s at a ${SPEED_REFERENCE_TOKENS}-token answer` +
+          (r.tokens != null ? ` (this row's own mean answer: ${r.tokens} tokens)` : '') +
           (offAxis ? `\nfaster than this axis shows — drawn at the edge ${'➤'}` : '');
         c.appendChild(title);
         svg.appendChild(c);
@@ -5550,7 +5564,7 @@
         ? { rowKey: opts.rowKey, members: opts.members.map(x => ({ providerKey: x.providerKey, modelId: x.modelId })) }
         : { rowKey: opts.rowKey, providerKey: opts.providerKey, modelId: opts.modelId };
       const btnArgs = JSON.stringify(args).replace(/"/g, '&quot;');
-      return `<button class="test-btn" onclick="event.stopPropagation(); testModelButton(this, ${btnArgs})" title="Send 'Respond with exactly the single word: Ready' to this model">Test</button>`;
+      return `<button class="test-btn" onclick="event.stopPropagation(); testModelButton(this, ${btnArgs})" title="Send 'Why does a hammer insist every screw is just a shy nail?' to this model">Test</button>`;
     }
 
     // Builds the Response cell: the Test button plus the latest response text.
@@ -5606,6 +5620,17 @@
       const reportedTokens = Number(lastResponse.tokens);
       if (!expired && Number.isFinite(reportedTokens) && reportedTokens > 0) {
         metaBits.push(`${reportedTokens} token${reportedTokens === 1 ? '' : 's'}`);
+      }
+      // An answer that arrived in one piece measures no first token and no generation rate
+      // (the server refuses to charge a whole response's duration to generation — see
+      // resolveStreamGenerationMs), so the row keeps whatever its real traffic measured and
+      // the only honest number left about this test is how long it took.
+      const durationMs = Number(lastResponse.durationMs);
+      if (!expired && lastResponse.tps == null && Number.isFinite(durationMs) && durationMs > 0) {
+        // A local endpoint can answer a non-streamed request in single-digit milliseconds, and
+        // the seconds formatter rounds that to "0.00s" — a label that reads as a broken number.
+        const shown = durationMs < 10 ? `${Math.round(durationMs)}ms` : formatSecondsFromMs(durationMs);
+        metaBits.push(`<span title="No generation rate was measured: this answer did not stream, so only the whole request time is known.">took ${shown}</span>`);
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -5820,9 +5845,10 @@
       return served && served.tps != null ? Number(served.tps) : null;
     }
 
-    // The response length the speed metric divides by, from the same basis the server
-    // used for rowTtft/rowTps: the row's mean answered length, else the length of the
-    // single measured response (rowSpeedTokens mirrors computeRowSpeed in lib/utils.js).
+    // The row's own mean answered length (else the length of its single measured response),
+    // from the same basis the server used for rowTtft/rowTps. It no longer feeds the speed
+    // score — that is scored at the fixed SPEED_REFERENCE_TOKENS on both sides — so this is
+    // context for the user (the tooltip), not a term in any formula.
     function rowSpeedTokens(m) {
       if (m && m.speedTokens != null) return Number(m.speedTokens);
       const served = servedResponse(m && m.lastResponse);
@@ -5901,9 +5927,9 @@
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
     }
 
-    // Handles a Test button click: asks the model to respond with the word Ready,
-    // writes the full response (or error) into the Response cell, then refreshes
-    // the table so TTFT / Tok/s / Context pick up the stats recorded from it.
+    // Handles a Test button click: asks the model for a short answer, writes the full
+    // response (or error) into the Response cell, then refreshes the table so TTFT /
+    // Tok/s / Context pick up the stats recorded from it.
     async function testModelButton(btn, opts) {
       const cell = btn.closest('td');
       const rowKey = opts && opts.rowKey;
@@ -5931,6 +5957,7 @@
           status: data.status != null ? data.status : (data.ok ? 200 : res.status || 0),
           at: Date.now(),
           ttftMs: data.ttftMs != null ? data.ttftMs : null,
+          durationMs: data.durationMs != null ? data.durationMs : null,
           tps: data.tps != null ? data.tps : null,
           tokens: data.tokens != null ? data.tokens : null,
           expiresAt: data.expiresAt != null ? data.expiresAt : null,
@@ -5968,6 +5995,7 @@
           status: 0,
           at: Date.now(),
           ttftMs: null,
+          durationMs: null,
           tps: null,
           tokens: null,
         }, opts);
