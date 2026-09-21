@@ -2356,6 +2356,14 @@
     // test with the same class of failure must not be re-tested every poll.
     const AUTOMATIC_RETEST_COOLDOWN_MS = 10 * 60_000;
     let automaticRetestAt = new Map();
+    // How long the dashboard waits for one Test before abandoning the request. The router spends
+    // up to three 60s attempts on a row — a provider-stated max_tokens cap and a reasoning-only
+    // answer each earn a re-ask (MAX_TEST_ATTEMPTS/TEST_TIMEOUT_MS in lib/server.js) — so this is
+    // deliberately longer than that worst case plus the provider transforms. Without it a stalled
+    // hop left the cell reading "⏳ Testing…" for as long as the socket stayed open: the result is
+    // written server-side either way, so the row is better off falling back to the button and
+    // picking the answer up on the next refresh than hanging with no way back.
+    const TEST_RESPONSE_TIMEOUT_MS = 210_000;
     let activePinnedModelId = null; // tracks the current pinned selection key
     let activePinnedProviderKey = null;
     let activePinnedRowKeys = []; // resolved pinned rows from server/client
@@ -5936,6 +5944,30 @@
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
     }
 
+    // Paints a Test outcome into its Response cell, for both the result and the failure path.
+    //
+    // A group heading owns no single answer: the click tested the best-ranked member, so that
+    // member's failure stays on its own row rather than being repeated as the heading's verdict —
+    // the cell names the provider that refused and points at the row that holds the detail. The
+    // rule lives here rather than in one of the two paths because it has to hold for every
+    // outcome: it used to be applied only to a result that arrived as a failure *with* an `ok`
+    // field, so a silent answer (which the server now reports as a failure too) went down the
+    // other branch and printed "Model returned no text." on the heading.
+    function paintTestResult(cell, lastResponse, opts, data) {
+      const members = opts && opts.members;
+      const groupError = members && members.length > 1 && lastResponse && lastResponse.error
+        ? lastResponse.error
+        : null;
+      if (!groupError) {
+        cell.innerHTML = responseCellHTML(lastResponse, opts);
+        return;
+      }
+      const failedRow = allModels.find(mm => mm.providerKey === (data && data.providerKey)
+        && mm.modelId === (data && data.modelId));
+      const label = failedRow?.label || (data && data.providerKey) || 'a provider';
+      cell.innerHTML = `${responseCellHTML(null, opts)}<div class="test-meta" title="${escapeAttr(groupError)}">⚠︎ ${escapeHtml(label)} refused — see its row</div>`;
+    }
+
     // Handles a Test button click: asks the model for a short answer, writes the full
     // response (or error) into the Response cell, then refreshes the table so TTFT /
     // Tok/s / Context pick up the stats recorded from it.
@@ -5950,6 +5982,7 @@
         const res = await fetch('/api/test-model', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(TEST_RESPONSE_TIMEOUT_MS),
           body: JSON.stringify(opts.members && opts.members.length > 0
             ? { members: opts.members }
             : { providerKey: opts.providerKey, modelId: opts.modelId }),
@@ -5990,21 +6023,22 @@
         // successful model test. Keep the diagnostic visible instead of
         // immediately replacing it with the next polling refresh.
         if (!res.ok || data.ok === false) {
-          cell.innerHTML = responseCellHTML(lastResponse, opts);
+          paintTestResult(cell, lastResponse, opts, data);
           return;
         }
         refreshAfterTest = true;
-        // Errors from a group test never propagate to the heading row; leave the
-        // Response cell's Test button there and keep the error on the provider row.
-        const isGroupTest = opts && opts.members && opts.members.length > 0;
-        const hideGroupError = isGroupTest && opts.members.length > 1 && lastResponse.error;
-        cell.innerHTML = hideGroupError
-          ? responseCellHTML(null, opts)
-          : responseCellHTML(lastResponse, opts);
+        paintTestResult(cell, lastResponse, opts, data);
       } catch (err) {
+        // A click that the browser abandoned still completed (or will complete) server-side, and
+        // its result is in the record the next refresh reads — so this says what happened rather
+        // than presenting the timeout as the model's verdict.
+        const aborted = err?.name === 'TimeoutError' || err?.name === 'AbortError';
+        const message = aborted
+          ? `No answer within ${Math.round(TEST_RESPONSE_TIMEOUT_MS / 1000)}s. The router may still be testing this row — its result appears on the next refresh.`
+          : (err?.message || 'Network error');
         cell.innerHTML = responseCellHTML({
           text: null,
-          error: err?.message || 'Network error',
+          error: message,
           status: 0,
           at: Date.now(),
           ttftMs: null,
@@ -9832,7 +9866,7 @@
             <button onclick="pinModel('${isModelPinned ? '' : m.modelId}', '${m.providerKey}')" style="background: ${isModelPinned ? 'var(--status-info-bg)' : 'var(--surface-alt)'}; border: ${isModelPinned ? '1px solid var(--status-info-border)' : '1px solid transparent'}; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; color: ${isModelPinned ? 'var(--status-info-text)' : 'var(--text)'}; cursor: pointer;">
               ${isModelPinned ? '📌 Unpin Model' : '📌 Pin Model'}
             </button>
-            <button onclick="pingModelNow('${m.modelId}')" style="background: var(--status-info-bg); border: 1px solid var(--status-info-border); padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; color: var(--status-info-text); cursor: pointer;">
+            <button onclick="pingModelNow('${m.modelId}', '${m.providerKey}')" style="background: var(--status-info-bg); border: 1px solid var(--status-info-border); padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; color: var(--status-info-text); cursor: pointer;">
               📶 Ping Now
             </button>
             <button onclick="toggleBan('${m.modelId}', '${m.status}')" style="background: ${m.status === 'banned' ? 'var(--text-muted)' : 'var(--status-error-bg)'}; border: none; padding: 8px 16px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; color: ${m.status === 'banned' ? 'var(--input-bg)' : 'var(--status-error-text)'}; cursor: pointer;">
@@ -9868,7 +9902,10 @@
       document.getElementById('overlay').classList.remove('active');
     }
 
-    async function pingModelNow(modelId) {
+    // `providerKey` names the row the drawer is showing. The same model id can be served by
+    // several providers (and one id can be an alias of another row's), so without it the server
+    // pings whichever row it finds first and the drawer then reports on a row it is not showing.
+    async function pingModelNow(modelId, providerKey) {
       const statusEl = document.getElementById('drawer-ping-status');
       if (statusEl) {
         statusEl.style.color = 'var(--text-muted)';
@@ -9879,7 +9916,7 @@
         const res = await fetch('/api/models/ping', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modelId })
+          body: JSON.stringify({ modelId, providerKey })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.success) {
@@ -9895,7 +9932,11 @@
         await fetchData();
 
         if (openDrawerModelId === modelId) {
-          const updatedModel = allModels ? allModels.find(r => r.modelId === modelId) : null;
+          // The exact row that was pinged, not the first row with that id.
+          const updatedModel = allModels
+            ? (allModels.find(r => r.providerKey === providerKey && r.modelId === modelId)
+              || allModels.find(r => r.modelId === modelId))
+            : null;
           if (updatedModel) updateDrawerContent(updatedModel);
         }
       } catch (e) {
