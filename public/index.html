@@ -40,19 +40,12 @@
       --status-neutral-text: #334155;
       --status-neutral-border: #cbd5e1;
       --chat-bg: #faf9f8;
-      --overlay-bg: rgba(255, 255, 255, 0.9);
       --shadow-color: rgba(0, 0, 0, 0.02);
       --drawer-shadow: rgba(0, 0, 0, 0.1);
       --modal-overlay: rgba(0, 0, 0, 0.1);
       --panel-gradient-start: #ffffff;
       --panel-gradient-end: #fbfaf8;
       --panel-decor: rgba(140, 137, 133, 0.16);
-      --update-badge-bg: #dcfce7;
-      --update-badge-text: #166534;
-      --update-badge-border: #bbf7d0;
-      --update-badge-hover: #bbf7d0;
-      --progress-bg: #f3f2f1;
-      --spinner-track: #f3f2f1;
       --tier-splus-bg: #ecfdf5;
       --tier-splus-text: #065f46;
       --tier-splus-border: #a7f3d0;
@@ -106,19 +99,12 @@
       --status-neutral-text: #94a3b8;
       --status-neutral-border: #334155;
       --chat-bg: #14161e;
-      --overlay-bg: rgba(15, 17, 23, 0.9);
       --shadow-color: rgba(0, 0, 0, 0.2);
       --drawer-shadow: rgba(0, 0, 0, 0.4);
       --modal-overlay: rgba(0, 0, 0, 0.5);
       --panel-gradient-start: #1a1d27;
       --panel-gradient-end: #14161e;
       --panel-decor: rgba(100, 116, 139, 0.12);
-      --update-badge-bg: #052e16;
-      --update-badge-text: #34d399;
-      --update-badge-border: #166534;
-      --update-badge-hover: #166534;
-      --progress-bg: #23262f;
-      --spinner-track: #23262f;
       --title-glow: rgba(96, 165, 250, 0.3);
       --tier-splus-bg: #052e16;
       --tier-splus-text: #34d399;
@@ -436,6 +422,12 @@
     .topo-link.warn { stroke: var(--warning); stroke-width: 1.0; opacity: 0.30; }
 
     .topo-provider-label { fill: var(--text); font-size: 4px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.45; transition: all 1.5s ease-in-out; pointer-events: none; }
+
+    /* A federated provider multiplies the node count several times over, and past a couple of
+       dozen nodes the labels are shortened and drawn a touch smaller (see drawBipartiteTopology).
+       A class, not a font-size attribute: a stylesheet rule beats a presentation attribute, so
+       the attribute silently did nothing and the crowded plot kept its full-size labels. */
+    .topo-provider-label.crowded { font-size: 3.4px; }
 
     .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
     .topo-model-label.up { fill: var(--success); opacity: 0.5; }
@@ -1691,71 +1683,6 @@
       background: var(--surface-alt);
       color: var(--text);
     }
-    .update-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      background: var(--update-badge-bg);
-      color: var(--update-badge-text);
-      padding: 4px 10px;
-      border-radius: 99px;
-      font-size: 0.75rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      border: 1px solid var(--update-badge-border);
-    }
-
-    .update-badge:hover {
-      background: var(--update-badge-hover);
-      transform: translateY(-1px);
-    }
-
-    #update-overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background: var(--overlay-bg);
-      backdrop-filter: blur(4px);
-      z-index: 9999;
-      display: none;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      text-align: center;
-      padding: 20px;
-    }
-
-    .progress-container {
-      width: 100%;
-      max-width: 400px;
-      height: 8px;
-      background: var(--progress-bg);
-      border-radius: 4px;
-      overflow: hidden;
-      margin: 20px 0;
-      border: 1px solid var(--border);
-    }
-
-    .progress-bar {
-      height: 100%;
-      background: var(--accent);
-      width: 0%;
-      transition: width 0.3s ease;
-    }
-
-    .update-spinner {
-      width: 40px;
-      height: 40px;
-      border: 3px solid var(--spinner-track);
-      border-top: 3px solid var(--accent);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin-bottom: 20px;
-    }
-
     @keyframes spin {
       0% { transform: rotate(0deg); }
       100% { transform: rotate(360deg); }
@@ -1859,16 +1786,6 @@
   <div id="local-file-warning" style="display:none; margin:16px auto 0; width:min(1100px, calc(100vw - 32px)); background:var(--status-warning-bg); border:1px solid var(--status-warning-border); color:var(--status-warning-text); border-radius:12px; padding:12px 14px; font-size:0.84rem; line-height:1.5;">
     This dashboard is being opened as a static <code>file://</code> page. Use <b>http://localhost:7352</b> instead so provider actions and OAuth callbacks can talk to the running Hammer server.
   </div>
-  <div id="update-overlay">
-    <div class="update-spinner"></div>
-    <h2 style="margin: 0 0 10px;">Updating Hammer</h2>
-    <p id="update-status-text" style="color: var(--text-muted); margin-bottom: 20px;">Downloading and installing update...</p>
-    <div class="progress-container">
-      <div id="update-progress-bar" class="progress-bar"></div>
-    </div>
-    <p id="update-percent-text" style="font-weight: 700; font-size: 1.25rem;">1%</p>
-  </div>
-
   <div class="drawer-overlay" id="overlay" onclick="closeDrawer()"></div>
   <div class="drawer-overlay" id="provider-sync-overlay" onclick="closeProviderSyncModal()" style="display:none;"></div>
 
@@ -1878,7 +1795,6 @@
         <p class="dashboard-eyebrow">Router Control Center</p>
         <h1 class="dashboard-heading">Hammer</h1>
         <p style="margin: 14px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
-          <span id="update-pill" style="display:none;"></span>
           <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <span id="theme-icon">🌙</span>
           </button>
@@ -2053,16 +1969,8 @@
 
     <div id="settings-view" style="display: none;">
       <h2 style="margin-top: 0; font-size: 1.25rem;">Settings</h2>
-      <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.875rem;">Manage router update behavior and routing preferences.</p>
-      <div id="autoupdate-container" class="provider-section">
-        <!-- Auto-update settings generated here -->
-      </div>
-      <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Auto-Ping</h3>
-      <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Control whether the router automatically pings models on a schedule to track their health and speed.</p>
-      <div id="autoping-container" class="provider-section">
-        <!-- Auto-ping settings generated here -->
-      </div>
-      <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Request Logging</h3>
+      <p style="color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.875rem;">Manage routing preferences and request logging.</p>
+      <h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Request Logging</h3>
       <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Control whether request bodies are captured and whether logs are written to disk. Prompt/response content can contain sensitive data.</p>
       <div id="logging-container" class="provider-section">
         <!-- Logging settings generated here -->
@@ -2382,7 +2290,6 @@
     let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
     let selectorGuaranteeSlope = 0;   // fastest-row guarantee slope, applied only at 100%
     let isTableHovered = false;
-    let metaLoaded = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
     const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;      let filterRules = { minSweScore: null, excludedProviders: [] };
@@ -2432,9 +2339,62 @@
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
       'scaleway': 'Scaleway', 'kilocode': 'KiloCode', 'opencode': 'OpenCode',
       'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
+      'gptfree': 'GPTFree',
       'github-copilot': 'GitHub Copilot',
       'openai-codex': 'OpenAI Codex',
     };
+
+    // ---- Federated origins -------------------------------------------------------------
+    // One provider can front many upstream servers: g4f.space federates dozens behind a
+    // single endpoint, and discovery reports which one serves each row (originId, named by
+    // originLabel). Nothing about the *account* changes — one key, one quota, one endpoint —
+    // but the traffic, the latency, the uptime, the test result and the outage belong to the
+    // upstream, so the table and the network plot read each origin as a provider of its own.
+    // Two origins serving one model are then two rows with two statuses, instead of two rows
+    // that both just say 'g4f'.
+    function providerInstanceKey(m) {
+      if (!m) return '';
+      const key = m.providerKey || '';
+      const originId = m.originId ? String(m.originId) : '';
+      return originId ? `${key}:${originId}` : key;
+    }
+
+    // The origin's own name when the catalog gave one, else the provider's. Names do repeat
+    // in a federated catalog (two of g4f's upstreams are both called 'qwen'); the router
+    // disambiguates those before sending them, so this is only ever a display string.
+    function providerInstanceName(m) {
+      const base = PROVIDER_NAMES[m && m.providerKey] || (m && m.providerKey) || '';
+      const origin = m && m.originLabel ? String(m.originLabel) : '';
+      return origin ? `${base} · ${origin}` : base;
+    }
+
+    // The table's provider cell speaks in raw provider keys ('groq', 'nvidia'), so an origin
+    // row reads 'g4f · nvidia.com' there: the same vocabulary, plus the upstream that served
+    // it, which is what tells two rows of the same model apart.
+    function providerRowLabel(m) {
+      const key = (m && m.providerKey) || '';
+      const origin = m && m.originLabel ? String(m.originLabel) : '';
+      return origin ? `${key} · ${origin}` : key;
+    }
+
+    // A federated origin's catalog name is usually its own hostname ('nvidia.com'), which is
+    // a truer brand mark than the gateway's. Anything else — a scraper's nickname, or a
+    // sentence describing the server — resolves to nothing here, and the provider's own
+    // favicon with the node's monogram stands in, exactly as for a provider with no domain.
+    function originFaviconDomain(m) {
+      // The router appends " · <id tail>" to an origin whose catalog name collides with another's
+      // (see labelOrigins), and that suffix is not part of the name the origin gave itself, so the
+      // brand mark is read from the label's own head. Without this a domain-named origin that had
+      // to be disambiguated lost its favicon to the gateway's. A name that is not a domain either
+      // way resolves to nothing, and the provider's own icon stands in.
+      const raw = m && m.originLabel ? String(m.originLabel).trim() : '';
+      const origin = raw.includes(' · ') ? raw.slice(0, raw.indexOf(' · ')).trim() : raw;
+      if (!origin || origin.length > 64) return '';
+      // Remove nemotron prefix if present
+      const nemotronPrefix = 'nemotron:';
+      const cleanedOrigin = origin.startsWith(nemotronPrefix) ? origin.slice(nemotronPrefix.length) : origin;
+      return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(cleanedOrigin) ? cleanedOrigin : '';
+    }
 
     function updateProxyErrorBanner(error) {
       const el = document.getElementById('proxy-error-banner');
@@ -2479,9 +2439,6 @@
 
     async function fetchData() {
       try {
-        if (!metaLoaded) {
-          loadMeta();
-        }
         const [modelsRes, configRes] = await Promise.all([
           fetch('/api/models'),
           fetch('/api/config'),
@@ -2541,150 +2498,6 @@
         updateProxyErrorBanner({ message: e?.message || 'Could not refresh Hammer status.', fallback: false });
         return false;
       }
-    }
-
-    async function loadMeta() {
-      try {
-        const res = await fetch('/api/meta');
-        if (!res.ok) throw new Error('meta fetch failed');
-        const meta = await res.json();
-        if (!meta || !meta.version || meta.version === 'unknown') throw new Error('meta missing version');
-        const pillEl = document.getElementById('update-pill');
-
-        if (pillEl) {
-          if (meta.updateAvailable && meta.latestVersion) {
-            pillEl.innerHTML = `<span class="update-badge" onclick="startManualUpdate(${jsStringAttr(meta.latestVersion)})">✨ Update to v${escapeHtml(meta.latestVersion)}</span>`;
-            pillEl.style.display = 'inline-flex';
-            pillEl.title = `Current: v${meta.version}`;
-          } else {
-            pillEl.style.display = 'none';
-          }
-        }
-
-        metaLoaded = true;
-      } catch {
-        setTimeout(() => {
-          if (!metaLoaded) loadMeta();
-        }, 5000);
-      }
-    }
-
-    async function startManualUpdate(targetVersion) {
-      if (!confirm(`Are you sure you want to update to v${targetVersion}? The server will restart and be unavailable for about 60 seconds.`)) {
-        return;
-      }
-
-      const overlay = document.getElementById('update-overlay');
-      const progressBar = document.getElementById('update-progress-bar');
-      const percentText = document.getElementById('update-percent-text');
-      const statusText = document.getElementById('update-status-text');
-
-      overlay.style.display = 'flex';
-      
-      // Start the progress animation (0 to 99% over 60 seconds)
-      let progress = 1;
-      const startTime = Date.now();
-      const duration = 60000; // 60 seconds
-
-      const progressInterval = setInterval(() => {
-        const elapsed = Date.now() - startTime;
-        if (elapsed >= duration) {
-          progress = 99;
-          statusText.textContent = 'Finalizing installation...';
-        } else {
-          // Non-linear progress (slows down as it reaches 99%)
-          progress = 1 + (98 * (1 - Math.pow(1 - elapsed / duration, 2)));
-        }
-        
-        const rounded = Math.floor(progress);
-        progressBar.style.width = `${rounded}%`;
-        percentText.textContent = `${rounded}%`;
-      }, 200);
-
-      try {
-        // Trigger the update on the server
-        const res = await fetch('/api/autoupdate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ forceCheck: true })
-        });
-        
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || 'Server rejected update request.');
-        }
-
-        const data = await res.json();
-        if (data.updateResult && data.updateResult.ok === false) {
-          throw new Error(data.updateResult.message);
-        }
-
-        // Now we wait for the server to come back online
-        statusText.textContent = 'Update applied. Waiting for server to restart...';
-        pollServerRestart(progressInterval);
-        
-      } catch (err) {
-        clearInterval(progressInterval);
-        overlay.style.display = 'none';
-        alert(`Update failed: ${err.message}`);
-      }
-    }
-
-    async function pollServerRestart(progressInterval) {
-      const progressBar = document.getElementById('update-progress-bar');
-      const percentText = document.getElementById('update-percent-text');
-      const statusText = document.getElementById('update-status-text');
-      let sawDowntime = false;
-      let healthyResponsesAfterDowntime = 0;
-      
-      const checkServer = async () => {
-        try {
-          const res = await fetch('/api/meta', { cache: 'no-store' });
-          if (res.ok) {
-            const meta = await res.json();
-            if (meta && meta.version) {
-              if (!sawDowntime) {
-                statusText.textContent = 'Waiting for current server to shut down...';
-                return false;
-              }
-
-              healthyResponsesAfterDowntime += 1;
-              statusText.textContent = healthyResponsesAfterDowntime >= 2
-                ? 'Successfully updated! Reloading...'
-                : 'Server is back. Confirming stability...';
-
-              if (healthyResponsesAfterDowntime >= 2) {
-                clearInterval(progressInterval);
-                progressBar.style.width = '100%';
-                percentText.textContent = '100%';
-                setTimeout(() => window.location.reload(), 1500);
-                return true;
-              }
-            }
-          }
-        } catch (e) {
-          sawDowntime = true;
-          healthyResponsesAfterDowntime = 0;
-          statusText.textContent = 'Server is restarting...';
-        }
-        return false;
-      };
-
-      // Give the current process a brief head start to exit before probing.
-      setTimeout(() => {
-        const pollInterval = setInterval(async () => {
-          const backOnline = await checkServer();
-          if (backOnline) clearInterval(pollInterval);
-        }, 2000);
-
-        // Stop after 3 minutes total
-        setTimeout(() => {
-          clearInterval(pollInterval);
-          clearInterval(progressInterval);
-          statusText.textContent = 'Update taking longer than expected. Please refresh manually.';
-          statusText.style.color = 'var(--error)';
-        }, 180000);
-      }, 2500);
     }
 
     function calculateBestModel(models) {
@@ -2754,7 +2567,9 @@
 
       const onlineProviders = new Set();
       models.forEach(m => {
-        if (isRowUp(m)) onlineProviders.add(m.providerKey);
+        // Counted by origin: this is the number the network plot beside it draws a node
+        // per, so counting gateways here would contradict the picture.
+        if (isRowUp(m)) onlineProviders.add(providerInstanceKey(m));
       });
 
       document.getElementById('kpi-active').textContent = onlineModelCount;
@@ -2810,7 +2625,7 @@
     // calls it from the poll callback.
     function kpiBestText(model) {
       const name = scatterShortName(model);
-      const provider = PROVIDER_NAMES[model.providerKey] || model.providerKey || '';
+      const provider = providerInstanceName(model);
       return provider ? `${name} · ${provider}` : name;
     }
 
@@ -3688,16 +3503,19 @@
         if (isRowStruck(m)) return false;
         return true;
       });
-      // Every provider the primary table lists gets a node, including one whose models
-      // are all down/timeout. Restricting this to providers with an online model
-      // silently dropped whole model groups from the plot — an all-down row is still a
-      // primary-table row, not a graveyard row — so the picture contradicted the table
-      // it claims to mirror. Offline providers now render with the status styling they
-      // already had (red ring / red monogram), which keeps every model node attached to
-      // the provider it belongs to instead of floating unattached.
-      const plotProviders = [...new Set(primaryModels.map(m => m.providerKey))]
-        .sort();
-      const numProvs = plotProviders.length;
+      // Which of the four buckets a model group falls in, from the same verdicts the table
+      // paints its dots with (see rowVerdict), so the picture cannot claim a model is up while
+      // its row shows a clock. One predicate, read twice: the group filter below drops the
+      // 'down' bucket, and modelStatusCls() colours whatever survives, so the two cannot
+      // disagree about which models the plot is showing or how it is describing them.
+      function modelGroupStatus(members) {
+        const kinds = members.map(m => rowVerdict(m));
+        if (kinds.some(kind => kind === 'up')) return 'up';
+        if (kinds.some(kind => BENCHED_VERDICTS.has(kind))) return 'benched';
+        const allInert = kinds.length > 0
+          && kinds.every(kind => STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded');
+        return allInert ? 'disabled' : 'down';
+      }
 
       // Always return a clean display name — never raw modelId with '/' or internal names
       function modelDisplayName(m) {
@@ -3707,15 +3525,37 @@
       }
 
       // ---- Build one node per model group using the exact same grouping as the
-      // main table (canonical modelId key, then label-name merge), so the network
-      // plot shows precisely the same model set as the primary table. ----
+      // main table (canonical modelId key, then label-name merge), then drop the groups
+      // that are simply down. This card counts "Models Online" and draws the network behind
+      // that number, so a broken model should not be a node on it: the red cluster was the
+      // plot's loudest feature while standing for nothing that can serve. Groups that are
+      // merely waiting on a provider window stay — the plot has to tell "waiting" apart from
+      // "broken" for the same reason the table does.
+      //
+      // The drop is per *group*, not per row. A provider that is down keeps its place while some
+      // sibling serves one of the same models — the group is still drawn and that provider is one
+      // of its links — and only leaves once every group it belongs to is down.
       const uniqueModels = groupModels(primaryModels).map(g => ({
         ...g.members[0],
         label: g.label,
         _groupKey: g.key,
-        _providers: g.members.map(m => ({ key: m.providerKey, model: m })),
-      }));
+        _providers: g.members.map(m => ({ key: providerInstanceKey(m), model: m })),
+      })).filter(um => modelGroupStatus(um._providers.map(p => p.model)) !== 'down');
       const numModels = uniqueModels.length;
+
+      // One node per provider *instance*, over the models that survived. A federated
+      // provider's origins are separate servers with separate uptimes, their own set of models,
+      // and their own outages, so they get their own nodes: one gateway hub would hide which
+      // upstream a model hangs off, which is the whole reason the origins are tracked at all.
+      //
+      // Derived from the surviving groups rather than from every primary-table row, so a
+      // provider whose models are all down drops out with them. Keeping the ring would leave a
+      // node with no links — a picture of a server with nothing behind it — which is the same
+      // claim the plot just stopped making about those models.
+      const plotRows = uniqueModels.flatMap(um => um._providers.map(p => p.model));
+      const plotProviders = [...new Set(plotRows.map(m => providerInstanceKey(m)))]
+        .sort();
+      const numProvs = plotProviders.length;
 
       // Model-family → favicon domain (model's own brand, not the provider hosting it).
       // Matched by prefix (raw.includes(prefix)); first matching key wins, so overlapping
@@ -3802,25 +3642,81 @@
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
         'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
         'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
+        'gptfree': 'gptfree.com',
         'github-copilot': 'github.com', 'openai-codex': 'chatgpt.com',
         // 'freemodels' is intentionally absent: its only domain is a workers.dev
         // subdomain, whose favicon is Cloudflare's logo — the monogram fallback
         // is more honest than a wrong brand mark.
       };
 
-      // Fit the viewBox to the card's actual pixel size.
+      // Display identity per node. A federated origin is named by its catalog and marked by
+      // its own hostname; a provider keeps the name and icon it always had. One entry per
+      // scope, from its first row — every row of a scope names it the same way.
+      const providerNodeInfo = new Map();
+      for (const m of plotRows) {
+        const id = providerInstanceKey(m);
+        if (providerNodeInfo.has(id)) continue;
+        providerNodeInfo.set(id, {
+          name: providerInstanceName(m),
+          // What a name shared with another node gets qualified by: the upstream's own label
+          // when its catalog gave one, else the identity the router routes by, else the plain
+          // fact that nothing named an upstream. Nothing here is invented.
+          qualifier: m.originLabel || (m.originId ? String(m.originId) : 'no origin'),
+          domain: originFaviconDomain(m) || PROVIDER_DOMAINS[m.providerKey] || '',
+        });
+      }
+      // A federated provider can hand two of its nodes the same name — its own bucket and the
+      // rows it does not attribute to any upstream both read "G4F" — so only a shared name is
+      // qualified, by the identity that actually tells the two apart. Distinct names (every
+      // ordinary provider, and every catalog-named origin) are left exactly as they were.
+      const nodeNameCounts = new Map();
+      for (const info of providerNodeInfo.values()) {
+        const key = info.name.toLowerCase();
+        nodeNameCounts.set(key, (nodeNameCounts.get(key) || 0) + 1);
+      }
+      for (const info of providerNodeInfo.values()) {
+        if ((nodeNameCounts.get(info.name.toLowerCase()) || 0) > 1) info.name = `${info.name} · ${info.qualifier}`;
+      }
+      const providerNodeName = (pk) => providerNodeInfo.get(pk)?.name || pk;
+      const providerNodeDomain = (pk) => providerNodeInfo.get(pk)?.domain || '';
+
+      // Fit the viewBox to the card's actual pixel size. A federated provider multiplies the
+      // node count several times over, and node labels are the one thing that has to stay
+      // legible when it does, so past a couple of dozen nodes the rings shrink and the labels
+      // shorten: neighbours on the ellipse are only a few tens of pixels apart at that size.
       const card = svg.parentElement;
       const W = card ? card.clientWidth : 600;
       const H = card ? card.clientHeight : 140;
       const cx = W / 2, cy = H / 2;
-      const provR = Math.min(7.5, Math.max(5.5, Math.min(W, H) * 0.05));
+      const crowded = numProvs > 24;
+      const provR = crowded
+        ? Math.min(5.5, Math.max(4, Math.min(W, H) * 0.032))
+        : Math.min(7.5, Math.max(5.5, Math.min(W, H) * 0.05));
       const faviconSz = Math.round(provR * 1.6);
       const clipR = Math.round(faviconSz / 2);
+      // The label budget is in characters, so the crowded plot's smaller font (3.4px against
+      // 4px, see .topo-provider-label.crowded) buys back the width the shorter text gives up:
+      // at 18 characters the labels occupy about what 15 did at full size, and the extra room
+      // is what keeps two origins' shortened names from printing identically.
+      const providerLabelMax = crowded ? 18 : 22;
+      const providerNodeLabel = (pk) => {
+        const name = providerNodeName(pk);
+        if (name.length <= providerLabelMax) return name;
+        // Shorten from the middle rather than the end. The end is where the router's own
+        // disambiguation lives ("qwen · 920d", see labelOrigins): cutting the tail would print
+        // two different origins as the same node name, which is the one thing a node per origin
+        // exists to prevent. Names with no such suffix shorten exactly as they did before.
+        const sep = name.lastIndexOf(' · ');
+        const tail = sep > 0 ? name.slice(sep) : '';
+        const head = providerLabelMax - tail.length - 1;
+        if (tail && head >= 4) return `${name.slice(0, head)}…${tail}`;
+        return `${name.slice(0, providerLabelMax - 1)}…`;
+      };
 
       // Rebuild whenever the actual model membership changes (not just the
       // count), so the plot stays in lock-step with the primary table as models
       // come and go between the main and graveyard tables in real time.
-      const membershipSig = primaryModels.map(m => getModelRowKey(m)).sort().join('|');
+      const membershipSig = plotRows.map(m => getModelRowKey(m)).sort().join('|');
       const providerSig = plotProviders.join('|');
       const svgHash = `${membershipSig}:${providerSig}:${W}:${H}`;
       if (svg.dataset.hash !== svgHash) {
@@ -3854,7 +3750,7 @@
           provNodes.push({
             id: `p:${plotProviders[i]}`, type: 'provider',
             providerKey: plotProviders[i],
-            domain: PROVIDER_DOMAINS[plotProviders[i]] || '',
+            domain: providerNodeDomain(plotProviders[i]),
             x: cx + rProvX * Math.cos(angle),
             y: cy + rProvY * Math.sin(angle),
             mass: 3.5
@@ -3862,9 +3758,8 @@
         }
 
         // One node per unique model (models first in array for index lookups).
-        // Every provider the primary table lists has a node, so each model group is
-        // always attached to at least one of them — nothing floats unattached, and
-        // nothing the table lists is left out.
+        // Each group is attached to at least one provider node, because the provider list is
+        // derived from these same groups — nothing floats unattached.
         for (let i = 0; i < numModels; i++) {
           const um = uniqueModels[i];
           const connectedKeys = um._providers.map(p => p.key);
@@ -3939,7 +3834,7 @@
           el.dataset.midx = ni; el.dataset.uidx = node.umIdx;
           el.dataset.pkeys = node.providers.join('|');
           const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-          title.textContent = `${modelDisplayName(m)} · ${node.providers.map(p => PROVIDER_NAMES[p] || p).join(', ')}`;
+          title.textContent = `${modelDisplayName(m)} · ${node.providers.map(p => providerNodeName(p)).join(', ')}`;
           el.appendChild(title);
           g.appendChild(el);
           // 2. Monogram disc + letter — always drawn so every model node shows a
@@ -4020,7 +3915,7 @@
           ring.setAttribute('class', 'topo-provider-ring');
           ring.dataset.pkey = pk;
           const ringTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-          ringTitle.textContent = PROVIDER_NAMES[pk] || pk;
+          ringTitle.textContent = providerNodeName(pk);
           ring.appendChild(ringTitle);
           g.appendChild(ring);
 
@@ -4051,7 +3946,7 @@
             mono.setAttribute('class', 'topo-provider-mono');
             mono.dataset.pkey = pk;
             const monoTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            monoTitle.textContent = PROVIDER_NAMES[pk] || pk;
+            monoTitle.textContent = providerNodeName(pk);
             mono.appendChild(monoTitle);
             g.appendChild(mono);
 
@@ -4068,7 +3963,7 @@
             img.setAttribute('class', 'topo-provider-img');
             img.dataset.pkey = pk;
             const imgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            imgTitle.textContent = PROVIDER_NAMES[pk] || pk;
+            imgTitle.textContent = providerNodeName(pk);
             img.appendChild(imgTitle);
             img.addEventListener('error', () => {
               // The monogram is already beneath the image, so just hide the
@@ -4084,17 +3979,17 @@
             mono.setAttribute('class', 'topo-provider-mono');
             mono.dataset.pkey = pk;
             const mTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            mTitle.textContent = PROVIDER_NAMES[pk] || pk;
+            mTitle.textContent = providerNodeName(pk);
             mono.appendChild(mTitle);
             g.appendChild(mono);
           }
 
           // Provider name label below the ring
-          const displayName = PROVIDER_NAMES[pk] || pk;
+          const displayName = providerNodeLabel(pk);
           const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           label.setAttribute('x', node.x.toFixed(1));
           label.setAttribute('y', (node.y + provR + 8).toFixed(1));
-          label.setAttribute('class', 'topo-provider-label');
+          label.setAttribute('class', crowded ? 'topo-provider-label crowded' : 'topo-provider-label');
           label.setAttribute('data-pkey', pk);
           label.dataset.pkey = pk;
           label.textContent = displayName;
@@ -4124,7 +4019,7 @@
 
       const providerHealth = {};
       for (const pk of plotProviders) {
-        const provModels = primaryModels.filter(m => m.providerKey === pk);
+        const provModels = primaryModels.filter(m => providerInstanceKey(m) === pk);
         const upCount = provModels.filter(isRowUp).length;
         providerHealth[pk] = { upCount, total: provModels.length };
       }
@@ -4134,15 +4029,17 @@
       // providers are all merely waiting on a provider window is 'benched' — the plot has
       // to tell that apart from 'broken' for the same reason the table does.
       function modelStatusCls(um, isBest) {
-        const kinds = um._providers.map(p => rowVerdict(p.model));
-        const anyUp = kinds.includes('up');
-        const anyBenched = kinds.some(kind => BENCHED_VERDICTS.has(kind));
-        const allInert = kinds.length > 0
-          && kinds.every(kind => STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded');
-        return `${anyUp ? ' up' : (allInert ? ' disabled' : (anyBenched ? ' benched' : ' down'))}${isBest ? ' best' : ''}`;
+        // The same bucket the group filter above drops on, so a survivor here can only be up,
+        // benched or disabled. The 'down' arm stays so the mapping remains complete: if that
+        // filter ever lets a down group through, the colouring says so instead of quietly
+        // dressing it as something it is not.
+        const status = modelGroupStatus(um._providers.map(p => p.model));
+        const cls = status === 'up' ? ' up' : status === 'disabled' ? ' disabled' : status === 'benched' ? ' benched' : ' down';
+        return `${cls}${isBest ? ' best' : ''}`;
       }
       function isModelBest(um) {
-        return bestModel && um._providers.some(p => p.model.modelId === bestModel.modelId && p.model.providerKey === bestModel.providerKey);
+        const bestKey = bestModel ? providerInstanceKey(bestModel) : '';
+        return bestModel && um._providers.some(p => p.model.modelId === bestModel.modelId && p.key === bestKey);
       }
 
       modelEls.forEach(el => {
@@ -4154,7 +4051,7 @@
           const cls = `topo-model${modelStatusCls(um, isBest)}`;
           if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
           const title = el.querySelector('title');
-          if (title) title.textContent = `${modelDisplayName(um)} · ${um._providers.map(p => PROVIDER_NAMES[p.key] || p.key).join(', ')}`;
+          if (title) title.textContent = `${modelDisplayName(um)} · ${um._providers.map(p => providerNodeName(p.key)).join(', ')}`;
         }
       });
 
@@ -4220,7 +4117,7 @@
         // thing that distinguishes them.
         ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}`);
         const title = ring.querySelector('title');
-        if (title) title.textContent = `${PROVIDER_NAMES[pk] || pk} · ${h.upCount}/${h.total} up`;
+        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
       });
 
       imgs.forEach(img => {
@@ -4228,7 +4125,7 @@
         const h = providerHealth[pk];
         if (!h) return;
         const title = img.querySelector('title');
-        if (title) title.textContent = `${PROVIDER_NAMES[pk] || pk} · ${h.upCount}/${h.total} up`;
+        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
       });
 
       monos.forEach(mono => {
@@ -4237,7 +4134,7 @@
         if (!h) return;
         mono.setAttribute('class', `topo-provider-mono${h.upCount === h.total && h.total > 0 ? ' green' : (h.upCount > 0 ? ' amber' : ' red')}`);
         const title = mono.querySelector('title');
-        if (title) title.textContent = `${PROVIDER_NAMES[pk] || pk} · ${h.upCount}/${h.total} up`;
+        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
       });
 
       // Re-apply highlight dimming
@@ -5204,7 +5101,7 @@
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <span class="pin-row-btn ${isPinned ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinned ? '' : first.modelId}', '')" title="${isPinned ? 'Unpin model' : 'Pin model'}">📌</span>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(PROVIDER_NAMES[members[0].providerKey] || members[0].providerKey) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
           </td>
           <td><div style="font-weight: 600;">${(() => {
             const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
@@ -5300,6 +5197,7 @@
       let filtered = allModels.filter(m =>
         m.label.toLowerCase().includes(searchTerm) ||
         m.providerKey.toLowerCase().includes(searchTerm) ||
+        (m.originLabel || '').toLowerCase().includes(searchTerm) ||
         m.modelId.toLowerCase().includes(searchTerm) ||
         (m.realModelId || '').toLowerCase().includes(searchTerm)
       );
@@ -5423,7 +5321,11 @@
       const isExcludedRow = m.status === 'excluded';
       row.style.opacity = isExcludedRow || isBannedRow ? '0.5' : '1';
       const nameSpan = modelCell.querySelector('span');
-      if (nameSpan) { nameSpan.textContent = m.providerKey; nameSpan.title = m.providerKey; }
+      if (nameSpan) {
+        const rowLabel = providerRowLabel(m);
+        nameSpan.textContent = rowLabel;
+        nameSpan.title = rowLabel;
+      }
       const pinBtn = modelCell.querySelector('.pin-row-btn');
       if (pinBtn) {
         const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
@@ -6020,8 +5922,8 @@
           }
         }
         // A non-2xx response or `{ ok: false }` result did not complete a
-        // successful model test. Keep the diagnostic visible instead of
-        // immediately replacing it with the next polling refresh.
+        // successful model test. Keep the diagnostic visible rather than
+        // leaving it to be overwritten by the next refresh.
         if (!res.ok || data.ok === false) {
           paintTestResult(cell, lastResponse, opts, data);
           return;
@@ -6687,7 +6589,7 @@
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${escapeHtml(cleanHeadingModelName(g.label))}</span>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(PROVIDER_NAMES[first.providerKey] || first.providerKey)}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(providerInstanceName(first))}</div>
           </td>
           <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           <td class="text-right">
@@ -6723,7 +6625,7 @@
       tr.innerHTML = `
           <td style="cursor:pointer;">
             <div style="display:flex; align-items:center; gap:8px;">
-              <span style="font-weight: 600;" title="${escapeHtml(m.providerKey)}">${m.providerKey}</span>
+              <span style="font-weight: 600;" title="${escapeHtml(providerRowLabel(m))}">${escapeHtml(providerRowLabel(m))}</span>
               <span class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinnedRow ? '' : m.modelId}', '${m.providerKey}')" title="${isPinnedRow ? 'Unpin model' : 'Pin model'}">📌</span>
             </div>
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
@@ -6831,176 +6733,6 @@
       return parts.join(' • ');
     }
 
-    function setAutoUpdateSaveStatus(message, tone = 'muted') {
-      const statusEl = document.getElementById('autoupdate-save-status');
-      if (!statusEl) return;
-      statusEl.className = `autoupdate-save-status${tone === 'success' ? ' success' : tone === 'error' ? ' error' : ''}`;
-      statusEl.textContent = message || '';
-    }
-
-    function applyAutoUpdateState(state) {
-      if (!state) return;
-      const enabled = state.enabled !== false;
-      const stateText = enabled ? 'On' : 'Off';
-
-      const stateEl = document.getElementById('autoupdate-state');
-      if (stateEl) stateEl.textContent = stateText;
-
-      const pillEl = document.getElementById('autoupdate-pill');
-      if (pillEl) {
-        pillEl.textContent = stateText;
-        pillEl.classList.remove('on', 'off');
-        pillEl.classList.add(enabled ? 'on' : 'off');
-      }
-
-      const enabledInput = document.getElementById('autoupdate-enabled');
-      if (enabledInput) enabledInput.checked = enabled;
-
-      const intervalInput = document.getElementById('autoupdate-interval');
-      if (intervalInput && Number.isFinite(Number(state.intervalHours)) && Number(state.intervalHours) > 0) {
-        intervalInput.value = String(Number(state.intervalHours));
-      }
-
-      const lastCheckEl = document.getElementById('autoupdate-last-check');
-      if (lastCheckEl) lastCheckEl.textContent = formatIsoDateTime(state.lastCheckAt);
-
-      const lastUpdateEl = document.getElementById('autoupdate-last-update');
-      if (lastUpdateEl) lastUpdateEl.textContent = formatIsoDateTime(state.lastUpdateAt);
-
-      const lastVersionEl = document.getElementById('autoupdate-last-version');
-      if (lastVersionEl) lastVersionEl.textContent = state.lastVersionApplied || 'None';
-
-      const lastErrorEl = document.getElementById('autoupdate-last-error');
-      if (lastErrorEl) {
-        const msg = state.lastError || 'None';
-        lastErrorEl.textContent = msg;
-        lastErrorEl.classList.toggle('error', !!state.lastError);
-      }
-    }
-
-    async function saveAutoUpdateSettings() {
-      const enabledEl = document.getElementById('autoupdate-enabled');
-      const intervalEl = document.getElementById('autoupdate-interval');
-      if (!enabledEl || !intervalEl) return;
-
-      const intervalHours = Number(intervalEl.value);
-      if (!Number.isFinite(intervalHours) || intervalHours <= 0) {
-        setAutoUpdateSaveStatus('Interval must be a positive number of hours.', 'error');
-        return;
-      }
-
-      setAutoUpdateSaveStatus('Saving...');
-
-      try {
-        const res = await fetch('/api/autoupdate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled: enabledEl.checked, intervalHours })
-        });
-
-        if (!res.ok) {
-          const payload = await res.json().catch(() => ({}));
-          throw new Error(payload.error || 'Failed to save auto-update settings.');
-        }
-
-        const payload = await res.json();
-        const state = payload.autoUpdate || null;
-        if (state) applyAutoUpdateState(state);
-        setAutoUpdateSaveStatus('Saved.', 'success');
-      } catch (err) {
-        setAutoUpdateSaveStatus(err.message || 'Failed to save auto-update settings.', 'error');
-      }
-    }
-
-    function renderAutoUpdateSettings(autoUpdate) {
-      const container = document.getElementById('autoupdate-container');
-      if (!container || !autoUpdate) return;
-
-      const enabled = autoUpdate.enabled !== false;
-      const interval = Number(autoUpdate.intervalHours) > 0 ? Number(autoUpdate.intervalHours) : 24;
-      const stateText = enabled ? 'On' : 'Off';
-
-      container.innerHTML = `
-        <div class="autoupdate-panel">
-          <div class="autoupdate-header">
-            <div>
-              <h3 class="autoupdate-title">Auto-Update</h3>
-              <div class="autoupdate-subtitle">Keep hammer fresh automatically with periodic npm checks and safe background restarts.</div>
-            </div>
-            <span id="autoupdate-pill" class="autoupdate-status-pill ${enabled ? 'on' : 'off'}">${stateText}</span>
-          </div>
-
-          <div class="autoupdate-controls">
-            <label class="autoupdate-toggle-label">
-            <input type="checkbox" id="autoupdate-enabled" ${enabled ? 'checked' : ''}>
-            Enable auto-update
-            </label>
-
-            <label class="autoupdate-interval-label">
-              Interval (hours)
-              <input id="autoupdate-interval" type="number" min="1" step="1" value="${interval}">
-            </label>
-
-            <button class="btn" onclick="saveAutoUpdateSettings()">Save Changes</button>
-            <span id="autoupdate-save-status" class="autoupdate-save-status"></span>
-          </div>
-
-          <div class="autoupdate-stats-grid">
-            <div class="autoupdate-stat">
-              <div class="autoupdate-stat-label">State</div>
-              <div id="autoupdate-state" class="autoupdate-stat-value">${stateText}</div>
-            </div>
-            <div class="autoupdate-stat">
-              <div class="autoupdate-stat-label">Last Check</div>
-              <div id="autoupdate-last-check" class="autoupdate-stat-value">${formatIsoDateTime(autoUpdate.lastCheckAt)}</div>
-            </div>
-            <div class="autoupdate-stat">
-              <div class="autoupdate-stat-label">Last Update</div>
-              <div id="autoupdate-last-update" class="autoupdate-stat-value">${formatIsoDateTime(autoUpdate.lastUpdateAt)}</div>
-            </div>
-            <div class="autoupdate-stat">
-              <div class="autoupdate-stat-label">Last Version</div>
-              <div id="autoupdate-last-version" class="autoupdate-stat-value">${autoUpdate.lastVersionApplied || 'None'}</div>
-            </div>
-            <div class="autoupdate-stat" style="grid-column:1 / -1;">
-              <div class="autoupdate-stat-label">Last Error</div>
-              <div id="autoupdate-last-error" class="autoupdate-stat-value${autoUpdate.lastError ? ' error' : ''}">${escapeHtml(autoUpdate.lastError || 'None')}</div>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    function renderAutoPingSettings(autoPing) {
-      const container = document.getElementById('autoping-container');
-      if (!container) return;
-      const enabled = autoPing.enabled !== false;
-
-      container.innerHTML = `
-        <div class="autoupdate-panel">
-          <div class="autoupdate-header">
-            <div>
-              <h3 class="autoupdate-title">Auto-Ping</h3>
-              <div class="autoupdate-subtitle">When enabled, the router periodically pings all models to track health and latency. Disable to save bandwidth and only ping on demand.</div>
-            </div>
-            <span class="autoupdate-status-pill ${enabled ? 'on' : 'off'}">${enabled ? 'On' : 'Off'}</span>
-          </div>
-          <div class="autoupdate-controls">
-            <label class="autoupdate-toggle-label">
-              <input type="checkbox" id="autoping-enabled" ${enabled ? 'checked' : ''}>
-              Enable auto-ping
-            </label>
-            <label class="autoupdate-interval-label">
-              Interval (minutes)
-              <input id="autoping-interval" type="number" min="1" step="1" value="${autoPing.intervalMinutes || 30}">
-            </label>
-            <button class="btn" onclick="saveAutoPingSettings()">Save Changes</button>
-            <span id="autoping-save-status" class="autoupdate-save-status"></span>
-          </div>
-        </div>
-      `;
-    }
-
     function renderLoggingSettings(logging) {
       const container = document.getElementById('logging-container');
       if (!container) return;
@@ -7045,28 +6777,6 @@
         statusEl.textContent = 'Saved!';
         statusEl.style.color = 'var(--success)';
         setTimeout(() => { statusEl.textContent = ''; }, 2000);
-      } catch (err) {
-        statusEl.textContent = err.message || 'Failed to save.';
-        statusEl.style.color = 'var(--error)';
-      }
-    }
-
-    async function saveAutoPingSettings() {
-      const enabled = document.getElementById('autoping-enabled').checked;
-      const intervalInput = document.getElementById('autoping-interval');
-      const intervalMinutes = Math.floor(Number(intervalInput?.value || 30));
-      const statusEl = document.getElementById('autoping-save-status');
-      try {
-        const res = await fetch('/api/auto-ping', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ enabled, intervalMinutes }),
-        });
-        if (!res.ok) throw new Error('Failed to save.');
-        statusEl.textContent = 'Saved!';
-        statusEl.style.color = 'var(--success)';
-        setTimeout(() => { statusEl.textContent = ''; }, 2000);
-        await loadSettings();
       } catch (err) {
         statusEl.textContent = err.message || 'Failed to save.';
         statusEl.style.color = 'var(--error)';
@@ -7414,24 +7124,18 @@
       } catch (e) { console.error('loadSettings: config fetch failed:', e); }
 
       // Fetch secondary settings in parallel; failures are non-fatal.
-      let autoUpdate = {}, filterRules = {}, pinning = {}, autoPing = {}, meta = {};
+      let filterRules = {}, pinning = {}, meta = {};
       try {
-        const [autoUpdateRes, filterRulesRes, pinningRes, autoPingRes, metaRes] = await Promise.all([
-          fetch('/api/autoupdate'),
+        const [filterRulesRes, pinningRes, metaRes] = await Promise.all([
           fetch('/api/filter-rules'),
           fetch('/api/pinning'),
-          fetch('/api/auto-ping'),
           fetch('/api/meta'),
         ]);
-        if (autoUpdateRes.ok) autoUpdate = await autoUpdateRes.json();
         if (filterRulesRes.ok) filterRules = await filterRulesRes.json();
         if (pinningRes.ok) pinning = await pinningRes.json();
-        if (autoPingRes.ok) autoPing = await autoPingRes.json();
         if (metaRes.ok) meta = await metaRes.json();
       } catch (e) { console.error('loadSettings: secondary settings fetch failed:', e); }
 
-      renderAutoUpdateSettings(autoUpdate);
-      renderAutoPingSettings(autoPing);
       renderLoggingSettings((meta && meta.logging) || {});
       renderPinningSettings(pinning);
       renderFilterRules(filterRules, providers);
@@ -7441,8 +7145,8 @@
       if (!activeContainer || !setupContainer) return;
 
       try {
-        // loadSettings runs on a ~4s dashboard poll, and rebuilding these two
-        // containers would silently discard a key the user is still typing
+        // loadSettings rebuilds these two containers on every dashboard refresh, which
+        // would silently discard a key the user is still typing
         // (the input node is destroyed before blur/Enter can save it). Capture
         // the current value/focus of every provider control and restore it on
         // the freshly built DOM below.
@@ -7499,7 +7203,7 @@
           return a.name.localeCompare(b.name);
         }).forEach(p => {
           const now = Date.now();
-          const KEYLESS_PROVIDER_KEYS = ['empero', 'opencode', 'ollama', 'freemodels'];
+          const KEYLESS_PROVIDER_KEYS = ['empero', 'opencode', 'ollama', 'freemodels', 'gptfree'];
           const providerNeedsApiKey = !KEYLESS_PROVIDER_KEYS.includes(p.key);
           const providerIsActive = p.hasKey || !providerNeedsApiKey;
 
@@ -7971,8 +7675,8 @@
 
     // Saving a provider key/enable state makes the server refresh that
     // provider's models in the background. Re-pull once shortly after so the
-    // newly available rows appear in the table without waiting for the next
-    // poll cycle.
+    // newly available rows appear in the table without the user having to
+    // refresh the page by hand.
     function scheduleKeySaveRefetch() {
       setTimeout(() => {
         if (!document.hidden) fetchData().catch(() => { });
@@ -9190,7 +8894,7 @@
           .sort((a, b) => (a.label || a.modelId).localeCompare(b.label || b.modelId))
           .map(m => ({
             value: m.modelId,
-            label: `${m.label || m.modelId} · ${m.providerKey}`
+            label: `${m.label || m.modelId} · ${providerInstanceName(m)}`
           }))
       ];
 
@@ -9859,6 +9563,8 @@
       document.getElementById('drawer-content').innerHTML = `
         <div style="margin-bottom: 24px; display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;">
           <div style="min-width:0; flex:1;">
+            <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Provider</div>
+            <div style="font-weight: 600; margin-bottom: 12px;">${escapeHtml(providerInstanceName(m))}</div>
             <div style="font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px;">Model ID</div>
             <div style="font-family: monospace; background: var(--surface-alt); padding: 12px; border-radius: 8px; font-size: 0.875rem; word-break:break-all;">${escapeHtml(m.modelId)}</div>
           </div>
@@ -9974,48 +9680,21 @@
     updateLogsPauseButton();
     initScatterControls();
 
-    // Self-scheduling poll loop: never overlaps a slow fetch, skips hidden tabs,
-    // refreshes immediately when the tab becomes visible again, and backs off on
-    // repeated failures so an outage doesn't hammer the server.
-    const POLL_INTERVAL_MS = 4000;
-    const POLL_BACKOFF_MAX_MS = 30000;
-    let pollTimer = null;
-    let pollFailStreak = 0;
-    let pollInFlight = false;
-
-    function schedulePoll(delayMs) {
-      clearTimeout(pollTimer);
-      pollTimer = setTimeout(pollLoop, delayMs);
-    }
-
-    async function pollLoop() {
-      if (pollInFlight) return;
-      pollInFlight = true;
-      try {
-        if (!document.hidden) {
-          const ok = await fetchData();
-          pollFailStreak = ok ? 0 : pollFailStreak + 1;
-        }
-      } finally {
-        pollInFlight = false;
-        schedulePoll(Math.min(POLL_INTERVAL_MS * Math.pow(2, pollFailStreak), POLL_BACKOFF_MAX_MS));
-      }
-    }
-
+    // No polling loop. This dashboard is a snapshot of server state, so it is re-read only
+    // when something the user did could have moved that state: the initial page load, a click
+    // that mutates something (Test, Refresh, ban, key/config save), or the tab coming back to
+    // the foreground. The server's state moves the same way — from evidence rather than from a
+    // clock: a manual Test, or traffic the router actually served. A 4s timer used to re-read
+    // this snapshot continuously, which had the server build ~400 rows of JSON every four
+    // seconds whether or not anything had changed.
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        fetchData(); // refresh immediately when the tab is shown again
-        schedulePoll(POLL_INTERVAL_MS);
-      }
+      if (!document.hidden) fetchData().catch(() => {}); // re-read when the user looks again
     });
 
-    schedulePoll(POLL_INTERVAL_MS);
     fetchData().catch(() => {});
     // Always populate the providers panel on initial page load, even if the
     // dashboard fetch failed or the models-view is hidden (e.g. the user is on
-    // the settings tab). loadSettings() is also called from inside fetchData()
-    // for periodic updates, but an explicit initial call guarantees the panel
-    // is populated before the first poll cycle.
+    // the settings tab).
     loadSettings().catch(e => console.error('Initial loadSettings failed:', e));
   </script>
 </body>

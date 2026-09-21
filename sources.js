@@ -454,6 +454,13 @@ export const PROVIDER_QUOTAS = {
     source: 'gpt4free usage is credit-based: anonymous traffic needs baked proof-of-work credits, otherwise a free account key',
     sourceUrl: 'https://g4f.dev/members.html',
   },
+  gptfree: {
+    // Nothing to report: the site advertises "no usage limits" for anonymous chat and
+    // returns no per-account quota headers, so the Quota column stays empty rather
+    // than showing a limit this integration cannot actually observe.
+    source: 'No observable limits: gptfree reports no per-account quota for anonymous chat',
+    sourceUrl: 'https://gptfree.com/',
+  },
   devin: {
     source: 'Devin account and plan limits are provider-managed',
     sourceUrl: 'https://devin.ai/pricing/',
@@ -765,6 +772,29 @@ export const sources = {
     "discoverable": true,
     "models": [
       ["auto", "Auto (G4F)", "128k"]
+    ]
+  },
+  // --- gptfree.com -----------------------------------------------------------
+  // A consumer chat site, not a platform: no published API, no keys, no /v1
+  // surface. Its web app signs in anonymously against the project's own Firebase
+  // instance and posts one message to a single Cloud Function, which is what
+  // hammer does too (see the token mint and the request/response conversion in
+  // lib/server.js). Two facts about that exchange are baked into the catalog
+  // below rather than papered over.
+  //
+  // There is no model parameter: the endpoint takes {message, images, history}
+  // and picks the backend itself, so this provider can only ever be one row, and
+  // that row names what it is — an auto route, not a model. Its context window is
+  // therefore unknown and is left unstated: a number here would rank it in the
+  // min_ctx filter on no evidence at all.
+  //
+  // Deliberately NOT `discoverable` — there is no model list to discover from.
+  "gptfree": {
+    "name": "GPTFree",
+    "url": "https://us-central1-gptfree-2.cloudfunctions.net/agent_stream",
+    "contextUrl": "https://gptfree.com/",
+    "models": [
+      ["auto", "Auto (GPTFree)"]
     ]
   }
 }

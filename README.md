@@ -124,13 +124,12 @@ hammer start --autostart
 hammer uninstall --autostart
 hammer status --autostart
 hammer update
-hammer autoupdate [--enable|--disable|--status] [--interval <hours>]
 hammer autostart [--install|--start|--uninstall|--status]
 hammer config export
 hammer config import <token>
 ```
 
-Request terminal logging is disabled by default. Use `--log` to enable it. Startup waits for model discovery and probes before binding the web UI; use `--verbose` (or `HAMMER_DEBUG_STARTUP=1`) for detailed diagnostics.
+Request terminal logging is disabled by default. Use `--log` to enable it. Startup waits for model discovery before binding the web UI; use `--verbose` (or `HAMMER_DEBUG_STARTUP=1`) for detailed diagnostics.
 
 ## Security
 
@@ -161,9 +160,22 @@ During `hammer onboard`, you will also be prompted to enable auto-start on login
 
 `hammer update` upgrades the global npm package and, when autostart is configured, stops the background service first and starts it again after the update.
 
-Auto-update is enabled by default. While the router is running, hammer checks npm periodically (default: every 24 hours) and applies updates automatically.
+hammer never updates itself. `hammer update` is the only path that touches npm, and it runs only when you run it — there is no background version check and no automatic restart.
 
-Use `hammer autoupdate --status` to inspect state, `hammer autoupdate --disable` to turn it off, and `hammer autoupdate --enable --interval 12` to re-enable with a custom interval.
+## Model state is learned, not polled
+
+Hammer runs no background schedule. Nothing pings models, re-discovers catalogs or re-reads the dashboard on a timer, so an idle router makes no upstream requests at all.
+
+A row's health, latency, error and quota state comes only from evidence the running router actually produced:
+
+- a **Test** you click in the dashboard (or `POST /api/test-model`), and
+- **real traffic** the router served — including the failures it hit while trying, and the token/latency samples it accumulated.
+
+Consequences worth knowing:
+
+- A **fresh start shows rows as unknown/Pending**. They fill in as you test them or as requests flow through the proxy; nothing is probed at boot.
+- The dashboard is a **snapshot**. It re-reads on page load, after actions you take (Test, Refresh, ban, key/config save), and when you bring the tab back to the foreground.
+- Model **catalog** discovery (which models a provider offers) still runs at startup and from the Refresh controls, because that describes the provider's menu rather than measuring it.
 
 Use `hammer config export` to print a transferable config token (base64url-encoded JSON), and `hammer config import <token>` to load it on another machine.
 You can also import by stdin:
@@ -259,6 +271,7 @@ Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS sc
   - `OPENAI_CODEX_REFRESH_TOKEN` (ChatGPT OAuth refresh token; the dashboard sign-in normally writes this for you)
   - `G4F_API_KEY` (optional — the g4f relays are keyless)
   - `G4F_BASE_URL` (optional — point the hosted g4f pool at a self-hosted server)
+  - (gptfree needs no key or env var — see [gptfree](#gptfree-gptfreecom) below)
 
 Kiro OAuth notes:
 - Base endpoint is preconfigured to `https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse`
@@ -284,6 +297,19 @@ Until a key is set, the provider appears under **Require setup** in the dashboar
 - Models are discovered automatically from `https://g4f.space/v1/models` (non-chat models such as whisper/TTS/image are filtered out); a curated fallback catalog is used before the first successful discovery.
 - Without a key every g4f request answers HTTP `402` with `insufficient_credits`.
 - To point hammer at a self-hosted g4f server instead, set `G4F_BASE_URL` (e.g. `http://localhost:1337/v1`) or a `baseUrl` on the `g4f` provider in `~/.hammer.json`.
+
+### gptfree (gptfree.com)
+
+[gptfree.com](https://gptfree.com/) is a free consumer chat site with **no published API**: no keys, no docs, no `/v1` surface. Hammer drives it anyway, by doing what the site's own web page does — signing in anonymously against its Firebase project and posting a single message to its chat Cloud Function. There is nothing to configure and no key to paste; the row is enabled by default.
+
+Read this part before relying on it:
+
+- **It is one auto route, not a model.** The endpoint takes `{message, images, history}` and chooses the backend itself — it ignores any model you ask for. So the provider shows exactly one row, `Auto (GPTFree)`, with no context window stated — it is unknown, and a made-up number would rank it in `min_ctx` on no evidence. The consequence is that any request carrying `+min_ctx:` never selects it (rows without a known window are excluded), and it cannot be picked *by name* the way a real model can: it is one extra candidate for `best`, not a model in the routing decisions.
+- **The credential is short-lived and minted for you.** Hammer signs in an anonymous Firebase account on first use, caches the ID token, and refreshes it from its refresh token; the Firebase web API key involved is public (it identifies the project, it does not authorize anything).
+- **It is an internal endpoint, not a contract.** Hammer uses the same Cloud Function the website calls. gptfree can add App Check, disable anonymous sign-in, rotate keys, or change the response format at any time, and the provider will stop working until hammer is updated.
+- **It is an ad-supported site.** This integration is automated traffic against a service that invites interactive use, which is a fair-use question hammer cannot answer for you. The G4F and FreeModels rows offer free relays with documented APIs if that matters to you.
+- **Expect the site's own speed and quality.** In testing, simple factual answers came back in ~2s, longer prompt-driven tests at ~4 tokens/s, and output quality tracked the small model behind it rather than any frontier model.
+- To route somewhere else — including your own local shim that mimics the site — set a `baseUrl` for `gptfree` in `~/.hammer.json`.
 
 ### GitHub Copilot
 
@@ -346,7 +372,7 @@ hammer supports configuring multiple OpenAI-compatible upstream endpoints (vLLM,
 ### Config migration (CLI + Web UI)
 
 - In the Web UI, open `Settings` -> `Configuration Transfer` to export/copy/import a token.
-- The token includes your full config (including API keys, pinning mode, bans, filter rules, and auto-update settings).
+- The token includes your full config (including API keys, pinning mode, bans, and filter rules).
 - Treat tokens as secrets. Anyone with the token can import your keys/settings.
 - Alternative: copy the config file directly from `~/.hammer.json` to the other machine at the same path (`~/.hammer.json`).
 
