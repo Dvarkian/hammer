@@ -5564,7 +5564,7 @@
         ? { rowKey: opts.rowKey, members: opts.members.map(x => ({ providerKey: x.providerKey, modelId: x.modelId })) }
         : { rowKey: opts.rowKey, providerKey: opts.providerKey, modelId: opts.modelId };
       const btnArgs = JSON.stringify(args).replace(/"/g, '&quot;');
-      return `<button class="test-btn" onclick="event.stopPropagation(); testModelButton(this, ${btnArgs})" title="Send 'Why does a hammer insist every screw is just a shy nail?' to this model">Test</button>`;
+      return `<button class="test-btn" onclick="event.stopPropagation(); testModelButton(this, ${btnArgs})" title="Send 'Please respond with a creative, funny, slightly snarky 30 words about hammers.' to this model">Test</button>`;
     }
 
     // Builds the Response cell: the Test button plus the latest response text.
@@ -5631,6 +5631,15 @@
         // the seconds formatter rounds that to "0.00s" — a label that reads as a broken number.
         const shown = durationMs < 10 ? `${Math.round(durationMs)}ms` : formatSecondsFromMs(durationMs);
         metaBits.push(`<span title="No generation rate was measured: this answer did not stream, so only the whole request time is known.">took ${shown}</span>`);
+      }
+      // A reasoning model that ran out of output budget before reaching the content channel has
+      // real output but no visible answer, and the text shown here is that reasoning. Saying so
+      // keeps the cell from reading as a reply, and names the cause when the provider said the
+      // answer was truncated (finish_reason 'length').
+      if (!expired && lastResponse.reasoningOnly) {
+        metaBits.push(`<span title="The model spent its output budget on reasoning and never reached a visible answer. This is the reasoning text; the test retries once with more headroom.">reasoning only${lastResponse.truncated ? ' · budget exhausted' : ''}</span>`);
+      } else if (!expired && lastResponse.truncated) {
+        metaBits.push(`<span title="The provider stopped because the output budget ran out.">truncated</span>`);
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -5961,6 +5970,10 @@
           tps: data.tps != null ? data.tps : null,
           tokens: data.tokens != null ? data.tokens : null,
           expiresAt: data.expiresAt != null ? data.expiresAt : null,
+          // An answer that came out of the reasoning channel, or one the output budget cut off:
+          // the cell says so instead of presenting it as a normal reply.
+          reasoningOnly: data.reasoningOnly === true,
+          truncated: data.truncated === true,
         };
         // Paint returned metrics immediately. The follow-up model fetch persists
         // them, but the response should never briefly show stale em dashes.
