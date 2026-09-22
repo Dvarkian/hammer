@@ -1,13 +1,12 @@
 // Throwaway audit: resolves the network-plot icon for every model in sources.js
-// using the exact getModelDomain code extracted from public/index.html.
+// using the exact getModelDomain code extracted from public/dashboard.js.
 import fs from 'node:fs'
 import { MODELS, MODEL_ID_ALIASES } from './sources.js'
 
-const html = fs.readFileSync('public/index.html', 'utf8')
-const script = html.slice(html.indexOf('<script>'), html.lastIndexOf('</script>'))
+const script = fs.readFileSync('public/dashboard.js', 'utf8')
 const start = script.indexOf('const MODEL_DOMAINS = {')
 const fnStart = script.indexOf('function getModelDomain(m)', start)
-if (start === -1 || fnStart === -1) throw new Error('icon maps not found in index.html')
+if (start === -1 || fnStart === -1) throw new Error('icon maps not found in public/dashboard.js')
 const brace = script.indexOf('{', fnStart)
 let depth = 0, end = -1
 for (let i = brace; i < script.length; i++) {
