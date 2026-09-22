@@ -4,6 +4,7 @@
  */
 
 import { scores } from './scores.js'
+import { lazyProviderSourceEntries } from './lib/providers/resolutions.js'
 
 export const MODEL_ID_ALIASES = {
   'cogito-2.1:671b': 'cogito-2.1:671b',
@@ -475,6 +476,24 @@ export const PROVIDER_QUOTAS = {
 }
 
 export const sources = {
+  // ── Imported providers (OmniRoute free tier) ────────────────────────────────
+  // Rows whose endpoint, wire format and credential shape were all resolved to plain
+  // OpenAI-compatible + bearer, so they need nothing provider-specific and can ride the
+  // generic path with no per-provider code. Distinct from the hand-configured providers
+  // below in two ways that matter:
+  //
+  //   • They carry `lazyDiscovery: true`. The startup probe wave in lib/server.js skips
+  //     that flag, so importing ~40 providers does not become ~40 network probes on every
+  //     boot — which would undo the deliberate removal of background polling. They are
+  //     discovered when something asks for them (a provider refresh, or a request that
+  //     needs their model list).
+  //   • They carry no model rows. A list invented here would be stale the moment the
+  //     provider rotated its roster; discovery supplies what is actually served.
+  //
+  // Spread FIRST so hammer's own providers below win any key collision (nvidia, groq,
+  // cerebras, openrouter, scaleway, kiro, opencode). See lib/providers/resolutions.js for
+  // which imports are active and why the rest are not.
+  ...lazyProviderSourceEntries(),
   "nvidia": {
     "name": "NIM",
     "url": "https://integrate.api.nvidia.com/v1/chat/completions",

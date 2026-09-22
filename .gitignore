@@ -51,3 +51,11 @@ Thumbs.db
 # 11. Local backups and tooling state
 lib/*.local-bak
 .freebuff/
+
+# 12. Vendor catalog fetch cache (tools/resolve-omniroute-endpoints.mjs)
+# Raw upstream sources kept only to make a rerun cheap. Never committed: the resolved
+# output in lib/providers/omniroute-resolved.json is the reviewed artefact.
+tools/.cache/
+# Per-machine provider verification results. Committing one machine's probe outcomes would
+# present them as the repository's own claim, which is exactly what "verified" must not mean.
+lib/providers/verification-report.json

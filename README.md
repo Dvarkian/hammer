@@ -235,7 +235,7 @@ Hammer uses context data reported by the selected provider when it is available.
 
 Besides the two sources above, hammer learns bounds from real requests: a successful request raises a lower bound, and a rejection that is genuinely about context lowers an upper bound. Only a provider-stated ceiling may become an *exact* bound, and only an exact bound may override the catalog or mark a row `Micro` in the dashboard. Throughput quotas ("…on output tokens per minute (OTPM): Limit 1000, Requested 1413") and output-token caps ("`max_tokens` must be less than or equal to `8192`") are refused: they describe this request's budget, not the model's window. A bound inferred from the size of a failed prompt is shown as a range (`>22, <1649`) and never benches a row.
 
-Every bound keeps the error body it was read from, and is re-checked against the current rules on startup, so a parser fix withdraws the numbers an older build wrote. To withdraw one by hand, use **🧹 Clear learned context** in a model's drawer, `hammer context reset [--provider <key>] [--model <id>]`, or `POST /api/context-bounds/reset` with `{providerKey, modelId}`.
+Every bound keeps the error body it was read from, and is re-checked against the current rules on startup, so a parser fix withdraws the numbers an older build wrote. To withdraw one by hand, use `hammer context reset [--provider <key>] [--model <id>]` or `POST /api/context-bounds/reset` with `{providerKey, modelId}`.
 
 ### Learned output caps
 

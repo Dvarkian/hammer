@@ -1,0 +1,1385 @@
+{
+  "_source": {
+    "project": "OmniRoute",
+    "license": "MIT",
+    "repo": "https://github.com/diegosouzapw/OmniRoute",
+    "ref": "main",
+    "input": "open-sse/config/providers/index.ts",
+    "registryPrefix": "open-sse/config/providers/",
+    "generatedAt": "2026-09-22T03:51:26.871Z",
+    "attribution": "Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute's provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.",
+    "activationRule": "active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider's own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.",
+    "tosPolicy": "Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead."
+  },
+  "summary": {
+    "active": 58,
+    "refused": 0,
+    "staged": 8,
+    "registryEntriesRead": 65
+  },
+  "providers": {
+    "mistral": {
+      "activation": "active",
+      "chatUrl": "https://api.mistral.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 5,
+        "declaredModels": [
+          "mistral-large-latest",
+          "mistral-medium-3-5",
+          "mistral-small-latest",
+          "devstral-latest",
+          "codestral-latest"
+        ]
+      }
+    },
+    "llm7": {
+      "activation": "active",
+      "chatUrl": "https://api.llm7.io/v1/chat/completions",
+      "modelsUrl": "https://api.llm7.io/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 4,
+        "declaredModels": [
+          "gpt-4o-mini-2024-07-18",
+          "gpt-4.1-nano-2025-04-14",
+          "deepseek-r1-0528",
+          "qwen2.5-coder-32b-instruct"
+        ]
+      }
+    },
+    "gemini": {
+      "activation": "active",
+      "chatUrl": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "x-goog-api-key",
+        "scheme": null
+      },
+      "provenance": {
+        "endpointOverride": "Google publishes an OpenAI-compatible layer at /v1beta/openai; hammer's own googleai provider already calls a sibling of this URL, so the shape is proven in-tree.",
+        "modelCount": 8,
+        "declaredModels": [
+          "gemini-3.7-flash",
+          "gemini-3.1-pro-preview",
+          "gemini-3.1-flash-lite",
+          "gemini-3-flash-preview",
+          "gemini-3.1-flash-tts-preview",
+          "gemini-2.5-pro",
+          "gemini-2.5-flash",
+          "gemini-2.5-flash-lite"
+        ]
+      }
+    },
+    "cerebras": {
+      "activation": "active",
+      "chatUrl": "https://api.cerebras.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 3,
+        "declaredModels": [
+          "zai-glm-4.7",
+          "gemma-4-31b",
+          "gpt-oss-120b"
+        ]
+      }
+    },
+    "cloudflare-ai": {
+      "activation": "active",
+      "chatUrl": "https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "flattenTextContent": true,
+        "urlTemplate": true,
+        "credentialFields": [
+          "accountId"
+        ]
+      },
+      "provenance": {
+        "executor": "cloudflare-ai",
+        "modelCount": 9,
+        "declaredModels": [
+          "@cf/mistral/mistral-7b-instruct-v0.2-lora",
+          "@cf/qwen/qwen2.5-coder-32b-instruct",
+          "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+          "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+          "@cf/meta/llama-3.2-3b-instruct",
+          "@cf/qwen/qwq-32b",
+          "@cf/zai-org/glm-4.7-flash",
+          "@cf/moonshotai/kimi-k2.6",
+          "@cf/google/gemma-4-26b-a4b-it"
+        ]
+      }
+    },
+    "api-airforce": {
+      "activation": "active",
+      "chatUrl": "https://api.airforce/v1/chat/completions",
+      "modelsUrl": "https://api.airforce/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 7,
+        "declaredModels": [
+          "x-ai/grok-3",
+          "x-ai/grok-2-1212",
+          "anthropic/claude-3.7-sonnet",
+          "qwen/qwen3-32b",
+          "moonshot/kimi-k2.6",
+          "google/gemini-2.5-flash",
+          "deepseek/deepseek-v3"
+        ]
+      }
+    },
+    "ollama-cloud": {
+      "activation": "active",
+      "chatUrl": "https://ollama.com/v1/chat/completions",
+      "modelsUrl": "https://ollama.com/api/tags",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 9,
+        "declaredModels": [
+          "gpt-oss:20b",
+          "gpt-oss:120b",
+          "deepseek-v4-flash",
+          "kimi-k2.6",
+          "glm-5.2",
+          "minimax-m2.7",
+          "gemma4:31b",
+          "nemotron-3-super",
+          "qwen3.5:397b"
+        ]
+      }
+    },
+    "groq": {
+      "activation": "active",
+      "chatUrl": "https://api.groq.com/openai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 7,
+        "declaredModels": [
+          "meta-llama/llama-4-scout-17b-16e-instruct",
+          "llama-3.3-70b-versatile",
+          "openai/gpt-oss-120b",
+          "openai/gpt-oss-20b",
+          "qwen/qwen3-32b",
+          "qwen/qwen3.6-27b",
+          "openai/gpt-oss-safeguard-20b"
+        ]
+      }
+    },
+    "bluesminds": {
+      "activation": "active",
+      "chatUrl": "https://api.bluesminds.com/v1/chat/completions",
+      "modelsUrl": "https://api.bluesminds.com/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 21,
+        "declaredModels": [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "gpt-4.1",
+          "gpt-4.1-mini",
+          "gpt-4.1-nano",
+          "claude-sonnet-4-5",
+          "claude-haiku-4-5",
+          "gemini-2.0-flash",
+          "gemini-2.0-flash-exp",
+          "deepseek-reasoner",
+          "deepseek-chat",
+          "qwen-plus",
+          "qwen-turbo",
+          "kimi-k2",
+          "kimi-k2-thinking",
+          "glm-4.7",
+          "glm-4-flash",
+          "minimax-m2.5",
+          "gemini-2.5-pro",
+          "grok-3",
+          "qwen-max"
+        ]
+      }
+    },
+    "sambanova": {
+      "activation": "active",
+      "chatUrl": "https://api.sambanova.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "arcee-ai": {
+      "activation": "staged",
+      "reason": "no free endpoint on either side: Arcee's own API is key-only (GET https://api.arcee.ai/v1/models -> 401) and OpenRouter currently lists no \":free\" Arcee variant, verified 2026-09-22"
+    },
+    "bazaarlink": {
+      "activation": "active",
+      "chatUrl": "https://bazaarlink.ai/api/v1/chat/completions",
+      "modelsUrl": "https://bazaarlink.ai/api/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 32,
+        "declaredModels": [
+          "auto:free",
+          "claude-opus-4.7",
+          "claude-sonnet-4.6",
+          "claude-haiku-4.5",
+          "gpt-5.5",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.4-nano",
+          "grok-4.3",
+          "grok-4.20",
+          "gemini-3.1-pro-preview",
+          "gemini-3-flash-preview",
+          "gemini-3.1-flash-lite-preview",
+          "gemma-4-31b-it",
+          "gemma-4-26b-a4b-it",
+          "deepseek-v3.2",
+          "kimi-k2.6",
+          "kimi-k2.5",
+          "glm-5.1",
+          "glm-5",
+          "mimo-v2.5-pro",
+          "mimo-v2.5",
+          "minimax-m2.7",
+          "minimax-m2.5",
+          "llama-4-maverick",
+          "llama-4-scout",
+          "llama-3.3-70b-instruct",
+          "qwen3.6-plus",
+          "mistral-large-2512",
+          "mistral-medium-3.1",
+          "mistral-small-2603",
+          "nemotron-3-super-120b-a12b"
+        ]
+      }
+    },
+    "openrouter": {
+      "activation": "active",
+      "chatUrl": "https://openrouter.ai/api/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "cohere": {
+      "activation": "active",
+      "chatUrl": "https://api.cohere.com/compatibility/v1/chat/completions",
+      "modelsUrl": "https://api.cohere.com/compatibility/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "command-a-reasoning-08-2025",
+          "command-a-vision-07-2025",
+          "command-a-03-2025",
+          "command-r7b-12-2024",
+          "command-r-plus-08-2024",
+          "command-r-08-2024"
+        ]
+      }
+    },
+    "huggingchat": {
+      "activation": "staged",
+      "reason": "HuggingChat signs in through HuggingFace OAuth (an unauthenticated GET answers 302 to /oauth/authorize, verified 2026-09-22) and then needs a session cookie plus a create-conversation round trip before any message is sent, so it needs a wire adapter"
+    },
+    "morph": {
+      "activation": "active",
+      "chatUrl": "https://api.morphllm.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "huggingface": {
+      "activation": "active",
+      "chatUrl": "https://router.huggingface.co/v1/chat/completions",
+      "modelsUrl": "https://router.huggingface.co/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "meta-llama/llama-3.1-8b-instruct",
+          "meta-llama/llama-3.2-11b-instruct",
+          "mistralai/mistral-7b-instruct",
+          "google/gemma-2-9b-it",
+          "Qwen/Qwen2.5-7B-Instruct",
+          "deepseek-ai/DeepSeek-V3"
+        ]
+      }
+    },
+    "kiro": {
+      "activation": "staged",
+      "reason": "executor \"kiro\" frames its own request and response with no declarative equivalent"
+    },
+    "longcat": {
+      "activation": "active",
+      "chatUrl": "https://api.longcat.chat/openai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 1,
+        "declaredModels": [
+          "LongCat-2.0"
+        ]
+      }
+    },
+    "glm-cn": {
+      "activation": "active",
+      "chatUrl": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "requestDefaults": {
+          "max_tokens": 16384
+        },
+        "timeoutMs": 3000000
+      },
+      "provenance": {
+        "executor": "glm",
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "baidu": {
+      "activation": "active",
+      "chatUrl": "https://qianfan.baidubce.com/v2/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 16,
+        "declaredModels": [
+          "ernie-5.1",
+          "ernie-5.0",
+          "ernie-x1.1",
+          "ernie-4.5-turbo-128k",
+          "ernie-4.5-turbo-32k",
+          "ernie-4.5-turbo-vl",
+          "ernie-4.5-21b-a3b",
+          "ernie-4.5-0.3b",
+          "ernie-4.0-8k",
+          "ernie-4.0-turbo-128k",
+          "ernie-4.0-turbo-8k",
+          "ernie-3.5-8k",
+          "ernie-speed-128k",
+          "ernie-speed-8k",
+          "ernie-lite-8k",
+          "ernie-tiny-8k"
+        ]
+      }
+    },
+    "kilo-gateway": {
+      "activation": "active",
+      "chatUrl": "https://api.kilo.ai/api/gateway/chat/completions",
+      "modelsUrl": "https://api.kilo.ai/api/gateway/models",
+      "auth": {
+        "kind": "none",
+        "optional": true,
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "kilo-auto/frontier",
+          "kilo-auto/balanced",
+          "kilo-auto/free",
+          "nvidia/nemotron-3-super-120b-a12b:free",
+          "minimax/minimax-m2.5:free",
+          "arcee-ai/trinity-large-preview:free"
+        ]
+      }
+    },
+    "opencode-zen": {
+      "activation": "active",
+      "chatUrl": "https://opencode.ai/zen/v1/chat/completions",
+      "modelsUrl": "https://opencode.ai/zen/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "executor": "opencode",
+        "modelCount": 21,
+        "declaredModels": [
+          "big-pickle",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.4-nano",
+          "gpt-5.3-codex-spark",
+          "gpt-5.1",
+          "claude-opus-5",
+          "claude-sonnet-5",
+          "claude-haiku-4-5",
+          "gemini-3.5-flash-lite",
+          "gemini-3.1-pro",
+          "gemini-3-flash",
+          "grok-4.6",
+          "deepseek-v4-flash",
+          "mimo-v2.5-free",
+          "hy3-free",
+          "nemotron-3-ultra-free",
+          "nemotron-3.5-lightning-free",
+          "laguna-s-2.1-free"
+        ]
+      }
+    },
+    "siliconflow": {
+      "activation": "active",
+      "chatUrl": "https://api.siliconflow.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 65,
+        "declaredModels": [
+          "deepseek-ai/DeepSeek-V3.2",
+          "deepseek-ai/DeepSeek-V3.2-Exp",
+          "deepseek-ai/DeepSeek-V3.1",
+          "deepseek-ai/DeepSeek-V3.1-Terminus",
+          "deepseek-ai/DeepSeek-V3",
+          "deepseek-ai/DeepSeek-R1",
+          "deepseek-ai/deepseek-vl2",
+          "nex-agi/DeepSeek-V3.1-Nex-N1",
+          "Qwen/Qwen3.6-27B",
+          "Qwen/Qwen3.5-397B-A17B",
+          "Qwen/Qwen3.5-122B-A10B",
+          "Qwen/Qwen3.5-35B-A3B",
+          "Qwen/Qwen3.5-27B",
+          "Qwen/Qwen3.5-9B",
+          "Qwen/Qwen3-Next-80B-A3B-Instruct",
+          "Qwen/Qwen3-Next-80B-A3B-Thinking",
+          "Qwen/Qwen3-235B-A22B",
+          "Qwen/Qwen3-235B-A22B-Instruct-2507",
+          "Qwen/Qwen3-235B-A22B-Thinking-2507",
+          "Qwen/Qwen3-32B",
+          "Qwen/Qwen3-30B-A3B-Instruct-2507",
+          "Qwen/Qwen3-30B-A3B-Thinking-2507",
+          "Qwen/Qwen3-14B",
+          "Qwen/Qwen3-8B",
+          "Qwen/Qwen3-Coder-480B-A35B-Instruct",
+          "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+          "Qwen/Qwen3-Omni-30B-A3B-Instruct",
+          "Qwen/Qwen3-Omni-30B-A3B-Thinking",
+          "Qwen/Qwen3-Omni-30B-A3B-Captioner",
+          "Qwen/Qwen2.5-72B-Instruct",
+          "Qwen/Qwen2.5-72B-Instruct-128K",
+          "Qwen/Qwen2.5-32B-Instruct",
+          "Qwen/Qwen2.5-14B-Instruct",
+          "Qwen/Qwen2.5-7B-Instruct",
+          "Qwen/Qwen2.5-VL-7B-Instruct",
+          "zai-org/GLM-5",
+          "zai-org/GLM-5V-Turbo",
+          "zai-org/GLM-4.7",
+          "zai-org/GLM-4.6",
+          "zai-org/GLM-4.6V"
+        ]
+      }
+    },
+    "tencent": {
+      "activation": "active",
+      "chatUrl": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "hunyuan-turbos-latest",
+          "hunyuan-t1-latest",
+          "hunyuan-pro",
+          "hunyuan-vision",
+          "hunyuan-functioncall",
+          "hunyuan-lite"
+        ]
+      }
+    },
+    "vertex": {
+      "activation": "active",
+      "chatUrl": "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "urlTemplate": true,
+        "credentialFields": [
+          "project",
+          "region"
+        ]
+      },
+      "provenance": {
+        "executor": "vertex",
+        "modelCount": 19,
+        "declaredModels": [
+          "gemini-3.1-pro-preview",
+          "gemini-3.1-flash-lite",
+          "gemini-3-flash-preview",
+          "gemma-4-31b-it",
+          "DeepSeek-V4-Flash",
+          "DeepSeek-V4-Pro",
+          "Qwen3.6-35B-A3B",
+          "GLM-5.1-FP8",
+          "claude-fable-5",
+          "claude-opus-5",
+          "claude-sonnet-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "claude-opus-4-6",
+          "claude-sonnet-4-6",
+          "claude-sonnet-4-5-v2",
+          "claude-sonnet-4-5",
+          "claude-opus-4-5",
+          "claude-haiku-4-5"
+        ]
+      }
+    },
+    "agentrouter": {
+      "activation": "active",
+      "chatUrl": "https://agentrouter.org/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "alternateFormatUsed": "openai",
+        "modelCount": 3,
+        "declaredModels": [
+          "claude-opus-4-8",
+          "claude-opus-5",
+          "gpt-5.6-sol"
+        ]
+      }
+    },
+    "predibase": {
+      "activation": "active",
+      "chatUrl": "https://serving.app.predibase.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "together": {
+      "activation": "active",
+      "chatUrl": "https://api.together.xyz/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 7,
+        "declaredModels": [
+          "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+          "meta-llama/Llama-Vision-Free",
+          "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-Free",
+          "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+          "deepseek-ai/DeepSeek-R1",
+          "Qwen/Qwen3-235B-A22B",
+          "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+        ]
+      }
+    },
+    "doubao": {
+      "activation": "active",
+      "chatUrl": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 9,
+        "declaredModels": [
+          "doubao-seed-2-0-pro-260215",
+          "doubao-seed-2-0-lite-260215",
+          "doubao-seed-2-0-mini-260215",
+          "doubao-seed-2-0-code-preview-260215",
+          "doubao-seed-1-8-251228",
+          "doubao-seed-1-6-251015",
+          "doubao-seed-1-6-flash-250828",
+          "doubao-1-5-pro-32k-250115",
+          "doubao-pro-32k"
+        ]
+      }
+    },
+    "ai21": {
+      "activation": "active",
+      "chatUrl": "https://api.ai21.com/studio/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "deepseek": {
+      "activation": "active",
+      "chatUrl": "https://api.deepseek.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "endpointOverride": "OmniRoute's entry targets the Responses API, but DeepSeek's documented OpenAI-compatible chat-completions endpoint is available and needs no translator.",
+        "modelCount": 2,
+        "declaredModels": [
+          "deepseek-v4-pro",
+          "deepseek-v4-flash"
+        ]
+      }
+    },
+    "hyperbolic": {
+      "activation": "active",
+      "chatUrl": "https://api.hyperbolic.xyz/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 8,
+        "declaredModels": [
+          "Qwen/QwQ-32B",
+          "deepseek-ai/DeepSeek-R1",
+          "deepseek-ai/DeepSeek-V3",
+          "meta-llama/Llama-3.3-70B-Instruct",
+          "meta-llama/Llama-3.2-3B-Instruct",
+          "Qwen/Qwen2.5-72B-Instruct",
+          "Qwen/Qwen2.5-Coder-32B-Instruct",
+          "NousResearch/Hermes-3-Llama-3.1-70B"
+        ]
+      }
+    },
+    "nscale": {
+      "activation": "active",
+      "chatUrl": "https://inference.api.nscale.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "bytez": {
+      "activation": "active",
+      "chatUrl": "https://api.bytez.com/models/v2/openai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "deepinfra": {
+      "activation": "active",
+      "chatUrl": "https://api.deepinfra.com/v1/openai/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "fireworks": {
+      "activation": "active",
+      "chatUrl": "https://api.fireworks.ai/inference/v1/chat/completions",
+      "modelsUrl": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless=true",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "modelIdPrefix": "accounts/fireworks/models/"
+      },
+      "provenance": {
+        "modelCount": 10,
+        "declaredModels": [
+          "deepseek-v4-flash",
+          "deepseek-v4-pro",
+          "glm-5p1",
+          "gpt-oss-120b",
+          "gpt-oss-20b",
+          "kimi-k2p5",
+          "kimi-k2p6",
+          "minimax-m2p5",
+          "minimax-m2p7",
+          "qwen3p6-plus"
+        ]
+      }
+    },
+    "nebius": {
+      "activation": "active",
+      "chatUrl": "https://api.tokenfactory.nebius.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "qoder": {
+      "activation": "active",
+      "chatUrl": "https://api.qoder.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "token-mint",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "headers": {
+          "User-Agent": "Qoder-Cli"
+        }
+      },
+      "provenance": {
+        "executor": "qoder",
+        "modelCount": 9,
+        "declaredModels": [
+          "qwen3.8-max-preview",
+          "qwen3.7-max",
+          "qwen3.7-plus",
+          "kimi-k3",
+          "kimi-k2.7-code",
+          "glm-5.2",
+          "deepseek-v4-pro",
+          "deepseek-v4-flash",
+          "minimax-m3"
+        ]
+      }
+    },
+    "scaleway": {
+      "activation": "active",
+      "chatUrl": "https://api.scaleway.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "qwen3-235b-a22b-instruct-2507",
+          "llama-3.1-70b-instruct",
+          "llama-3.1-8b-instruct",
+          "mistral-small-3.2-24b-instruct-2506",
+          "deepseek-v3-0324",
+          "gpt-oss-120b"
+        ]
+      }
+    },
+    "novita": {
+      "activation": "active",
+      "chatUrl": "https://api.novita.ai/openai/v1/chat/completions",
+      "modelsUrl": "https://api.novita.ai/openai/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 13,
+        "declaredModels": [
+          "deepseek/deepseek-v4-pro",
+          "deepseek/deepseek-v4-flash",
+          "deepseek/deepseek-v3.2",
+          "moonshotai/kimi-k2.7-code",
+          "moonshotai/kimi-k2.6",
+          "zai-org/glm-5.1",
+          "zai-org/glm-4.7",
+          "minimax/minimax-m2.7",
+          "qwen/qwen3.6-plus",
+          "qwen/qwen3.5-397b-a17b",
+          "qwen/qwen3-coder-480b-a35b-instruct",
+          "openai/gpt-oss-120b",
+          "google/gemma-4-31b-it"
+        ]
+      }
+    },
+    "agy": {
+      "activation": "staged",
+      "reason": "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines), so it needs a wire adapter"
+    },
+    "baichuan": {
+      "activation": "active",
+      "chatUrl": "https://api.baichuan-ai.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 5,
+        "declaredModels": [
+          "Baichuan4-Turbo",
+          "Baichuan4-Air",
+          "Baichuan4",
+          "Baichuan3-Turbo",
+          "Baichuan3-Turbo-128k"
+        ]
+      }
+    },
+    "blackbox": {
+      "activation": "active",
+      "chatUrl": "https://api.blackbox.ai/v1/chat/completions",
+      "modelsUrl": "https://api.blackbox.ai/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 11,
+        "declaredModels": [
+          "claude-fable-5",
+          "claude-opus-4.8",
+          "claude-sonnet-5",
+          "claude-sonnet-4.6",
+          "gpt-5.5",
+          "gpt-5.4-pro",
+          "gpt-5.4",
+          "gpt-5.3-codex",
+          "gpt-5.4-nano",
+          "deepseek-v4-flash",
+          "grok-4.3"
+        ]
+      }
+    },
+    "coze": {
+      "activation": "active",
+      "chatUrl": "https://api.coze.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "duckduckgo-web": {
+      "activation": "staged",
+      "reason": "Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads `navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no legitimate client that talks to this endpoint"
+    },
+    "freemodel-dev": {
+      "activation": "active",
+      "chatUrl": "https://api.freemodel.dev/v1/chat/completions",
+      "modelsUrl": "https://api.freemodel.dev/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 4,
+        "declaredModels": [
+          "gpt-5.5",
+          "gpt-5.4",
+          "gpt-5.4-mini",
+          "gpt-5.3-codex"
+        ]
+      }
+    },
+    "friendliai": {
+      "activation": "active",
+      "chatUrl": "https://api.friendli.ai/serverless/v1/chat/completions",
+      "modelsUrl": "https://api.friendli.ai/serverless/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "iflytek": {
+      "activation": "active",
+      "chatUrl": "https://spark-api-open.xf-yun.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 6,
+        "declaredModels": [
+          "4.0Ultra",
+          "generalv3.5",
+          "max-32k",
+          "generalv3",
+          "pro-128k",
+          "lite"
+        ]
+      }
+    },
+    "inference-net": {
+      "activation": "active",
+      "chatUrl": "https://api.inference.net/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "liquid": {
+      "activation": "active",
+      "chatUrl": "https://inference.liquid.ai/v1/chat/completions",
+      "modelsUrl": "https://inference.liquid.ai/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "monsterapi": {
+      "activation": "active",
+      "chatUrl": "https://api.monsterapi.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 2,
+        "declaredModels": [
+          "meta-llama/Meta-Llama-3.1-8B-Instruct",
+          "meta-llama/Llama-3.3-70B-Instruct"
+        ]
+      }
+    },
+    "muse-spark-web": {
+      "activation": "staged",
+      "reason": "Muse Spark is a cookie-authenticated GraphQL endpoint, not a chat-completions API, so it needs a wire adapter"
+    },
+    "nlpcloud": {
+      "activation": "active",
+      "chatUrl": "https://api.nlpcloud.io/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 5,
+        "declaredModels": [
+          "chatdolphin",
+          "dolphin",
+          "finetuned-llama-3-70b",
+          "llama-3-1-405b",
+          "llama-3-8b-instruct"
+        ]
+      }
+    },
+    "nous-research": {
+      "activation": "active",
+      "chatUrl": "https://inference-api.nousresearch.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 2,
+        "declaredModels": [
+          "Hermes-4-405B",
+          "Hermes-4-70B"
+        ]
+      }
+    },
+    "nvidia": {
+      "activation": "active",
+      "chatUrl": "https://integrate.api.nvidia.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 46,
+        "declaredModels": [
+          "z-ai/glm-5.2",
+          "google/gemma-4-31b-it",
+          "mistralai/mistral-small-4-119b-2603",
+          "mistralai/mistral-large-3-675b-instruct-2512",
+          "mistralai/devstral-2-123b-instruct-2512",
+          "qwen/qwen3.5-397b-a17b",
+          "qwen/qwen3.5-122b-a10b",
+          "stepfun-ai/step-3.5-flash",
+          "stepfun-ai/step-3.7-flash",
+          "openai/gpt-oss-120b",
+          "openai/gpt-oss-20b",
+          "nvidia/nemotron-3-super-120b-a12b",
+          "nvidia/nemotron-3-ultra-550b-a55b",
+          "google/gemma-2-2b-it",
+          "google/gemma-3n-e2b-it",
+          "meta/llama-3.1-8b-instruct",
+          "meta/llama-3.2-11b-vision-instruct",
+          "meta/llama-3.2-1b-instruct",
+          "meta/llama-3.2-3b-instruct",
+          "meta/llama-3.2-90b-vision-instruct",
+          "meta/llama-4-maverick-17b-128e-instruct",
+          "meta/llama-guard-4-12b",
+          "mistralai/ministral-14b-instruct-2512",
+          "mistralai/mistral-medium-3.5-128b",
+          "mistralai/mistral-nemotron",
+          "mistralai/mixtral-8x7b-instruct-v0.1",
+          "nvidia/ising-calibration-1-35b-a3b",
+          "nvidia/llama-3.1-nemoguard-8b-content-safety",
+          "nvidia/llama-3.1-nemoguard-8b-topic-control",
+          "nvidia/llama-3.1-nemotron-nano-8b-v1",
+          "nvidia/llama-3.1-nemotron-nano-vl-8b-v1",
+          "nvidia/llama-3.1-nemotron-safety-guard-8b-v3",
+          "nvidia/llama-3.3-nemotron-super-49b-v1",
+          "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+          "nvidia/nemotron-3-content-safety",
+          "nvidia/nemotron-3-nano-30b-a3b",
+          "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+          "nvidia/nemotron-3.5-content-safety",
+          "nvidia/nemotron-mini-4b-instruct",
+          "nvidia/nemotron-nano-12b-v2-vl"
+        ]
+      }
+    },
+    "opencode": {
+      "activation": "active",
+      "chatUrl": "https://opencode.ai/zen/v1/chat/completions",
+      "modelsUrl": "https://opencode.ai/zen/v1/models",
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "executor": "opencode",
+        "modelCount": 6,
+        "declaredModels": [
+          "big-pickle",
+          "muse-spark-1.2-contributor-free",
+          "deepseek-v4-flash-free",
+          "hy3-free",
+          "nemotron-3-ultra-free",
+          "north-mini-code-free"
+        ]
+      }
+    },
+    "pollinations": {
+      "activation": "active",
+      "chatUrl": "https://gen.pollinations.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "shaping": {
+        "jsonMode": true,
+        "premiumModels": [
+          "claude",
+          "claude-fast",
+          "claude-large",
+          "gemini",
+          "gemini-fast",
+          "midijourney",
+          "midijourney-large"
+        ]
+      },
+      "provenance": {
+        "requiresKeyEvidence": "completion — 2026-09-22 — POST /v1/chat/completions with no credential returned HTTP 401 {\"success\":false,\"error\":{\"code\":\"UNAUTHORIZED\",\"message\":\"A valid API key is required\"}}, so the registry's `authType: \"optional\"` and its 2026-07-20 note are both stale",
+        "executor": "pollinations",
+        "modelCount": 31,
+        "declaredModels": [
+          "openai",
+          "openai-fast",
+          "openai-large",
+          "qwen-coder",
+          "mistral",
+          "gemini",
+          "gemini-flash-lite-3.1",
+          "gemini-fast",
+          "deepseek",
+          "grok",
+          "grok-large",
+          "gemini-search",
+          "midijourney",
+          "midijourney-large",
+          "claude-fast",
+          "claude",
+          "claude-large",
+          "perplexity-fast",
+          "perplexity-reasoning",
+          "kimi",
+          "gemini-large",
+          "nova-fast",
+          "nova",
+          "glm",
+          "minimax",
+          "mistral-large",
+          "polly",
+          "qwen-coder-large",
+          "qwen-large",
+          "qwen-vision",
+          "qwen-safety"
+        ]
+      }
+    },
+    "publicai": {
+      "activation": "active",
+      "chatUrl": "https://api.publicai.co/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 0,
+        "declaredModels": []
+      }
+    },
+    "qwen-web": {
+      "activation": "staged",
+      "reason": "Qwen Chat issues no API key — the bearer its registry entry names is a logged-in browser session token, and the chat endpoint sits behind an Aliyun WAF interstitial (a bodyless POST returns the WAF challenge page rather than an auth error, verified 2026-09-22), so it needs a wire adapter"
+    },
+    "reka": {
+      "activation": "active",
+      "chatUrl": "https://api.reka.ai/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 3,
+        "declaredModels": [
+          "reka-flash-3",
+          "reka-flash",
+          "reka-edge-2603"
+        ]
+      }
+    },
+    "sensenova": {
+      "activation": "active",
+      "chatUrl": "https://token.sensenova.cn/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 3,
+        "declaredModels": [
+          "sensenova-6.7-flash-lite",
+          "deepseek-v4-flash",
+          "glm-5.2"
+        ]
+      }
+    },
+    "sparkdesk": {
+      "activation": "active",
+      "chatUrl": "https://spark-api-open.xf-yun.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 4,
+        "declaredModels": [
+          "4.0Ultra",
+          "generalv3",
+          "pro-128k",
+          "lite"
+        ]
+      }
+    },
+    "stepfun": {
+      "activation": "active",
+      "chatUrl": "https://api.stepfun.com/v1/chat/completions",
+      "modelsUrl": null,
+      "auth": {
+        "kind": "bearer",
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 5,
+        "declaredModels": [
+          "step-3.7-flash",
+          "step-3.5-flash",
+          "step-3.5-flash-2603",
+          "step-1o-turbo-vision",
+          "step-1v"
+        ]
+      }
+    },
+    "t3-web": {
+      "activation": "staged",
+      "reason": "t3.chat authenticates with a session cookie and streams its own frame shape, so it needs a wire adapter"
+    },
+    "uncloseai": {
+      "activation": "active",
+      "chatUrl": "https://hermes.ai.unturf.com/v1/chat/completions",
+      "modelsUrl": "https://hermes.ai.unturf.com/v1/models",
+      "auth": {
+        "kind": "none",
+        "optional": true,
+        "headerName": "Authorization",
+        "scheme": "Bearer"
+      },
+      "provenance": {
+        "modelCount": 3,
+        "declaredModels": [
+          "adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic",
+          "qwen3.6:27b",
+          "gemma4:31b"
+        ]
+      }
+    }
+  }
+}

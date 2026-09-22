@@ -27,7 +27,10 @@
   "author": "anonymous",
   "type": "module",
   "scripts": {
-    "start": "node bin/hammer.js"
+    "start": "node bin/hammer.js",
+    "test": "node --test test/",
+    "verify:providers": "node tools/verify-providers.mjs",
+    "sync:omniroute": "node tools/sync-omniroute-catalog.mjs"
   },
   "dependencies": {
     "chalk": "^5.4.1",
