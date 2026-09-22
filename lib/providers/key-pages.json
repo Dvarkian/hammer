@@ -228,12 +228,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "freemodel-dev": {
-      "url": "https://freemodel.dev/",
-      "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "friendliai": {
       "url": "https://suite.friendli.ai/",
       "evidence": "Friendli Suite; Settings then API Keys",

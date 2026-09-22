@@ -6,14 +6,14 @@
     "ref": "main",
     "input": "open-sse/config/providers/index.ts",
     "registryPrefix": "open-sse/config/providers/",
-    "generatedAt": "2026-09-22T10:59:41.453Z",
+    "generatedAt": "2026-09-22T11:40:39.653Z",
     "attribution": "Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute's provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.",
     "activationRule": "active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider's own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.",
     "tosPolicy": "Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead."
   },
   "summary": {
-    "active": 53,
-    "refused": 5,
+    "active": 52,
+    "refused": 6,
     "staged": 8,
     "registryEntriesRead": 65
   },
@@ -918,23 +918,8 @@
       "reason": "Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads `navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no legitimate client that talks to this endpoint"
     },
     "freemodel-dev": {
-      "activation": "active",
-      "chatUrl": "https://api.freemodel.dev/v1/chat/completions",
-      "modelsUrl": "https://api.freemodel.dev/v1/models",
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 4,
-        "declaredModels": [
-          "gpt-5.5",
-          "gpt-5.4",
-          "gpt-5.4-mini",
-          "gpt-5.3-codex"
-        ]
-      }
+      "activation": "refused",
+      "reason": "not free: the row's grant is `keyless`, and there is no keyless access. Verified live 2026-09-22: POST https://api.freemodel.dev/v1/chat/completions with no credential at all returns HTTP 403 {\"error\":\"Unauthorized: No valid credentials provided\"}, and the same request with a placeholder bearer returns HTTP 401 {\"error\":\"Unauthorized - Invalid token\"} — so every request needs a key on a registered account, and the only free value that account carries is a one-time signup credit rather than a recurring allowance, which is why nothing here recurs. Its `/v1/models` does answer with no credential (gpt-5.6-luna / -sol / -terra), and that is exactly the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness (see the llm7 case); it is the only part of the roster row that was ever checked, which is how a key-gated provider came to be recorded as keyless. The declared models disagree with the live list as well (the roster names gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex, the endpoint serves none of them), so the row is stale on both counts. Declined at the operator's instruction, 2026-09-22."
     },
     "friendliai": {
       "activation": "active",

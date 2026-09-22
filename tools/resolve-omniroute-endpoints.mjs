@@ -282,6 +282,18 @@ const NOT_FREE_KEYS = {
   deepseek: 'not free: the row\'s only grant is a one-time 5,000,000-token signup credit — its own '
     + '`access` classification is "signup-credit", never the recurring one — and DeepSeek\'s platform '
     + 'is prepaid, so nothing here recurs. Declined at the operator\'s instruction, 2026-09-22.',
+  'freemodel-dev': 'not free: the row\'s grant is `keyless`, and there is no keyless access. Verified live '
+    + '2026-09-22: POST https://api.freemodel.dev/v1/chat/completions with no credential at all returns '
+    + 'HTTP 403 {"error":"Unauthorized: No valid credentials provided"}, and the same request with a '
+    + 'placeholder bearer returns HTTP 401 {"error":"Unauthorized - Invalid token"} — so every request '
+    + 'needs a key on a registered account, and the only free value that account carries is a one-time '
+    + 'signup credit rather than a recurring allowance, which is why nothing here recurs. Its '
+    + '`/v1/models` does answer with no credential (gpt-5.6-luna / -sol / -terra), and that is exactly '
+    + 'the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness (see the llm7 case); it '
+    + 'is the only part of the roster row that was ever checked, which is how a key-gated provider came '
+    + 'to be recorded as keyless. The declared models disagree with the live list as well (the roster '
+    + 'names gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex, the endpoint serves none of them), so the row is '
+    + 'stale on both counts. Declined at the operator\'s instruction, 2026-09-22.',
   opencode: 'not free: the grant is `keyless` access to Zen\'s free-tier ids, and Zen refuses its free '
     + 'tier to every client but its own — HTTP 403 `FreeTierError`, "OpenCode\'s free tier can only be used '
     + 'from within OpenCode". Verified live 2026-09-22 by capturing the official client\'s own request (its '

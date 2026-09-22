@@ -173,7 +173,7 @@ A row's health, latency, error and quota state comes only from evidence the runn
 
 Consequences worth knowing:
 
-- A **fresh start shows rows as unknown/Pending**. They fill in as you test them or as requests flow through the proxy; nothing is probed at boot.
+- A **fresh start shows rows as Down**. The Status column is a slave of the Response column, so a row fills in as you test it or as requests flow through the proxy; nothing is probed at boot.
 - The dashboard is a **snapshot**. It re-reads on page load, after actions you take (Test, Refresh, ban, key/config save), and when you bring the tab back to the foreground.
 - Model **catalog** discovery (which models a provider offers) still runs at startup and from the Refresh controls, because that describes the provider's menu rather than measuring it.
 

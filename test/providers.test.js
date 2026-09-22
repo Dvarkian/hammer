@@ -86,7 +86,7 @@ import {
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
 import { sources, canonicalizeModelId } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
-import { isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
+import { isAccountBudgetRefusalText, isAuthoritativeProbeFailure, isCachedReplayResponse, isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
 import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
 import { parseRegistryEntry, parseRegistryIndex, decideResolution, termsRefusal } from '../tools/resolve-omniroute-endpoints.mjs'
 
@@ -407,15 +407,18 @@ test('terms flags are advisory by default, but still travel on every descriptor'
 })
 
 test('a provider whose free-access premise does not hold is refused, and cannot route', () => {
-  // The roster's own corrections: upstream lists all five as free providers. Two grant only a
-  // one-time signup credit on a prepaid platform, where nothing recurs; Cerebras has no free
-  // tier at all — its trial credit expires after 30 days and its API stays inactive without a
-  // payment method; and both Zen rows are free only *inside OpenCode's own client*, which
-  // refuses every other caller at the transport layer. A refusal is structural, not a flag
-  // someone has to remember to check.
+  // The roster's own corrections: upstream lists all six as free providers. Two grant only a
+  // one-time signup credit on a prepaid platform, where nothing recurs; freemodel-dev claims
+  // `keyless` but answers every completion without a credential with HTTP 403 (its public
+  // `/v1/models` is the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness),
+  // so its free value is a signup credit behind an account key; Cerebras has no free tier at
+  // all — its trial credit expires after 30 days and its API stays inactive without a payment
+  // method; and both Zen rows are free only *inside OpenCode's own client*, which refuses every
+  // other caller at the transport layer. A refusal is structural, not a flag someone has to
+  // remember to check.
   assert.deepEqual(activationOf('refused').map(d => d.key),
-    ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'opencode'])
-  for (const key of ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'opencode']) {
+    ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode'])
+  for (const key of ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode']) {
     const provider = getProvider(key)
     assert.match(provider.blockedReason, /not free/)
     assert.equal(provider.chatUrl, null, `${key} carries no endpoint`)
@@ -440,6 +443,9 @@ test('the not-free correction is a decision about the provider, not about its en
     deepseek: { baseUrl: 'https://api.deepseek.com/v1/chat/completions', access: 'signup-credit' },
     deepinfra: { baseUrl: 'https://api.deepinfra.com/v1/openai/chat/completions', access: 'signup-credit' },
     cerebras: { baseUrl: 'https://api.cerebras.ai/v1/chat/completions', access: 'recurring' },
+    // The roster's strongest claim, and the one freemodel-dev makes: keyless. It is contradicted
+    // by the completion probe in NOT_FREE_KEYS, not by anything about the endpoint's shape.
+    'freemodel-dev': { baseUrl: 'https://api.freemodel.dev/v1/chat/completions', access: 'keyless' },
   }
   for (const [key, { baseUrl, access }] of Object.entries(declined)) {
     const flawlessEndpoint = { format: 'openai', executor: 'default', baseUrl, authType: 'apikey', authHeader: 'bearer', models: [] }
@@ -729,7 +735,7 @@ test('only unresolved, answerable imports are probed on demand', () => {
 // shaped correctly. No server is booted and no network is touched: the discovery step is
 // injected, and the routing consequence is checked with the real ranker.
 
-const row = (modelId, providerKey) => ({ modelId, providerKey, status: 'pending', pings: [], rateLimit: null })
+const row = (modelId, providerKey) => ({ modelId, providerKey, status: 'down', pings: [], rateLimit: null })
 
 test('a cold request for an import-only model discovers it, then it is a routable candidate', async () => {
   // The table starts with Hammer's own model only; the import has no rows yet.
@@ -861,9 +867,9 @@ test('importSummary counts the roster, while the registry counts only what was r
 
 // ── Refusals that mean "come back later" ──────────────────────────────────────────────
 //
-// Both of these reached the table as Pending / Down even though the provider had just said,
-// in its own words, that the model would serve again shortly. They are recorded here as the
-// exact bodies they arrived as.
+// Both of these reached the table as Down even though the provider had just said, in its own
+// words, that the model would serve again shortly. They are recorded here as the exact bodies
+// they arrived as.
 
 const GOOGLE_QUOTA_REFUSAL = 'You exceeded your current quota, please check your plan and billing '
   + 'details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. '
@@ -902,12 +908,96 @@ test('a plain server error stays a failure rather than becoming a clock', () => 
     'an exhausted quota has its own clock and its own reset window')
 })
 
+test('a spent credit balance is a refusal even when the provider renders it as an answer', () => {
+  // Pollinations answers HTTP 200 with the refusal *as the assistant's message*, which is the
+  // one place no status code can reach (see isAccountBudgetRefusalText). This exact wording —
+  // live 2026-09-22 — read as an ordinary completion for as long as the predicate only knew
+  // "has reached its budget" and "insufficient credit balance": the proxy streamed it to the
+  // client as the model's answer, and a manual Test recorded it as a *successful* response that
+  // promoted the row to Up, which is why the same key looked healthy on a Test click and
+  // broken in real use.
+  assert.equal(isAccountBudgetRefusalText(
+    "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."),
+    true)
+  // The phrasings that were already recognized keep working.
+  assert.equal(isAccountBudgetRefusalText(
+    'The API key used for this request has reached its budget. Please raise the key budget, then try again.'), true)
+  assert.equal(isAccountBudgetRefusalText('insufficient credit balance'), true)
+  assert.equal(isAccountBudgetRefusalText('you are out of credits'), true)
+  // The negation has to be explicit: "enough" alone is the opposite statement, and a model
+  // writing about billing or an account must not be silenced as a refusal.
+  assert.equal(isAccountBudgetRefusalText('You have enough credits in your account to continue.'), false)
+  assert.equal(isAccountBudgetRefusalText('Your account has enough credits for this request.'), false)
+  assert.equal(isAccountBudgetRefusalText('The account of the expedition is long, and the budget was discussed at length.'), false)
+})
+
+test('a probe refusal about the account is believed at once, not forgiven by recent liveness', () => {
+  // The grace window a recently-good row gets exists for a cold start or a transport blip, so
+  // only a failure that says nothing about the model may be absorbed — see
+  // isAuthoritativeProbeFailure, which is the half of that decision the probe asks first.
+  //
+  // An account-budget refusal is authoritative on the refusal's own words rather than on the
+  // status the probe synthesizes for it. That distinction is the test: isQuotaExhaustionError
+  // accepts *any* 429 before it reads the text, so the path as it stands today (ping() re-labels a
+  // 200 body carrying the notice as 429) is already authoritative — while a probe reporting the
+  // same notice under any other status would have had it absorbed by the grace window, leaving a
+  // spent key looking healthy on the strength of a recent success.
+  const spentKeyNotice = "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
+  assert.equal(isAuthoritativeProbeFailure({ code: '429', errorMessage: spentKeyNotice }), true)
+  assert.equal(isAuthoritativeProbeFailure({ code: '200', errorMessage: spentKeyNotice }), true,
+    'the refusal is believed on its own words, whatever status arrived with it')
+  // The near-misses stay non-authoritative: a timeout, an unreachable endpoint and a busy minute
+  // are what a cold start produces, and the grace window is meant to absorb them.
+  assert.equal(isAuthoritativeProbeFailure({ code: '000', errorMessage: 'Request timed out while pinging provider.' }), false)
+  assert.equal(isAuthoritativeProbeFailure({ code: 'ERR', errorMessage: 'fetch failed' }), false)
+  assert.equal(isAuthoritativeProbeFailure({ code: '503', errorMessage: 'Service Unavailable' }), false)
+  assert.equal(isAuthoritativeProbeFailure({ code: '429', errorMessage: 'Rate limit exceeded' }), true)
+  assert.equal(isAuthoritativeProbeFailure({ code: '401', errorMessage: '' }), true)
+  assert.equal(isAuthoritativeProbeFailure({ code: '200', errorMessage: '', deadVerdict: true }), true,
+    'a dead verdict is a statement about the catalog, so a recent success must not outlive it')
+  assert.equal(isAuthoritativeProbeFailure(), false)
+  // The account predicate is two-sided, and this rule inherits that: a model writing prose about
+  // accounts and budgets is not a statement about the credential.
+  assert.equal(isAuthoritativeProbeFailure({
+    code: '200',
+    errorMessage: 'The account of the expedition is long, and the budget was discussed at length.',
+  }), false)
+})
+
+test('a cached provider answer is recognized as a replay, not as this request being served', () => {
+  // Pollinations answers a stored prompt from its own cache and does NOT debit the account for
+  // it (live 2026-09-22: `x-cache: HIT` with a year-long immutable `cache-control`, on a key
+  // whose every uncached request was refused for lack of credit). So the header is the only
+  // thing that distinguishes "this model answered" from "this answer was already on file" — and
+  // a manual Test that reads the latter as the former passes on a key that cannot serve real
+  // traffic (see the per-click prompt marker in lib/server.js).
+  assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT' })), true)
+  assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT, HIT' })), true, 'Fastly lists one hit per hop')
+  assert.equal(isCachedReplayResponse(new Headers({ 'cf-cache-status': 'HIT' })), true)
+  assert.equal(isCachedReplayResponse(new Headers({ 'x-vercel-cache': 'HIT' })), true)
+  assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'hit' })), true, 'status values are case-insensitive')
+  // A miss, a bypass and an expired entry are all live requests to the origin: reading them as
+  // cached would stop a provider's latency and throughput from ever being recorded.
+  for (const value of ['MISS', 'BYPASS', 'EXPIRED', 'DYNAMIC', 'REVALIDATED']) {
+    assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': value })), false, value)
+  }
+  assert.equal(isCachedReplayResponse(new Headers({})), false)
+  assert.equal(isCachedReplayResponse(null), false)
+  assert.equal(isCachedReplayResponse(undefined), false)
+  // `age` is deliberately not a signal: gateways set it on paths hammer keeps measuring, and a
+  // false "cached" silently removes that provider from every series.
+  assert.equal(isCachedReplayResponse(new Headers({ age: '3600' })), false)
+  // Plain header maps work too, so the rule can be pinned without a Headers object.
+  assert.equal(isCachedReplayResponse({ 'x-cache': 'HIT' }), true)
+  assert.equal(isCachedReplayResponse({ 'X-Cache': 'MISS' }), false)
+})
+
 test('OpenCode Zen\'s client gate is Incompatible, not a failure to keep re-probing', () => {
   // Zen ships no provider here any more (both roster rows are refused as not free), so this
   // pins the predicate rather than a provider: a user who points an `openai-compatible`
   // instance at Zen still gets this envelope, and it must not read as an auth error or an
   // outage. A permanent access policy belongs in the unavailable table, not in a red Down
-  // that gets retried or in a Pending that never resolves. The refusal in the resolver's
+  // that gets retried. The refusal in the resolver's
   // NOT_FREE_KEYS carries the same evidence, verified live 2026-09-22 by capturing the official
   // client's request and replaying it byte-for-byte: it is refused while the client streams.
   const envelope = JSON.stringify({

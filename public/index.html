@@ -416,14 +416,15 @@
     .topo-provider-mono.red,
     .topo-provider-mono:hover { opacity: 1; }
 
-    /* A link only exists between a model node and a provider that can serve it right now
-       (see the group filter in drawBipartiteTopology), so 'active' is the only state it
-       reaches — there is no benched or down link to style separately. */
+    /* One link per model↔provider pair that can serve it right now (see the group filter in
+       drawBipartiteTopology), so 'active' is the state every drawn link reaches and there is no
+       benched or down link to style separately. Exactly one of them is the serving path, which
+       'selected' below marks. */
     .topo-link { fill: none; stroke: var(--text-muted); stroke-width: 0.8; opacity: 0.12; transition: all 1.5s ease-in-out; }
     .topo-link.active { stroke: var(--success); stroke-width: 1.4; opacity: 0.45; }
-    /* The link from the selected (best) model to its active provider: bright blue with a
-       flowing dash animation so the serving path reads at a glance, pulsing *into* the model
-       from the provider that serves it. The path is drawn model -> provider (see the edge
+    /* The serving link — the active model to the provider serving it, out of the whole green
+       mesh the one path in blue, with a flowing dash animation so it reads at a glance, pulsing
+       *into* the model from the provider that serves it. The path is drawn model -> provider (see the edge
        construction in drawBipartiteTopology) and a positive stroke-dashoffset shifts the dash
        pattern back toward the path's start, so the offset animates 0 -> +14 to send the pulses
        the other way. The negative value it used to carry read forwards instead and pulsed
@@ -3766,7 +3767,12 @@
       // come and go between the main and graveyard tables in real time.
       const membershipSig = plotRows.map(m => getModelRowKey(m)).sort().join('|');
       const providerSig = plotProviders.join('|');
-      const svgHash = `${membershipSig}:${providerSig}:${W}:${H}`;
+      // Which link is blue is a function of the *active* model as much as of the membership, so
+      // the active pair belongs in the rebuild key: the classes are refreshed every render, but
+      // a pick that moves to a pair the plot has not drawn yet needs the plot to redraw — a
+      // signature that only watched membership would leave the serving path unmarked.
+      const bestSig = bestModel ? getModelRowKey(bestModel) : '';
+      const svgHash = `${membershipSig}:${providerSig}:${bestSig}:${W}:${H}`;
       if (svg.dataset.hash !== svgHash) {
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         svg.innerHTML = '';
@@ -3829,7 +3835,11 @@
         }
         for (const pn of provNodes) nodes.push(pn);
 
-        // --- Edges: each model connects to ALL providers that serve it ---
+        // --- Edges: each model connects to EVERY provider that can serve it ---
+        // One array, two jobs: these are the springs the layout reads (a model settles beside
+        // the providers that can serve it) and the links drawn below are the same pairs. The
+        // mesh is the picture of what *could* serve; which single one of them is serving is a
+        // class decision made in the refresh below, where the router's pick is known.
         const edges = [];
         for (const node of nodes) {
           if (node.type !== 'model') continue;
@@ -3849,6 +3859,8 @@
         for (const n of nodes) { n.vx = 0; n.vy = 0; }
 
         // --- Draw edges ---
+        // A path per pair, all of them muted-green once the refresh classifies them; the one
+        // the router is actually using is painted blue there (see 'selected' below).
         for (const e of edges) {
           const mx = (e.from.x + e.to.x) / 2, my = (e.from.y + e.to.y) / 2;
           const dx = e.to.x - e.from.x, dy = e.to.y - e.from.y;
@@ -4147,8 +4159,15 @@
           if (!um) { line.setAttribute('class', 'topo-link'); return; }
           // Every drawn link comes from a live row (see the group filter above), so there is
           // no benched or down link left for 'warn' or the bare muted stroke to describe.
-          // Links from the selected (best) model get the flowing blue animation.
-          const cls = `topo-link active${isModelBest(um) ? ' selected' : ''}`;
+          //
+          // Exactly one link wears the flowing blue: the serving path — the active model to the
+          // provider instance that serves that exact row, the same pair the blue ring marks.
+          // The best model's *other* providers stay green: they can serve it, but the router is
+          // not using them, and matching on the model alone is what painted several paths blue
+          // at once (isModelBest is true for the whole best group, not for one of its links).
+          const servingProviderKey = bestModel ? providerInstanceKey(bestModel) : '';
+          const isServingPath = Boolean(bestModel) && isModelBest(um) && line.dataset.pkey === servingProviderKey;
+          const cls = `topo-link active${isServingPath ? ' selected' : ''}`;
           if (line.getAttribute('class') !== cls) line.setAttribute('class', cls);
         }
       });
@@ -5273,24 +5292,35 @@
 
       // Live sort is always on: re-sort on every render. While hovering we lock
       // the order (values still refresh in place).
+      //
+      // The strike-through split is *membership*, not order: a row the verdict says is
+      // paid, dead, incompatible or missing auth must leave the main table the moment a
+      // test says so, even when that render is triggered while the cursor still rests on
+      // the table (the Test button lives inside it). The hover lock below therefore locks
+      // only the order of the rows that remain — it used to hold struck rows in place too,
+      // and because the old branch read `allGroups` from the other side of the `if` it
+      // threw before it could even do that, so a clicked row never moved at all.
+      const allGroups = sortedGroups(groupModels(filtered));
+      const { mainGroups, graveyardGroups: grave } = splitDisplayGroups(allGroups);
+      graveyardGroups = grave;
+
       if (!hoverLocked) {
-        const allGroups = sortedGroups(groupModels(filtered));
-        const { mainGroups, graveyardGroups: grave } = splitDisplayGroups(allGroups);
         expanded = buildExpanded(mainGroups);
-        graveyardGroups = grave;
       } else {
-        // Hover-locked: rebuild row data from current models but preserve
-        // last rendered key order so rows never reorder under the cursor.
-        const keySet = new Set(currentRenderedOrder);
-        expanded = (allGroups ?? []).flatMap(g => {
-          const key = 'g:' + g.key;
-          if (!keySet.has(key)) return [];
-          return [Object.assign({ type: 'group', key: g.key }, g)];
-        }).concat(
-          filtered.filter(m => keySet.has(getModelRowKey(m))).map(m => ({
-            type: 'model', m, key: getModelRowKey(m)
-          }))
-        );
+        // Hover-locked: build the same rows, then keep the last rendered order for the
+        // ones already on screen. Rows that only became visible now (a provider that just
+        // turned usable) sort to the end rather than jumping the queue under the cursor.
+        const orderIndex = new Map(currentRenderedOrder.map((key, i) => [key, i]));
+        const orderOf = e => {
+          const key = e.type === 'group' ? 'g:' + e.key : getModelRowKey(e.m);
+          return orderIndex.has(key) ? orderIndex.get(key) : Infinity;
+        };
+        expanded = buildExpanded(mainGroups).slice().sort((a, b) => {
+          const ai = orderOf(a);
+          const bi = orderOf(b);
+          if (ai === bi) return 0;
+          return ai < bi ? -1 : 1;
+        });
       }
 
       const newOrderKeys = expanded.map(e => e.type === 'group' ? 'g:' + e.key : getModelRowKey(e.m));
@@ -5587,7 +5617,9 @@
       // resolveStreamGenerationMs), so the row keeps whatever its real traffic measured and
       // the only honest number left about this test is how long it took.
       const durationMs = Number(lastResponse.durationMs);
-      if (!expired && lastResponse.tps == null && Number.isFinite(durationMs) && durationMs > 0) {
+      // A cached answer is excluded: its duration is this connection's delivery of a stored
+      // response, so "took 2.6s" would read as a measurement the cell explicitly isn't making.
+      if (!expired && !lastResponse.cached && lastResponse.tps == null && Number.isFinite(durationMs) && durationMs > 0) {
         // A local endpoint can answer a non-streamed request in single-digit milliseconds, and
         // the seconds formatter rounds that to "0.00s" — a label that reads as a broken number.
         const shown = durationMs < 10 ? `${Math.round(durationMs)}ms` : formatSecondsFromMs(durationMs);
@@ -5601,6 +5633,12 @@
         metaBits.push(`<span title="The model spent its output budget on reasoning and never reached a visible answer. This is the reasoning text; the test retries once with more headroom.">reasoning only</span>`);
       } else if (!expired && lastResponse.truncated) {
         metaBits.push(`<span title="The provider stopped because the output budget ran out.">truncated</span>`);
+      }
+      // The provider answered from its own cache, so this is a stored answer rather than one
+      // generated for this click. Saying so keeps a replay from reading as a fresh measurement
+      // (no latency or speed was recorded from it — see isCachedReplayResponse).
+      if (!expired && lastResponse.cached) {
+        metaBits.push(`<span title="The provider served this answer from its own response cache instead of generating it for this test, so no latency or speed was measured. Treat it as proof the model is reachable, not as proof it can serve real requests.">cached</span>`);
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -5769,7 +5807,12 @@
       }
 
       // ── Untested (No test response and no live usage) ────────────────────────
-      return 'pending';
+      // Down, not a 'pending' holding state: the Status column is a slave of the response
+      // column, so a row nothing has answered for reads as Down until a test or live traffic
+      // says otherwise. The few exceptions above are the only ones that can override it, and
+      // each is a statement about *actual usage* (a live rate limit, a provider overload, or a
+      // proxied success).
+      return 'down';
     }
 
     function isRowUp(m) {
@@ -5787,7 +5830,7 @@
     // The verdicts in the order a model heading prefers them when nothing is up: the
     // states that come back on their own first, then the ones the user has to fix.
     const VERDICT_RECOVERABILITY = [
-      'up', 'pending', 'rate-limited', 'overloaded', 'timeout', 'noauth', 'paid', 'incompatible', 'dead', 'micro', 'down', 'banned', 'excluded',
+      'up', 'rate-limited', 'overloaded', 'timeout', 'noauth', 'paid', 'incompatible', 'dead', 'micro', 'down', 'banned', 'excluded',
     ];
 
     // Rank for the heading's pick. An unrecognised state ranks last rather than first:
@@ -5820,7 +5863,6 @@
         case 'dead': return 'Dead';
         case 'paid': return 'Paid';
         case 'timeout': return 'Timeout';
-        case 'pending': return 'Pending';
         case 'up': return 'Up';
         default: return kind ? kind.charAt(0).toUpperCase() + kind.slice(1) : 'Down';
       }
@@ -6021,6 +6063,7 @@
           rateLimitResetAt: data.rateLimitResetAt != null ? data.rateLimitResetAt : null,
           reasoningOnly: data.reasoningOnly === true,
           truncated: data.truncated === true,
+          cached: data.cached === true,
         };
 
         const targetProviderKey = data.providerKey || opts.providerKey;
@@ -6301,7 +6344,7 @@
       // The window a refusal named is when the provider *might* serve again, not when the row
       // learned something newer. Until a success supersedes it (see refusalKind) the refusal
       // stands, so the cell keeps its clock — bare, with no countdown to a window that has
-      // already passed — instead of dropping to 'pending' when the timer hits zero.
+      // already passed — instead of dropping to 'down' when the timer hits zero.
       const standing = !liveWindow && refusalKind(m) === 'rate-limited';
       if (!serverSaysLimited && !liveWindow && !standing) return { limited: false, resetAt: null };
       const stated = [
@@ -6386,8 +6429,9 @@
 
     // A dot already reads as up (green) or down (red), so those two words are
     // dropped next to it and the dot carries them as a tooltip instead. The other
-    // states keep their label because it says something the colour cannot — including
-    // 'pending', which the bare red dot would otherwise leave unnamed.
+    // states keep their label because it says something the colour cannot — a wait on
+    // the provider, a paywall, a missing credential — while an untested row is simply
+    // Down and needs no word beside its red dot.
     function plainStatusLabel(kind) {
       if (kind === 'up' || kind === 'down') return '';
       return kind === 'noauth' ? 'No Auth' : verdictLabel(kind);
