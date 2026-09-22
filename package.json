@@ -28,7 +28,7 @@
   "type": "module",
   "scripts": {
     "start": "node bin/hammer.js",
-    "test": "node --test test/",
+    "test": "node --test \"test/**/*.test.js\"",
     "verify:providers": "node tools/verify-providers.mjs",
     "sync:omniroute": "node tools/sync-omniroute-catalog.mjs"
   },

@@ -37,6 +37,7 @@ import {
   oauthAccountProviders,
   providerClassifyPatterns,
   providerKeys,
+  providerQuotaTable,
   providerSummary,
   providersByTosFlag,
   registerProvider,
@@ -65,12 +66,16 @@ import { humanizeProviderKey, loadOmniRouteCatalog } from '../lib/providers/omni
 import {
   buildProviderRequestBody,
   buildProviderRequestHeaders,
+  PING_TIMEOUT,
+} from '../lib/server.js'
+import {
+  DISCOVERY_TIMEOUT_MS,
   isProviderAuthOptional,
   isProviderBearerAuthEnabled,
   lazyDiscoveryCandidates,
   resolveDiscoveryModelsUrl,
   resolveRequestModels,
-} from '../lib/server.js'
+} from '../lib/providers/discovery.js'
 import { sources, canonicalizeModelId } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import { rankModelsForRouting } from '../lib/utils.js'
@@ -1028,4 +1033,58 @@ test('every provider without a shaping block is returned byte-for-byte unchanged
   const body = { model: 'x', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], max_tokens: 7 }
   assert.deepEqual(buildProviderRequestBody('mistral', body, 'x'), body)
   assert.equal(applyRequestShaping('mistral', body).body.max_tokens, 7)
+})
+
+// ── The provider facts the registry now owns outright ───────────────────────────────────
+//
+// The quota table was the last one still read from its old home (`sources.js`) while
+// `registry.js` shipped a derivation of it that nothing called. These pin the live path so
+// it cannot quietly revert.
+
+test('the quota table is read through the registry, and sources.js no longer ships a copy', () => {
+  const table = providerQuotaTable()
+
+  // Every provider hammer publishes a quota for is reachable through the derived table. A
+  // descriptor that carries no quota is simply absent, which is the shape the old
+  // hand-maintained object had for a provider it did not describe.
+  for (const key of [
+    'nvidia', 'groq', 'cerebras', 'googleai', 'openrouter', 'codestral', 'scaleway',
+    'kiro', 'kilocode', 'opencode', 'empero', 'freemodels', 'github-copilot',
+    'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
+  ]) {
+    assert.ok(table[key], `${key} must keep its published quota`)
+  }
+
+  // Records travel whole: the window and scope the dashboard reads come off the descriptor,
+  // not from a summary reconstructed at the call site.
+  assert.equal(table.opencode.window, 'day')
+  assert.equal(table.opencode.limitScope, 'account/model')
+  assert.equal(table['github-copilot'].window, 'month')
+  assert.match(table.nvidia.source, /Provider-reported limits only/)
+
+  // And the old home is gone, so there is one source rather than two that can disagree.
+  const sourcesFile = readFileSync(new URL('../sources.js', import.meta.url), 'utf8')
+  assert.equal(
+    /export const PROVIDER_QUOTAS/.test(sourcesFile),
+    false,
+    'sources.js must not export a quota table any more — the registry derives it',
+  )
+})
+
+test('discovery shares the router probe window and never reaches back into the server', () => {
+  // Two constants, one env var: if a default is edited in one place, the other would silently
+  // keep the old value and a catalog fetch would time out on a different budget than a ping.
+  assert.equal(DISCOVERY_TIMEOUT_MS, PING_TIMEOUT)
+
+  const source = readFileSync(new URL('../lib/providers/discovery.js', import.meta.url), 'utf8')
+  // Discovery sits *below* server.js: importing it would point the dependency the wrong way
+  // and close a cycle.
+  assert.equal(
+    /from\s+['"][^'"]*server\.js['"]/.test(source),
+    false,
+    'discovery.js must not import lib/server.js',
+  )
+  // The fetches live inside functions; a top-level one would turn importing the providers
+  // module into a network probe, which is the property the boot-safety guard protects.
+  assert.equal(/^fetch\s*\(/m.test(source), false, 'discovery.js must not call fetch at import time')
 })
