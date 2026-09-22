@@ -253,7 +253,6 @@ Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS sc
 - API key env overrides:
   - `NVIDIA_API_KEY`
   - `GROQ_API_KEY`
-  - `CEREBRAS_API_KEY`
   - `SAMBANOVA_API_KEY`
 - `OPENROUTER_API_KEY`
 - `OPENCODE_API_KEY`

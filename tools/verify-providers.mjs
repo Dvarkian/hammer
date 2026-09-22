@@ -158,7 +158,7 @@ async function main() {
     console.log(`\nCoverage: ${summary.total} providers (${summary.hammer} hammer, ${summary.imported} imported)`)
     console.log(`  routable:  ${summary.routable} (${summary.routableImported} of them imported)`)
     console.log(`  staged:    ${summary.activation.staged}  <- resolvable in principle, needs provider-specific work`)
-    console.log(`  refused:   ${summary.activation.refused}  <- withheld at resolution time; pass --exclude-avoid to the resolver to withhold more`)
+    console.log(`  refused:   ${summary.activation.refused}  <- withheld by decision: the terms posture under --exclude-avoid, or a row whose free-access premise does not hold`)
     console.log(`  terms:     ok ${summary.tos.ok} / caution ${summary.tos.caution} / ambiguous ${summary.tos.ambiguous} / avoid ${summary.tos.avoid} / unknown ${summary.tos.unknown}`)
     const notActive = summary.blocked || []
     if (notActive.length) {

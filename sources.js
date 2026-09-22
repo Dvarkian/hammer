@@ -395,7 +395,7 @@ export const sources = {
   //     provider rotated its roster; discovery supplies what is actually served.
   //
   // Spread FIRST so hammer's own providers below win any key collision (nvidia, groq,
-  // cerebras, openrouter, scaleway, kiro, opencode). See lib/providers/resolutions.js for
+  // openrouter, scaleway, kiro, opencode). See lib/providers/resolutions.js for
   // which imports are active and why the rest are not.
   ...lazyProviderSourceEntries(),
   "nvidia": {
@@ -471,38 +471,6 @@ export const sources = {
       ["openai/gpt-oss-120b", "GPT OSS 120B", "128k"],
       ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
       ["qwen/qwen3-32b", "Qwen3 32B", "131k"]
-    ]
-  },
-  "cerebras": {
-    "name": "Cerebras",
-    "url": "https://api.cerebras.ai/v1/chat/completions",
-    "contextUrl": "https://api.cerebras.ai/public/v1/models?format=openrouter",
-    "discoverable": true,
-    // Cerebras' /v1/models only reports a subset of what the free tier actually
-    // serves (confirmed live: 2 models via the public list), so keep the curated
-    // rows below even when discovery returns a healthy list. Most other providers
-    // leave this unset, making discovery authoritative and pruning retired models.
-    "keepStaticOnDiscovery": true,
-    "models": [
-      // Cerebras' own /v1/models?format=openrouter reports context_length: 131072 for this
-      // model, and their docs claim 64k on the free tier -- but the live account this project
-      // actually uses (likely on a more restrictive "Free Trial" tier, not full "Free") gets
-      // hard-rejected by the real API at 8192 tokens: "Please reduce the length of the messages
-      // or completion. Current length is 23592 while limit is 8192" (confirmed live 2026-08-07,
-      // this is what a real openclaw-sandbox request hit via smartest+min_ctx:32000 -- the
-      // min_ctx filter can only work if this catalog value reflects what actually gets accepted,
-      // not the model's advertised maximum). If the account tier ever changes, re-verify before
-      // raising this.
-      ["zai-glm-4.7", "GLM 4.7", "8192"],
-      ["llama3.1-8b", "Llama 3.1 8B", "128k"],
-      // What this catalog row advertises is not what this account can use. Verified live
-      // 2026-09-16: `qwen-3-235b-a22b-instruct-2507` answers 404 "Model does not exist or
-      // you do not have access to it.", and the discovered `qwen-3.8-27b` answers 402
-      // payment-required. The row is kept rather than deleted because keepStaticOnDiscovery
-      // would never put it back, and another account's tier can serve it; the dashboard
-      // reports the provider's own verdict (Dead / Paid) instead of pretending otherwise.
-      ["qwen-3-235b-a22b-instruct-2507", "Qwen3 235B", "128k"],
-      ["gpt-oss-120b", "GPT OSS 120B", "128k"]
     ]
   },
   "opencode": {

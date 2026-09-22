@@ -338,9 +338,11 @@
     .topo-model.up { fill: var(--success); opacity: 0.7; filter: drop-shadow(0 0 1.5px var(--success)); }
     .topo-model.down { fill: var(--error); opacity: 0.4; }
     .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--accent)); }
-    .topo-model.best { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); animation: topo-best-pulse 2s ease-in-out infinite; }
+    .topo-model.best { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); }
 
-    .topo-model.selected { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); animation: topo-selected-pulse 2s ease-in-out infinite; }
+    /* 'selected' carries the much stronger pulse: two layered drop-shadows sweeping
+       between a tight glow and a wide halo so the best model reads instantly. */
+    .topo-model.selected { filter: drop-shadow(0 0 8px var(--accent)) drop-shadow(0 0 18px var(--accent)); animation: topo-selected-pulse 1.6s ease-in-out infinite; }
 
     .topo-model-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
     .topo-model-img.best { opacity: 1; }
@@ -393,8 +395,8 @@
     }
 
    @keyframes topo-selected-pulse {
-     0%, 100% { filter: drop-shadow(0 0 8px var(--accent)); }
-     50% { filter: drop-shadow(0 0 20px var(--accent)); }
+     0%, 100% { filter: drop-shadow(0 0 10px var(--accent)) drop-shadow(0 0 22px var(--accent)); }
+     50% { filter: drop-shadow(0 0 18px var(--accent)) drop-shadow(0 0 44px var(--accent)); }
    }
 
     .topo-provider-ring { fill: none; stroke-width: 1.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
@@ -402,6 +404,9 @@
     .topo-provider-ring.amber { stroke: var(--warning); opacity: 0.45; }
     .topo-provider-ring.red { stroke: var(--error); opacity: 0.35; }
     .topo-provider-ring:hover { stroke-width: 2.4; opacity: 0.9; filter: drop-shadow(0 0 4px currentColor); }
+    /* The ring of the provider actively serving the selected (best) model turns blue;
+       declared after .green/.amber/.red so it wins the cascade at equal specificity. */
+    .topo-provider-ring.selected { stroke: var(--accent); opacity: 0.95; stroke-width: 1.8; filter: drop-shadow(0 0 5px var(--accent)); }
 
     .topo-provider-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
 
@@ -416,6 +421,15 @@
        reaches — there is no benched or down link to style separately. */
     .topo-link { fill: none; stroke: var(--text-muted); stroke-width: 0.8; opacity: 0.12; transition: all 1.5s ease-in-out; }
     .topo-link.active { stroke: var(--success); stroke-width: 1.4; opacity: 0.45; }
+    /* The link from the selected (best) model to its active provider: bright blue with a
+       flowing dash animation so the serving path reads at a glance, pulsing *into* the model
+       from the provider that serves it. The path is drawn model -> provider (see the edge
+       construction in drawBipartiteTopology) and a positive stroke-dashoffset shifts the dash
+       pattern back toward the path's start, so the offset animates 0 -> +14 to send the pulses
+       the other way. The negative value it used to carry read forwards instead and pulsed
+       model -> provider, i.e. away from the model. */
+    .topo-link.selected { stroke: var(--accent); stroke-width: 1.8; opacity: 0.95; stroke-dasharray: 4 3; filter: drop-shadow(0 0 3px var(--accent)); animation: topo-link-flow 0.9s linear infinite; }
+    @keyframes topo-link-flow { to { stroke-dashoffset: 14; } }
 
     .topo-provider-label { fill: var(--text); font-size: 4px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.45; transition: all 1.5s ease-in-out; pointer-events: none; }
 
@@ -1694,6 +1708,25 @@
       animation: spin 1s linear infinite;
     }
 
+    /* A provider card's title, once the provider has a page to obtain its credential at.
+       One rule instead of an inline style per card, so every title behaves the same: the
+       accent color is what marks it as the actionable thing on the card, and the underline
+       appears on hover so a heading that happens to be a link still reads as a heading at
+       rest. `display:inline-block` keeps the hover underline tight to the text. */
+    .provider-title-link {
+      display: inline-block;
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .provider-title-link:hover,
+    .provider-title-link:focus-visible {
+      text-decoration: underline;
+    }
+
     .sync-result-list {
       margin: 0;
       padding-left: 18px;
@@ -1766,6 +1799,10 @@
         <p class="dashboard-eyebrow">Router Control Center</p>
         <h1 class="dashboard-heading">Hammer</h1>
         <p style="margin: 14px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
+          <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            <span id="reload-label">Restart</span>
+          </button>
           <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <span id="theme-icon">🌙</span>
           </button>
@@ -2176,6 +2213,52 @@
       };
     })();
 
+    // Restart the router, then come back to a freshly loaded page.
+    //
+    // This is not `location.reload()`: the provider registry, the model table and the catalog
+    // are built once per process, so nothing short of a new process picks up a change to lib/ or
+    // to the vendored provider catalog. The server answers 202 before it lets go of its
+    // listener, so this can report progress instead of watching the connection die.
+    //
+    // Readiness is polled through this page itself rather than an API route: it costs the
+    // server a static file read, where /api/models would rebuild the whole model table on every
+    // poll. The unique query and no-store are both load-bearing — a cached copy of this page
+    // answering from disk would report a router that is still down as back up.
+    async function restartHammer() {
+      const btn = document.getElementById('reload-btn');
+      const label = document.getElementById('reload-label');
+      const setLabel = text => { if (label) label.textContent = text; };
+      if (btn) btn.disabled = true;
+      setLabel('Restarting…');
+
+      try {
+        await fetch('/api/restart', { method: 'POST' });
+      } catch {
+        // A server that drops the socket on its way out has still restarted; the poll below,
+        // not this call, is what decides whether it came back.
+      }
+
+      const deadline = Date.now() + 45000;
+      while (Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 750));
+        try {
+          const res = await fetch(`/?ready=${Date.now()}`, { cache: 'no-store' });
+          if (res.ok) {
+            location.reload();
+            return;
+          }
+        } catch {
+          // Still coming up.
+        }
+      }
+
+      setLabel('Restart failed');
+      if (btn) {
+        btn.disabled = false;
+        btn.title = 'The router did not come back within 45s. Start it again manually, then reload this page.';
+      }
+    }
+
     function toggleTheme() {
       const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
       if (isDark) {
@@ -2296,7 +2379,7 @@
       'x-ai/grok-4-1-fast-non-reasoning': 'grok-4.1-fast-non-reasoning',
     };
     const PROVIDER_NAMES = {
-      'groq': 'Groq', 'googleai': 'Google', 'cerebras': 'Cerebras',
+      'groq': 'Groq', 'googleai': 'Google',
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
       'scaleway': 'Scaleway', 'kilocode': 'KiloCode', 'opencode': 'OpenCode',
       'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
@@ -2751,33 +2834,43 @@
     function drawScatterPoints(svg, rows, scales) {
       const ring = cssVarValue('--card') || '#fff';
       const rSize = scatterDotSize(rows);
+      // An inactive row keeps its position but gives up its bulk: a full stop marks where the
+      // model measured without competing with the rows the router will actually use. A literal
+      // rather than a fraction of `rSize`, because what makes it read as punctuation is its
+      // absolute size — and a crowded field shrinks `rSize` to 3, which a fraction would have
+      // dragged down with it.
+      const inactiveR = 1.5;
       const plotRight = scales.pad.left + scales.plotW - 4;
       const axisLimit = scales.xMax;
-      // Filled dots are routable; hollow dashed rings are models the router will
-      // not use (down / banned / rate-limited). The shape carries the verdict and the
-      // ring carries its colour, both from rowVerdict, so a dot can no longer be drawn
-      // healthy while its table row reads 'Rate limited'. The plot needs no per-dot
-      // status labels.
-      const strokeFor = (r) => {
+      // Every row is a single filled point, whatever its verdict: a routable model is a
+      // provider-hued dot and an exhausted or otherwise inactive model is a far smaller mark in
+      // the verdict's colour. Size and colour now carry the verdict instead of shape — which is
+      // why the colour still comes from rowVerdict: a dot can never be drawn healthy while its
+      // table row reads 'Rate limited'. The plot needs no per-dot status labels.
+      const verdictColorFor = (r) => {
         const kind = rowVerdict(r.m);
-        if (kind === 'up') return { color: ring, width: 1 };
-        if (BENCHED_VERDICTS.has(kind)) return { color: cssVarValue('--warning') || '#d29922', width: 1.6 };
-        if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return { color: cssVarValue('--text-muted') || '#8b949e', width: 1.4 };
-        return { color: cssVarValue('--error') || '#e5484d', width: 1.6 };
+        if (kind === 'up') return ring;
+        if (BENCHED_VERDICTS.has(kind)) return cssVarValue('--warning') || '#d29922';
+        if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return cssVarValue('--text-muted') || '#8b949e';
+        return cssVarValue('--error') || '#e5484d';
       };
       for (const r of rows) {
         const hue = scatterProviderHue(r.m.providerKey);
         const up = isRowUp(r.m);
-        const st = strokeFor(r);
+        const verdictColor = verdictColorFor(r);
         const cx = scales.xOf(r.speed);
         const cy = scales.yOf(r.intell);
         const c = svgEl('circle', up ? {
           cx, cy, r: rSize,
           fill: `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
-          stroke: st.color, 'stroke-width': st.width,
+          stroke: verdictColor, 'stroke-width': 1,
         } : {
-          cx, cy, r: rSize,
-          fill: 'none', stroke: st.color, 'stroke-width': st.width, 'stroke-dasharray': '2 2',
+          // A point, not an outline: a dashed ring has no centre, so an exhausted row read as a
+          // hole in the plot rather than as a model that was measured. The opacity is higher
+          // than a live dot's halo would suggest because the mark is this small — at a pixel and
+          // a half across, anything faint enough to match a 9px dot's weight would simply vanish.
+          cx, cy, r: inactiveR,
+          fill: verdictColor, 'fill-opacity': 0.75,
         });
         const title = svgEl('title', {});
         const offAxis = r.speed > axisLimit;
@@ -2792,7 +2885,7 @@
           // The arrow is the row's real position: "somewhere to the right of here".
           const arrow = svgEl('text', {
             x: Math.min(cx + rSize + 1, plotRight), y: cy + 3,
-            'font-size': '9px', fill: st.color, 'paint-order': 'stroke', stroke: ring, 'stroke-width': '2.5',
+            'font-size': '9px', fill: verdictColor, 'paint-order': 'stroke', stroke: ring, 'stroke-width': '2.5',
           });
           arrow.textContent = '➤';
           svg.appendChild(arrow);
@@ -3593,7 +3686,7 @@
 
       // Favicon domain map & friendly display names
       const PROVIDER_DOMAINS = {
-        'groq': 'groq.com', 'googleai': 'ai.google.dev', 'cerebras': 'cerebras.ai',
+        'groq': 'groq.com', 'googleai': 'ai.google.dev',
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
         'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
         'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
@@ -4000,7 +4093,7 @@
           const um = uniqueModels[mi];
           if (!um) { el.setAttribute('class', 'topo-model'); return; }
           const isBest = isModelBest(um);
-          const cls = `topo-model${modelStatusCls(um, isBest)}`;
+          const cls = `topo-model${modelStatusCls(um, isBest)}${isBest ? ' selected' : ''}`;
           if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
           const title = el.querySelector('title');
           if (title) title.textContent = `${modelDisplayName(um)} · ${um._providers.map(p => providerNodeName(p.key)).join(', ')}`;
@@ -4054,7 +4147,8 @@
           if (!um) { line.setAttribute('class', 'topo-link'); return; }
           // Every drawn link comes from a live row (see the group filter above), so there is
           // no benched or down link left for 'warn' or the bare muted stroke to describe.
-          const cls = 'topo-link active';
+          // Links from the selected (best) model get the flowing blue animation.
+          const cls = `topo-link active${isModelBest(um) ? ' selected' : ''}`;
           if (line.getAttribute('class') !== cls) line.setAttribute('class', cls);
         }
       });
@@ -4067,7 +4161,9 @@
         // drawn at all (see the group filter above), so this is 'green' by construction — the
         // count is still read rather than hardcoded, so a node that outlived its last live
         // model reads red instead of lying about it.
-        ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}`);
+        // The provider serving the selected (best) model also gets the blue ring.
+        const servesBest = Boolean(bestModel) && providerInstanceKey(bestModel) === pk;
+        ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}${servesBest ? ' selected' : ''}`);
         const title = ring.querySelector('title');
         if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
       });
@@ -6264,7 +6360,7 @@
           return `<span class="rl-countdown" data-reset-at="${resetAt}" data-provider-key="${escapeAttr(m.providerKey || '')}" data-model-id="${escapeAttr(m.modelId || '')}" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>`;
         }
         const title = `Rate limited${quota ? ` — ${quota}` : ''} — the model returns when the provider's window resets`;
-        return `<span style="color: var(--warning);" title="${escapeHtml(title)}">🕑 Rate limited</span>`;
+        return `<span style="color: var(--warning);" title="${escapeHtml(title)}">🕑</span>`;
       }
       return null;
     }
@@ -6342,6 +6438,7 @@
       });
     }
     setInterval(updateRateLimitCountdowns, 1000);
+    setInterval(updatePoolBarCountdowns, 1000);
 
     // Why a row is Micro, in the provider's own words. The API only marks a row micro
     // for an exact, evidence-backed provider-stated limit, so this can name the evidence
@@ -7257,7 +7354,7 @@
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${kiroStatusBg}; color:${kiroStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${kiroStatusOk ? '✅' : '⚠️'} ${escapeHtml(kiroStatusText)}</span>
-                  <h3 style="margin:0; font-size:1rem;">${p.name}</h3>
+                  ${providerTitleHtml(p, 'Set up Kiro')}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7265,6 +7362,8 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
+
+
                 </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Connect Kiro with AWS Builder ID device authorization, import a token from the AWS SSO cache, or paste a refresh token manually.</div>
@@ -7284,6 +7383,7 @@
               ${kiroDeviceAuthHtml}
               ${kiroBrowserAuthHtml}
               ${kiroMessageHtml}
+              ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
             `;
@@ -7335,7 +7435,7 @@
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${copilotStatusBg}; color:${copilotStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${copilotConnected ? '✅' : '⚠️'} ${escapeHtml(copilotStatusText)}</span>
-                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Manage GitHub Copilot" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  ${providerTitleHtml(p, 'Manage GitHub Copilot')}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7359,6 +7459,7 @@
               </div>
               ${copilotDeviceAuthHtml}
               ${copilotMessageHtml}
+              ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
             `;
@@ -7369,18 +7470,54 @@
             const codexConnected = p.hasKey;
             const codexStatusBg = codexConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
             const codexStatusColor = codexConnected ? 'var(--status-success-text)' : 'var(--status-warning-text)';
-            const codexAccount = Array.isArray(p.accounts) && p.accounts.length > 0 ? p.accounts[0] : null;
+            const codexAccounts = Array.isArray(p.accounts) ? p.accounts : [];
+            const codexAccountCount = codexAccounts.length;
             let codexStatusText = 'Not signed in';
-            if (p.authMode === 'device-flow') {
+            if (codexAccountCount > 1) {
+              // With a pool, naming one account would misdescribe the credential: every
+              // request rotates, so the count is the honest summary.
+              codexStatusText = `Signed in · ${codexAccountCount} accounts`;
+            } else if (p.authMode === 'device-flow') {
               codexStatusText = p.authEmail ? `Signed in · ${p.authEmail}` : 'Signed in with ChatGPT';
             } else if (p.authMode === 'manual-token') {
               codexStatusText = 'Refresh token configured';
             } else if (codexConnected) {
               codexStatusText = 'ChatGPT account connected';
             }
-            if (codexConnected && codexAccount && codexAccount.planType) {
-              codexStatusText = `${codexStatusText} · ${codexAccount.planType}`;
+            if (codexAccountCount <= 1 && codexConnected && codexAccounts[0] && codexAccounts[0].planType) {
+              codexStatusText = `${codexStatusText} · ${codexAccounts[0].planType}`;
             }
+
+            // One row per signed-in account. The identifier is the email (or the workspace id),
+            // because that is what the sign-out route matches on, and an account that reported
+            // neither falls back to its pool position — which the server resolves back to the
+            // credential itself, so no account is stuck in the pool forever. Remove only appears
+            // once there is more than one account: signing the last one out is Disconnect's job.
+            const codexAccountRowsHtml = codexAccounts.map(account => {
+              const identifier = account.email || account.accountId || '';
+              const label = account.email || account.accountId || 'ChatGPT account with no reported email';
+              const meta = [account.planType, account.addedAt ? `added ${new Date(account.addedAt).toLocaleString()}` : null].filter(Boolean).join(' · ');
+              // A row with neither an identifier nor a pool position gets no Remove button: the
+              // empty request that would send means "sign every account out", and a payload this
+              // UI cannot identify is no reason to wipe the pool.
+              const removable = Boolean(identifier) || Number.isInteger(account.index)
+              const removeButton = codexAccountCount > 1 && removable
+                ? `<button data-codex-account="${escapeHtml(identifier)}" data-codex-index="${Number.isInteger(account.index) ? account.index : ''}" onclick="disconnectCodex(this.dataset.codexAccount, this.dataset.codexIndex)" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:6px 10px; border-radius:6px; font-size:0.74rem; font-weight:600; white-space:nowrap;">Remove</button>`
+                : '';
+              return `
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-top:1px solid var(--border-subtle);">
+                  <div style="min-width:0;">
+                    <div style="font-size:0.82rem; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(label)}</div>
+                    <div style="font-size:0.74rem; color:var(--text-muted);">${escapeHtml(meta || 'Signed in with ChatGPT')}</div>
+                  </div>
+                  ${removeButton}
+                </div>`;
+            }).join('');
+            const codexAccountListHtml = codexAccountCount === 0 ? '' : `
+              <div style="margin:0 0 12px 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--input-bg-alt);">
+                ${codexAccountRowsHtml}
+                ${codexAccountCount > 1 ? '<div style="padding:8px 12px; font-size:0.74rem; color:var(--text-muted); border-top:1px solid var(--border-subtle);">The first account is used until it is spent, then the next takes over — and one that hits its plan limit is benched so the others keep serving.</div>' : ''}
+              </div>`;
 
             const codexMessageHtml = codexUiMessage
               ? `<div id="codex-ui-message" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.8rem; border:1px solid ${codexUiMessage.tone === 'error' ? 'var(--status-error-border)' : codexUiMessage.tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}; background:${codexUiMessage.tone === 'error' ? 'var(--status-error-bg)' : codexUiMessage.tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)'}; color:${codexUiMessage.tone === 'error' ? 'var(--status-error-text)' : codexUiMessage.tone === 'success' ? 'var(--status-success-text)' : 'var(--text)'};">${escapeHtml(codexUiMessage.text)}</div>`
@@ -7406,15 +7543,18 @@
               </div>
             ` : '';
 
+            // Signing in is available while signed in: that is how a second ChatGPT account is
+            // added, and the flow appends rather than replaces.
             const codexActionsHtml = codexConnected
-              ? '<button onclick="disconnectCodex()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect</button>'
+              ? '<button onclick="startCodexDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Add another account</button>'
+                + `<button onclick="disconnectCodex()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect${codexAccountCount > 1 ? ' all' : ''}</button>`
               : '<button onclick="startCodexDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with ChatGPT</button>';
 
             section.innerHTML = `
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${codexStatusBg}; color:${codexStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${codexConnected ? '✅' : '⚠️'} ${escapeHtml(codexStatusText)}</span>
-                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Manage the ChatGPT plan behind Codex" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  ${providerTitleHtml(p, 'Manage the ChatGPT plan behind Codex')}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7424,10 +7564,11 @@
                   </button>
                 </div>
               </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing.</div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing. Sign in again with a different account to add it: the first is spent before the next is used, so one plan's limit is not the ceiling for the whole router.</div>
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
                 Codex is not an OpenAI-compatible endpoint: traffic is translated to the Responses API, and only the models your plan may serve are listed. Your ChatGPT password is never seen by Hammer — the device flow only ever returns a token.
               </div>
+              ${codexAccountListHtml}
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
                 ${codexActionsHtml}
               </div>
@@ -7438,6 +7579,7 @@
               </div>
               ${codexDeviceAuthHtml}
               ${codexMessageHtml}
+              ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
             `;
@@ -7478,7 +7620,7 @@
               <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${devinStatusBg}; color:${devinStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${devinConnected ? '✅' : '⚠️'} ${escapeHtml(devinStatusText)}</span>
-                  ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Get Devin" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                  ${providerTitleHtml(p, 'Get Devin')}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7496,6 +7638,7 @@
                 <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
               </div>
               ${devinMessageHtml}
+              ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
             `;
@@ -7506,7 +7649,7 @@
             <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
               <div style="display:flex; align-items:center; gap:10px;">
                 <span style="background:${statusBg}; color:${statusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${statusIcon} ${statusText}</span>
-                ${p.signupUrl ? `<a href="${p.signupUrl}" target="_blank" rel="noopener noreferrer" title="Get API key" style="font-size:1rem; color:var(--accent); text-decoration:none; font-weight:600;">${escapeHtml(p.name)}</a>` : `<h3 style="margin:0; font-size:1rem;">${escapeHtml(p.name)}</h3>`}
+                ${providerTitleHtml(p)}
                 <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7524,14 +7667,26 @@
             <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                 <span style="font-size:0.8rem; font-weight:700; color:var(--text);">Accounts (${p.apiKeyPool.length})</span>
-                <span style="font-size:0.7rem; color:var(--text-muted);">${p.apiKeyPool.length > 1 ? 'Round-robin active' : 'Add one more key to enable round-robin'}</span>
+                <span style="font-size:0.7rem; color:var(--text-muted);">${p.apiKeyPool.length > 1 ? 'Spent in order, one at a time' : 'Add one more key to fall back to'}</span>
               </div>
               <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:10px;">
                 ${p.apiKeyPool.map((acct, i) => `
                   <div style="display:flex; align-items:center; gap:8px; padding:6px 8px; background:var(--input-bg); border:1px solid var(--border-subtle); border-radius:6px; font-size:0.78rem;">
                     <span style="font-weight:700; color:var(--text-muted); min-width:20px;">[${i}]</span>
                     <span style="font-family:monospace; color:var(--text); flex:1;">${escapeHtml(acct.masked)}</span>
-                    <span id="acct-status-${p.key}-${i}" style="font-size:0.7rem;"></span>
+                    <span style="font-size:0.7rem; color:var(--text-muted);">${(() => {
+                      // The same facts the pool bar draws, in words: how much this key has carried
+                      // and where it stands. The span used to be an empty hook nothing filled.
+                      const usage = (p.credentialPool && Array.isArray(p.credentialPool.accounts))
+                        ? p.credentialPool.accounts.find(entry => entry.index === i)
+                        : null;
+                      if (!usage) return '';
+                      const requests = Number(usage.requests) || 0;
+                      const state = usage.exhausted
+                        ? `exhausted${usage.resetsInMs ? ` \u00b7 resets in ${formatCountdown(usage.resetsInMs)}` : ''}`
+                        : (i === p.credentialPool.servingIndex ? 'serving' : 'waiting its turn');
+                      return escapeHtml(requests > 0 ? `${requests} request${requests === 1 ? '' : 's'} \u00b7 ${state}` : state);
+                    })()}</span>
                     <button onclick="removeAccountKey(${jsStringAttr(p.key)}, ${i})" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:2px 8px; border-radius:4px; font-size:0.7rem; font-weight:600;">Remove</button>
                   </div>
                 `).join('')}
@@ -7544,6 +7699,7 @@
             ` : ''}
             ${optionalBearerAuthHtml}
             ${openAiCompatibleFieldsHtml}
+            ${credentialBarHtml(p)}
             ${providerErrorHtml}
             ${rateLimitHtml}
           `;
@@ -7817,7 +7973,7 @@
 
         const providerKeys = Object.keys(providers);
         if (providerKeys.length === 0) {
-          body.innerHTML = '<div style="padding:32px; text-align:center; color:var(--text-muted);">No multi-account providers configured.<br><br>Add multiple API keys to a provider to enable round-robin.</div>';
+          body.innerHTML = '<div style="padding:32px; text-align:center; color:var(--text-muted);">No credential pools in use yet.<br><br>Add more than one API key, or sign in another account, and the router spends one before falling through to the next.</div>';
           return;
         }
 
@@ -7828,7 +7984,7 @@
               <th style="text-align:left; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Account</th>
               <th style="text-align:left; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Status</th>
               <th style="text-align:right; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Requests</th>
-              <th style="text-align:center; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Next</th>
+              <th style="text-align:center; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Serving</th>
             </tr>
           </thead>
           <tbody>`;
@@ -7847,17 +8003,20 @@
               statusBg = 'var(--status-error-bg)';
               statusText = 'Rate Limited';
             }
-            const isNext = acct.index === info.currentIdx;
+            const isServing = acct.index === info.currentIdx;
+            const resetText = acct.rateLimited && Number.isFinite(Number(acct.resetsInMs)) && Number(acct.resetsInMs) > 0
+              ? ` \u00b7 resets in ${formatCountdown(acct.resetsInMs)}`
+              : '';
             html += `<tr style="border-bottom:1px solid var(--border);">
               <td style="padding:14px 24px; font-size:0.875rem; font-weight:600;">${escapeHtml(name)}</td>
               <td style="padding:14px 24px; font-size:0.875rem;">
-                <span style="font-family:monospace; background:var(--surface-alt); padding:2px 6px; border-radius:4px; font-size:0.78rem;">[${acct.index}] ${escapeHtml(acct.masked)}</span>
+                <span style="font-family:monospace; background:var(--surface-alt); padding:2px 6px; border-radius:4px; font-size:0.78rem;">[${acct.index}] ${escapeHtml(acct.label || acct.masked)}</span>${resetText ? `<span style="margin-left:8px; font-size:0.72rem; color:var(--text-muted);">${escapeHtml(resetText.replace(/^ \u00b7 /, ''))}</span>` : ''}
               </td>
               <td style="padding:14px 24px;">
                 <span style="background:${statusBg}; color:${statusColor}; border-radius:999px; padding:2px 10px; font-size:0.72rem; font-weight:700;">${statusIcon} ${statusText}</span>
               </td>
               <td style="padding:14px 24px; text-align:right; font-size:0.875rem; font-weight:600; font-variant-numeric:tabular-nums;">${acct.requests}</td>
-              <td style="padding:14px 24px; text-align:center; font-size:1.1rem;">${isNext ? '→' : ''}</td>
+              <td style="padding:14px 24px; text-align:center; font-size:1.1rem;">${isServing ? '→' : ''}</td>
             </tr>`;
           }
         }
@@ -8413,7 +8572,11 @@
           codexDeviceAuthState = null;
           const identity = data.email ? ` as ${data.email}` : '';
           const plan = data.planType ? ` (${data.planType} plan)` : '';
-          setCodexUiMessage(`Connected OpenAI Codex${identity}${plan}.`, 'success');
+          const accountCount = Number(data.accountCount || 0);
+          const pool = accountCount > 1
+            ? ` ${accountCount} ChatGPT accounts are now in rotation, and one that hits its plan limit is benched so the others keep serving.`
+            : '';
+          setCodexUiMessage(`Connected OpenAI Codex${identity}${plan}.${pool}`, 'success');
           await loadSettings();
           await fetchData();
           return;
@@ -8442,14 +8605,31 @@
       }
     }
 
-    async function disconnectCodex() {
+    // Called with no argument it signs every account out — that is what the Disconnect button
+    // does. Called with an account's email (or workspace id), or failing that its pool
+    // position, it signs out exactly that one: the only way to trim a pool without emptying
+    // it. The index arrives from a data attribute as a string, so it is normalized here.
+    async function disconnectCodex(account, index) {
+      const identifier = typeof account === 'string' ? account.trim() : '';
+      const position = Number.parseInt(index, 10);
+      const body = identifier ? { account: identifier } : (Number.isInteger(position) ? { index: position } : {});
       try {
-        const res = await fetch('/api/oauth/openai-codex/disconnect', { method: 'POST' });
+        const res = await fetch('/api/oauth/openai-codex/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to disconnect OpenAI Codex.');
         clearCodexDevicePollTimer();
         codexDeviceAuthState = null;
-        setCodexUiMessage('Disconnected OpenAI Codex and removed the stored credentials.', 'success');
+        const signedOutOne = Boolean(identifier) || Number.isInteger(position);
+        if (signedOutOne) {
+          const remaining = Number(data.remaining || 0);
+          setCodexUiMessage(`Signed ${identifier || 'that account'} out.${remaining > 0 ? ` ${remaining} account${remaining === 1 ? '' : 's'} still signed in.` : ''}`, 'success');
+        } else {
+          setCodexUiMessage('Disconnected OpenAI Codex and removed the stored credentials.', 'success');
+        }
         await loadSettings();
         await fetchData();
       } catch (err) {
@@ -9222,6 +9402,110 @@
         .replace(/>/g, '\\u003e')
         .replace(/&/g, '\\u0026');
       return "'" + s + "'";
+    }
+
+    // A provider card's title, linked to the page where that provider's credential comes
+    // from. The link is the point of the title: a card that reads "No API key" is only
+    // useful if the next click is the page that issues one, and the URL is already a
+    // provider fact the server sends (`signupUrl`, derived from the provider descriptor).
+    //
+    // A provider with no credential page keeps the plain heading rather than a link to
+    // nowhere. That is not an oversight, and it is the signature of an unfinished fact
+    // rather than of a missing feature: FreeModels routes real keyless browser traffic and
+    // has no dashboard key to obtain, so its heading is final. An imported provider with no
+    // URL is a gap in `key-pages.json` waiting for someone to confirm the page, which is why
+    // the curator refuses to guess one.
+    function providerTitleHtml(provider, tooltip = 'Get API key') {
+      const name = escapeHtml(provider.name);
+      if (!provider.signupUrl) return `<h3 style="margin:0; font-size:1rem;">${name}</h3>`;
+      // `noopener` because the target is a third-party page, and `noreferrer` because a
+      // provider has no business seeing the local dashboard's URL.
+      return `<a class="provider-title-link" href="${escapeHtml(provider.signupUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(tooltip)}">${name}</a>`;
+    }
+
+    // ── The credential pool bar ────────────────────────────────────────────────
+    //
+    // One segment per credential, in the order the router spends them: the first is used until
+    // it is exhausted, then the second, and so on. That order is the reason this is a bar and not
+    // a chart — reading left to right is reading the plan. Which segment is *serving* is a
+    // separate fact (it is whichever one `servingIndex` names, and it is the accent-filled
+    // segment), because once the first credential is spent the traffic has moved rightwards and
+    // the spent one keeps its width.
+    //
+    // Nothing here invents a percentage of an allowance. The server knows how many requests a
+    // credential has served and whether it is currently exhausted; it does not know how much of
+    // a provider's free tier remains, and a bar that guessed at that would be a lie that looks
+    // like data. So the fill is the *share of this provider's traffic* each credential has
+    // carried, and exhaustion is stated outright, with the reset counted down when the provider
+    // said when it lifts.
+    //
+    // A provider with a single credential gets a single bar, because "is there anything left in
+    // this account?" is the same question whether the pool holds one or five.
+    function credentialBarHtml(provider) {
+      const pool = provider ? provider.credentialPool : null;
+      if (!pool || !Array.isArray(pool.accounts) || pool.accounts.length === 0) return '';
+      const accounts = pool.accounts;
+      const totalRequests = accounts.reduce((sum, account) => sum + (Number(account.requests) || 0), 0);
+      const serving = accounts[pool.servingIndex] || null;
+
+      const segments = accounts.map((account, i) => {
+        const requests = Number(account.requests) || 0;
+        // Equal widths before anything has been served: with no traffic yet the pool is a plan,
+        // not a measurement, and drawing one credential as "100%" would assert otherwise.
+        const share = totalRequests > 0 ? (requests / totalRequests) * 100 : 100 / accounts.length;
+        const isServing = i === pool.servingIndex && !account.exhausted;
+        const label = account.label || `Account ${i + 1}`;
+        const title = `${label} \u2014 ${requests} request${requests === 1 ? '' : 's'}`
+          + (account.exhausted ? ' \u00b7 exhausted' : isServing ? ' \u00b7 serving' : ' \u00b7 waiting its turn');
+        const fill = account.exhausted
+          ? 'var(--status-error-bg)'
+          : isServing ? 'var(--accent)' : 'var(--border)';
+        // The exhausted segment is hatched rather than merely red, so it reads as spent at a
+        // glance without relying on colour alone.
+        const hatch = account.exhausted
+          ? 'background-image:repeating-linear-gradient(45deg, transparent, transparent 3px, var(--status-error-border) 3px, var(--status-error-border) 6px);'
+          : '';
+        return `<div title="${escapeHtml(title)}" data-pool-segment="${i}" style="width:${share.toFixed(3)}%; height:100%; background:${fill}; ${hatch}${i > 0 ? ' border-left:1px solid var(--border);' : ''}"></div>`;
+      }).join('');
+
+      const spent = accounts.filter(account => account.exhausted);
+      const soonestResetMs = spent.reduce((soonest, account) => {
+        const ms = Number(account.resetsInMs);
+        if (!Number.isFinite(ms) || ms <= 0) return soonest;
+        return soonest === null || ms < soonest ? ms : soonest;
+      }, null);
+
+      const summary = [`${accounts.length} account${accounts.length === 1 ? '' : 's'}`];
+      if (totalRequests > 0) summary.push(`${totalRequests.toLocaleString()} request${totalRequests === 1 ? '' : 's'}`);
+      if (serving && !serving.exhausted && accounts.length > 1) summary.push(`${serving.label || 'first account'} serving`);
+      if (spent.length > 0) {
+        summary.push(spent.length === accounts.length
+          ? 'all accounts exhausted'
+          : `${spent.length} exhausted`);
+      }
+
+      const resetHtml = soonestResetMs === null
+        ? ''
+        : `<span data-pool-reset-at="${Date.now() + soonestResetMs}" style="margin-left:6px;">resets in ${escapeHtml(formatCountdown(soonestResetMs))}</span>`;
+
+      return `
+        <div style="margin-top:12px;">
+          <div style="display:flex; height:8px; border-radius:999px; overflow:hidden; border:1px solid var(--border); background:var(--input-bg);">
+            ${segments}
+          </div>
+          <div style="margin-top:6px; font-size:0.72rem; color:var(--text-muted);">${escapeHtml(summary.join(' \u00b7 '))}${resetHtml}</div>
+        </div>`;
+    }
+
+    // The bars' reset countdowns tick down locally, like the rate-limit ones: the server sends a
+    // remaining duration once per render, and this walks it down without asking again.
+    function updatePoolBarCountdowns() {
+      document.querySelectorAll('[data-pool-reset-at]').forEach(element => {
+        const at = Number(element.dataset.poolResetAt);
+        if (!Number.isFinite(at)) return;
+        const remaining = at - Date.now();
+        element.textContent = remaining > 0 ? `resets in ${formatCountdown(remaining)}` : 'window passed';
+      });
     }
 
     function stableStringify(value) {

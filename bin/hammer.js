@@ -310,7 +310,7 @@ async function main() {
       } else if (typeof existing === 'string' && existing) {
         config.apiKeys[provider] = [existing, key]
         saveConfig(config)
-        console.log(chalk.green(`✔ Added second key to ${provider} (now 2 keys, round-robin enabled)`))
+        console.log(chalk.green(`✔ Added a second key to ${provider} (the first is spent before the second is used)`))
       } else {
         config.apiKeys[provider] = key
         saveConfig(config)
@@ -443,7 +443,7 @@ async function main() {
         if (isRateLimited) statusIcon = chalk.red('🔴')
         else if (hitMaxTurns) statusIcon = chalk.yellow('🟡')
 
-        const rotation = live?.currentIdx === i ? ' ← next' : ''
+        const rotation = live?.currentIdx === i ? ' ← serving' : ''
         console.log(`  ${statusIcon} [${i}] ${masked}${rotation}  requests: ${requests}`)
       }
       console.log()

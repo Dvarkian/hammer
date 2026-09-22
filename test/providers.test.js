@@ -61,8 +61,9 @@ import {
   shapedHeaders,
   shapedModelNeedsKey,
   shapedTimeoutMs,
+  substituteCredentialFields,
 } from '../lib/providers/adapters.js'
-import { humanizeProviderKey, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
+import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
   buildProviderRequestBody,
   buildProviderRequestHeaders,
@@ -70,15 +71,18 @@ import {
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
+  extractOpenAICompatibleModelRecords,
+  isChatCompatibleDiscoveredModel,
   isProviderAuthOptional,
   isProviderBearerAuthEnabled,
   lazyDiscoveryCandidates,
   resolveDiscoveryModelsUrl,
   resolveRequestModels,
 } from '../lib/providers/discovery.js'
+import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
 import { sources, canonicalizeModelId } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
-import { rankModelsForRouting } from '../lib/utils.js'
+import { isIncompatibleModelError, rankModelsForRouting } from '../lib/utils.js'
 import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
 import { parseRegistryEntry, parseRegistryIndex, decideResolution, termsRefusal } from '../tools/resolve-omniroute-endpoints.mjs'
 
@@ -98,7 +102,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
   sortsDeepEqual(apiKeyEnvVarTable(), {
     nvidia: 'NVIDIA_API_KEY',
     groq: 'GROQ_API_KEY',
-    cerebras: 'CEREBRAS_API_KEY',
     opencode: 'OPENCODE_API_KEY',
     empero: 'EMPERO_API_KEY',
     openrouter: 'OPENROUTER_API_KEY',
@@ -175,8 +178,75 @@ test('the optional-auth set stays the pre-refactor five, and ollama stays local-
   )
 })
 
-test('signup URLs cover the same 18 providers as before', () => {
-  assert.equal(Object.keys(signupUrlTable()).length, 18)
+test('the 17 hammer-owned signup URLs survive the import, which is additive', () => {
+  // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
+  // pinned the total at 18, which stopped being true the moment an imported provider got a
+  // key page — and would have hidden a *removed* hammer URL behind an added import.
+  const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(key => PROVIDER_DESCRIPTORS[key].signupUrl)
+  assert.equal(hammerOwned.length, 17)
+  const table = signupUrlTable()
+  for (const key of hammerOwned) {
+    assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
+  }
+  assert.ok(Object.keys(table).length > 18, 'imported providers must add key pages')
+})
+
+// ── The curated key-page table ─────────────────────────────────────────────────────────
+//
+// `key-pages.json` exists because upstream has no column for "where do I get a credential"
+// and the repo refuses to guess one. These tests pin the properties that make a guess
+// distinguishable from a verified fact.
+
+test('every curated key page is HTTPS and records the evidence behind it', () => {
+  const pages = loadKeyPages()
+  assert.ok(Object.keys(pages).length > 40, 'the table should cover the imported fleet')
+  for (const [key, entry] of Object.entries(pages)) {
+    assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
+    assert.ok(
+      typeof entry.evidence === 'string' && entry.evidence.trim().length > 0,
+      `${key} must say what kind of page its URL is`,
+    )
+  }
+})
+
+test('a key page claims a verification date only when the check actually succeeded', () => {
+  // The checker stamps `verifiedAt` on reachable pages and `httpStatus` on every check. An
+  // entry that recorded a date from a 403, a timeout or a DNS failure would be asserting
+  // something nobody observed, which is exactly the failure mode this table is built around.
+  for (const [key, entry] of Object.entries(loadKeyPages())) {
+    if (entry.verifiedAt === null || entry.verifiedAt === undefined) {
+      assert.equal(entry.verifiedAt, null, `${key} must spell "not verified" as null`)
+      continue
+    }
+    assert.match(entry.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, `${key} must date its verification as YYYY-MM-DD`)
+    assert.ok(
+      Number.isFinite(entry.httpStatus) && entry.httpStatus >= 200 && entry.httpStatus < 300,
+      `${key} claims verification at ${entry.verifiedAt} but its last check was ${entry.httpStatus}`,
+    )
+  }
+})
+
+test('every active import has somewhere to send a user for a credential', () => {
+  const orphanless = Object.keys(loadKeyPages())
+  const unregistered = orphanless.filter(key => !listProviders().some(provider => provider.key === key))
+  assert.deepEqual(unregistered, [], 'these curated keys no longer name a provider')
+
+  const unrouted = listProviders()
+    .filter(provider => provider.origin === 'omniroute' && provider.activation === 'active')
+    .filter(provider => !provider.signupUrl)
+    .map(provider => provider.key)
+  assert.deepEqual(unrouted, [], 'an active import with no key page renders a title nobody can click')
+
+  // The server's own lookup, not just the registry's table. `buildProviderConfigEntry` reads
+  // `API_KEY_SIGNUP_URLS`, so a URL that reached the table but not this map would still ship
+  // the dashboard a heading with nothing to click.
+  for (const provider of listProviders()) {
+    assert.equal(
+      API_KEY_SIGNUP_URLS[provider.key] || null,
+      provider.signupUrl || null,
+      `${provider.key} must reach the server through API_KEY_SIGNUP_URLS`,
+    )
+  }
 })
 
 // ── Registry integrity ─────────────────────────────────────────────────────────────────
@@ -189,8 +259,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 19 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 19)
+test('hammer ships 18 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 18)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -250,6 +320,19 @@ test('provider-scoped dead-model evidence is reachable through the registry', ()
   assert.equal(matchesProviderDeadError('nvidia', 'upstream timeout'), false)
 })
 
+test('llm7\'s chat-endpoint refusal for its image/video rows is classified Incompatible', () => {
+  // isIncompatibleModelError is what the manual test, the ping and the probe paths
+  // all read (lib/server.js), so this one pin covers every surface the dashboard
+  // renders. The exact phrasing is llm7's own: it advertises image/video models in
+  // /v1/models whose ids carry no modality hint, then refuses the chat call with
+  // this message.
+  assert.ok(isIncompatibleModelError("Model 'dark-beast-krea2' does not support chat endpoints."))
+  assert.ok(isIncompatibleModelError("Model 'kling-v3.0-pro' does not support chat endpoints.", 400))
+  // Unrelated failures keep their own classifications rather than joining this one.
+  assert.equal(isIncompatibleModelError('upstream timeout'), false)
+  assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
+})
+
 test('behavior hooks are addressable per provider', () => {
   resetRegistry()
   registerProvider('hooky', { label: 'Hooky', chatUrl: 'https://h.test/v1/chat/completions' })
@@ -272,7 +355,7 @@ test('the vendored catalog parses and carries provenance', () => {
 
 test('imported providers never overwrite hammer-owned keys', () => {
   const importedKeys = imported().map(d => d.key)
-  for (const key of ['nvidia', 'groq', 'cerebras', 'openrouter', 'scaleway', 'kiro', 'opencode']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro', 'opencode']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
   }
@@ -307,11 +390,56 @@ test('every provider that is not active records exactly why', () => {
 test('terms flags are advisory by default, but still travel on every descriptor', () => {
   // Matches OmniRoute, whose flag is documented as "not a routing gate". The provider is
   // usable, and the flag remains visible so the decision is never hidden.
-  assert.equal(activationOf('refused').length, 0, 'nothing is withheld under the default policy')
+  const withheldForTerms = activationOf('refused').filter(d => /terms flag/.test(d.blockedReason || ''))
+  assert.equal(withheldForTerms.length, 0, 'nothing is withheld for its terms under the default policy')
   const flagged = imported().filter(d => d.tos === 'avoid')
   assert.ok(flagged.length > 0, 'the roster has avoid-flagged rows, so some must be imported')
   for (const provider of flagged) {
     assert.ok(['active', 'staged'].includes(provider.activation))
+  }
+})
+
+test('a provider whose free-access premise does not hold is refused, and cannot route', () => {
+  // The roster's own corrections: upstream lists all three as free providers. Two grant only a
+  // one-time signup credit on a prepaid platform, where nothing recurs; the third, Cerebras,
+  // has no free tier at all — its trial credit expires after 30 days and its API stays
+  // inactive without a payment method. A refusal is structural, not a flag someone has to
+  // remember to check.
+  assert.deepEqual(activationOf('refused').map(d => d.key), ['cerebras', 'deepseek', 'deepinfra'])
+  for (const key of ['cerebras', 'deepseek', 'deepinfra']) {
+    const provider = getProvider(key)
+    assert.match(provider.blockedReason, /not free/)
+    assert.equal(provider.chatUrl, null, `${key} carries no endpoint`)
+    assert.equal(provider.discoverable, false)
+    // No entry in `sources` is what removes its card from the dashboard: the server builds the
+    // provider list from `Object.keys(sources)`, so this is the whole visible effect.
+    assert.equal(key in lazyProviderSourceEntries(), false)
+    assert.equal(routableImports().some(d => d.key === key), false)
+  }
+})
+
+test('the not-free correction is a decision about the provider, not about its endpoint', () => {
+  // It has to hold when the endpoint is flawless, and when the registry entry could not be
+  // fetched at all — which is why the check sits ahead of the missing-entry branch. A clean
+  // endpoint must never be able to talk a declined provider back into routing.
+  //
+  // `access` is the roster's own claim, and the refusal has to survive the strongest one it can
+  // make. The two signup-credit rows are contradicted by calling their grant one-time, but
+  // Cerebras is contradicted while claiming *recurring* access — so the correction cannot be
+  // reduced to "the roster said signup-credit".
+  const declined = {
+    deepseek: { baseUrl: 'https://api.deepseek.com/v1/chat/completions', access: 'signup-credit' },
+    deepinfra: { baseUrl: 'https://api.deepinfra.com/v1/openai/chat/completions', access: 'signup-credit' },
+    cerebras: { baseUrl: 'https://api.cerebras.ai/v1/chat/completions', access: 'recurring' },
+  }
+  for (const [key, { baseUrl, access }] of Object.entries(declined)) {
+    const flawlessEndpoint = { format: 'openai', executor: 'default', baseUrl, authType: 'apikey', authHeader: 'bearer', models: [] }
+    for (const entry of [flawlessEndpoint, null]) {
+      const decision = decideResolution({ key, access, tos: 'ok', entry })
+      assert.equal(decision.activation, 'refused')
+      assert.match(decision.reason, /not free/)
+      assert.equal(decision.resolution, null)
+    }
   }
 })
 
@@ -456,7 +584,7 @@ test('imported providers are flagged lazy and absent from eager discovery', () =
 })
 
 test('hammer\'s own hand-configured providers are not lazy', () => {
-  for (const key of ['nvidia', 'groq', 'cerebras', 'openrouter', 'scaleway']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway']) {
     assert.equal(sources[key].lazyDiscovery, undefined, `${key} must keep participating in startup discovery`)
   }
 })
@@ -495,6 +623,66 @@ test('discovery honors a provider-declared models URL, and a base override wins 
   assert.equal(
     resolveDiscoveryModelsUrl(sources.fireworks, 'https://proxy.test/v1'),
     'https://proxy.test/v1/models',
+  )
+})
+
+test("Cloudflare's model list is account-scoped, and discovery can fill the account id in", () => {
+  const provider = getProvider('cloudflare-ai')
+  // Workers AI's OpenAI-compatible layer has no `/v1/models` — it serves only
+  // `/chat/completions`, `/embeddings` and (GPT-OSS) `/responses` — so the sibling of the
+  // chat path is a URL that 404s, which is what left this provider with an empty roster
+  // however it was configured. Its list comes from the platform's Model Search instead.
+  assert.equal(
+    derivedModelsUrl(provider.chatUrl),
+    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/models',
+    'the derivation this provider must not rely on',
+  )
+  assert.equal(
+    resolveDiscoveryModelsUrl({ url: provider.chatUrl, modelsUrl: provider.modelsUrl }),
+    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
+  )
+  // Both the chat URL and the list URL are templates, so neither is fetchable until the
+  // account id exists — which is why an unconfigured provider is a recorded skip rather
+  // than a probe of a URL that still contains `{accountId}`.
+  assert.deepEqual(substituteCredentialFields({}, 'cloudflare-ai', provider.modelsUrl), {
+    url: null,
+    missing: ['accountId'],
+  })
+  assert.deepEqual(
+    substituteCredentialFields({ providers: { 'cloudflare-ai': { accountId: 'acct-42' } } }, 'cloudflare-ai', provider.modelsUrl),
+    {
+      url: 'https://api.cloudflare.com/client/v4/accounts/acct-42/ai/models/search?task=Text%20Generation&per_page=100',
+      missing: [],
+    },
+  )
+  // A URL with no placeholder in it is returned untouched, so this is not a rewrite of
+  // every provider's list URL.
+  assert.deepEqual(substituteCredentialFields({}, 'nvidia', 'https://integrate.api.nvidia.com/v1/models'), {
+    url: 'https://integrate.api.nvidia.com/v1/models',
+    missing: [],
+  })
+})
+
+test('a record that declares a non-chat task is not imported as a chat model', () => {
+  // Cloudflare's model search answers in the platform's own envelope, and names each model's
+  // task. The task is what makes the list usable: `@cf/baai/bge-large-en-v1.5` carries no
+  // hint in its id, so without it the embedding model would be imported as a chat row and
+  // then 404 at chat time — which reads as a dead provider rather than a catalog mistake.
+  const payload = {
+    success: true,
+    errors: [],
+    messages: [],
+    result: [
+      { name: '@cf/baai/bge-large-en-v1.5', task: { name: 'Text Embeddings' } },
+      { name: '@cf/meta/llama-3.1-8b-instruct', task: { name: 'Text Generation' } },
+      { name: '@cf/stabilityai/stable-diffusion-xl-base-1.0', task: { name: 'Text-to-Image' } },
+    ],
+  }
+  const records = extractOpenAICompatibleModelRecords(payload)
+  assert.equal(records.length, 3, 'the platform `result` envelope is read as a model list')
+  assert.deepEqual(
+    records.filter(record => isChatCompatibleDiscoveredModel(record, record.name)).map(record => record.name),
+    ['@cf/meta/llama-3.1-8b-instruct'],
   )
 })
 
@@ -855,6 +1043,12 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
   assert.equal(cloudflare.resolution.shaping.urlTemplate, true)
   assert.deepEqual(cloudflare.resolution.shaping.credentialFields, ['accountId'])
   assert.equal(cloudflare.resolution.shaping.flattenTextContent, true)
+  // The profile also names where the model list lives, because Workers AI's OpenAI-compatible
+  // surface has no `/v1/models` for the generic derivation to find.
+  assert.equal(
+    cloudflare.resolution.modelsUrl,
+    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
+  )
 
   // Two roster rows can share one executor, so the profile is keyed by executor rather than
   // by row: `opencode-zen` inherits what `opencode` needs.
@@ -1048,7 +1242,7 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // descriptor that carries no quota is simply absent, which is the shape the old
   // hand-maintained object had for a provider it did not describe.
   for (const key of [
-    'nvidia', 'groq', 'cerebras', 'googleai', 'openrouter', 'codestral', 'scaleway',
+    'nvidia', 'groq', 'googleai', 'openrouter', 'codestral', 'scaleway',
     'kiro', 'kilocode', 'opencode', 'empero', 'freemodels', 'github-copilot',
     'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
   ]) {

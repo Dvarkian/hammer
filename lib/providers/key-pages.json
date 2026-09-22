@@ -1,0 +1,356 @@
+{
+  "_source": {
+    "purpose": "Where to go to obtain a credential for each imported provider.",
+    "whyThisFileExists": "The OmniRoute roster carries access, terms and token economics, and the resolution file carries endpoints and auth shape — but neither carries a URL for obtaining a key. OmniRoute's per-provider registry entries have no website field either (checked against their live tree), so this fact has no upstream owner and is curated here rather than invented at import time.",
+    "ownership": "Hand-maintained and not generated. `url`, `evidence` and `note` are written by a person; `verifiedAt` and `httpStatus` are stamped by the tool. Re-running the OmniRoute sync never touches this file, which is the point: upstream has no opinion to overwrite it with.",
+    "whatCounts": [
+      "A page that issues or displays a credential, or the signup page that leads to one. `evidence` says which kind of page it is, so a marketing homepage never passes as a key page by accident.",
+      "A provider with no reachable public page is absent on purpose. Its card renders as a plain heading, which is the honest state: there is nowhere to send the user.",
+      "A service with no credential at all (a keyless relay) is recorded with that fact rather than left blank, because the link is still the right place to send someone."
+    ],
+    "readingTheChecks": "`httpStatus` is the status of the last live check and `note` explains anything that makes that number misleading. This environment's egress is filtered: several hosts time out and a few do not resolve at all, which is a statement about the sandbox and not about the URL. Those entries keep their URL and record the inconclusive check in `note` instead of being silently dropped.",
+    "verifiedWith": "tools/verify-key-pages.mjs"
+  },
+  "pages": {
+    "mistral": {
+      "url": "https://console.mistral.ai/api-keys",
+      "evidence": "Mistral console; API keys page",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "The check establishes no connection to this host at all from the dev environment while sibling consoles answer, so the result is inconclusive rather than negative; the path is Mistral's own documented keys page."
+    },
+    "llm7": {
+      "url": "https://token.llm7.io/",
+      "evidence": "LLM7's token page, where its free tokens are issued",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "gemini": {
+      "url": "https://aistudio.google.com/apikey",
+      "evidence": "Google AI Studio; API keys page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "cloudflare-ai": {
+      "url": "https://dash.cloudflare.com/profile/api-tokens",
+      "evidence": "Cloudflare dashboard; API tokens page (Workers AI also needs an account ID)",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "api-airforce": {
+      "url": "https://api.airforce/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "ollama-cloud": {
+      "url": "https://ollama.com/settings/keys",
+      "evidence": "Ollama account settings; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "bluesminds": {
+      "url": "https://www.bluesminds.com/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "sambanova": {
+      "url": "https://cloud.sambanova.ai/apis",
+      "evidence": "SambaNova Cloud; API keys page",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment; the page itself is named verbatim by SambaNova's own docs."
+    },
+    "bazaarlink": {
+      "url": "https://bazaarlink.ai/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "cohere": {
+      "url": "https://dashboard.cohere.com/api-keys",
+      "evidence": "Cohere dashboard; API keys page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "morph": {
+      "url": "https://morphllm.com/dashboard",
+      "evidence": "Morph dashboard; API keys",
+      "verifiedAt": null,
+      "httpStatus": 429,
+      "note": "Reachable but rate-limits automated checks (HTTP 429)."
+    },
+    "huggingface": {
+      "url": "https://huggingface.co/settings/tokens",
+      "evidence": "Hugging Face settings; access tokens (a read token reaches the Inference Providers router)",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "longcat": {
+      "url": "https://longcat.chat/platform/",
+      "evidence": "LongCat open platform console",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "glm-cn": {
+      "url": "https://open.bigmodel.cn/usercenter/apikeys",
+      "evidence": "BigModel (Zhipu) user center; API keys page",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment; the exact path is cited by Zhipu-facing tooling."
+    },
+    "baidu": {
+      "url": "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
+      "evidence": "Baidu Qianfan console; the application page that issues the key",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment; the path comes from Qianfan's own SDK docs."
+    },
+    "kilo-gateway": {
+      "url": "https://kilo.ai/",
+      "evidence": "Kilo homepage; the gateway credential is issued from the account here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "opencode-zen": {
+      "url": "https://opencode.ai/auth",
+      "evidence": "opencode auth page; Zen credentials",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "siliconflow": {
+      "url": "https://cloud.siliconflow.com/me/account/ak",
+      "evidence": "SiliconFlow console; API keys page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "tencent": {
+      "url": "https://console.cloud.tencent.com/lkeap",
+      "evidence": "Tencent Cloud console; the LKEAP page that issues the Hunyuan API key",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "vertex": {
+      "url": "https://console.cloud.google.com/apis/credentials",
+      "evidence": "Google Cloud console; credentials page (Vertex authenticates with a service account, not a bearer key)",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "agentrouter": {
+      "url": "https://agentrouter.org/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment."
+    },
+    "predibase": {
+      "url": "https://app.predibase.com/",
+      "evidence": "Predibase console; API token under Settings",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "This environment's resolver cannot find the host, so the check is inconclusive rather than negative. Predibase was acquired by Rubrik, so expect the console to move."
+    },
+    "together": {
+      "url": "https://api.together.ai/settings/api-keys",
+      "evidence": "Together settings; API keys page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "doubao": {
+      "url": "https://console.volcengine.com/ark",
+      "evidence": "Volcengine console; the Ark page that issues the Doubao API key",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200,
+      "note": "Timed out from this environment."
+    },
+    "ai21": {
+      "url": "https://studio.ai21.com/",
+      "evidence": "AI21 Studio; API keys under Settings (per AI21's own create-an-api-key guide)",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200,
+      "note": "Signed-out visitors are redirected to ai21.com, so the keys page sits behind the sign-in."
+    },
+    "hyperbolic": {
+      "url": "https://app.hyperbolic.ai/settings",
+      "evidence": "Hyperbolic settings; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "nscale": {
+      "url": "https://console.nscale.com/",
+      "evidence": "Nscale console; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "bytez": {
+      "url": "https://bytez.com/",
+      "evidence": "Bytez homepage; the dashboard behind signup issues the key",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "fireworks": {
+      "url": "https://fireworks.ai/api-keys",
+      "evidence": "Fireworks; API keys page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "nebius": {
+      "url": "https://tokenfactory.nebius.com/",
+      "evidence": "Nebius Token Factory; the get-an-API-key entry point",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment."
+    },
+    "qoder": {
+      "url": "https://qoder.com/",
+      "evidence": "Qoder homepage; the account behind signup issues the API key",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment."
+    },
+    "novita": {
+      "url": "https://novita.ai/settings/key-management",
+      "evidence": "Novita settings; key management page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "baichuan": {
+      "url": "https://platform.baichuan-ai.com/console/apikey",
+      "evidence": "Baichuan platform console; API key page",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "Timed out from this environment."
+    },
+    "blackbox": {
+      "url": "https://www.blackbox.ai/api",
+      "evidence": "Blackbox router page; one API key covers its models",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "coze": {
+      "url": "https://www.coze.com/open/oauth/apps",
+      "evidence": "Coze open platform; the page behind this issues personal access tokens",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "freemodel-dev": {
+      "url": "https://freemodel.dev/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "friendliai": {
+      "url": "https://suite.friendli.ai/",
+      "evidence": "Friendli Suite; Settings then API Keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "iflytek": {
+      "url": "https://console.xfyun.cn/",
+      "evidence": "iFlytek open platform console; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200,
+      "note": "Timed out from this environment."
+    },
+    "inference-net": {
+      "url": "https://inference.net/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "liquid": {
+      "url": "https://console.liquid.ai/",
+      "evidence": "Liquid console; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "monsterapi": {
+      "url": "https://monsterapi.ai/",
+      "evidence": "MonsterAPI homepage; its dashboard's Auth Keys section issues the key",
+      "verifiedAt": null,
+      "httpStatus": null,
+      "note": "This environment's resolver cannot find the host, so the check is inconclusive rather than negative."
+    },
+    "nlpcloud": {
+      "url": "https://nlpcloud.com/home/token",
+      "evidence": "NLP Cloud dashboard; API token page",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "nous-research": {
+      "url": "https://portal.nousresearch.com/",
+      "evidence": "Nous Research portal; API keys",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "pollinations": {
+      "url": "https://pollinations.ai/",
+      "evidence": "project homepage; the dashboard behind signup issues tokens",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "publicai": {
+      "url": "https://publicai.co/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "reka": {
+      "url": "https://platform.reka.ai/",
+      "evidence": "Reka platform; API keys in the dashboard",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "sensenova": {
+      "url": "https://console.sensecore.cn/",
+      "evidence": "SenseCore console; the page that issues SenseNova tokens",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200,
+      "note": "Timed out from this environment."
+    },
+    "sparkdesk": {
+      "url": "https://console.xfyun.cn/",
+      "evidence": "iFlytek open platform console; Spark (SparkDesk) keys are issued here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200,
+      "note": "Timed out from this environment."
+    },
+    "stepfun": {
+      "url": "https://platform.stepfun.ai/",
+      "evidence": "StepFun open platform; the get-an-API-key entry point",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "uncloseai": {
+      "url": "https://uncloseai.com/",
+      "evidence": "project homepage; signup lives here",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "arcee-ai": {
+      "url": "https://www.arcee.ai/",
+      "evidence": "Arcee AI homepage; the console behind signup issues the key",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "huggingchat": {
+      "url": "https://huggingface.co/chat/",
+      "evidence": "HuggingChat; a Hugging Face token is what authenticates it",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "duckduckgo-web": {
+      "url": "https://duckduckgo.com/",
+      "evidence": "the service itself; there is no credential to obtain",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    },
+    "qwen-web": {
+      "url": "https://chat.qwen.ai/",
+      "evidence": "the service itself; there is no credential to obtain",
+      "verifiedAt": "2026-09-22",
+      "httpStatus": 200
+    }
+  }
+}

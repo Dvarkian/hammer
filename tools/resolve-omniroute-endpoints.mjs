@@ -21,9 +21,11 @@
  *               prefix, a URL suffix or a content shape, because those become fields on the
  *               descriptor that `lib/providers/adapters.js` reads. Discovery stays lazy, so
  *               the model list still comes from `/v1/models` on first use, not from here.
- *   `refused` — the terms flag (from OmniRoute's own `FREE_TIER_TOS`, cross-checked
- *               against our vendored row) is `avoid` **and** `--exclude-avoid` was passed.
- *               No endpoint is written at all, so the provider cannot route even by accident.
+ *   `refused` — withheld by decision, for one of two reasons. Either the terms flag (from
+ *               OmniRoute's own `FREE_TIER_TOS`, cross-checked against our vendored row) is
+ *               `avoid` **and** `--exclude-avoid` was passed, or the row is in
+ *               `NOT_FREE_KEYS` because its free-access premise does not hold. No endpoint
+ *               is written at all, so the provider cannot route even by accident.
  *   `staged`  — genuinely not reachable over HTTP: a wire protocol with no declarative
  *               equivalent (a session cookie jar, GraphQL, an OAuth device flow, a second
  *               protocol) or a credential only the user can capture. `BESPOKE_EXECUTORS` names
@@ -195,6 +197,24 @@ const EXECUTOR_PROFILES = {
    */
   'cloudflare-ai': {
     chatUrlTemplate: 'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions',
+    /**
+     * The model list is deliberately NOT the sibling of the chat path, because Workers AI has
+     * no `GET /ai/v1/models`: its OpenAI-compatible layer serves only `/chat/completions`,
+     * `/embeddings` and (GPT-OSS) `/responses`, so a derived `.../ai/v1/models` answers 404
+     * and the provider would show an empty roster forever. The list lives on the platform's
+     * Model Search endpoint instead, which is account-scoped like the chat path (verified
+     * against Cloudflare's API reference, 2026-09-22).
+     *
+     * Two query parameters do the filtering that hammer would otherwise have to do in code:
+     * `task=Text Generation` keeps the chat models and drops embeddings, image, ASR and
+     * translation rows that carry no marker in their id, and `per_page=100` asks for the whole
+     * roster in one page rather than the default twenty. The response is the platform's
+     * `{ result: [...] }` envelope rather than OpenAI's `data`, which
+     * `extractOpenAICompatibleModelRecords` understands. `format=openrouter` is available but
+     * deliberately unused: it renames model ids, and the id is what goes in the request body.
+     */
+    modelsUrl:
+      'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
     flattenTextContent: true,
     credentialFields: ['accountId'],
   },
@@ -242,6 +262,35 @@ const BESPOKE_EXECUTORS = {
 }
 
 /**
+ * Rows whose free-access premise does not hold, so this instance declines them outright.
+ *
+ * The roster's job is to say *which* providers offer free access, and that claim is
+ * upstream's rather than ours — occasionally a stale one. A row can be perfectly resolvable,
+ * with a clean OpenAI-compatible endpoint and a bearer key, and still not belong here,
+ * because that endpoint is only reachable on a prepaid account. Such a row is `refused`
+ * rather than `staged`: `staged` records work that is pending, and this is a decision that is
+ * finished. Refusing is also what makes the correction survive a re-sync — the row stays in
+ * the vendored roster where its provenance lives, and the reason travels with it instead of
+ * the provider being quietly deleted from a mirror of somebody else's document.
+ */
+const NOT_FREE_KEYS = {
+  cerebras: 'not free: the roster claims recurring access (30,000,000 tokens/month) — the strongest access '
+    + 'classification it has — but Cerebras publishes no free tier at all. Its own FAQ answers "Is there a '
+    + 'permanently free tier?" with a flat "No": the only free usage is a $5 credit that expires 30 days after '
+    + 'signup, API access stays inactive until a payment method is on the account, and a key without one is '
+    + 'answered 402 `payment_required`. Verified live 2026-09-22: both models the key can list return that 402 '
+    + 'with `x-should-retry: false` and no rate-limit headers whatsoever. Declined at the operator\'s '
+    + 'instruction, 2026-09-22.',
+  deepinfra: 'not free: the row\'s only grant is a one-time 1,000,000-token signup credit — its own '
+    + '`access` classification is "signup-credit", never the recurring one — and DeepInfra\'s API is '
+    + 'pay-as-you-go against prepaid credit, so nothing here recurs. Declined at the operator\'s '
+    + 'instruction, 2026-09-22.',
+  deepseek: 'not free: the row\'s only grant is a one-time 5,000,000-token signup credit — its own '
+    + '`access` classification is "signup-credit", never the recurring one — and DeepSeek\'s platform '
+    + 'is prepaid, so nothing here recurs. Declined at the operator\'s instruction, 2026-09-22.',
+}
+
+/**
  * Executors whose "protocol" is a client attestation to defeat rather than a format to
  * translate, and which this instance declines to build.
  *
@@ -252,8 +301,9 @@ const BESPOKE_EXECUTORS = {
  * and expects a forged browser fingerprint back. Answering it is impersonation, not a wire
  * adapter, so the row is recorded as declined instead of as a task nobody has got to yet.
  *
- * The activation stays `staged` rather than `refused`: `refused` is the terms posture (see
- * `termsRefusal`), and this instance keeps terms advisory at the operator's request.
+ * The activation stays `staged` rather than `refused`, because this instance keeps terms
+ * advisory at the operator's request (see `termsRefusal`) and declining a protocol is not the
+ * same decision as declining a provider. `NOT_FREE_KEYS` is where the latter lives.
  */
 const DECLINED_EXECUTORS = {
   'duckduckgo-web': 'Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation '
@@ -450,6 +500,12 @@ export function parseRegistryIndex(source) {
  * @returns {{ activation: 'active'|'refused'|'staged', reason: string|null, resolution: object|null }}
  */
 export function decideResolution({ key, access, tos, note, entry }) {
+  // First, before even the missing-entry branch: whether a provider is free has nothing to
+  // do with how clean its endpoint is, so a fetch failure upstream must not be able to
+  // downgrade this refusal into a different reason. The reason here is the decision.
+  const notFree = NOT_FREE_KEYS[key]
+  if (notFree) return { activation: 'refused', reason: notFree, resolution: null }
+
   // Terms are recorded but no longer gate activation. OmniRoute treats its own ToS flag as
   // advisory — by their design it "is not a routing gate" and flagged providers stay in
   // routing — and the operator of this instance has confirmed they accept that posture for
@@ -598,7 +654,9 @@ export function decideResolution({ key, access, tos, note, entry }) {
     reason: null,
     resolution: {
       chatUrl,
-      modelsUrl: entry.modelsUrl || null,
+      // A profile's own list URL wins over the entry's, for the providers whose catalog is
+      // served somewhere other than the sibling of their chat path (Cloudflare).
+      modelsUrl: profile?.modelsUrl || entry.modelsUrl || null,
       auth: {
         kind: keyless ? 'none' : (profile?.credentialKind || 'bearer'),
         // No key needed, and a key is accepted when present.
@@ -680,8 +738,16 @@ async function main() {
       console.log(`  ✔ ${row.key.padEnd(20)} active — ${resolution.chatUrl}`)
     } else {
       resolutions[row.key] = { activation, reason }
-      report.staged.push(row.key)
-      console.log(`  · ${row.key.padEnd(20)} staged — ${reason}`)
+      // A refusal is its own bucket: it used to be reachable only from the terms branch
+      // above, so this branch assumed anything non-active was staged and would have
+      // reported a declined provider as pending work.
+      if (activation === 'refused') {
+        report.refused.push(row.key)
+        console.log(`  ⊘ ${row.key.padEnd(20)} refused — ${reason}`)
+      } else {
+        report.staged.push(row.key)
+        console.log(`  · ${row.key.padEnd(20)} staged — ${reason}`)
+      }
     }
   }
 
