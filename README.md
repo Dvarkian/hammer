@@ -22,7 +22,7 @@
 
 - 💸 **Completely Free:** Stop paying for API usage. We seamlessly provide access to robust free models.
 - 🧠 **State-of-the-Art (SOTA) Models:** Out-of-the-box availability for top-tier models including **Kimi K2.5, Minimax M2.5, GLM 5, Deepseek V3.2**, and more.
-- 🏢 **Reliable Providers:** We route requests securely through trusted, high-performance platforms like **NVIDIA, Groq, OpenRouter, OpenCode Zen, Ollama, Kiro, Google, GitHub Copilot, and OpenAI Codex**.
+- 🏢 **Reliable Providers:** We route requests securely through trusted, high-performance platforms like **NVIDIA, Groq, OpenRouter, Ollama, Kiro, Google, GitHub Copilot, and OpenAI Codex**.
 - ⚡ **Lightning Fast:** The built-in benchmark continually evaluates metrics to pick the fastest and most capable LLM for your request.
 - 🔄 **OpenAI-Compatible:** A perfect drop-in replacement that works seamlessly with your existing tools, scripts, and workflows.
 
@@ -255,7 +255,6 @@ Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS sc
   - `GROQ_API_KEY`
   - `SAMBANOVA_API_KEY`
 - `OPENROUTER_API_KEY`
-- `OPENCODE_API_KEY`
 - `OLLAMA_API_KEY`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`

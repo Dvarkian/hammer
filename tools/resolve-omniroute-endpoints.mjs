@@ -182,12 +182,6 @@ const EXECUTOR_PROFILES = {
     premiumModels: ['claude', 'claude-fast', 'claude-large', 'gemini', 'gemini-fast', 'midijourney', 'midijourney-large'],
   },
   /**
-   * OpencodeExecutor's `buildUrl()` resolves to `<baseUrl>/chat/completions` while its
-   * model list lives at `<baseUrl>/models`; the entry's `baseUrl` is the `/v1` root. Its
-   * `authPrefix` is the OpenAI convention, which the entry already declares.
-   */
-  opencode: { chatUrlSuffix: '/chat/completions' },
-  /**
    * CloudflareAIExecutor's only imperative work is building the account-scoped URL and
    * flattening OpenAI content-part arrays, which Workers AI rejects with HTTP 400. Both
    * are expressible: a URL template plus a required `accountId` credential field.
@@ -288,6 +282,25 @@ const NOT_FREE_KEYS = {
   deepseek: 'not free: the row\'s only grant is a one-time 5,000,000-token signup credit — its own '
     + '`access` classification is "signup-credit", never the recurring one — and DeepSeek\'s platform '
     + 'is prepaid, so nothing here recurs. Declined at the operator\'s instruction, 2026-09-22.',
+  opencode: 'not free: the grant is `keyless` access to Zen\'s free-tier ids, and Zen refuses its free '
+    + 'tier to every client but its own — HTTP 403 `FreeTierError`, "OpenCode\'s free tier can only be used '
+    + 'from within OpenCode". Verified live 2026-09-22 by capturing the official client\'s own request (its '
+    + 'configured base URL redirected to a local logger, so the real headers were read rather than guessed) '
+    + 'and replaying that request byte-for-byte: the captured `Authorization: Bearer sk-…`, '
+    + '`User-Agent: opencode/1.18.25 …` and the `x-opencode-client/project/request/session` headers are '
+    + 'refused with that 403, while the same credential in the official client streams a completion. The '
+    + 'gate is therefore outside the request — the client\'s transport fingerprint — so nothing this '
+    + 'router can send clears it. The row\'s own `tos` flag is `avoid` for the same reason: "Terms '
+    + 'restrict use to your own internal use and not on behalf of a third party." Declined at the '
+    + 'operator\'s instruction, 2026-09-22.',
+  'opencode-zen': 'not free: `permanent` describes a grant that only exists inside OpenCode\'s own '
+    + 'client. This is the same Zen endpoint and the same free-tier ids as the `opencode` row, served by '
+    + 'one executor, and Zen answers every one of them with HTTP 403 `FreeTierError`, "OpenCode\'s free tier '
+    + 'can only be used from within OpenCode". Verified live 2026-09-22: the client\'s own captured '
+    + 'request, replayed byte-for-byte with its credential, is refused while the client itself streams a '
+    + 'completion, so the gate is outside the request and cannot be emulated from a third-party harness. '
+    + 'Zen leaves its model list ungated, which is the only reason these rows appear at all. Declined at '
+    + 'the operator\'s instruction, 2026-09-22.',
 }
 
 /**
@@ -533,8 +546,8 @@ export function decideResolution({ key, access, tos, note, entry }) {
   const declined = DECLINED_EXECUTORS[entry.executor]
   if (declined) return { activation: 'staged', reason: declined, resolution: null }
 
-  // Profiles are keyed by *executor*, not by roster row: `opencode` and `opencode-zen` are two
-  // rows served by one executor, and its differences are the same for both.
+  // Profiles are keyed by *executor*, not by roster row: rows that share an executor share
+  // its differences, so one profile serves them all.
   const profile = EXECUTOR_PROFILES[entry.executor] || EXECUTOR_PROFILES[key] || null
   // An override replaces a wire format we would otherwise have to translate; a provider's
   // own declared OpenAI alternative does the same, but from the provider rather than from us.

@@ -64,7 +64,7 @@ export const MODEL_ID_ALIASES = {
   'kimi-k3': 'moonshotai/kimi-k3',
   'laguna-s-2.1-free': 'poolside/laguna-s-2.1',
   'ling-3.0-flash-free': 'inclusionai/ling-3.0-flash',
-  // OpenCode Zen's fin variant of the same InclusionAI model.
+  // A different host's fin variant of the same InclusionAI model.
   'ling-3.0-flash-fin-free': 'inclusionai/ling-3.0-flash',
   'poolside/laguna-s-2.1:free': 'poolside/laguna-s-2.1',
   'hy3-free': 'tencent/hy3',
@@ -395,7 +395,7 @@ export const sources = {
   //     provider rotated its roster; discovery supplies what is actually served.
   //
   // Spread FIRST so hammer's own providers below win any key collision (nvidia, groq,
-  // openrouter, scaleway, kiro, opencode). See lib/providers/resolutions.js for
+  // openrouter, scaleway, kiro). See lib/providers/resolutions.js for
   // which imports are active and why the rest are not.
   ...lazyProviderSourceEntries(),
   "nvidia": {
@@ -472,11 +472,6 @@ export const sources = {
       ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
       ["qwen/qwen3-32b", "Qwen3 32B", "131k"]
     ]
-  },
-  "opencode": {
-    "name": "OpenCode Zen",
-    "url": "https://opencode.ai/zen/v1/chat/completions",
-    "models": []
   },
   "empero": {
     "name": "Empero Free",

@@ -57,16 +57,20 @@ import { normalizeDescriptor, validateDescriptor, derivedModelsUrl } from '../li
 import {
   applyRequestShaping,
   flattenTextContent,
+  missingCredentialFields,
+  requiredCredentialFields,
   resolveShapedChatUrl,
   shapedHeaders,
   shapedModelNeedsKey,
   shapedTimeoutMs,
+  shapingReadiness,
   substituteCredentialFields,
 } from '../lib/providers/adapters.js'
 import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
   buildProviderRequestBody,
   buildProviderRequestHeaders,
+  credentialFieldWrites,
   PING_TIMEOUT,
 } from '../lib/server.js'
 import {
@@ -82,7 +86,7 @@ import {
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
 import { sources, canonicalizeModelId } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
-import { isIncompatibleModelError, rankModelsForRouting } from '../lib/utils.js'
+import { isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
 import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
 import { parseRegistryEntry, parseRegistryIndex, decideResolution, termsRefusal } from '../tools/resolve-omniroute-endpoints.mjs'
 
@@ -102,7 +106,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
   sortsDeepEqual(apiKeyEnvVarTable(), {
     nvidia: 'NVIDIA_API_KEY',
     groq: 'GROQ_API_KEY',
-    opencode: 'OPENCODE_API_KEY',
     empero: 'EMPERO_API_KEY',
     openrouter: 'OPENROUTER_API_KEY',
     'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
@@ -162,9 +165,10 @@ test('freemodels has no signup URL, matching the gap in the old table', () => {
 
 test('the optional-auth set stays the pre-refactor five, and ollama stays local-only', () => {
   // The refactor replaced a hardcoded `OPTIONAL_BEARER_AUTH_PROVIDERS` set with a lookup on
-  // `auth.optional`. These are the five it held, and each must still declare it.
+  // `auth.optional`. These are the five it held, less `opencode`, which hammer no longer
+  // ships: each must still declare it.
   const config = { apiKeys: {}, providers: {} }
-  for (const key of ['kilocode', 'opencode', 'empero', 'freemodels', 'gptfree']) {
+  for (const key of ['kilocode', 'empero', 'freemodels', 'gptfree']) {
     assert.equal(getProvider(key).auth.optional, true, `${key} must declare optional`)
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
@@ -178,12 +182,12 @@ test('the optional-auth set stays the pre-refactor five, and ollama stays local-
   )
 })
 
-test('the 17 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(key => PROVIDER_DESCRIPTORS[key].signupUrl)
-  assert.equal(hammerOwned.length, 17)
+  assert.equal(hammerOwned.length, 16)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
@@ -259,8 +263,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 18 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 18)
+test('hammer ships 17 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 17)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -314,7 +318,6 @@ test('normalizeDescriptor derives a models URL and defaults to active', () => {
 test('provider-scoped dead-model evidence is reachable through the registry', () => {
   assert.ok(providerClassifyPatterns('nvidia').dead.length > 0)
   assert.ok(matchesProviderDeadError('nvidia', "Function 'x' Not found for account abc"))
-  assert.ok(matchesProviderDeadError('opencode', 'Model is unavailable.'))
   assert.ok(matchesProviderDeadError('g4f', "No server found that supports model 'x'"))
   assert.ok(matchesProviderDeadError('groq', '', 410))
   assert.equal(matchesProviderDeadError('nvidia', 'upstream timeout'), false)
@@ -355,7 +358,7 @@ test('the vendored catalog parses and carries provenance', () => {
 
 test('imported providers never overwrite hammer-owned keys', () => {
   const importedKeys = imported().map(d => d.key)
-  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro', 'opencode']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
   }
@@ -392,21 +395,27 @@ test('terms flags are advisory by default, but still travel on every descriptor'
   // usable, and the flag remains visible so the decision is never hidden.
   const withheldForTerms = activationOf('refused').filter(d => /terms flag/.test(d.blockedReason || ''))
   assert.equal(withheldForTerms.length, 0, 'nothing is withheld for its terms under the default policy')
-  const flagged = imported().filter(d => d.tos === 'avoid')
-  assert.ok(flagged.length > 0, 'the roster has avoid-flagged rows, so some must be imported')
+  // The roster's avoid-flagged rows stay registered and visible. Its only one is `opencode`,
+  // which is now refused — but for its free-access premise, not its terms flag, which is the
+  // distinction this test exists to keep: the flag never gates routing, the premise does.
+  const flagged = providersByTosFlag('avoid')
+  assert.ok(flagged.length > 0, 'the roster keeps its avoid-flagged rows')
   for (const provider of flagged) {
-    assert.ok(['active', 'staged'].includes(provider.activation))
+    assert.ok(['active', 'staged', 'refused'].includes(provider.activation))
+    assert.doesNotMatch(provider.blockedReason || '', /terms flag/)
   }
 })
 
 test('a provider whose free-access premise does not hold is refused, and cannot route', () => {
-  // The roster's own corrections: upstream lists all three as free providers. Two grant only a
-  // one-time signup credit on a prepaid platform, where nothing recurs; the third, Cerebras,
-  // has no free tier at all — its trial credit expires after 30 days and its API stays
-  // inactive without a payment method. A refusal is structural, not a flag someone has to
-  // remember to check.
-  assert.deepEqual(activationOf('refused').map(d => d.key), ['cerebras', 'deepseek', 'deepinfra'])
-  for (const key of ['cerebras', 'deepseek', 'deepinfra']) {
+  // The roster's own corrections: upstream lists all five as free providers. Two grant only a
+  // one-time signup credit on a prepaid platform, where nothing recurs; Cerebras has no free
+  // tier at all — its trial credit expires after 30 days and its API stays inactive without a
+  // payment method; and both Zen rows are free only *inside OpenCode's own client*, which
+  // refuses every other caller at the transport layer. A refusal is structural, not a flag
+  // someone has to remember to check.
+  assert.deepEqual(activationOf('refused').map(d => d.key),
+    ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'opencode'])
+  for (const key of ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'opencode']) {
     const provider = getProvider(key)
     assert.match(provider.blockedReason, /not free/)
     assert.equal(provider.chatUrl, null, `${key} carries no endpoint`)
@@ -478,7 +487,7 @@ test('the NO_KEY gate reads the registry, so a keyless import is actually callab
   assert.equal(isProviderAuthOptional(config, 'llm7'), false)
   assert.equal(isProviderAuthOptional(config, 'cohere'), false)
   // And hammer's own optional providers keep working, now via their descriptors.
-  for (const key of ['gptfree', 'opencode', 'kilocode', 'empero', 'freemodels']) {
+  for (const key of ['gptfree', 'kilocode', 'empero', 'freemodels']) {
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
   // FreeModels never sends a bearer even when a key exists (Cloudflare bot path).
@@ -850,16 +859,116 @@ test('importSummary counts the roster, while the registry counts only what was r
   assert.ok(summary.resolvedAt, 'the resolution must record when it was generated')
 })
 
+// ── Refusals that mean "come back later" ──────────────────────────────────────────────
+//
+// Both of these reached the table as Pending / Down even though the provider had just said,
+// in its own words, that the model would serve again shortly. They are recorded here as the
+// exact bodies they arrived as.
+
+const GOOGLE_QUOTA_REFUSAL = 'You exceeded your current quota, please check your plan and billing '
+  + 'details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. '
+  + 'To monitor your current usage, head to: https://ai.dev/rate-limit. \n'
+  + '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, '
+  + 'limit: 0, model: gemini-omni-flash\n'
+  + '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, '
+  + 'model: gemini-omni-flash\nPlease retry in 58.649134332s.'
+
+const GOOGLE_OVERLOAD_REFUSAL = 'This model is currently experiencing high demand. Spikes in demand '
+  + 'are usually temporary. Please try again later.'
+
+test('an exhausted quota is a rate limit even when it arrives as limit: 0 on a free tier', () => {
+  // A quota of zero is not a paywall and not a failure: the model is on the free tier, the
+  // window is spent, and the provider names when to come back.
+  assert.equal(isQuotaExhaustionError(GOOGLE_QUOTA_REFUSAL, 429), true)
+  assert.equal(isRateLimitedErrorText(GOOGLE_QUOTA_REFUSAL), false,
+    'the text itself is neither of the phrases this predicate looks for — the status is what says it')
+})
+
+test('a busy provider is a wait, not a failure', () => {
+  assert.equal(isProviderOverloadedError(GOOGLE_OVERLOAD_REFUSAL, 503), true)
+  assert.equal(isProviderOverloadedError('ResourceExhausted: Worker local total request limit reached (25/16)', 503), true,
+    'a 5xx saying nothing at all is still Service Unavailable, which is temporary by definition')
+  assert.equal(isProviderOverloadedError('Service temporarily overloaded', 500), true)
+  assert.equal(isProviderOverloadedError('The server is at capacity, try again later.', 500), true)
+})
+
+test('a plain server error stays a failure rather than becoming a clock', () => {
+  // The predicate answers what the *row* is doing, so a 500 that names no overload is not a
+  // wait — otherwise every broken deployment would read as a provider window.
+  assert.equal(isProviderOverloadedError('Internal error', 500), false)
+  assert.equal(isProviderOverloadedError('', 500), false)
+  assert.equal(isProviderOverloadedError('Not Found', 404), false)
+  assert.equal(isProviderOverloadedError(GOOGLE_QUOTA_REFUSAL, 429), false,
+    'an exhausted quota has its own clock and its own reset window')
+})
+
+test('OpenCode Zen\'s client gate is Incompatible, not a failure to keep re-probing', () => {
+  // Zen ships no provider here any more (both roster rows are refused as not free), so this
+  // pins the predicate rather than a provider: a user who points an `openai-compatible`
+  // instance at Zen still gets this envelope, and it must not read as an auth error or an
+  // outage. A permanent access policy belongs in the unavailable table, not in a red Down
+  // that gets retried or in a Pending that never resolves. The refusal in the resolver's
+  // NOT_FREE_KEYS carries the same evidence, verified live 2026-09-22 by capturing the official
+  // client's request and replaying it byte-for-byte: it is refused while the client streams.
+  const envelope = JSON.stringify({
+    type: 'error',
+    error: {
+      type: 'FreeTierError',
+      message: "Error from provider (Console): OpenCode's free tier can only be used from within OpenCode",
+    },
+  })
+  assert.ok(isIncompatibleModelError(envelope, 403))
+  assert.ok(isIncompatibleModelError("OpenCode's free tier can only be used from within OpenCode"))
+  // Adjacent failures keep their own classification: this predicate must not turn every 403
+  // into a statement about the model.
+  assert.equal(isIncompatibleModelError('Rate limit exceeded. Please try again later.', 403), false)
+  assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
+  assert.equal(isIncompatibleModelError('Unauthorized. Check API key.', 401), false)
+})
+
 test('humanizeProviderKey renders readable labels without inventing names', () => {
   assert.equal(humanizeProviderKey('cloudflare-ai'), 'Cloudflare AI')
   assert.equal(humanizeProviderKey('llm7'), 'LLM7')
   assert.equal(humanizeProviderKey(''), '')
 })
 
+test('a templated endpoint receives only the credential fields it declares', () => {
+  // Cloudflare's Worker AI endpoint embeds the account id and Vertex's embeds the project and
+  // region. The dashboard collects them as inputs, and this rule is the only thing standing
+  // between a form post and arbitrary keys in a provider's config entry.
+  assert.deepEqual(requiredCredentialFields('cloudflare-ai'), ['accountId'])
+  assert.deepEqual(requiredCredentialFields('vertex'), ['project', 'region'])
+  assert.deepEqual(requiredCredentialFields('cohere'), [])
+
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '  abc123  ' }), { accountId: 'abc123' })
+  // A field the descriptor does not declare is dropped rather than stored.
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'abc', evil: 'x' }), { accountId: 'abc' })
+  // Clearing removes it; echoing an environment-supplied value back does the same, so an env var
+  // is never frozen into the config file by a form the user did not change.
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '' }), { accountId: null })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'from-environment' }), { accountId: null })
+  // Only the fields present are written, so a partial form cannot clear the others.
+  assert.deepEqual(credentialFieldWrites('vertex', { project: 'p' }), { project: 'p' })
+  assert.deepEqual(credentialFieldWrites('vertex', null), {})
+})
+
+test('a missing credential field is what unreadable model lists have in common', () => {
+  // The dashboard renders one input per declared field and reads this to say which are still
+  // needed. Cloudflare cannot list a single model until the account id exists, which is why its
+  // card used to say "0 models" for a reason nothing on screen explained.
+  const config = { apiKeys: {}, providers: {} }
+  assert.deepEqual(missingCredentialFields(config, 'cloudflare-ai'), ['accountId'])
+  assert.match(shapingReadiness(config, 'cloudflare-ai'), /needs accountId.*CLOUDFLARE_ACCOUNT_ID/)
+
+  const withAccount = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: 'abc' } } }
+  assert.deepEqual(missingCredentialFields(withAccount, 'cloudflare-ai'), [])
+  assert.equal(shapingReadiness(withAccount, 'cloudflare-ai'), null)
+})
+
 test('keyless providers are identified across both origins', () => {
   const keyless = keylessProviders().map(d => d.key)
   assert.ok(keyless.includes('gptfree'))
-  assert.ok(keyless.includes('opencode'))
+  assert.ok(keyless.includes('freemodels'))
 })
 
 // ── Tool parsers ───────────────────────────────────────────────────────────────────────
@@ -1050,8 +1159,9 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
     'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
   )
 
-  // Two roster rows can share one executor, so the profile is keyed by executor rather than
-  // by row: `opencode-zen` inherits what `opencode` needs.
+  // Profiles are keyed by *executor*, not by roster row, so rows sharing one inherit its
+  // differences. Zen's profile is gone with its rows: both are refused before a profile is
+  // ever consulted, which is the point of the refusal being checked first.
   const zen = decideResolution({
     key: 'opencode-zen', access: 'recurring', tos: 'caution',
     entry: {
@@ -1060,9 +1170,10 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
       authType: 'apikey', authHeader: 'Authorization', authPrefix: 'Bearer', models: [],
     },
   })
-  assert.equal(zen.activation, 'active')
-  assert.equal(zen.resolution.chatUrl, 'https://opencode.ai/zen/v1/chat/completions')
-  assert.equal(zen.resolution.auth.scheme, 'Bearer')
+  assert.equal(zen.activation, 'refused')
+  assert.equal(zen.resolution, null, 'a refused row carries no endpoint to inherit')
+  assert.match(zen.reason, /not free/)
+  assert.doesNotMatch(zen.reason, /needs a wire adapter/, 'the refusal must not read as pending work')
 
   // A frozen request default is data too, and the 50-minute budget comes with it.
   const glm = decideResolution({
@@ -1243,7 +1354,7 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // hand-maintained object had for a provider it did not describe.
   for (const key of [
     'nvidia', 'groq', 'googleai', 'openrouter', 'codestral', 'scaleway',
-    'kiro', 'kilocode', 'opencode', 'empero', 'freemodels', 'github-copilot',
+    'kiro', 'kilocode', 'empero', 'freemodels', 'github-copilot',
     'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
   ]) {
     assert.ok(table[key], `${key} must keep its published quota`)
@@ -1251,8 +1362,6 @@ test('the quota table is read through the registry, and sources.js no longer shi
 
   // Records travel whole: the window and scope the dashboard reads come off the descriptor,
   // not from a summary reconstructed at the call site.
-  assert.equal(table.opencode.window, 'day')
-  assert.equal(table.opencode.limitScope, 'account/model')
   assert.equal(table['github-copilot'].window, 'month')
   assert.match(table.nvidia.source, /Provider-reported limits only/)
 

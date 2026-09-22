@@ -2381,7 +2381,7 @@
     const PROVIDER_NAMES = {
       'groq': 'Groq', 'googleai': 'Google',
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
-      'scaleway': 'Scaleway', 'kilocode': 'KiloCode', 'opencode': 'OpenCode',
+      'scaleway': 'Scaleway', 'kilocode': 'KiloCode',
       'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
       'gptfree': 'GPTFree',
       'github-copilot': 'GitHub Copilot',
@@ -3688,7 +3688,7 @@
       const PROVIDER_DOMAINS = {
         'groq': 'groq.com', 'googleai': 'ai.google.dev',
         'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
-        'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'opencode': 'opencode.ai', 'empero': 'free.empero.org',
+        'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'empero': 'free.empero.org',
         'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
         'gptfree': 'gptfree.com',
         'github-copilot': 'github.com', 'openai-codex': 'chatgpt.com',
@@ -5633,53 +5633,30 @@
     const READY_FRESHNESS_MS = 60 * 60_000
 
     // True when the model's most recent test response is a clean 'Ready' (non-expired,
-    // successful, non-empty text, no error, recent enough). The last real request is
-    // authoritative — while the evidence is fresh.
+    // successful, non-empty text, no error). The test result is authoritative as long
+    // as it stands — it does not expire arbitrarily after 60 minutes into Down.
     function isLastResponseReady(lastResponse) {
-      if (!lastResponse) return false
-      if (lastResponse.ok === false) return false
-      if (lastResponse.error) return false
-      if (!lastResponse.text || String(lastResponse.text).trim() === '') return false
-      if (lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt)) return false
-      const at = Number(lastResponse.at)
-      if (Number.isFinite(at) && Date.now() - at > READY_FRESHNESS_MS) return false
-      return true
+      if (!lastResponse) return false;
+      if (lastResponse.ok === false) return false;
+      if (lastResponse.error) return false;
+      if (!lastResponse.text || String(lastResponse.text).trim() === '') return false;
+      if (lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt)) return false;
+      return true;
     }
 
     // ---- The one row verdict -------------------------------------------------
-    // Every availability indicator in the dashboard reads rowVerdict(), so the status
-    // dot, the model heading, the up counts, the measured columns, the ordering, the
-    // plot and the graveyard cannot disagree with each other — or with the two kinds of
-    // evidence they are all drawn from.
-    //
-    // Precedence, strongest statement first:
-    //   banned / excluded  the router refuses the row by policy
-    //   noauth             no credential, so it cannot even be tried
-    //   paid               billing or plan wall (probe, proxy 402, or a test)
-    //   dead               the provider's catalog no longer serves the model
-    //   incompatible       the model cannot serve text chat
-    //   micro              context bounded below the usable floor
-    //   rate-limited       benched on a provider window or quota
-    //   up                 usable now
-    //   timeout            the last probe got no answer within its budget
-    //   pending            not probed yet (a row that has just appeared)
-    //   down               a real failure with no better explanation
-    //
-    // A test response and a probe answer are the same kind of claim — what the provider
-    // did with one request — so the *fresher* one wins. A failure the test saw outranks
-    // the probe status only until a probe succeeds again, which is exactly the point at
-    // which the router starts routing there again; a rate limit additionally expires
-    // with the window it describes (see rateLimitEvidence). An older test is history:
-    // it stays visible in the Test column, annotated with its age, instead of
-    // overruling a row that works.
+    // The Status column is the absolute slave of and fully defined by the Test column,
+    // with exceptions only when the model is actually being used (live proxy traffic).
     const STRUCK_VERDICTS = new Set(['paid', 'dead', 'incompatible', 'micro', 'noauth']);
-    const BENCHED_VERDICTS = new Set(['rate-limited', 'timeout']);
+    // Every state that means "waiting on the provider": the clock is drawn for all of them. An
+    // overload belongs here for the same reason a quota does — the provider is refusing for
+    // now and the row returns on its own, so nothing is broken and nothing needs fixing.
+    const BENCHED_VERDICTS = new Set(['rate-limited', 'overloaded', 'timeout']);
     // How long a rate limit stands when the provider names no window at all: the same
     // grace the server applies before it clears its own wasRateLimited flag.
     const RATE_LIMIT_UNSTATED_GRACE_MS = 60_000;
 
     // When this row last answered a probe successfully, in epoch ms (0 when never).
-    // A successful manual test counts too: the server records it in the same history.
     function lastProbeSuccessAt(m) {
       const pings = Array.isArray(m?.pings) ? m.pings : [];
       for (let i = pings.length - 1; i >= 0; i--) {
@@ -5688,42 +5665,111 @@
       return 0;
     }
 
-    // True while no probe has seen this row work since the test last spoke — i.e. the
-    // test response is still the newest evidence about it.
+    // True while no real proxy request has seen this row work since the test last spoke.
     function testIsNewestEvidence(m) {
       const at = Number(m?.lastResponse?.at);
       if (!Number.isFinite(at) || at <= 0) return true;
-      return at >= lastProbeSuccessAt(m);
+      const lastProxied = Number(m?.lastProxiedAt || 0);
+      return at >= lastProxied;
+    }
+
+    // What the newest response says the row is waiting on, or null when it says nothing and
+    // when a later success has superseded it.
+    function refusalKind(m) {
+      const lr = m && m.lastResponse;
+      if (!lr || lr.ok === true || !lr.error) return null;
+      if (!testIsNewestEvidence(m)) return null;
+      if (lr.paymentRequired === true || lr.dead === true || lr.incompatible === true) return null;
+      if (lr.overloaded === true) return 'overloaded';
+      const text = String(lr.error);
+      if (Number(lr.status) === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(text)) return 'rate-limited';
+      if (Number(lr.status) === 503 || Number(lr.status) >= 500) {
+        return /overload|high demand|capacity|too busy|temporarily unavailable|service unavailable|try again later/i.test(text)
+          ? 'overloaded'
+          : null;
+      }
+      return null;
+    }
+
+    // The clock a busy provider earns. Its own window is never stated in a way worth counting
+    // down — "spikes in demand are usually temporary" is the whole claim — so the cell shows a
+    // bare clock unless the response carried a retry time of its own.
+    function isOverloadedRow(m) {
+      if (String(m?.status || '').toLowerCase() === 'overloaded') return true;
+      if (m?.lastResponse?.overloaded === true && testIsNewestEvidence(m)) return true;
+      return refusalKind(m) === 'overloaded';
+    }
+
+    function overloadedResetAt(m) {
+      const at = Number(m?.lastResponse?.rateLimitResetAt);
+      return Number.isFinite(at) && at > 0 && at > Date.now() ? at : null;
     }
 
     function rowVerdict(m) {
       if (!m) return 'down';
       const status = String(m.status || '').toLowerCase();
       if (status === 'banned' || status === 'excluded') return status;
-      if (status === 'noauth') return 'noauth';
-      const test = testIsNewestEvidence(m) ? (m.lastResponse || null) : null;
-      // The server's own status first: it is its classification of the newest probe, and
-      // it is the same verdict the router reads when it decides whether the row may serve
-      // (isModelEligibleForRouting). The flags a *test* response carries were computed when
-      // that test ran, so they only fill in the states the status does not already name —
-      // otherwise a stored 'dead' from before the surface-refusal split would keep a row
-      // labelled Dead while every fresh probe classifies it Incompatible.
-      if (status === 'paid') return 'paid';
-      if (status === 'dead') return 'dead';
-      if (status === 'incompatible') return 'incompatible';
-      if (test?.paymentRequired === true) return 'paid';
-      if (test?.dead === true) return 'dead';
-      if (test?.incompatible === true) return 'incompatible';
+      if (status === 'noauth' || m.hasAuth === false) return 'noauth';
       if (m.microContext === true) return 'micro';
-      if (isRateLimitedRow(m)) return 'rate-limited';
-      // A clean, fresh test outranks a status that says nothing was learned: 'timeout' is
-      // a probe that got no answer within its budget, and 'pending' is a row nobody has
-      // probed yet. The server promotes the same evidence the same way
-      // (applyUsageDerivedMetrics), so routing and this highlight agree.
-      if (status === 'up' || isLastResponseReady(m.lastResponse)) return 'up';
-      if (status === 'timeout') return 'timeout';
-      if (status === 'pending') return 'pending';
-      return 'down';
+
+      const lr = m.lastResponse;
+      const testAt = Number(lr?.at) || 0;
+      const lastProxiedAt = Number(m.lastProxiedAt || 0);
+
+      // ── Exceptions: when the model is actually being used (live proxy traffic) ──
+      // 1. Live Rate Limit (HTTP 429 / Quota exhausted on live traffic):
+      if (isRateLimitedRow(m)) {
+        const rateLimitCapturedAt = Number(m.rateLimit?.capturedAt) || 0;
+        const testClearedLimit = isLastResponseReady(lr) && testAt > rateLimitCapturedAt;
+        if (!testClearedLimit) return 'rate-limited';
+      }
+
+      // 2. Live Overload (HTTP 503 / High demand on live traffic):
+      if (isOverloadedRow(m)) {
+        const overloadAt = Number(m.lastError?.updatedAt) || 0;
+        const testClearedOverload = isLastResponseReady(lr) && testAt > overloadAt;
+        if (!testClearedOverload) return 'overloaded';
+      }
+
+      // 3. Live Success (a real request through the proxy succeeded):
+      const liveProxiedNewer = lastProxiedAt > 0 && lastProxiedAt >= testAt;
+      if (liveProxiedNewer) return 'up';
+
+      // ── Base Rule: Status is the absolute slave of the Test column ──────────
+      if (lr) {
+        const expired = lr.expiresAt != null && Date.now() > Number(lr.expiresAt);
+        if (!expired) {
+          // A clean, successful test response means the model is UP:
+          if (isLastResponseReady(lr)) {
+            return 'up';
+          }
+
+          // A test failure is classified directly by what the test reported:
+          if (lr.paymentRequired === true) return 'paid';
+          if (lr.dead === true) return 'dead';
+          if (lr.incompatible === true) return 'incompatible';
+          if (lr.overloaded === true) return 'overloaded';
+
+          const code = Number(lr.status || 0);
+          const errText = String(lr.error || '');
+
+          if (code === 402 || /payment required|billing/i.test(errText)) return 'paid';
+          if (code === 410 || /model is dead|model_not_found|410 Gone/i.test(errText)) return 'dead';
+          if (/image\/video only|not support text/i.test(errText)) return 'incompatible';
+          if (code === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errText)) {
+            return 'rate-limited';
+          }
+          if (code === 503 || /overload|high demand|capacity|too busy|temporarily unavailable|service unavailable|try again later/i.test(errText)) {
+            return 'overloaded';
+          }
+          if (code === 401 || code === 403) return 'noauth';
+          if (code === 408 || code === 504 || /timed?\s*out/i.test(errText)) return 'timeout';
+          return 'down';
+        }
+      }
+
+      // ── Untested (No test response and no live usage) ────────────────────────
+      return 'pending';
     }
 
     function isRowUp(m) {
@@ -5741,7 +5787,7 @@
     // The verdicts in the order a model heading prefers them when nothing is up: the
     // states that come back on their own first, then the ones the user has to fix.
     const VERDICT_RECOVERABILITY = [
-      'up', 'pending', 'rate-limited', 'timeout', 'noauth', 'paid', 'incompatible', 'dead', 'micro', 'down', 'banned', 'excluded',
+      'up', 'pending', 'rate-limited', 'overloaded', 'timeout', 'noauth', 'paid', 'incompatible', 'dead', 'micro', 'down', 'banned', 'excluded',
     ];
 
     // Rank for the heading's pick. An unrecognised state ranks last rather than first:
@@ -5768,6 +5814,7 @@
       switch (kind) {
         case 'noauth': return 'No Auth';
         case 'rate-limited': return 'Rate limited';
+        case 'overloaded': return 'Overloaded';
         case 'incompatible': return 'Incompatible';
         case 'micro': return 'Micro';
         case 'dead': return 'Dead';
@@ -5936,6 +5983,11 @@
       if (!cell || !rowKey || inflightTests.has(rowKey)) return;
       inflightTests.add(rowKey);
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
+      const tr = cell.closest('tr');
+      const statusCell = tr && tr.cells[6];
+      if (statusCell) {
+        statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
+      }
       let refreshAfterTest = false;
       try {
         const res = await fetch('/api/test-model', {
@@ -5962,49 +6014,55 @@
           tps: data.tps != null ? data.tps : null,
           tokens: data.tokens != null ? data.tokens : null,
           expiresAt: data.expiresAt != null ? data.expiresAt : null,
-          // An answer that came out of the reasoning channel, or one the output budget cut off:
-          // the cell says so instead of presenting it as a normal reply.
+          paymentRequired: data.paymentRequired === true,
+          dead: data.dead === true,
+          incompatible: data.incompatible === true,
+          overloaded: data.overloaded === true,
+          rateLimitResetAt: data.rateLimitResetAt != null ? data.rateLimitResetAt : null,
           reasoningOnly: data.reasoningOnly === true,
           truncated: data.truncated === true,
         };
-        // Paint returned metrics immediately. The follow-up model fetch persists
-        // them, but the response should never briefly show stale em dashes.
-        if (data.ok === true) {
-          const tested = allModels.find(model => model.providerKey === data.providerKey && model.modelId === data.modelId);
-          if (tested) {
+
+        const targetProviderKey = data.providerKey || opts.providerKey;
+        const targetModelId = data.modelId || opts.modelId;
+        const tested = allModels.find(model => model.providerKey === targetProviderKey && model.modelId === targetModelId);
+        if (tested) {
+          tested.lastResponse = lastResponse;
+          if (data.rateLimitResetAt != null) {
+            tested.rateLimit = { ...(tested.rateLimit || {}), wasRateLimited: true, resetRequestsAt: data.rateLimitResetAt, capturedAt: Date.now() };
+          }
+          if (data.ok === true) {
             tested.ttft = data.ttftMs != null ? data.ttftMs : tested.ttft;
             tested.tps = data.tps != null ? data.tps : tested.tps;
-            tested.lastResponse = lastResponse;
             updateVisibleMetrics(tested, rowKey);
           }
         }
-        // A non-2xx response or `{ ok: false }` result did not complete a
-        // successful model test. Keep the diagnostic visible rather than
-        // leaving it to be overwritten by the next refresh.
-        if (!res.ok || data.ok === false) {
-          paintTestResult(cell, lastResponse, opts, data);
-          return;
+        paintTestResult(cell, lastResponse, opts, data);
+        if (statusCell && tested) {
+          statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(tested)}</div>`;
         }
         refreshAfterTest = true;
-        paintTestResult(cell, lastResponse, opts, data);
       } catch (err) {
-        // A click that the browser abandoned still completed (or will complete) server-side, and
-        // its result is in the record the next refresh reads — so this says what happened rather
-        // than presenting the timeout as the model's verdict.
         const aborted = err?.name === 'TimeoutError' || err?.name === 'AbortError';
         const message = aborted
           ? `No answer within ${Math.round(TEST_RESPONSE_TIMEOUT_MS / 1000)}s. The router may still be testing this row — its result appears on the next refresh.`
           : (err?.message || 'Network error');
-        cell.innerHTML = responseCellHTML({
+        const errResponse = {
           text: null,
           error: message,
-          status: 0,
+          status: aborted ? 408 : 0,
           at: Date.now(),
           ttftMs: null,
           durationMs: null,
           tps: null,
           tokens: null,
-        }, opts);
+        };
+        const tested = allModels.find(model => model.providerKey === opts.providerKey && model.modelId === opts.modelId);
+        if (tested) tested.lastResponse = errResponse;
+        cell.innerHTML = responseCellHTML(errResponse, opts);
+        if (statusCell && tested) {
+          statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(tested)}</div>`;
+        }
       } finally {
         inflightTests.delete(rowKey);
         if (refreshAfterTest) fetchData(); // refresh stats recorded by a completed test
@@ -6240,7 +6298,12 @@
         || creditExhausted;
       const window = testRateLimitWindow(m);
       const liveWindow = window && window.until > now ? window : null;
-      if (!serverSaysLimited && !liveWindow) return { limited: false, resetAt: null };
+      // The window a refusal named is when the provider *might* serve again, not when the row
+      // learned something newer. Until a success supersedes it (see refusalKind) the refusal
+      // stands, so the cell keeps its clock — bare, with no countdown to a window that has
+      // already passed — instead of dropping to 'pending' when the timer hits zero.
+      const standing = !liveWindow && refusalKind(m) === 'rate-limited';
+      if (!serverSaysLimited && !liveWindow && !standing) return { limited: false, resetAt: null };
       const stated = [
         m.lastResponse?.rateLimitResetAt,
         rateLimitResetFromBody(String(m.lastResponse?.error || '')),
@@ -6352,6 +6415,14 @@
         return `<span style="width: 6px; height: 6px; border-radius: 50%; background: var(--error); display: inline-block; vertical-align: middle;"></span>
               <span style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase;">Dead</span>`;
       }
+      if (kind === 'overloaded') {
+        const resetAt = overloadedResetAt(m);
+        if (resetAt != null) {
+          const title = `Provider overloaded — retrying ${formatClockTime(resetAt)}`;
+          return `<span class="rl-countdown" data-reset-at="${resetAt}" data-provider-key="${escapeAttr(m.providerKey || '')}" data-model-id="${escapeAttr(m.modelId || '')}" title="${escapeHtml(title)}">🕑 ${formatCountdown(resetAt - Date.now())}</span>`;
+        }
+        return `<span style="color: var(--warning);" title="Provider overloaded — temporarily turning requests away; the model comes back on its own">🕑</span>`;
+      }
       if (kind === 'rate-limited') {
         const quota = quotaLabel(m);
         const resetAt = getRateLimitResetAt(m);
@@ -6419,7 +6490,12 @@
         const remaining = resetAt - now;
         if (remaining > 0) {
           el.textContent = '🕑 ' + formatCountdown(remaining);
-          el.title = `Rate limited — resets ${formatClockTime(resetAt)}`;
+          const model = allModels.find(candidate => getModelRowKey(candidate) === getModelRowKey(el.dataset.providerKey, el.dataset.modelId));
+          const kind = model ? rowVerdict(model) : 'rate-limited';
+          const prefix = kind === 'overloaded'
+            ? 'Provider overloaded — retrying'
+            : 'Rate limited — resets';
+          el.title = `${prefix} ${formatClockTime(resetAt)}`;
           return;
         }
         // The window closed. Re-render the whole cell through statusCellHTML rather than
@@ -6939,7 +7015,29 @@
       return String(Math.round(tokens));
     }
 
-    function renderProviderSyncSuccess(providerName, models) {
+    // A refresh that returns nothing is not one outcome. Five situations all arrive as an empty
+    // list — never probed, a missing URL setting, no credential, upstream failed, upstream listed
+    // nothing usable — and the user's next move is different in each. The server names the one it
+    // hit (see `modelDiscovery` on /api/config), so the modal says which instead of "no models".
+    function discoveryEmptyExplanation(modelDiscovery) {
+      if (!modelDiscovery) {
+        return 'This provider\'s model list has not been read yet. A provider refresh, or a request that uses one of its models, reads it.';
+      }
+      if (modelDiscovery.state === 'ok') {
+        return `The last check read ${modelDiscovery.modelCount ?? 0} model(s), but none are in the table. Refresh again to reload them.`;
+      }
+      const lead = {
+        'needs-config': 'Cannot read this list: ',
+        'needs-key': 'Cannot read this list: ',
+        'disabled': 'Not checked: ',
+        'empty': 'Nothing servable as chat: ',
+        'unavailable': 'No model list to read: ',
+        'failed': 'The refresh failed: ',
+      }[modelDiscovery.state] || 'Model list unavailable: ';
+      return `${lead}${modelDiscovery.note || 'no reason recorded'}`;
+    }
+
+    function renderProviderSyncSuccess(providerName, models, modelDiscovery) {
       const count = models.length;
       const items = models
         .slice()
@@ -6952,8 +7050,119 @@
         `${count} model${count === 1 ? '' : 's'} returned`,
         count > 0
           ? `<ol class="sync-result-list">${items}</ol>`
-          : `<div style="font-size:0.84rem; color:var(--text-muted);">The provider returned no models.</div>`
+          : `<div style="font-size:0.84rem; color:var(--text-muted);">${escapeHtml(discoveryEmptyExplanation(modelDiscovery))}</div>`
       );
+    }
+
+    /**
+     * What a "0 models" card means, in the card itself.
+     *
+     * Imported providers are discovered on demand, so an unread list is normal and self-healing
+     * — but it used to render exactly like "this provider serves nothing", which is why a fleet of
+     * imports looked broken. The server's per-provider reason (see `modelDiscovery` on
+     * /api/config) turns that into either a wait, a setting to fill in, or a key to add.
+     */
+    function discoveryStateHtml(p, modelCount) {
+      if (modelCount > 0) return '';
+      const box = (bg, border, color) => `margin:0 0 10px 0; padding:10px 12px; border-radius:8px; font-size:0.78rem; line-height:1.45; background:${bg}; border:1px solid ${border}; color:${color};`;
+      const d = p.modelDiscovery || null;
+      if (!d) {
+        return `<div style="${box('var(--input-bg-alt)', 'var(--border)', 'var(--text-muted)')}">No models read yet. This provider's list is fetched when something needs it, or when the button above is pressed.</div>`;
+      }
+      if (d.state === 'ok') {
+        return `<div style="${box('var(--status-info-bg)', 'var(--status-info-border)', 'var(--status-info-text)')}">Last check returned ${escapeHtml(String(d.modelCount ?? 0))} model(s), none of which are in the table. Refresh to reload them.</div>`;
+      }
+      const waiting = d.state === 'needs-config' || d.state === 'needs-key' || d.state === 'disabled';
+      const bg = waiting ? 'var(--status-warning-bg)' : 'var(--status-error-bg)';
+      const border = waiting ? 'var(--status-warning-border)' : 'var(--status-error-border)';
+      const color = waiting ? 'var(--status-warning-text)' : 'var(--status-error-text)';
+      const lead = {
+        'needs-config': 'Cannot read this provider\'s model list: ',
+        'needs-key': 'Cannot read this provider\'s model list: ',
+        'disabled': 'Nothing was checked: ',
+        'empty': 'This provider listed no servable chat models: ',
+        'unavailable': 'No model list to read: ',
+        'failed': 'The last model-list refresh failed: ',
+      }[d.state] || 'Model list unavailable: ';
+      return `<div style="${box(bg, border, color)}">${escapeHtml(lead + (d.note || 'no reason recorded'))}</div>`;
+    }
+
+    /**
+     * Inputs for a templated endpoint's extra fields — Cloudflare's account id, Vertex's project
+     * and region. They are not secrets, but they are embedded in the provider's URL, so without
+     * them the provider is wired and unprobeable: its models can never be listed and the card
+     * shows an empty table for a reason no other screen explained.
+     */
+    function credentialFieldsHtml(p) {
+      const fields = Array.isArray(p.requiredCredentialFields) ? p.requiredCredentialFields : [];
+      if (fields.length === 0) return '';
+      const missing = new Set(Array.isArray(p.missingCredentialFields) ? p.missingCredentialFields : []);
+      const values = p.credentialFieldValues || {};
+      const rows = fields.map(field => {
+        const shown = values[field];
+        const fromEnv = shown === 'from-environment';
+        const value = (shown && !fromEnv) ? shown : '';
+        const placeholder = fromEnv ? 'set by the environment' : `Enter ${field}...`;
+        return `
+          <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+            <input type="text" id="cred-field-${escapeHtml(p.key)}-${escapeHtml(field)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:0.78rem; background:var(--input-bg); color:var(--text);" onkeydown="if(event.key==='Enter'){event.preventDefault();saveProviderCredentialFields(${jsStringAttr(p.key)});}" title="Press Enter or click Save">
+            <button onclick="saveProviderCredentialFields(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Save</button>
+          </div>`;
+      }).join('');
+      return `
+        <div style="margin-top:12px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
+          <div style="font-size:0.8rem; font-weight:700; color:var(--text); margin-bottom:4px;">${missing.size > 0 ? 'Required settings' : 'Settings'}</div>
+          <div style="font-size:0.74rem; color:var(--text-muted);">This endpoint embeds ${fields.map(f => `<code>${escapeHtml(f)}</code>`).join(', ')} in its URL, so its models cannot be listed until ${fields.length === 1 ? 'it is' : 'they are'} set.</div>
+          ${rows}
+        </div>`;
+    }
+
+    async function saveProviderCredentialFields(key) {
+      const prefix = `cred-field-${key}-`;
+      const credentialFields = {};
+      document.querySelectorAll('input[id^="cred-field-"]').forEach(el => {
+        if (!el.id.startsWith(prefix)) return;
+        credentialFields[el.id.slice(prefix.length)] = el.value.trim();
+      });
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerKey: key, credentialFields })
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        console.error('Failed to save provider settings:', err);
+        alert(`Could not save provider settings: ${err.message || err}`);
+      }
+    }
+
+    // Opening the providers view is demand, and imported providers are only discovered on demand.
+    // Without this the page could only ever show "0 models" for every import that no request had
+    // happened to touch — which is what it did. Once per page load: the server keeps its own
+    // cache, and only providers that can actually answer are probed.
+    let discoverySweepStarted = false;
+    async function discoverPendingProviders() {
+      if (discoverySweepStarted) return;
+      discoverySweepStarted = true;
+      try {
+        const res = await fetch('/api/providers/discover-pending', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        const found = (data.providers || []).filter(entry => (entry.modelCount || 0) > 0);
+        // Only rebuild the panels when something actually arrived: a sweep that found nothing
+        // must not tear down the DOM under the user's cursor.
+        if (found.length === 0) return;
+        await fetchData();
+        await loadSettings();
+      } catch (err) {
+        console.error('discovery sweep failed:', err);
+      }
     }
 
     function renderProviderSyncError(providerName, errorMessage) {
@@ -6980,7 +7189,7 @@
         }
 
         await fetchData();
-        renderProviderSyncSuccess(providerName, Array.isArray(data.models) ? data.models : []);
+        renderProviderSyncSuccess(providerName, Array.isArray(data.models) ? data.models : [], data.modelDiscovery || null);
       } catch (err) {
         renderProviderSyncError(providerName, err.message || `Failed to refresh ${providerName} models.`);
       } finally {
@@ -7180,7 +7389,7 @@
           return a.name.localeCompare(b.name);
         }).forEach(p => {
           const now = Date.now();
-          const KEYLESS_PROVIDER_KEYS = ['empero', 'opencode', 'ollama', 'freemodels', 'gptfree'];
+          const KEYLESS_PROVIDER_KEYS = ['empero', 'ollama', 'freemodels', 'gptfree'];
           const providerNeedsApiKey = !KEYLESS_PROVIDER_KEYS.includes(p.key);
           const providerIsActive = p.hasKey || !providerNeedsApiKey;
 
@@ -7659,10 +7868,12 @@
                 </button>
               </div>
             </div>
+            ${discoveryStateHtml(p, modelCount)}
             <div class="form-group" style="display:flex; gap:8px; align-items:center;">
               <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (' + (tokenOptional ? 'API Key Configured' : 'Key Configured') + ')' : (tokenOptional ? 'Enter API Key (optional)...' : 'Enter API Key...')}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
               <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide API key" aria-label="Show or hide API key" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
             </div>
+            ${credentialFieldsHtml(p)}
             ${(Array.isArray(p.apiKeyPool) && p.apiKeyPool.length > 0) ? `
             <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
               <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
@@ -7707,6 +7918,10 @@
         });
         restoreInputState();
       } catch (err) { console.error(err); }
+      // After the panels are up, so a slow sweep never delays the page: read the model lists of
+      // the imported providers that have none yet. This is the only automatic discovery trigger;
+      // everything else is a click or a request that needs a model.
+      void discoverPendingProviders();
     }
 
     // Saving a provider key/enable state makes the server refresh that
