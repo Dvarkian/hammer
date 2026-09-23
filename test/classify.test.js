@@ -14,7 +14,67 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { extractErrorMessage, isDeadModelError, summarizeErrorDetails } from '../lib/utils.js'
+import {
+  extractErrorMessage,
+  isBlockedModelName,
+  isDeadModelError,
+  isModelEligibleForRouting,
+  resolveModelStatus,
+  summarizeErrorDetails,
+} from '../lib/utils.js'
+
+test('a model whose id names a non-chat family is incompatible by name', () => {
+  // The rule reads the id because that is all a row has before it has been asked anything, and
+  // because these models can answer a liveness probe perfectly well.
+  for (const id of [
+    'nvidia/riva-translate-4b-instruct',
+    'nvidia/riva-translate-4b-instruct-v1.1',
+    'nvidia/riva-translate-4b-instruct-v2',
+    'models/gemini-3.5-live-translate-preview',
+    'some/translation-model',
+    'vendor/translator-8b',
+    'vendor/calibration-suite',
+    'vendor/saudi-chat',
+    'vendor/whisper-audio-large',
+  ]) {
+    assert.equal(isBlockedModelName(id), true, `${id} names a non-chat family`)
+  }
+  // Negative controls: the families are substrings, not vibes, so ordinary chat ids stay
+  // routable — including ones that merely look similar.
+  for (const id of [
+    'gpt-5.6-sol',
+    'claude-sonnet-4.5',
+    'moonshotai/kimi-k2.7-code',
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'qwen/qwen3.8-27b',
+    '',
+    null,
+  ]) {
+    assert.equal(isBlockedModelName(id), false, `${id} is a chat model`)
+  }
+})
+
+test('the name rule outranks a successful probe, in every place that reads it', () => {
+  // NVIDIA's riva-translate-4b-instruct-v2 answered a probe with a healthy 200 and sat in the
+  // table reading Up and routable, while every request sent to it was a translation rather than
+  // the chat that was asked for. A test that squeezes a completion out of such a row must not
+  // promote it, so the three consumers are pinned together.
+  const now = Date.now()
+  const row = {
+    modelId: 'nvidia/riva-translate-4b-instruct-v2',
+    providerKey: 'nvidia',
+    status: 'up',
+    lastResponse: { ok: true, text: 'Hallo Welt', status: 200, at: now, error: null },
+  }
+  assert.equal(resolveModelStatus(row, now), 'incompatible')
+  assert.equal(isModelEligibleForRouting(row), false)
+
+  // The negative control: the same row without the name would be Up and routable, so this is the
+  // name rule doing the work rather than the row being unsuited for another reason.
+  const chatRow = { ...row, modelId: 'nvidia/nemotron-3-ultra-550b-a55b' }
+  assert.equal(resolveModelStatus(chatRow, now), 'up')
+  assert.equal(isModelEligibleForRouting(chatRow), true)
+})
 
 test('an error envelope is flattened to its message, wherever the message is nested', () => {
   // The shapes observed live, each of which had to be read or a provider's own words were lost.
