@@ -6,14 +6,14 @@
     "ref": "main",
     "input": "open-sse/config/providers/index.ts",
     "registryPrefix": "open-sse/config/providers/",
-    "generatedAt": "2026-09-22T11:40:39.653Z",
+    "generatedAt": "2026-09-23T00:45:32.207Z",
     "attribution": "Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute's provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.",
     "activationRule": "active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider's own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.",
     "tosPolicy": "Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead."
   },
   "summary": {
-    "active": 52,
-    "refused": 6,
+    "active": 51,
+    "refused": 7,
     "staged": 8,
     "registryEntriesRead": 65
   },
@@ -433,26 +433,8 @@
       }
     },
     "kilo-gateway": {
-      "activation": "active",
-      "chatUrl": "https://api.kilo.ai/api/gateway/chat/completions",
-      "modelsUrl": "https://api.kilo.ai/api/gateway/models",
-      "auth": {
-        "kind": "none",
-        "optional": true,
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 6,
-        "declaredModels": [
-          "kilo-auto/frontier",
-          "kilo-auto/balanced",
-          "kilo-auto/free",
-          "nvidia/nemotron-3-super-120b-a12b:free",
-          "minimax/minimax-m2.5:free",
-          "arcee-ai/trinity-large-preview:free"
-        ]
-      }
+      "activation": "refused",
+      "reason": "superseded: hammer already routes this host under its own `kilocode` provider — the same chat endpoint (`https://api.kilo.ai/api/gateway/chat/completions`) and the same model list — so every row the import reaches is a second copy of one `kilocode` already owns. Its `authType: \"optional\"` holds only for the free *subset*, which is the part `kilocode` covers correctly: verified live 2026-09-23, `GET /api/gateway/models` answers HTTP 200 to an anonymous caller with 391 records of which 21 carry `isFree: true`, a keyless POST for `kilo-auto/free` streams a completion, and a paid id such as `anthropic/claude-opus-5.5` is refused HTTP 401 {\"error\":{\"code\":\"PAID_MODEL_AUTH_REQUIRED\",\"message\":\"You need to sign in to use this model.\"}}. The import could not tell those apart: it rides the generic OpenAI-compatible discovery path, which screens records for chat compatibility only, so it imported all 391 and listed 378 of them as keyless rows that cannot answer (0 up in the table, against 12 up for `kilocode` on the same host) — while `kilocode`, which owns Kilo's `isFree` convention in `toKiloCodeModelMeta`, served the free set correctly all along. Declined at the operator's instruction, 2026-09-23."
     },
     "opencode-zen": {
       "activation": "refused",

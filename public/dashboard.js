@@ -5398,9 +5398,17 @@
           return a.name.localeCompare(b.name);
         }).forEach(p => {
           const now = Date.now();
-          const KEYLESS_PROVIDER_KEYS = ['empero', 'ollama', 'freemodels', 'gptfree'];
-          const providerNeedsApiKey = !KEYLESS_PROVIDER_KEYS.includes(p.key);
-          const providerIsActive = p.hasKey || !providerNeedsApiKey;
+          // Which group the card belongs in is the router's answer, not a list kept here. This
+          // used to be a hardcoded four keys, which is the same fact the server already owns —
+          // and it had drifted: hosted Ollama sat in "Active now" while every dispatch refused
+          // it NO_KEY, and the keyless imports landed in "Require setup" while working fine.
+          //
+          // `canServe` is the server's answer to exactly this question. A payload with no
+          // `canServe` is a server from before that field existed, which still sends both
+          // halves of it — a configured credential, or a declaration that none is needed — so
+          // derive it rather than reaching for the deleted list.
+          const providerIsActive = p.canServe === true
+            || (p.canServe == null && (p.hasKey === true || p.supportsOptionalBearerAuth === true));
 
           const providerModels = allModels ? allModels.filter(m => m.providerKey === p.key) : [];
           // Count models for this provider from allModels

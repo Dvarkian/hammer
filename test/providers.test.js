@@ -72,6 +72,7 @@ import {
   buildProviderRequestHeaders,
   credentialFieldWrites,
   PING_TIMEOUT,
+  providerCanServe,
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
@@ -80,11 +81,12 @@ import {
   isProviderAuthOptional,
   isProviderBearerAuthEnabled,
   lazyDiscoveryCandidates,
+  providerDiscoveryNeedsCredential,
   resolveDiscoveryModelsUrl,
   resolveRequestModels,
 } from '../lib/providers/discovery.js'
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
-import { sources, canonicalizeModelId } from '../sources.js'
+import { sources, canonicalizeModelId, MODELS } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import { isAccountBudgetRefusalText, isAuthoritativeProbeFailure, isCachedReplayResponse, isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
 import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
@@ -180,6 +182,77 @@ test('the optional-auth set stays the pre-refactor five, and ollama stays local-
     isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'),
     true,
   )
+})
+
+test('a public catalog on a key-gated provider is not read as capability', () => {
+  // Ollama Cloud's `GET /api/tags` answers 200 to an anonymous caller with its whole hosted
+  // roster, while its chat endpoint requires `OLLAMA_API_KEY`. Reading the list therefore
+  // imported 20 rows whose every dispatch was refused as NO_KEY — the "reachable on paper,
+  // unreachable in practice" failure the imported-provider gate was fixed for, arriving from
+  // the other direction. Discovery now asks the question dispatch asks.
+  const hosted = { apiKeys: {}, providers: {} }
+  assert.equal(providerDiscoveryNeedsCredential(hosted, 'ollama'), true)
+
+  // The same config that makes the provider usable makes its list readable, because both read
+  // this one predicate: a local base URL needs no key, and a configured key unlocks the hosted
+  // default without any base URL at all.
+  const local = { providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }
+  assert.equal(providerDiscoveryNeedsCredential(local, 'ollama'), false)
+  assert.equal(providerDiscoveryNeedsCredential({ apiKeys: { ollama: 'k' } }, 'ollama'), false)
+
+  // Not a blanket rule for every provider: one hammer treats as genuinely keyless still has
+  // its catalog read with no credential at all.
+  assert.equal(providerDiscoveryNeedsCredential(hosted, 'uncloseai'), false)
+})
+
+test('a provider that cannot authenticate contributes no rows, whatever its catalog declares', () => {
+  // The invariant the model table holds now: a row exists only for a provider that can answer.
+  // Its absence produced the same bug three times, each a provider whose *catalog* was
+  // reachable while its *credential* was not — Kilo's gateway (391 models, 21 of them keyless),
+  // Ollama Cloud (public `/api/tags`, key-gated chat), and GitHub Copilot, whose twelve curated
+  // rows were merged back by name whenever no token was configured. Every one of those rows
+  // answered NO_KEY: capability in the table, an auth error on the first request.
+  const cleared = ['GITHUB_COPILOT_TOKEN', 'DEVIN_API_KEY', 'DEVIN_SESSION_TOKEN', 'OLLAMA_API_KEY']
+  const saved = cleared.map(name => [name, process.env[name]])
+  try {
+    // A credential in the environment is a configured credential, so the negative cases below
+    // are only meaningful with these unset. Restored in the `finally`.
+    for (const name of cleared) delete process.env[name]
+    const empty = { apiKeys: {}, providers: {} }
+
+    for (const key of ['github-copilot', 'openai-codex', 'kiro', 'devin', 'ollama', 'cohere']) {
+      assert.equal(providerCanServe(empty, key), false, `${key} cannot serve without a credential`)
+    }
+    // And each of those really does declare rows, because otherwise the assertions above would
+    // hold for the wrong reason: the gate is the only thing between them and the table.
+    for (const key of ['github-copilot', 'openai-codex', 'kiro', 'devin']) {
+      assert.ok(MODELS.some(row => row[4] === key), `${key} declares rows that only this gate suppresses`)
+    }
+
+    // Each credential form brings its provider back, read where its own card reads it: an API
+    // key, an OAuth account, or a session token. Those are three different places, which is why
+    // the answer comes from the helpers that own them rather than from `apiKeys` alone.
+    assert.equal(providerCanServe({ apiKeys: { 'github-copilot': 'gho_x' } }, 'github-copilot'), true)
+    assert.equal(providerCanServe({ providers: { 'github-copilot': { oauthToken: 'gho_x' } } }, 'github-copilot'), true)
+    assert.equal(providerCanServe({ providers: { 'openai-codex': { accounts: [{ secret: 'rt' }] } } }, 'openai-codex'), true)
+    assert.equal(providerCanServe({ apiKeys: { kiro: 'k' } }, 'kiro'), true)
+    assert.equal(providerCanServe({ providers: { devin: { sessionToken: 'sess' } } }, 'devin'), true)
+
+    // Keyless by declaration is not gated. Asking rather than assuming is what keeps this from
+    // hardening into "an unconfigured provider is never listed", which would delete providers
+    // that work fine and are the reason the import exists.
+    for (const key of ['gptfree', 'freemodels', 'kilocode', 'empero', 'uncloseai']) {
+      assert.equal(providerCanServe(empty, key), true, `${key} is keyless by declaration`)
+    }
+    // Ollama is keyless by where it points instead: a local base URL needs no credential, and
+    // the hosted default does.
+    assert.equal(providerCanServe({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'), true)
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 })
 
 test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
@@ -416,9 +489,15 @@ test('a provider whose free-access premise does not hold is refused, and cannot 
   // method; and both Zen rows are free only *inside OpenCode's own client*, which refuses every
   // other caller at the transport layer. A refusal is structural, not a flag someone has to
   // remember to check.
-  assert.deepEqual(activationOf('refused').map(d => d.key),
-    ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode'])
-  for (const key of ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode']) {
+  // Scoped to this reason on purpose: `refused` holds one more row whose free access is fine
+  // and which is declined for a different decision entirely (see the superseded-import test
+  // below), so the reason is the thing this test pins.
+  const notFreeRefusals = ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode']
+  assert.deepEqual(
+    activationOf('refused').filter(d => /^not free:/.test(d.blockedReason || '')).map(d => d.key),
+    notFreeRefusals,
+  )
+  for (const key of notFreeRefusals) {
     const provider = getProvider(key)
     assert.match(provider.blockedReason, /not free/)
     assert.equal(provider.chatUrl, null, `${key} carries no endpoint`)
@@ -456,6 +535,50 @@ test('the not-free correction is a decision about the provider, not about its en
       assert.equal(decision.resolution, null)
     }
   }
+})
+
+test('an import that duplicates a host hammer already routes is refused, not activated', () => {
+  // `kilo-gateway` named the same chat endpoint and the same model list as hammer's own
+  // `kilocode`, so every row it could reach was a second copy of a row `kilocode` owns. Its
+  // `authType: "optional"` holds for the free *subset* only — 21 of the 391 records that public
+  // list serves carry `isFree: true`, and a paid id is refused HTTP 401 `PAID_MODEL_AUTH_REQUIRED`
+  // ("You need to sign in to use this model.") to a keyless call. The generic OpenAI-compatible
+  // discovery path screens records for chat compatibility, not for that flag, so the import
+  // listed 378 rows that could never answer while `kilocode` — which owns Kilo's `isFree`
+  // convention — served the free set correctly from the same host.
+  const decision = decideResolution({
+    key: 'kilo-gateway', access: 'permanent', tos: 'caution',
+    entry: {
+      format: 'openai', executor: 'default',
+      baseUrl: 'https://api.kilo.ai/api/gateway/chat/completions',
+      authType: 'optional', authHeader: 'bearer', models: [],
+    },
+  })
+  assert.equal(decision.activation, 'refused')
+  assert.match(decision.reason, /superseded/)
+  assert.match(decision.reason, /kilocode/, 'the reason must name what supersedes it')
+  assert.equal(decision.resolution, null, 'a refused row gets no endpoint, so it cannot route')
+
+  // The correction is about the row, not about its endpoint: a flawless entry cannot talk it
+  // back into routing, and neither can a registry entry that failed to fetch.
+  assert.equal(
+    decideResolution({ key: 'kilo-gateway', access: 'permanent', tos: 'caution', entry: null }).activation,
+    'refused',
+  )
+
+  // It reaches the registry as a refusal carrying no endpoint...
+  const provider = getProvider('kilo-gateway')
+  assert.equal(provider.activation, 'refused')
+  assert.equal(provider.chatUrl, null)
+  assert.equal(provider.discoverable, false)
+  // ...which is what keeps its rows out of the table: the server builds the provider list from
+  // `Object.keys(sources)`, and an import absent from that map is never probed on demand either.
+  assert.equal('kilo-gateway' in lazyProviderSourceEntries(), false)
+  assert.equal(routableImports().some(d => d.key === 'kilo-gateway'), false)
+
+  // The whole refused set, so adding a row to either refusal table stays a visible decision.
+  assert.deepEqual(activationOf('refused').map(d => d.key),
+    ['cerebras', 'kilo-gateway', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode'])
 })
 
 test('the stricter terms posture is still reachable, and records its reason', () => {
@@ -706,14 +829,14 @@ test('only unresolved, answerable imports are probed on demand', () => {
   const helpers = { isAuthOptional: isProviderAuthOptional, hasApiKey: getApiKey }
 
   const candidates = lazyDiscoveryCandidates(sources, new Set(['nvidia']), config, helpers)
-  // The two keyless imports are reachable on first use...
+  // The one keyless import is reachable on first use...
   assert.ok(candidates.includes('uncloseai'))
-  assert.ok(candidates.includes('kilo-gateway'))
-  // Note on evidence: `kilo-gateway` is keyless *by declaration* (its descriptor says so),
-  // which is all this asserts — the candidate set, not that it has served traffic. It is
-  // easy to over-claim here: `kilo-auto/free` lives on `api.kilo.ai/api/gateway`, the same
-  // host as Hammer's own `kilocode`, so requesting it routes to `kilocode` and proves
-  // nothing about the import. `uncloseai` is the one keyless import proven end to end.
+  // `kilo-gateway` used to be asserted here as the second. It is refused now — it named the same
+  // host and the same model list as hammer's own `kilocode` — so its absence is the point rather
+  // than an omission: a refused row has no source entry for a candidate to come from. (The note
+  // that used to live here said as much: requesting `kilo-auto/free` routed to `kilocode`, so the
+  // import was never proven by it.)
+  assert.equal(candidates.includes('kilo-gateway'), false)
   // ...and a keyed import the user configured is too.
   assert.ok(candidates.includes('cohere'))
   // A credential-requiring import with no key is left to the explicit refresh: probing it
@@ -1311,9 +1434,12 @@ test('a provider with no credential concept activates keyless', () => {
 })
 
 test('an optional-auth provider activates keyless, matching hammer\'s optional-bearer semantics', () => {
+  // `uncloseai` is the live example of the rule: an import that declares `authType: "optional"`
+  // and has answered a real completion with no credential. It used to be `kilo-gateway`, which
+  // is refused now — so the rule keeps a provider hammer actually routes.
   const decision = decideResolution({
-    key: 'kilo-gateway', access: 'permanent', tos: 'caution',
-    entry: { format: 'openai', executor: 'default', baseUrl: 'https://api.kilo.ai/api/gateway/chat/completions', authType: 'optional', authHeader: 'bearer', models: [] },
+    key: 'uncloseai', access: 'keyless', tos: 'caution',
+    entry: { format: 'openai', executor: 'default', baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions', authType: 'optional', authHeader: 'bearer', models: [] },
   })
   assert.equal(decision.activation, 'active')
   assert.equal(decision.resolution.auth.optional, true)
@@ -1411,17 +1537,20 @@ test('observation beats a stale declaration of keylessness', () => {
   // The shaping is unaffected: needing a key does not change how its body is built.
   assert.deepEqual(pollinations.resolution.shaping.premiumModels.includes('claude'), true)
 
-  // The declaration that a live completion *did* confirm is left alone.
-  const kilo = decideResolution({
-    key: 'kilo-gateway', access: 'permanent', tos: 'caution',
+  // The declaration that observation *did* confirm is left alone, and carries no override —
+  // which is what makes the correction above a statement about one provider rather than a
+  // posture applied to every optional declaration.
+  const confirmed = decideResolution({
+    key: 'uncloseai', access: 'keyless', tos: 'caution',
     entry: {
       format: 'openai', executor: 'default',
-      baseUrl: 'https://api.kilo.ai/api/gateway/chat/completions',
+      baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions',
       authType: 'optional', authHeader: 'bearer', models: [],
     },
   })
-  assert.equal(kilo.resolution.auth.kind, 'none')
-  assert.equal(kilo.resolution.auth.optional, true)
+  assert.equal(confirmed.resolution.auth.kind, 'none')
+  assert.equal(confirmed.resolution.auth.optional, true)
+  assert.equal(confirmed.resolution.provenance.requiresKeyEvidence, undefined)
 })
 
 test('every provider without a shaping block is returned byte-for-byte unchanged', () => {

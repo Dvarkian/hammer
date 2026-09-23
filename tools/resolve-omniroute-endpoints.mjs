@@ -21,11 +21,13 @@
  *               prefix, a URL suffix or a content shape, because those become fields on the
  *               descriptor that `lib/providers/adapters.js` reads. Discovery stays lazy, so
  *               the model list still comes from `/v1/models` on first use, not from here.
- *   `refused` — withheld by decision, for one of two reasons. Either the terms flag (from
+ *   `refused` — withheld by decision, for one of three reasons. Either the terms flag (from
  *               OmniRoute's own `FREE_TIER_TOS`, cross-checked against our vendored row) is
  *               `avoid` **and** `--exclude-avoid` was passed, or the row is in
- *               `NOT_FREE_KEYS` because its free-access premise does not hold. No endpoint
- *               is written at all, so the provider cannot route even by accident.
+ *               `NOT_FREE_KEYS` because its free-access premise does not hold, or it is in
+ *               `SUPERSEDED_KEYS` because hammer already routes that host under a provider of
+ *               its own and the row would only be a second copy of it. No endpoint is written
+ *               at all, so the provider cannot route even by accident.
  *   `staged`  — genuinely not reachable over HTTP: a wire protocol with no declarative
  *               equivalent (a session cookie jar, GraphQL, an OAuth device flow, a second
  *               protocol) or a credential only the user can capture. `BESPOKE_EXECUTORS` names
@@ -316,6 +318,38 @@ const NOT_FREE_KEYS = {
 }
 
 /**
+ * Rows that duplicate a provider hammer already routes, so this instance declines them.
+ *
+ * A different decision from {@link NOT_FREE_KEYS}, and kept in its own table so the reason
+ * cannot lie: that table says the row is *not free*, while these rows can be perfectly free
+ * and still belong elsewhere. When an import names the same host and the same chat endpoint as
+ * one of hammer's own providers, activating it buys a second copy of every row that provider
+ * can reach — and, for a provider whose free access is a *subset* of its catalog, a copy that
+ * has lost the filter saying which subset that is. The generic OpenAI-compatible path cannot
+ * recover it: it screens records for chat compatibility, not for a free flag.
+ *
+ * The row stays in the vendored roster where its provenance lives, exactly as a `NOT_FREE_KEYS`
+ * refusal does, and the reason travels with it. Declining is a decision that is finished, not
+ * work that is pending — `staged` is where pending work lives.
+ */
+const SUPERSEDED_KEYS = {
+  'kilo-gateway': 'superseded: hammer already routes this host under its own `kilocode` provider — '
+    + 'the same chat endpoint (`https://api.kilo.ai/api/gateway/chat/completions`) and the same model '
+    + 'list — so every row the import reaches is a second copy of one `kilocode` already owns. Its '
+    + '`authType: "optional"` holds only for the free *subset*, which is the part `kilocode` covers '
+    + 'correctly: verified live 2026-09-23, `GET /api/gateway/models` answers HTTP 200 to an anonymous '
+    + 'caller with 391 records of which 21 carry `isFree: true`, a keyless POST for `kilo-auto/free` '
+    + 'streams a completion, and a paid id such as `anthropic/claude-opus-5.5` is refused HTTP 401 '
+    + '{"error":{"code":"PAID_MODEL_AUTH_REQUIRED","message":"You need to sign in to use this '
+    + 'model."}}. The import could not tell those apart: it rides the generic OpenAI-compatible '
+    + 'discovery path, which screens records for chat compatibility only, so it imported all 391 and '
+    + 'listed 378 of them as keyless rows that cannot answer (0 up in the table, against 12 up for '
+    + '`kilocode` on the same host) — while `kilocode`, which owns Kilo\'s `isFree` convention in '
+    + '`toKiloCodeModelMeta`, served the free set correctly all along. Declined at the operator\'s '
+    + 'instruction, 2026-09-23.',
+}
+
+/**
  * Executors whose "protocol" is a client attestation to defeat rather than a format to
  * translate, and which this instance declines to build.
  *
@@ -530,6 +564,11 @@ export function decideResolution({ key, access, tos, note, entry }) {
   // downgrade this refusal into a different reason. The reason here is the decision.
   const notFree = NOT_FREE_KEYS[key]
   if (notFree) return { activation: 'refused', reason: notFree, resolution: null }
+  // Also before the missing-entry branch, and for the same reason: a row that duplicates a
+  // provider hammer already routes is declined whatever its endpoint looks like, so a fetch
+  // failure upstream must not be able to restate this decision as "no matching entry".
+  const superseded = SUPERSEDED_KEYS[key]
+  if (superseded) return { activation: 'refused', reason: superseded, resolution: null }
 
   // Terms are recorded but no longer gate activation. OmniRoute treats its own ToS flag as
   // advisory — by their design it "is not a routing gate" and flagged providers stay in
