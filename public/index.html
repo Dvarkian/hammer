@@ -66,6 +66,10 @@
                 title="Click to unpin">📌 Pinned ×</span>
             </div>
           </div>
+          <!-- Shown only when this page is newer than the running router, so the plot's logos
+               cannot come from it. A stale router used to look exactly like a favicon service
+               outage: every image failed silently and the monogram stood in for it. -->
+          <div id="topo-logo-note" style="display:none; margin-top:auto; padding-top:8px; max-width:70ch; font-size:0.7rem; line-height:1.4; color:var(--text-muted);"></div>
         </div>
         </div>
 
@@ -136,8 +140,6 @@
                   id="arrow-model">↕</i></th>
               <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, or the one interpolated from Elo where AA has none (marked *). Hover a value for its source.">Intelligence <i class="sort-arrow"
                   id="arrow-intell">↕</i></th>
-              <th class="sortable text-right" onclick="setSort('ping')" id="th-ping">Ping <i
-                  class="sort-arrow" id="arrow-ping">↕</i></th>
               <th class="text-right" title="Average time to first token across real requests (seconds)">TTFT</th>
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
               <th class="sortable" onclick="setSort('ctx')" id="th-ctx"
@@ -162,7 +164,6 @@
                 <tr>
                   <th>Model</th>
                   <th>Intelligence</th>
-                  <th class="text-right">Ping</th>
                   <th class="text-right">TTFT</th>
                   <th class="text-right">Tok/s</th>
                   <th>Context</th>

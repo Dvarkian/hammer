@@ -105,6 +105,24 @@
     document.addEventListener('DOMContentLoaded', updateLocalFileWarning);
 
     let allModels = [];
+    // providerKey -> the domains whose favicons may mark it in the topology plot, best first.
+    // Sent by the router (see providerFaviconDomains), which derives them from the sites each
+    // provider's own descriptor names — this replaced a hand-written list here that covered
+    // hammer's own providers only, so every imported provider drew as a blank disc. A list rather
+    // than one domain because a single derivation is a single guess: an endpoint on a hosting
+    // platform, or a company domain with no icon where the provider's console has one, would
+    // otherwise leave a node with no mark at all.
+    let providerFaviconDomainLists = new Map();
+    // Whether the running router serves brand marks itself (/api/favicon — see fetchFavicon in
+    // lib/server.js). This file is read from disk on every load, so the page can be newer than
+    // the process answering it, and when that route was introduced the plot asked a path that
+    // process did not have: every image 404'd, every one of them hid itself, and the monogram
+    // underneath — which is exactly what a domain with no icon draws — made "the router is
+    // stale" indistinguishable from "the favicon service is down". `faviconDomain` ships in the
+    // same release as the route, so its presence on the provider list is the capability test.
+    // Without it the plot asks the third party directly, as it did before the route existed, and
+    // says so on the card rather than going quiet.
+    let faviconProxyAvailable = false;
     let searchTerm = '';
     // null = default multi-sort; otherwise { col: string, dir: 'asc'|'desc' }
     let sortState = null;
@@ -256,6 +274,37 @@
       return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(cleanedOrigin) ? cleanedOrigin : '';
     }
 
+    // The hrefs to try for one node's mark, in order. The router is preferred: it caches, it works
+    // on a machine that cannot reach Google from the browser, and it keeps the provider roster from
+    // being handed to a third party on every page load. Domains are deduped because a node's own
+    // host and the provider behind it are often the same site, and an empty list means draw no
+    // image at all and let the monogram stand.
+    function faviconHrefs(domains) {
+      const seen = new Set();
+      const hrefs = [];
+      for (const domain of Array.isArray(domains) ? domains : [domains]) {
+        const host = typeof domain === 'string' ? domain.trim() : '';
+        if (!host || seen.has(host)) continue;
+        seen.add(host);
+        const encoded = encodeURIComponent(host);
+        hrefs.push(faviconProxyAvailable
+          ? `/api/favicon?domain=${encoded}`
+          : `https://www.google.com/s2/favicons?domain=${encoded}&sz=64`);
+      }
+      return hrefs;
+    }
+
+    // Named when it is the exception, silent when it is not: a stale router is worth one line on
+    // the plot, and a healthy one is worth none.
+    function updateLogoSourceNote() {
+      const el = document.getElementById('topo-logo-note');
+      if (!el) return;
+      el.textContent = faviconProxyAvailable
+        ? ''
+        : 'Logos are being fetched from a third party because this page is newer than the running router. Restart it to serve them locally.';
+      el.style.display = faviconProxyAvailable ? 'none' : 'block';
+    }
+
     function updateProxyErrorBanner(error) {
       const el = document.getElementById('proxy-error-banner');
       if (!el) return;
@@ -356,6 +405,16 @@
         // point of use by rateLimitEvidence(). Re-deriving it into the field here would
         // feed a snapshot back into the rule that produced it.
         allModels = data.models.map(m => ({ ...m, qos: m.qos || 0 }));
+        providerFaviconDomainLists = new Map(
+          (Array.isArray(providers) ? providers : [])
+            .filter(p => p && p.key)
+            .map(p => [p.key, (Array.isArray(p.faviconDomains) && p.faviconDomains.length > 0
+              ? p.faviconDomains
+              : (p.faviconDomain ? [p.faviconDomain] : []))]),
+        );
+        faviconProxyAvailable = (Array.isArray(providers) ? providers : [])
+          .some(p => p && Object.prototype.hasOwnProperty.call(p, 'faviconDomain'));
+        updateLogoSourceNote();
 
         // Providers that relay persona entries over a rotating backend (FreeModels)
         // report the real upstream model in every response. When the router captured
@@ -1472,7 +1531,7 @@
         'qwen': 'qwen.ai', 'qwq': 'qwen.ai',
         'glm': 'zhipuai.cn', 'z-ai': 'zhipuai.cn', 'zai': 'zhipuai.cn',
         'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
-        'minimax': 'minimax.chat', 'minimaxai': 'minimax.chat',
+        'minimax': 'minimax.io', 'minimaxai': 'minimax.io',
         'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
         'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
         'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
@@ -1496,13 +1555,13 @@
         'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
         'laguna': 'poolside.ai', 'poolside': 'poolside.ai',
         'granite': 'ibm.com', 'ibm': 'ibm.com', 'allam': 'sdaia.gov.sa',
-        'stockmark': 'stockmark.com',
+        'stockmark': 'stockmark.co.jp',
         'colosseum': 'igenius.ai', 'igenius': 'igenius.ai',
         'orpheus': 'canopylabs.ai', 'canopylabs': 'canopylabs.ai',
         'compound': 'groq.com',
         'solar': 'upstage.ai', 'upstage': 'upstage.ai',
         'dolphin': 'cognitivecomputations.com',
-        'falcon': 'tii.ae', 'olmo': 'allenai.org', 'exaone': 'lgai.research',
+        'falcon': 'tii.ae', 'olmo': 'allenai.org', 'exaone': 'lgresearch.ai',
       };
       // Token-aware brand lookup. A key only matches when it names the model's
       // LEADING word(s), so "dolphin-mistral" no longer borrows Microsoft's "phi"
@@ -1541,19 +1600,6 @@
         return '';
       }
 
-      // Favicon domain map & friendly display names
-      const PROVIDER_DOMAINS = {
-        'groq': 'groq.com', 'googleai': 'ai.google.dev',
-        'nvidia': 'nvidia.com', 'openrouter': 'openrouter.ai', 'codestral': 'mistral.ai',
-        'scaleway': 'scaleway.com', 'kilocode': 'kilocode.com', 'empero': 'free.empero.org',
-        'ollama': 'ollama.com', 'kiro': 'kiro.dev', 'g4f': 'g4f.dev', 'devin': 'cognition.ai',
-        'gptfree': 'gptfree.com',
-        'github-copilot': 'github.com', 'openai-codex': 'chatgpt.com',
-        // 'freemodels' is intentionally absent: its only domain is a workers.dev
-        // subdomain, whose favicon is Cloudflare's logo — the monogram fallback
-        // is more honest than a wrong brand mark.
-      };
-
       // Display identity per node. A federated origin is named by its catalog and marked by
       // its own hostname; a provider keeps the name and icon it always had. One entry per
       // scope, from its first row — every row of a scope names it the same way.
@@ -1567,7 +1613,14 @@
           // when its catalog gave one, else the identity the router routes by, else the plain
           // fact that nothing named an upstream. Nothing here is invented.
           qualifier: m.originLabel || (m.originId ? String(m.originId) : 'no origin'),
-          domain: originFaviconDomain(m) || PROVIDER_DOMAINS[m.providerKey] || '',
+          // The node's own hostname first — a federated origin's catalog name is usually its own
+          // host, which is a truer brand mark than the gateway's — and then every site the
+          // provider behind it names, so a node whose own host resolves to no icon is still drawn
+          // with a mark instead of an empty disc. An origin that names itself `ollama.truenas` is a
+          // machine on the relay's LAN, not a site: it is honest about its hostname, has no logo to
+          // fetch, and the gateway that relays it does. The label beside the node keeps the two
+          // distinguishable.
+          domains: faviconHrefs([originFaviconDomain(m), ...(providerFaviconDomainLists.get(m.providerKey) || [])]),
         });
       }
       // A federated provider can hand two of its nodes the same name — its own bucket and the
@@ -1583,7 +1636,8 @@
         if ((nodeNameCounts.get(info.name.toLowerCase()) || 0) > 1) info.name = `${info.name} · ${info.qualifier}`;
       }
       const providerNodeName = (pk) => providerNodeInfo.get(pk)?.name || pk;
-      const providerNodeDomain = (pk) => providerNodeInfo.get(pk)?.domain || '';
+      // The brand-mark hrefs to try for a node, best first (see providerNodeInfo.domains).
+      const providerNodeMarkHrefs = (pk) => providerNodeInfo.get(pk)?.domains || [];
 
       // Fit the viewBox to the card's actual pixel size. A federated provider multiplies the
       // node count several times over, and node labels are the one thing that has to stay
@@ -1660,7 +1714,8 @@
           provNodes.push({
             id: `p:${plotProviders[i]}`, type: 'provider',
             providerKey: plotProviders[i],
-            domain: providerNodeDomain(plotProviders[i]),
+            // The brand-mark hrefs for this provider node, best first.
+            markHrefs: providerNodeMarkHrefs(plotProviders[i]),
             x: cx + rProvX * Math.cos(angle),
             y: cy + rProvY * Math.sin(angle),
             mass: 3.5
@@ -1793,14 +1848,18 @@
             const img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
             img.setAttribute('x', (node.x - 4).toFixed(1)); img.setAttribute('y', (node.y - 4).toFixed(1));
             img.setAttribute('width', '8'); img.setAttribute('height', '8');
-            img.setAttribute('href', `https://www.google.com/s2/favicons?domain=${modelDom}&sz=64`);
+            // A model node's mark is its vendor's, never its provider's: the node stands for the
+            // model, and a gateway's logo on it would name the wrong thing. No vendor domain, or
+            // a vendor with no icon, leaves the model's monogram showing.
+            img.setAttribute('href', faviconHrefs([modelDom])[0] || '');
             img.setAttribute('clip-path', `url(#${mcId})`);
             img.setAttribute('class', 'topo-model-img');
             img.dataset.midx = ni; img.dataset.uidx = node.umIdx;
             img.dataset.pkeys = node.providers.join('|');
             // A blocked/blank favicon must not erase the node: hide it so the
-            // monogram beneath stays visible. (Google's service returns a generic
-            // default for unknown domains; those are filtered out here too.)
+            // monogram beneath stays visible. The router answers 404 for a domain it
+            // could not fetch an icon for, so a miss lands here rather than drawing a
+            // placeholder brand mark.
             img.addEventListener('error', () => { img.style.display = 'none'; });
             const imgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
             imgTitle.textContent = modelDisplayName(m);
@@ -1822,8 +1881,7 @@
 
         // --- Draw provider nodes (ring + favicon or monogram + name) ---
         for (const node of provNodes) {
-          const pk = node.providerKey, hasDomain = !!node.domain;
-          // Status ring
+          const pk = node.providerKey, hasDomain = node.markHrefs.length > 0;          // Status ring
           const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
           ring.setAttribute('cx', node.x.toFixed(1));
           ring.setAttribute('cy', node.y.toFixed(1));
@@ -1872,9 +1930,17 @@
             img.setAttribute('width', faviconSz);
             img.setAttribute('height', faviconSz);
             img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-            const iconHref = `https://www.google.com/s2/favicons?domain=${encodeURIComponent(node.domain)}&sz=64`;
+            const iconHref = node.markHrefs[0];
             img.setAttribute('href', iconHref);
             img.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', iconHref);
+            // Every candidate the router offered, walked in order on a failed load: the node's own
+            // hostname first, then the sites the provider behind it names. A node whose hostname
+            // resolves to no icon (a relay's LAN name, say) is therefore drawn with a real mark,
+            // and one whose provider names no site at all still lands on the monogram rather than
+            // on a broken image. The walk is finite because every candidate is compared against
+            // what is already set, so an image that has exhausted the list hides itself.
+            const markHrefs = node.markHrefs;
+            let markIdx = 0;
             img.setAttribute('clip-path', `url(#${clipId})`);
             img.setAttribute('class', 'topo-provider-img');
             img.dataset.pkey = pk;
@@ -1882,6 +1948,15 @@
             imgTitle.textContent = providerNodeName(pk);
             img.appendChild(imgTitle);
             img.addEventListener('error', () => {
+              let next = '';
+              while (++markIdx < markHrefs.length && !next) {
+                if (markHrefs[markIdx] !== img.getAttribute('href')) next = markHrefs[markIdx];
+              }
+              if (next) {
+                img.setAttribute('href', next);
+                img.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', next);
+                return;
+              }
               // The monogram is already beneath the image, so just hide the
               // failed remote resource instead of inserting another node.
               img.style.display = 'none';
@@ -2522,7 +2597,7 @@
     }
 
     function updateSortHeaders() {
-      const cols = ['model', 'ctx', 'intell', 'ping', 'status'];
+      const cols = ['model', 'ctx', 'intell', 'status'];
       const resetBtn = document.getElementById('sort-reset-btn');
       cols.forEach(col => {
         const th = document.getElementById(`th-${col}`);
@@ -2548,7 +2623,6 @@
     function colValue(m, col) {
       switch (col) {
         case 'status': return isRowUp(m) ? 0 : 1;
-        case 'ping': return (m.avg === Infinity || m.avg === null) ? Infinity : m.avg;
         case 'qos': return m.qos || 0;
         case 'intell': return getBenchmarkSortValue(m.intell);
         case 'rate': return isRateLimitedRow(m) ? 1 : 0;
@@ -2562,13 +2636,14 @@
     // Default sort priority and direction when used as a tiebreaker.
     // dir: 1 = ascending (lower value first), -1 = descending (higher value first)
     // Default ordering (used on first paint and after reset): strongest model first.
-    // Intelligence (the Artificial Analysis index) is the primary key; status / QoS /
-    // latency / availability break ties among models with the same rating.
+    // Intelligence (the Artificial Analysis index) is the primary key; status then QoS break
+    // ties among models with the same rating. Probe latency used to be a tiebreaker between
+    // them, and is gone with the column that showed it: an order that depends on a measurement
+    // the table no longer displays is one nobody can account for.
     const DEFAULT_SORT_CHAIN = [
       { col: 'intell', dir: -1 },  // Highest intelligence first
       { col: 'status', dir: 1 },   // up (0) before down (1)
       { col: 'qos', dir: -1 },     // Highest QoS first
-      { col: 'ping', dir: 1 },     // fallback tiebreaker
       { col: 'model', dir: 1 },    // alphabetical
     ];
     // Primary (default) sort column, shown highlighted in the header when no
@@ -2604,12 +2679,6 @@
 
       const av = colValue(a, col);
       const bv = colValue(b, col);
-      // Ping: Infinity always last regardless of sort direction
-      if (col === 'ping') {
-        if (av === Infinity && bv === Infinity) return compareByChain(a, b, tiebreakers);
-        if (av === Infinity) return 1;
-        if (bv === Infinity) return -1;
-      }
       const cmp = typeof av === 'string' ? av.localeCompare(bv) : (av - bv);
       if (cmp !== 0) return sign * cmp;
       return compareByChain(a, b, tiebreakers);
@@ -3043,8 +3112,7 @@
       const members = g.members;
       const usable = members.filter(isRowUsable);
       const measured = opts.onlyUsable === false ? members : usable;
-      let bestQos = 0, bestIntell = 0, bestUptime = 0;
-      let fastest = Infinity;
+      let bestQos = 0, bestIntell = 0;
       let minTtft = null, maxTps = null, bestCtx = null;
       let bestCtxMember = null;
       let bestIntellMember = members[0];
@@ -3059,10 +3127,6 @@
       for (const m of measured) {
         const q = Number(m.qos) || 0;
         if (q > bestQos) bestQos = q;
-        const u = Number(m.uptime) || 0;
-        if (u > bestUptime) bestUptime = u;
-        const p = m.avg;
-        if (p !== null && p !== Infinity && (fastest === Infinity || p < fastest)) fastest = p;
         const memberTtft = rowTtft(m);
         const memberTps = rowTps(m);
         if (memberTtft != null && (minTtft === null || memberTtft < minTtft)) minTtft = memberTtft;
@@ -3070,7 +3134,7 @@
         const ctx = m.contextTokens;
         if (ctx != null && (bestCtx === null || ctx > bestCtx)) { bestCtx = ctx; bestCtxMember = m; }
       }
-      return { bestQos, bestIntell, bestUptime, fastest, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember };
+      return { bestQos, bestIntell, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember };
     }
 
     function groupRowInnerHTML(g) {
@@ -3078,8 +3142,6 @@
       const s = getGroupSummary(g);
       const first = members[0];
       const isPinned = members.length > 0 && members.every(m => activePinnedRowKeys.includes(getModelRowKey(m)));
-      const fastest = s.fastest;
-      const hasPing = fastest !== null && fastest !== Infinity;
       // The heading answers one question — can this model be used at all? — in the same
       // verdict vocabulary as the provider rows underneath it: green as soon as any
       // provider can serve, and otherwise the most recoverable reason among them, so a
@@ -3126,15 +3188,6 @@
               ? `<span style="opacity:0.55;" title="No provider available — this is the model's rating, not a live measurement">${rating}</span>`
               : rating;
           })()}</div></td>
-          <td class="text-right">
-            <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
-              <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
-                ${hasPing
-          ? `<div style="font-size:0.82rem;">${fastest}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${s.bestUptime}%</div>`
-          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
-              </div>
-            </div>
-          </td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td>
@@ -3331,8 +3384,6 @@
     }
 
     function updateRowCells(row, m) {
-      const hasPing = m.avg !== Infinity && m.avg !== null;
-
       // Mark the currently routed model (pin > slope-line pick > intelligence) so the
       // table always shows the same model the KPI, topology and scatter plot do.
       row.classList.toggle('row-best', isCurrentBestRow(m));
@@ -3367,7 +3418,7 @@
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
       // Update context window (known limit or observed bounds)
-      const ctxCell = row.cells[5];
+      const ctxCell = row.cells[4];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -3377,39 +3428,27 @@
       const intellCell = row.cells[1];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // Update status cell (col 6) and response cell (col 7); never clobber an in-flight test
-      const statusCell = row.cells[6];
+      // Update status cell (col 5) and response cell (col 6); never clobber an in-flight test
+      const statusCell = row.cells[5];
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[7];
+      const responseCell = row.cells[6];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
-      }
-
-      // Update ping (with uptime% and rate-limit icon in the subtitle)
-      const pingCell = row.cells[2];
-      const pingTextEl = pingCell.querySelector('div[style*="text-align"]') || pingCell.querySelector('div:last-child');
-      if (hasPing) {
-        const rateTxt = isRateLimitedRow(m) ? ' 🕑' : '';
-        if (pingTextEl) pingTextEl.innerHTML = `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${rateTxt}</div>`;
-      } else {
-        if (pingTextEl) pingTextEl.innerHTML = '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>';
       }
 
       // Update TTFT and tokens/sec (real usage stats)
       const displayTtft = rowTtft(m);
       const displayTps = rowTps(m);
-      const ttftCell = row.cells[3];
+      const ttftCell = row.cells[2];
       ttftCell.innerHTML = displayTtft != null
         ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(displayTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowTtftLabel(m)}</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-      const tpsCell = row.cells[4];
+      const tpsCell = row.cells[3];
       tpsCell.innerHTML = displayTps != null
         ? `<div style="font-size:0.82rem;">${displayTps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-
-      // Availability column removed — uptime% now lives under ping.
     }
 
     // Formats a raw token count like the catalog's context strings: "128k", "1.5M", "32000".
@@ -3928,8 +3967,8 @@
     function updateVisibleMetrics(model, rowKey = getModelRowKey(model)) {
       const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
       if (!row) return;
-      const ttftCell = row.cells[3];
-      const tpsCell = row.cells[4];
+      const ttftCell = row.cells[2];
+      const tpsCell = row.cells[3];
       const visibleTtft = rowTtft(model);
       const visibleTps = rowTps(model);
       if (ttftCell) ttftCell.innerHTML = visibleTtft != null
@@ -3974,7 +4013,7 @@
       inflightTests.add(rowKey);
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
       const tr = cell.closest('tr');
-      const statusCell = tr && tr.cells[6];
+      const statusCell = tr && tr.cells[5];
       if (statusCell) {
         statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
       }
@@ -4659,8 +4698,6 @@
       // Graveyard rows keep their own history: they are struck by definition, so
       // "usable only" would blank every measured cell the panel exists to show.
       const s = getGroupSummary(g, { onlyUsable: false });
-      const fastest = s.fastest;
-      const hasPing = fastest !== null && fastest !== Infinity;
       const statusText = unavailableReasonLabel(first);
       const hasAuth = members.some(m => m.status !== 'noauth');
 
@@ -4674,15 +4711,6 @@
             <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(providerInstanceName(first))}</div>
           </td>
           <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
-          <td class="text-right">
-            <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
-              <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
-                ${hasPing
-          ? `<div style="font-size:0.82rem;">${fastest}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${s.bestUptime}%</div>`
-          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
-              </div>
-            </div>
-          </td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td>
@@ -4700,7 +4728,6 @@
       tr.dataset.rowKey = getModelRowKey(m);
       tr.style.opacity = m.status === 'excluded' || m.status === 'banned' ? '0.5' : '1';
       tr.classList.toggle('row-struck', isRowStruck(m));
-      const hasPing = m.avg !== Infinity && m.avg !== null;
 
       const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
       tr.classList.toggle('row-best', isCurrentBestRow(m));
@@ -4713,15 +4740,6 @@
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
-          <td class="text-right">
-            <div style="display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
-              <div style="font-variant-numeric: tabular-nums; text-align:right; line-height:1.3;">
-                ${hasPing
-          ? `<div style="font-size:0.82rem;">${m.avg}ms</div><div style="font-size:0.7rem; color:var(--text-muted);">${m.uptime}%${isRateLimitedRow(m) ? ' 🕑' : ''}</div>`
-          : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}
-              </div>
-            </div>
-          </td>
           ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
           ${formatTpsCell(rowTps(m), 'tok/s')}
           <td>

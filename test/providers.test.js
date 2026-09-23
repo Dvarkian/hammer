@@ -72,8 +72,13 @@ import {
   buildProviderRequestBody,
   buildProviderRequestHeaders,
   credentialFieldWrites,
+  faviconDomainFromUrl,
+  faviconHostFromUrl,
+  normalizeFaviconDomain,
   PING_TIMEOUT,
   providerCanServe,
+  providerFaviconDomain,
+  providerFaviconDomains,
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
@@ -267,9 +272,16 @@ test('a Test asks its question in prose, and asks a different one on every click
   // The question never moves, which is what keeps two clicks — and two rows — comparable.
   assert.ok(prompts.every(prompt => prompt.startsWith(QUESTION)), 'the question must not change between clicks')
   assert.ok(prompts.every(prompt => /^Please respond with[\s\S]+ Mention .+ and .+\.$/.test(prompt)))
-  // 500 draws out of ~1M marker combinations: a collision is a cached answer recorded as this
-  // row's own measurement, so this is the assertion that keeps the vocabulary honest.
-  assert.ok(new Set(prompts).size >= 499, `marker collided ${500 - new Set(prompts).size} times in 500 draws`)
+  // 500 draws out of 32⁴ ≈ 1M marker combinations: a collision is a cached answer recorded as
+  // this row's own measurement, so this is the assertion that keeps the vocabulary honest.
+  //
+  // The tolerance is birthday maths rather than slack. Random draws collide by design — 500
+  // draws from a million combinations expect λ = 500²/(2·32⁴) ≈ 0.12 collisions, so even a
+  // correct generator produces two of them about once in 150 runs, and demanding all 500 be
+  // distinct made this test flaky at roughly that rate. Six collisions (λ would have to be ~6,
+  // i.e. a vocabulary tens of times smaller than the one claimed) is the point where the word
+  // lists have collapsed, and it cannot be reached by chance: P(X ≥ 6) at λ = 0.12 is under 1e-7.
+  assert.ok(new Set(prompts).size >= 494, `marker collided ${500 - new Set(prompts).size} times in 500 draws`)
   for (const prompt of prompts) {
     // The marker alone is held to this, not the question: "30 words" is a digit by design, and
     // the question is the part that answered when the marker was dropped.
@@ -288,6 +300,127 @@ test('a Test asks its question in prose, and asks a different one on every click
   assert.notEqual(degenerate[1], degenerate[2], 'a marker asked for the same thing twice')
   // 'a' or 'an': the vocabulary is open, so the article has to be chosen, not hardcoded.
   assert.match(buildModelTestPrompt(() => 0), /Mention an (amber|anchor)/)
+})
+
+test('a chat endpoint names the site a provider\'s brand mark comes from', () => {
+  // The plot used to draw every imported provider as a blank disc, because the domain it used
+  // came from a hand-written list of hammer's own fifteen providers. The derivation replaces it:
+  // the registrable name of the provider's registered chat endpoint.
+  assert.equal(faviconDomainFromUrl('https://api.groq.com/openai/v1/chat/completions'), 'groq.com')
+  assert.equal(faviconDomainFromUrl('https://integrate.api.nvidia.com/v1/chat/completions'), 'nvidia.com')
+  assert.equal(faviconDomainFromUrl('https://hermes.ai.unturf.com/v1/chat/completions'), 'unturf.com')
+  assert.equal(faviconDomainFromUrl('https://chatgpt.com/backend-api/codex/responses'), 'chatgpt.com')
+
+  // And empty is a supported answer, because the monogram underneath is honest where a wrong
+  // brand mark is not. A template host is not a site, a hosting platform's suffix is the
+  // platform's icon rather than the provider's, and a single label is a machine.
+  assert.equal(faviconDomainFromUrl('https://{region}-aiplatform.googleapis.com/v1/chat'), '')
+  assert.equal(faviconDomainFromUrl('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'), '')
+  assert.equal(faviconDomainFromUrl('https://freemodels-chat.freemodels.workers.dev'), '')
+  assert.equal(faviconDomainFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/agent_stream'), '')
+  assert.equal(faviconDomainFromUrl('http://localhost:11434/v1/chat/completions'), '')
+  assert.equal(faviconDomainFromUrl('not a url'), '')
+  assert.equal(faviconDomainFromUrl(''), '')
+  assert.equal(faviconDomainFromUrl(null), '')
+
+  // The host is kept as well as its registration, because either may be the site whose icon
+  // exists — but a host that *is* a hosting platform, or sits under one, is refused here too: its
+  // mark would be the platform's.
+  assert.equal(faviconHostFromUrl('https://spark-api-open.xf-yun.com/v1/chat/completions'), 'spark-api-open.xf-yun.com')
+  assert.equal(faviconHostFromUrl('https://freemodels-chat.freemodels.workers.dev'), '')
+  assert.equal(faviconHostFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/x'), '')
+  assert.equal(faviconHostFromUrl('file:///etc/passwd'), '')
+
+  // Per provider: a deliberate brand mark wins over the host it happens to be served from —
+  // googleai is served from googleapis.com and gptfree from a Cloudflare function, and neither is
+  // the site a logo should come from.
+  assert.equal(providerFaviconDomain('googleai'), 'ai.google.dev')
+  assert.equal(providerFaviconDomain('gptfree'), 'gptfree.com')
+  // `gemini` and `googleai` are the same endpoint reached by two keys, and had been drawing
+  // differently: googleai's override gave it the Gemini site while gemini was left with the
+  // hostname it is served from — Google's API platform, which resolves to no icon at all.
+  assert.equal(providerFaviconDomain('gemini'), 'ai.google.dev')
+  // A provider reached through a cloud is named by its own site rather than the cloud's.
+  assert.equal(providerFaviconDomain('doubao'), 'doubao.com')
+  assert.equal(providerFaviconDomain('baidu'), 'baidu.com')
+  assert.equal(providerFaviconDomain('no-such-provider'), '')
+  assert.equal(providerFaviconDomain(''), '')
+
+  // The invariant that makes this a fix rather than a tidy-up: every provider that can route has
+  // a brand mark, so a newly imported provider cannot arrive drawing a blank disc. The one
+  // structural exception is the `openai-compatible` template, which is emitted as named instances
+  // rather than as a provider of its own.
+  const exceptions = new Set(['openai-compatible'])
+  for (const provider of listProviders()) {
+    if (provider.activation !== 'active' || exceptions.has(provider.key)) continue
+    assert.ok(providerFaviconDomain(provider.key), `${provider.key} would draw as a blank disc`)
+  }
+})
+
+test('a provider offers every site it names, so a missing icon is not a missing logo', () => {
+  // One derived domain is one guess, and the ways it misses are ordinary: the endpoint is on a
+  // hosting platform, the endpoint is a template, or the company domain simply has no icon while
+  // the console the provider names does. FreeModels is the first case — its chat URL is a
+  // Cloudflare function, and its own site is named by `contextUrl` — and Vertex the second, whose
+  // endpoint is a template and whose mark is only reachable through the site its signup page
+  // belongs to.
+  assert.deepEqual(providerFaviconDomains('freemodels'), ['freemodels.pro'])
+  assert.equal(providerFaviconDomains('vertex')[0], 'cloud.google.com')
+
+  // iFlytek is the third: `spark-api-open.xf-yun.com` names the cloud it is served from first,
+  // and the console it sends users to is the site with an icon.
+  const iflytek = providerFaviconDomains('iflytek')
+  assert.equal(iflytek[0], 'spark-api-open.xf-yun.com')
+  assert.ok(iflytek.includes('xfyun.cn'), 'the signup site must be offered as a candidate')
+
+  // A candidate list is only useful if every entry could be fetched and none is a platform's own
+  // host, so the whole roster is checked rather than the three examples above.
+  for (const provider of listProviders()) {
+    const domains = providerFaviconDomains(provider.key)
+    assert.equal(new Set(domains).size, domains.length, `${provider.key} repeats a candidate`)
+    for (const domain of domains) {
+      assert.equal(normalizeFaviconDomain(domain), domain, `${provider.key}: ${domain} is not a hostname`)
+    }
+  }
+})
+
+test('the favicon endpoint accepts a hostname and nothing else', () => {
+  // It fetches whatever it is handed, so this validation is the whole of the input handling.
+  for (const value of ['nvidia.com', 'sub.domain.co', 'x.photography', 'NVIDIA.COM']) {
+    assert.equal(normalizeFaviconDomain(value), value.toLowerCase(), `${value} is a hostname`)
+  }
+  for (const value of [
+    'https://nvidia.com', 'nvidia.com/path', 'nvidia.com:443', 'a b.com', 'nvidia_corp.com',
+    'nvidia', '..', 'nvidia..com', '-nvidia.com', '', '   ', null, undefined,
+    // A literal address is not a site, and the numeric form must not survive the shape test.
+    '169.254.169.254', '127.0.0.1',
+  ]) {
+    assert.equal(normalizeFaviconDomain(value), '', `${String(value)} must not be fetched`)
+  }
+})
+
+test('the plot asks one place for a brand mark, and keeps no second domain list', () => {
+  // The plot's logos are decoration, so every way they can fail is silent: a failed image hides
+  // itself and the monogram underneath is what a domain with no icon draws as well. That is why
+  // the URL is spelled once — two builders drifting apart is how "the router is stale" came to
+  // look identical to "the favicon service is down", and why the domain map lives on the router
+  // rather than in a list here that covers hammer's own providers and nothing else.
+  const src = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  assert.equal((src.match(/google\.com\/s2\/favicons/g) || []).length, 1, 'one third-party fallback')
+  assert.equal((src.match(/\/api\/favicon\?domain=/g) || []).length, 1, 'one router URL')
+  // The helper's definition and its two callers — the model node and the provider node. The old
+  // singular helper is gone: a node carries a list now, and one name for the URL is what keeps
+  // the third-party fallback and the router's own route from being spelled twice.
+  assert.equal((src.match(/function faviconHrefs\(/g) || []).length, 1, 'one URL builder')
+  assert.equal((src.match(/faviconHrefs\(/g) || []).length, 3, 'both image builders must ask it')
+  assert.ok(!src.includes('PROVIDER_DOMAINS'), 'the hand-written domain list must not come back')
+  // The provider node walks its candidates on a failed load, and the walk is bounded by the list
+  // it was given: a node whose every candidate 404s must still end on its monogram. A handler
+  // that could loop would hang the render, and one that stops at the first failure is exactly the
+  // bug this replaces — the node's own LAN hostname had no icon and the provider's mark was never
+  // tried.
+  assert.match(src, /const markHrefs = node\.markHrefs\b/, 'the node must carry its candidates')
+  assert.match(src, /while \(\+\+markIdx < markHrefs\.length/, 'the walk must be bounded by the list')
 })
 
 test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
