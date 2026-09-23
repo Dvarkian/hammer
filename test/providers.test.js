@@ -68,6 +68,7 @@ import {
 } from '../lib/providers/adapters.js'
 import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
+  buildModelTestPrompt,
   buildProviderRequestBody,
   buildProviderRequestHeaders,
   credentialFieldWrites,
@@ -253,6 +254,40 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
       else process.env[name] = value;
     }
   }
+})
+
+test('a Test asks its question in prose, and asks a different one on every click', () => {
+  // A test has to ask something the provider has not answered before, or a provider that caches
+  // completions answers it from cache forever. Only the text can carry that: measured live on
+  // g4f's route to Pollinations, `seed`, `temperature` and `user` are all normalised out of the
+  // cache key (five bodies differing only in those fields returned one identical `x-cache-key`),
+  // while two different marker words produced two different keys and two fresh generations.
+  const QUESTION = 'Please respond with a creative, funny, inspiring 30 words about hammers.'
+  const prompts = Array.from({ length: 500 }, () => buildModelTestPrompt())
+  // The question never moves, which is what keeps two clicks — and two rows — comparable.
+  assert.ok(prompts.every(prompt => prompt.startsWith(QUESTION)), 'the question must not change between clicks')
+  assert.ok(prompts.every(prompt => /^Please respond with[\s\S]+ Mention .+ and .+\.$/.test(prompt)))
+  // 500 draws out of ~1M marker combinations: a collision is a cached answer recorded as this
+  // row's own measurement, so this is the assertion that keeps the vocabulary honest.
+  assert.ok(new Set(prompts).size >= 499, `marker collided ${500 - new Set(prompts).size} times in 500 draws`)
+  for (const prompt of prompts) {
+    // The marker alone is held to this, not the question: "30 words" is a digit by design, and
+    // the question is the part that answered when the marker was dropped.
+    //
+    // The shape a route refused, and the shape it accepted — captured live 2026-09-23:
+    // `(test id: ab12cd34)` was refused even at 30 characters, while the same question with the
+    // marker dropped, and the same marker with its parentheses dropped, both answered.
+    const marker = prompt.slice(QUESTION.length)
+    assert.doesNotMatch(marker, /[()\[\]:]|\d/, `${marker} carries a parenthesised or metadata shape`)
+    assert.doesNotMatch(marker, /\b(test|session|id|key|token|apikey)\b/i, `${marker} reads as metadata`)
+  }
+  // The two pairs are never the same pair: it is an invariant, not a retry, so it holds even for
+  // a generator that returns one value forever.
+  const degenerate = /Mention (.+?) and (.+?)\.$/.exec(buildModelTestPrompt(() => 0))
+  assert.ok(degenerate, 'the marker must keep the shape the accepted route answered')
+  assert.notEqual(degenerate[1], degenerate[2], 'a marker asked for the same thing twice')
+  // 'a' or 'an': the vocabulary is open, so the article has to be chosen, not hardcoded.
+  assert.match(buildModelTestPrompt(() => 0), /Mention an (amber|anchor)/)
 })
 
 test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
