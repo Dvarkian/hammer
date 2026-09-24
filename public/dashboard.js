@@ -150,10 +150,28 @@
     // written server-side either way, so the row is better off falling back to the button and
     // picking the answer up on the next refresh than hanging with no way back.
     const TEST_RESPONSE_TIMEOUT_MS = 210_000;
-    let activePinnedModelId = null; // tracks the current pinned selection key
+    let activePinnedModelId = null;
     let activePinnedProviderKey = null;
-    let activePinnedRowKeys = []; // resolved pinned rows from server/client
-    let pinningMode = 'canonical';
+    let activePinnedGroupKey = null;
+    let activePinnedScope = null;
+    let activePinnedAvailable = false;
+    let activePinnedRowKeys = [];
+    // The last state confirmed by the server. Optimistic clicks may be superseded
+    // or fail, so rollback must never restore another optimistic value that never
+    // reached the router.
+    let confirmedPinnedState = {
+      modelId: null,
+      providerKey: null,
+      groupKey: null,
+      scope: null,
+      available: false,
+      rowKeys: [],
+    };
+    // Pin writes are serialized so rapid clicks reach the server in user order;
+    // the revision prevents an older response from repainting over a newer choice.
+    let pinMutationRevision = 0;
+    let pendingPinMutations = 0;
+    let pinMutationQueue = Promise.resolve();
 
     // Slope-line selector (Intelligence-vs-Speed plot → smartest routing).
     // Mirrors the server-side selectModelBySlope() pick so the plot is a live
@@ -162,6 +180,11 @@
     let selectorSaveTimer = null;
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
+    // Set while the router's current model is one it had to *move to* mid-request, because the
+    // model it had selected refused the request that triggered it (see /api/models → selection,
+    // and fallbackSelection in lib/server.js). It is explanatory metadata only: the current
+    // model still comes from pin > slope > intelligence, and a stale fallback never overrides it.
+    let routerFallbackSelection = null;
     let proxyErrorState = null;
     let scatterDrag = null;       // active threshold-line drag
     let scatterScales = null;     // plot extents, refreshed by every draw
@@ -170,7 +193,7 @@
     let isTableHovered = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
-    const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;      let filterRules = { minSweScore: null, excludedProviders: [] };
+    const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;
     let providerRefreshInFlight = new Set();
     let kiroDeviceAuthState = null;
     let kiroDevicePollTimer = null;
@@ -330,9 +353,7 @@
       document.getElementById('models-view').style.display = tab === 'models' ? 'block' : 'none';
       document.getElementById('chat-view').style.display = tab === 'chat' ? 'block' : 'none';
       document.getElementById('logs-view').style.display = tab === 'logs' ? 'block' : 'none';
-      document.getElementById('status-view').style.display = tab === 'status' ? 'block' : 'none';
       document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
-      document.getElementById('setup-view').style.display = tab === 'setup' ? 'block' : 'none';
 
       if (tab === 'settings') {
         loadSettings();
@@ -341,8 +362,6 @@
       } else if (tab === 'chat') {
         renderChatTranscript();
         scrollChatToBottom();
-      } else if (tab === 'status') {
-        loadAccountStatus();
       }
     }
 
@@ -388,6 +407,8 @@
     }
 
     async function fetchData() {
+      const pinRevisionAtStart = pinMutationRevision;
+      const pinWasPendingAtStart = pendingPinMutations > 0;
       try {
         const [modelsRes, configRes] = await Promise.all([
           fetch('/api/models'),
@@ -428,9 +449,41 @@
           }
         }
 
-        setActivePinnedModel(data.pinnedModelId, data.pinnedProviderKey, data.pinnedRowKeys, data.pinningMode);
+        // A refresh can have started before a queued pin write and finish after
+        // it. Do not let that stale catalog snapshot overwrite either the
+        // optimistic row or the last server-confirmed rollback state.
+        const pinSnapshotIsCurrent = pinRevisionAtStart === pinMutationRevision
+          && !pinWasPendingAtStart
+          && pendingPinMutations === 0;
+        if (pinSnapshotIsCurrent) {
+          confirmedPinnedState = {
+            modelId: data.pinnedModelId || null,
+            providerKey: data.pinnedModelId ? (data.pinnedProviderKey || null) : null,
+            groupKey: data.pinnedModelId ? (data.pinnedGroupKey || null) : null,
+            scope: data.pinnedModelId ? (data.pinnedScope || 'family') : null,
+            available: data.pinnedModelId ? data.pinnedAvailable !== false : false,
+            rowKeys: Array.isArray(data.pinnedRowKeys) ? [...data.pinnedRowKeys] : [],
+          };
+          setActivePinnedModel(
+            data.pinnedModelId,
+            data.pinnedProviderKey,
+            data.pinnedRowKeys,
+            data.pinnedScope,
+            data.pinnedGroupKey,
+            data.pinnedAvailable,
+          );
+        }
         currentBestModelId = data.best || null;
         currentBestProviderKey = data.bestProviderKey || null;
+        // A fallback is an event, not a current-selection rule. Keep its explanation only when
+        // the model it named is still the server's current pin/slope/ranking pick; after a
+        // slope or pin change, the old fallback must not relabel the new current model.
+        const fallback = data.selection && data.selection.fallback;
+        routerFallbackSelection = fallback
+          && fallback.modelId === data.selection.modelId
+          && (!fallback.providerKey || fallback.providerKey === data.selection.providerKey)
+          ? { modelId: data.selection.modelId, providerKey: data.selection.providerKey, ...fallback }
+          : null;
         updateChatModelOptions(allModels);
 
         try { render(); } catch (e) { console.error('Render error:', e); }
@@ -484,28 +537,85 @@
       return `${modelOrProviderKey || ''}::${maybeModelId || ''}`;
     }
 
-    function getPinnedRowKeysForSelection(modelId, providerKey = null, mode = pinningMode) {
-      if (!modelId) return [];
-      if (mode === 'exact') return [getModelRowKey(providerKey, modelId)];
+    function pinnedStateFrom(modelId, providerKey = null, rowKeys = [], scope = null, groupKey = null, available = null) {
+      return {
+        modelId: modelId || null,
+        providerKey: modelId ? (providerKey || null) : null,
+        groupKey: modelId ? (groupKey || null) : null,
+        scope: modelId ? (scope === 'exact' ? 'exact' : 'family') : null,
+        available: modelId ? available !== false : false,
+        rowKeys: Array.isArray(rowKeys) ? [...new Set(rowKeys.filter(Boolean))] : [],
+      };
+    }
 
-      const { unprefixed: selectedUnprefixed } = canonicalizeClientModelId(modelId);
+    function isExactPinnedRow(modelOrRowKey) {
+      if (activePinnedScope !== 'exact') return false;
+      const rowKey = typeof modelOrRowKey === 'object'
+        ? getModelRowKey(modelOrRowKey)
+        : String(modelOrRowKey || '');
+      return activePinnedRowKeys.includes(rowKey);
+    }
+
+    function isFamilyPinnedGroup(members) {
+      // The server's family membership includes unavailable siblings, while the
+      // main table intentionally omits those rows. Therefore an active family pin
+      // must not require every rendered member to be present: one legal sibling is
+      // enough to keep the heading visibly pinned after another provider goes down.
+      return activePinnedScope === 'family'
+        && members.length > 0
+        && members.some(model => activePinnedRowKeys.includes(getModelRowKey(model)));
+    }
+
+    function getPinnedRowKeysForSelection(modelId, providerKey = null, scope = 'family', groupKey = null) {
+      if (!modelId) return [];
+      if (scope === 'exact') return providerKey ? [getModelRowKey(providerKey, modelId)] : [];
+      const selectedUnprefixed = canonicalizeClientModelId(modelId).unprefixed;
+      const selectedGroup = String(groupKey || selectedUnprefixed).toLowerCase();
       return allModels
-        .filter(m => canonicalizeClientModelId(m.modelId).unprefixed === selectedUnprefixed)
+        .filter(m => canonicalizeClientModelId(m.modelId).unprefixed.toLowerCase() === selectedGroup)
         .map(m => getModelRowKey(m));
+    }
+
+    function bindPinButton(button, { modelId, providerKey = null, groupKey = null, pinned = false }) {
+      if (!button) return;
+      button.onclick = (event) => {
+        event.stopPropagation();
+        return pinModel(pinned ? '' : modelId, pinned ? null : providerKey, pinned ? null : groupKey);
+      };
     }
 
     function syncPinnedModelUI() {
       const badge = document.getElementById('pin-badge');
-      if (badge) badge.style.display = activePinnedRowKeys.length > 0 ? 'inline-block' : 'none';
+      if (!badge) return;
+      badge.style.display = activePinnedModelId ? 'inline-block' : 'none';
+      if (!activePinnedModelId) {
+        badge.textContent = '📌 Pinned ×';
+        badge.title = 'Click to unpin';
+        return;
+      }
+      const row = allModels.find(m => getModelRowKey(m) === activePinnedRowKeys[0])
+        || allModels.find(m => m.modelId === activePinnedModelId);
+      const label = row ? cleanHeadingModelName(row.label || row.modelId) : activePinnedModelId;
+      const scopeLabel = activePinnedScope === 'exact' ? 'exact provider' : 'model family';
+      const unavailable = activePinnedAvailable === false ? ' · unavailable' : '';
+      badge.textContent = `📌 ${label} · ${scopeLabel}${unavailable} ×`;
+      badge.title = `${scopeLabel} pin — click to unpin`;
     }
 
-    function setActivePinnedModel(modelId, providerKey = null, resolvedRowKeys = null, mode = pinningMode) {
+    function setActivePinnedModel(modelId, providerKey = null, resolvedRowKeys = null, scope = null, groupKey = null, available = null) {
       activePinnedModelId = modelId || null;
       activePinnedProviderKey = modelId ? (providerKey || null) : null;
-      pinningMode = mode === 'exact' ? 'exact' : 'canonical';
+      activePinnedGroupKey = modelId ? (groupKey || null) : null;
+      activePinnedScope = modelId ? (scope === 'exact' ? 'exact' : 'family') : null;
+      activePinnedAvailable = modelId ? available !== false : false;
       activePinnedRowKeys = Array.isArray(resolvedRowKeys)
         ? [...new Set(resolvedRowKeys.filter(Boolean))]
-        : getPinnedRowKeysForSelection(activePinnedModelId, activePinnedProviderKey, pinningMode);
+        : getPinnedRowKeysForSelection(
+          activePinnedModelId,
+          activePinnedProviderKey,
+          activePinnedScope,
+          activePinnedGroupKey,
+        );
       syncPinnedModelUI();
     }
 
@@ -523,11 +633,38 @@
         if (isRowUp(m)) onlineProviders.add(providerInstanceKey(m));
       });
 
+      // Derive main-table-only groups (mirrors render(): splitDisplayGroups drops
+      // struck rows into the graveyard). From those:
+      //   Endpoints = total edges in the bipartite nodes plot = model↔provider links
+      //   Providers = unique provider instances in the main table (only online/up rows)
+      //   Rows     = every row the main table shows (provider rows, grouped heads,
+      //              excluding graveyard/unavailable rows)
+      const { mainGroups } = splitDisplayGroups(sortedGroups(groupModels(models)));
+      let endpoints = 0;
+      const mainProviderKeys = new Set();
+      let mainRows = 0;
+      for (const g of mainGroups) {
+        for (const m of g.members) {
+          if (isRowUp(m)) endpoints += 1; // one edge per online member
+          if (isRowUp(m)) mainProviderKeys.add(providerInstanceKey(m)); // only online providers
+          mainRows += 1; // every provider row in the main table
+        }
+      }
+
+      const readoutModels = document.getElementById('readout-models');
+      const readoutCombos = document.getElementById('readout-combos');
+      const readoutProviders = document.getElementById('readout-providers');
+      const readoutRows = document.getElementById('readout-rows');
+      if (readoutModels) readoutModels.textContent = onlineModelCount;
+      if (readoutCombos) readoutCombos.textContent = endpoints;
+      if (readoutProviders) readoutProviders.textContent = mainProviderKeys.size;
+      if (readoutRows) readoutRows.textContent = mainRows;
+
       document.getElementById('kpi-active').textContent = onlineModelCount;
       document.getElementById('kpi-providers').textContent = onlineProviders.size;
 
       const bestModel = bestModelId ? models.find(m => m.modelId === bestModelId) : null;
-      document.getElementById('kpi-best').textContent = bestModel ? kpiBestText(bestModel) : 'None Online';
+      setKpiBest(bestModel ? kpiBestText(bestModel) : 'None Online');
 
       drawBipartiteTopology(models, bestModel);
       drawSpeedIntellScatter(models);
@@ -578,6 +715,20 @@
       const name = scatterShortName(model);
       const provider = providerInstanceName(model);
       return provider ? `${name} · ${provider}` : name;
+    }
+
+    // The 'Current' readout is a statement about routing, and its tooltip is the explanation of
+    // that statement. They are written together here because the explanation is only ever
+    // produced by the router-fallback branch of the scatter draw: a writer that set the name
+    // alone left the page hovering a model with the story of a *different* one — text reading
+    // the slope pick while the tooltip went on explaining a fallback the server had already
+    // withdrawn. Naming one model and explaining another is worse than either, so every writer
+    // goes through this.
+    function setKpiBest(text, title = '') {
+      const el = document.getElementById('kpi-best');
+      if (!el) return;
+      el.textContent = text;
+      el.title = title;
     }
 
     // The answered length every dot is scored at, in output tokens. Mirrors
@@ -1008,11 +1159,20 @@
     // pickSlopeModel/pickFastestRow apply the same eligibility the server does.
     function getSelection(rows) {
       const pinned = !!activePinnedModelId;
-      const pinnedSelRow = pinned
-        ? rows.find(r => r.m.modelId === activePinnedModelId && (!activePinnedProviderKey || r.m.providerKey === activePinnedProviderKey))
+      // A canonical pin can resolve to a sibling row whose model id differs from the id the
+      // user clicked. Compare the server's resolved current row, not the display id, or the
+      // dashboard would let the local slope pick displace a pin the server is honoring.
+      const currentBestRowKey = currentBestModelId
+        ? getModelRowKey(currentBestProviderKey, currentBestModelId)
+        : '';
+      const pinIsCurrent = pinned && activePinnedRowKeys.includes(currentBestRowKey);
+      const pinnedSelRow = pinIsCurrent
+        ? rows.find(r => getModelRowKey(r.m) === currentBestRowKey)
         : null;
       const pinnedModel = (pinned && !pinnedSelRow)
-        ? (allModels.find(x => x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
+        ? (allModels.find(x => pinIsCurrent
+          ? getModelRowKey(x) === currentBestRowKey
+          : x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
         : null;
       const slopeNum = Number(selectorState.slope);
       const slopeActive = selectorState.slope != null && Number.isFinite(slopeNum);
@@ -1023,18 +1183,31 @@
       // like "max slope" and highlight the fastest row while the router, which treats
       // slope 0 as the argmax, routes to the smartest one.
       const atMaxSlope = slopeActive && slopeNum > 0 && slopeNum >= selectorSlopeMax;
-      const slopePick = (!pinned && slopeActive) ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
-      const fallbackRow = (!pinned && !slopePick && !slopeActive && currentBestModelId)
+      const slopePick = slopeActive && !pinIsCurrent ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
+      // `currentBest` is the server's ordinary pin > slope > ranking result. A pin that has no
+      // usable row is metadata, not a selection, so it must not hide the slope pick (or the
+      // ranking fallback) that the router will actually use.
+      const fallbackRow = (!slopePick && !slopeActive && currentBestModelId)
         ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
         : null;
-      const fallbackModel = (!pinned && !slopePick && !slopeActive && !fallbackRow && currentBestModelId)
+      const fallbackModel = (!slopePick && !slopeActive && !fallbackRow && currentBestModelId)
         ? (allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey)) || null)
+        : null;
+      // The router's own move, from the last snapshot. It is shown only when the fallback
+      // model is still the current model; the current selection itself remains pin > slope >
+      // ranking, never fallback-first.
+      const routedFallbackRow = routerFallbackSelection
+        ? (rows.find(r => r.m.modelId === routerFallbackSelection.modelId && (!routerFallbackSelection.providerKey || r.m.providerKey === routerFallbackSelection.providerKey)) || null)
+        : null;
+      const routedFallbackModel = (routerFallbackSelection && !routedFallbackRow)
+        ? (allModels.find(x => x.modelId === routerFallbackSelection.modelId && (!routerFallbackSelection.providerKey || x.providerKey === routerFallbackSelection.providerKey)) || null)
         : null;
       return {
         pinned, pinnedSelRow, pinnedModel, slopeNum, slopeActive, atMaxSlope, slopePick,
         fallbackRow, fallbackModel,
+        routedFallbackRow, routedFallbackModel,
         shownSelRow: pinnedSelRow || slopePick || fallbackRow,
-        labelRow: pinnedSelRow || pinnedModel || slopePick || fallbackRow || fallbackModel,
+        labelRow: pinnedSelRow || (pinIsCurrent ? pinnedModel : null) || slopePick || fallbackRow || fallbackModel || pinnedModel,
       };
     }
 
@@ -1053,7 +1226,11 @@
       selClip.appendChild(svgEl('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
       svg.appendChild(selClip);
 
-      const { pinned, slopeNum, slopeActive, atMaxSlope, slopePick, shownSelRow, labelRow } = selection;
+      const { pinned, slopeNum, slopeActive, atMaxSlope, slopePick, shownSelRow, labelRow, routedFallbackRow, routedFallbackModel } = selection;
+      // The ring around the current model: the accent for a model the selector chose, a warning
+      // hue for one the router had to move to — the difference between "the line touches this"
+      // and "this is what is answering because something else stopped".
+      const selectedRingColor = routedFallbackRow ? (cssVarValue('--warning') || '#d97706') : accentColor;
 
       // Minimum intelligence: horizontal dashed line, drag up/down. Unset, it
       // rests on the floor as a faint affordance and carries no value label —
@@ -1137,8 +1314,7 @@
       // the routed intelligence best. The same name also drives the KPI 'Current' readout
       // (and vice versa on the next poll), so Current is always the same model —
       // even mid-drag and when the selector falls back.
-      const kpiBestEl = document.getElementById('kpi-best');
-      if (slopeActive && !slopePick && !pinned) {
+      if (slopeActive && !slopePick) {
         // A slope is set but nothing clears the minimums: routing falls back to
         // the intelligence best, so name that model instead of pretending the line
         // touches a dot.
@@ -1146,7 +1322,9 @@
           ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
           : null;
         const fbText = fbModel ? kpiBestText(fbModel) : null;
-        if (kpiBestEl && fbText) kpiBestEl.textContent = fbText;
+        // Not a fallback claim, so no explanation: this is the ordinary rules speaking, and the
+        // title is cleared rather than inherited from whatever drew last.
+        if (fbText) setKpiBest(fbText);
       } else if (labelRow) {
         // labelRow is either a scatter row (has .m) or a bare model object when
         // the pinned/best model has no speed data to plot.
@@ -1154,10 +1332,21 @@
         if (shownSelRow) {
           svg.appendChild(svgEl('circle', {
             cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
-            stroke: accentColor, 'stroke-width': 2,
+            stroke: selectedRingColor, 'stroke-width': 2,
           }));
         }
-        if (kpiBestEl && kpiText) kpiBestEl.textContent = kpiText;
+        // The fallback explanation is a property of the current selection only. The server now
+        // returns the ordinary pin/slope/ranking pick as `currentBest`; a prior fallback whose
+        // model is no longer that pick must not add a warning ring or change the KPI.
+        if (kpiText) {
+          const fellBack = (routedFallbackRow || routedFallbackModel) && routerFallbackSelection;
+          setKpiBest(
+            fellBack ? `${kpiText} ↯ fallback` : kpiText,
+            fellBack
+              ? `Router fallback: ${kpiText} replaced ${routerFallbackSelection.fromProviderKey ? `${routerFallbackSelection.fromProviderKey}/` : ''}${routerFallbackSelection.fromModelId || 'the selected model'}, which refused the request${routerFallbackSelection.reason ? `: ${routerFallbackSelection.reason}` : '.'}`
+              : '',
+          );
+        }
       }
     }
 
@@ -1191,7 +1380,7 @@
       // The routed best and pin are part of the redraw key too: when the server
       // reports a new best (pin toggled, slope save landed) the selection label
       // and KPI must re-render even though the rows and slider state didn't move.
-      const selHash = `${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'},best=${currentBestModelId ?? 'n'}/${currentBestProviderKey ?? 'n'},pin=${activePinnedModelId ?? 'n'}/${activePinnedProviderKey ?? 'n'}`;
+      const selHash = `${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'},best=${currentBestModelId ?? 'n'}/${currentBestProviderKey ?? 'n'},pin=${activePinnedModelId ?? 'n'}/${activePinnedProviderKey ?? 'n'},fb=${routerFallbackSelection ? `${routerFallbackSelection.modelId}/${routerFallbackSelection.providerKey}` : 'n'}`;
       const hash = rows.map(r => `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}`).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
       if (svg.dataset.hash === hash) return;
       svg.dataset.hash = hash;
@@ -2542,32 +2731,69 @@
       });
     }
 
-    async function pinModel(modelId, providerKey = null) {
-      const previousPinnedModelId = activePinnedModelId;
-      const previousPinnedProviderKey = activePinnedProviderKey;
-      const previousPinnedRowKeys = [...activePinnedRowKeys];
-      const previousPinningMode = pinningMode;
-      setActivePinnedModel(modelId || null, providerKey, null, pinningMode);
+    function pinModel(modelId, providerKey = null, groupKey = null) {
+      const revision = ++pinMutationRevision;
+      pendingPinMutations += 1;
+      const nextScope = modelId ? (providerKey ? 'exact' : 'family') : null;
+      setActivePinnedModel(modelId || null, providerKey, null, nextScope, groupKey, true);
       render(true);
 
-      try {
-        const res = await fetch('/api/pinned', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modelId: modelId || null, providerKey: modelId ? providerKey : null })
-        });
-        if (!res.ok) {
-          throw new Error(`Pin request failed with status ${res.status}`);
+      const mutation = pinMutationQueue.catch(() => {}).then(async () => {
+        try {
+          const res = await fetch('/api/pinned', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              modelId: modelId || null,
+              providerKey: modelId ? providerKey : null,
+              groupKey: modelId && !providerKey ? groupKey : null,
+            }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data?.error?.message || `Pin request failed with status ${res.status}`);
+
+          // Every successful response is a real intermediate server state. Record
+          // it even when a newer optimistic click owns the screen: if that newer
+          // click fails, this is the correct state to restore.
+          confirmedPinnedState = pinnedStateFrom(
+            data.pinnedModelId,
+            data.pinnedProviderKey,
+            data.pinnedRowKeys,
+            data.pinnedScope,
+            data.pinnedGroupKey,
+            data.pinnedAvailable,
+          );
+          if (revision !== pinMutationRevision) return;
+          setActivePinnedModel(
+            data.pinnedModelId,
+            data.pinnedProviderKey,
+            data.pinnedRowKeys,
+            data.pinnedScope,
+            data.pinnedGroupKey,
+            data.pinnedAvailable,
+          );
+          await fetchData();
+          return true;
+        } catch (e) {
+          if (revision === pinMutationRevision) {
+            setActivePinnedModel(
+              confirmedPinnedState.modelId,
+              confirmedPinnedState.providerKey,
+              confirmedPinnedState.rowKeys,
+              confirmedPinnedState.scope,
+              confirmedPinnedState.groupKey,
+              confirmedPinnedState.available,
+            );
+            render(true);
+            updateProxyErrorBanner({ message: e?.message || 'Could not change the selected model.', fallback: false });
+          }
+          return false;
         }
-        const data = await res.json();
-        setActivePinnedModel(data.pinnedModelId, data.pinnedProviderKey, data.pinnedRowKeys, data.pinningMode);
-        await fetchData();
-      } catch (e) {
-        setActivePinnedModel(previousPinnedModelId, previousPinnedProviderKey, previousPinnedRowKeys, previousPinningMode);
-        render(true);
-        console.error('Failed to pin model', e);
-        updateProxyErrorBanner({ message: e?.message || 'Could not change the selected model.', fallback: false });
-      }
+      }).finally(() => {
+        pendingPinMutations = Math.max(0, pendingPinMutations - 1);
+      });
+      pinMutationQueue = mutation.catch(() => {});
+      return mutation;
     }
 
     function handleSearch() {
@@ -3141,7 +3367,7 @@
       const members = g.members;
       const s = getGroupSummary(g);
       const first = members[0];
-      const isPinned = members.length > 0 && members.every(m => activePinnedRowKeys.includes(getModelRowKey(m)));
+      const isPinned = isFamilyPinnedGroup(members);
       // The heading answers one question — can this model be used at all? — in the same
       // verdict vocabulary as the provider rows underneath it: green as soon as any
       // provider can serve, and otherwise the most recoverable reason among them, so a
@@ -3174,9 +3400,10 @@
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${emoji}${escapeHtml(cleanHeadingModelName(g.label))}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
-              <span class="pin-row-btn ${isPinned ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinned ? '' : first.modelId}', '')" title="${isPinned ? 'Unpin model' : 'Pin model'}">📌</span>
+              <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
+            ${providerCapabilityNote(members) ? `<div class="provider-capability-note" title="This provider uses a stateless relay; Hammer can reconstruct an explicitly identified local transcript, but the upstream has no session affinity.">${escapeHtml(providerCapabilityNote(members))}</div>` : ''}
           </td>
           <td><div style="font-weight: 600;">${(() => {
             const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
@@ -3244,6 +3471,9 @@
       tr.classList.toggle('row-best', isCurrentBestGroup(g));
       tr.innerHTML = groupRowInnerHTML(g);
       applyGroupRowClick(tr, g);
+      const pinButton = tr.querySelector('.pin-row-btn');
+      const pinned = isFamilyPinnedGroup(g.members);
+      bindPinButton(pinButton, { modelId: g.members[0]?.modelId, groupKey: g.key, pinned });
       return tr;
     }
 
@@ -3252,6 +3482,9 @@
       row.classList.toggle('row-best', isCurrentBestGroup(g));
       // Rebind so the handler closes over the freshly rendered member data.
       applyGroupRowClick(row, g);
+      const pinButton = row.querySelector('.pin-row-btn');
+      const pinned = isFamilyPinnedGroup(g.members);
+      bindPinButton(pinButton, { modelId: g.members[0]?.modelId, groupKey: g.key, pinned });
     }
 
     function render(isUserAction = false) {
@@ -3271,20 +3504,6 @@
 
       // Models without credentials remain in the unavailable table so their
       // No Auth status is visible instead of silently disappearing.
-
-      // 1.5. Apply Filter Rules (minSweScore, excludedProviders) - marks as excluded for display
-      const { minSweScore, excludedProviders } = filterRules;
-      const hasFilterRules = minSweScore != null && minSweScore > 0 || (excludedProviders && excludedProviders.length > 0);
-      if (hasFilterRules) {
-        filtered = filtered.map(m => {
-          const isExcludedProvider = excludedProviders && excludedProviders.includes(m.providerKey);
-          const isBelowMinSwe = typeof minSweScore === 'number' && typeof m.intell === 'number' && m.intell < minSweScore;
-          if (isExcludedProvider || isBelowMinSwe) {
-            return { ...m, status: 'excluded', _excludedReason: isExcludedProvider ? 'provider' : 'swe' };
-          }
-          return m;
-        });
-      }
 
       let expanded;
       let graveyardGroups = [];
@@ -3404,10 +3623,10 @@
       }
       const pinBtn = modelCell.querySelector('.pin-row-btn');
       if (pinBtn) {
-        const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
+        const isPinnedRow = isExactPinnedRow(m);
         pinBtn.className = 'pin-row-btn' + (isPinnedRow ? ' pinned' : '');
-        pinBtn.onclick = (e) => { e.stopPropagation(); pinModel(isPinnedRow ? '' : m.modelId, m.providerKey); };
-        pinBtn.title = isPinnedRow ? 'Unpin model' : 'Pin model';
+        pinBtn.title = isPinnedRow ? 'Unpin exact provider row' : 'Pin exact provider row';
+        bindPinButton(pinBtn, { modelId: m.modelId, providerKey: m.providerKey, pinned: isPinnedRow });
       }
       // Refresh the provider subtext: discovery can learn a real model id later,
       // and the subtext is what distinguishes repeated rows of one provider.
@@ -3615,7 +3834,7 @@
       // keeps the cell from reading as a reply, and names the cause when the provider said the
       // answer was truncated (finish_reason 'length').
       if (!expired && lastResponse.reasoningOnly) {
-        metaBits.push(`<span title="The model spent its output budget on reasoning and never reached a visible answer. This is the reasoning text; the test retries once with more headroom.">reasoning only</span>`);
+        metaBits.push(`<span title="The model spent its whole output budget on reasoning and never reached a visible answer. This is the reasoning text.">reasoning only</span>`);
       } else if (!expired && lastResponse.truncated) {
         metaBits.push(`<span title="The provider stopped because the output budget ran out.">truncated</span>`);
       }
@@ -3624,6 +3843,14 @@
       // (no latency or speed was recorded from it — see isCachedReplayResponse).
       if (!expired && lastResponse.cached) {
         metaBits.push(`<span title="The provider served this answer from its own response cache instead of generating it for this test, so no latency or speed was measured. Treat it as proof the model is reachable, not as proof it can serve real requests.">cached</span>`);
+      }
+      // The router sent a real request to this row and the row refused it. That is the same
+      // evidence a Test click would have left, and it is shown the same way — but it was not a
+      // click, and saying which it was is the difference between "I tested this" and "this
+      // happened while I was working". The router writes this marker (see
+      // recordRoutedModelFailure) and never for a Test, so its presence is the whole answer.
+      if (!expired && lastResponse.routedFailure) {
+        metaBits.push('<span title="Recorded from live traffic, not from a Test click: the router sent this model a request and it refused, so the failure above is this row\'s own answer to a real request.">live request</span>');
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -3671,6 +3898,20 @@
     // The Status column is the absolute slave of and fully defined by the Test column,
     // with exceptions only when the model is actually being used (live proxy traffic).
     const STRUCK_VERDICTS = new Set(['paid', 'dead', 'incompatible', 'micro', 'noauth']);
+    // The balance half of the account refusals, kept in step with INSUFFICIENT_FUNDS_RE in
+    // lib/utils.js: a stated shortfall on the account's own balance or funds is money the row
+    // needs rather than a quota it waits out. The server marks such a response `paymentRequired`
+    // (the primary route to the Paid badge), and this copy is what keeps evidence stored before
+    // that rule existed — or a row whose flag was never persisted — from reading as the clock.
+    const INSUFFICIENT_FUNDS_RE = /\b(?:insufficient|not enough|no|out of|low|zero|negative|empty)\b[^.\n]{0,24}\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b|\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b[^.\n]{0,24}\b(?:insufficient|empty|zero|negative|too low|depleted|exhausted|out of funds?)\b/i;
+    // The incompatible half of the same mirror, kept in step with isIncompatibleModelError in
+    // lib/utils.js — the rule the server reads the same stored text with. The narrow
+    // `image/video only | not support text` pair this replaces missed most of the canonical
+    // clauses, so a row the server had already struck as Incompatible kept its place in the main
+    // table with an empty Status cell: llm7 refuses every Seedance id with "Model
+    // 'seedance-2.0-fast' does not support chat endpoints." (live 2026-09-22), which the router
+    // read as incompatible and this file re-read as a generic Down.
+    const INCOMPATIBLE_MODEL_RE = /content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within/i;
     // Every state that means "waiting on the provider": the clock is drawn for all of them. An
     // overload belongs here for the same reason a quota does — the provider is refusing for
     // now and the row returns on its own, so nothing is broken and nothing needs fixing.
@@ -3714,6 +3955,45 @@
       return null;
     }
 
+    // The server's own statement that no window can reopen this row: money, a tombstone, or a
+    // model that does not serve chat. It reads the evidence with the full rule set (see
+    // permanentTestVerdict in lib/utils.js) and is the authority the graveyard's reason is drawn
+    // from, so it is taken as the verdict it is.
+    function permanentStatusOf(m) {
+      const status = String(m?.status || '').toLowerCase();
+      return status === 'paid' || status === 'dead' || status === 'incompatible' ? status : null;
+    }
+
+    // The same statement made by a *test response* — the click that just landed, before the next
+    // poll carries the server's verdict, and for rows whose stored evidence predates a clause in
+    // the rule. Mirrors permanentTestVerdict in lib/utils.js, like the other copies in this file.
+    // Only when the test is the newest evidence: a row that has really served since (see
+    // testIsNewestEvidence) is not condemned by an older refusal.
+    function permanentTestVerdictOf(m) {
+      const lr = m && m.lastResponse;
+      if (!lr || !testIsNewestEvidence(m)) return null;
+      if (lr.expiresAt != null && Date.now() > Number(lr.expiresAt)) return null;
+      if (lr.paymentRequired === true) return 'paid';
+      if (lr.dead === true) return 'dead';
+      if (lr.incompatible === true) return 'incompatible';
+      const code = Number(lr.status || 0);
+      const errText = String(lr.error || '');
+      if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
+      if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
+      if (INCOMPATIBLE_MODEL_RE.test(errText)) return 'incompatible';
+      return null;
+    }
+
+    // True when such a verdict is newer than the bench the row is sitting on, so the clock it
+    // draws is a claim nobody can act on. The server's status is taken as given — it decides the
+    // ordering itself — while a test response has to beat the bench's own timestamp, because a
+    // 429 observed after that response is the newer story and keeps its clock.
+    function permanentOutranksBench(m) {
+      if (permanentStatusOf(m)) return true;
+      if (!permanentTestVerdictOf(m)) return false;
+      return (Number(m.lastResponse?.at) || 0) > (Number(m.rateLimit?.capturedAt) || 0);
+    }
+
     // The clock a busy provider earns. Its own window is never stated in a way worth counting
     // down — "spikes in demand are usually temporary" is the whole claim — so the cell shows a
     // bare clock unless the response carried a retry time of its own.
@@ -3734,6 +4014,23 @@
       if (status === 'banned' || status === 'excluded') return status;
       if (status === 'noauth' || m.hasAuth === false) return 'noauth';
       if (m.microContext === true) return 'micro';
+
+      // The verdicts the browser cannot reach for itself. A row whose model id names a non-chat
+      // family (isBlockedModelName: audio, translation, calibration) and one the liveness probe
+      // refused as paid, dead or incompatible have no lastResponse for the classification below
+      // to read — the server states them in `status`, so the one authority that can see them is
+      // trusted, as isOverloadedRow already trusts 'overloaded'. These are properties of the
+      // model rather than of traffic, so they sit here with the other model-level states and
+      // ahead of the live-usage exceptions, exactly where resolveModelStatus ranks them.
+      const permanentStatus = permanentStatusOf(m);
+      if (permanentStatus) return permanentStatus;
+
+      // And the same verdict straight off the response, which is what makes a Test click
+      // reclassify a row that is *presently* on the clock — the render that follows the click
+      // runs before any poll has carried the server's new status. Younger than live traffic, so
+      // a row that is actually being served still reads Up.
+      const freshPermanent = permanentTestVerdictOf(m);
+      if (freshPermanent) return freshPermanent;
 
       const lr = m.lastResponse;
       const testAt = Number(lr?.at) || 0;
@@ -3776,11 +4073,13 @@
           const code = Number(lr.status || 0);
           const errText = String(lr.error || '');
 
-          if (code === 402 || /payment required|billing/i.test(errText)) return 'paid';
+          if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
           // 'model does not exist' is kept in step with isDeadModelError in lib/utils.js so a
           // row whose stored evidence predates that rule still reads Dead rather than Down.
           if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
-          if (/image\/video only|not support text/i.test(errText)) return 'incompatible';
+          // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
+          // before a clause existed still classifies the way the server classifies the same text.
+          if (INCOMPATIBLE_MODEL_RE.test(errText)) return 'incompatible';
           if (code === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errText)) {
             return 'rate-limited';
           }
@@ -4318,6 +4617,11 @@
     //     exactly as the router does with the same evidence.
     function rateLimitEvidence(m) {
       if (!m) return { limited: false, resetAt: null };
+      // A verdict no window can reopen is not a window: while it is the newer statement, the row
+      // does not come back when the countdown ends, so there is nothing to count down to and the
+      // clock would be a claim nobody can act on. Read before the sources below, because a bench
+      // the server has not yet re-derived would otherwise outlive the verdict that replaced it.
+      if (permanentOutranksBench(m)) return { limited: false, resetAt: null };
       const now = Date.now();
       const status = String(m.status || '').toLowerCase();
       const creditExhausted = Number(m.rateLimit?.creditLimit) > 0
@@ -4442,7 +4746,9 @@
         return '<span class="paid-status" title="Payment required — add billing to use this model">💲 Paid</span>';
       }
       if (kind === 'incompatible') {
-        return '<span style="color: var(--text-muted);" title="Model does not support text chat (audio/image/video only)">Incompatible</span>';
+        // nowrap because the word cannot be broken: the cells that must fit an error string carry
+        // an aggressive word-break, and "Incompa/tible" across two lines names no state at all.
+        return '<span style="color: var(--text-muted); white-space: nowrap;" title="Model cannot serve text chat (image/video/audio only, or gated to another client)">Incompatible</span>';
       }
       if (kind === 'micro') {
         return `<span style="color: var(--text-muted);" title="${escapeHtml(microContextTitle(m))}">Micro</span>`;
@@ -4698,6 +5004,8 @@
       // Graveyard rows keep their own history: they are struck by definition, so
       // "usable only" would blank every measured cell the panel exists to show.
       const s = getGroupSummary(g, { onlyUsable: false });
+      // nowrap on the cell below: the reason is a single word, and the td's own word-break (there
+      // for long error strings) split "Incompatible" into "Incompa/tible" across two lines.
       const statusText = unavailableReasonLabel(first);
       const hasAuth = members.some(m => m.status !== 'noauth');
 
@@ -4716,10 +5024,25 @@
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
-          <td><div style="font-size:0.75rem;font-weight:600;">${escapeHtml(statusText)}</div></td>
+          <td><div style="font-size:0.75rem;font-weight:600;white-space:nowrap;">${escapeHtml(statusText)}</div></td>
           <td>${hasAuth
             ? responseCellHTML(lastResponse, { rowKey: getModelRowKey(first), providerKey: first.providerKey, modelId: first.modelId, hasAuth: true, status: first.status })
             : '<div class="test-cell"></div>'}</td>`;
+    }
+
+    function providerCapabilityNote(m) {
+      const models = Array.isArray(m) ? m : [m];
+      // A model heading can cover several unrelated providers. Do not put one child's
+      // FreeModels caveat on the whole heading; its provider row carries that disclosure.
+      // Uniform groups can still surface the caveat without implying anything false.
+      if (models.length > 1 && (
+        models.some(model => model?.continuity !== 'local-transcript')
+        || models.some(model => model?.toolSupport !== 'best-effort')
+      )) return '';
+      const notes = [];
+      if (models.some(model => model?.continuity === 'local-transcript')) notes.push('stateless relay · local transcript continuity');
+      if (models.some(model => model?.toolSupport === 'best-effort')) notes.push('tools best-effort');
+      return notes.join(' · ');
     }
 
     function createRow(m) {
@@ -4729,15 +5052,16 @@
       tr.style.opacity = m.status === 'excluded' || m.status === 'banned' ? '0.5' : '1';
       tr.classList.toggle('row-struck', isRowStruck(m));
 
-      const isPinnedRow = activePinnedRowKeys.includes(getModelRowKey(m));
+      const isPinnedRow = isExactPinnedRow(m);
       tr.classList.toggle('row-best', isCurrentBestRow(m));
       tr.innerHTML = `
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
               <span style="font-weight: 600;" title="${escapeHtml(providerRowLabel(m))}">${escapeHtml(providerRowLabel(m))}</span>
-              <span class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" onclick="event.stopPropagation(); pinModel('${isPinnedRow ? '' : m.modelId}', '${m.providerKey}')" title="${isPinnedRow ? 'Unpin model' : 'Pin model'}">📌</span>
+              <button type="button" class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" data-pin-model="${escapeAttr(m.modelId)}" data-pin-provider="${escapeAttr(m.providerKey)}" title="${isPinnedRow ? 'Unpin exact provider row' : 'Pin exact provider row'}">📌</button>
             </div>
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
+            ${providerCapabilityNote(m) ? `<div class="provider-capability-note" title="This provider uses a stateless relay; Hammer can reconstruct an explicitly identified local transcript, but the upstream has no session affinity.">${escapeHtml(providerCapabilityNote(m))}</div>` : ''}
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
@@ -4748,6 +5072,11 @@
           <td><div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div></td>
           <td>${responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status })}</td>
         `;
+      bindPinButton(tr.querySelector('.pin-row-btn'), {
+        modelId: m.modelId,
+        providerKey: m.providerKey,
+        pinned: isPinnedRow,
+      });
       return tr;
     }
 
@@ -4893,100 +5222,17 @@
       }
     }
 
-    function renderPinningSettings(pinningState) {
+    function renderPinningSettings() {
       const container = document.getElementById('pinning-settings-container');
       if (!container) return;
-
-      const mode = pinningState?.pinningMode === 'exact' ? 'exact' : 'canonical';
-      pinningMode = mode;
-
       container.innerHTML = `
         <div class="autoupdate-panel">
-          <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
-            <div>
-              <h3 style="margin:0; font-size:1rem;">Pinned Model Scope</h3>
-              <div style="margin-top:6px; color:var(--text-muted); font-size:0.82rem;">Canonical pins route to the best matching provider for that model family. Exact pins lock to the specific provider row you clicked.</div>
-            </div>
-            <div style="display:flex; gap:10px; flex-wrap:wrap;">
-              <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; background:${mode === 'canonical' ? 'var(--status-info-bg)' : 'var(--input-bg)'}; border:1px solid ${mode === 'canonical' ? 'var(--status-info-border)' : 'var(--border)'}; border-radius:10px; padding:10px 12px; max-width:320px;">
-                <input type="radio" name="pinning-mode" value="canonical" ${mode === 'canonical' ? 'checked' : ''} onchange="updatePinningMode('canonical')">
-                <span>
-                  <span style="display:block; font-weight:700; font-size:0.82rem;">Canonical Group</span>
-                  <span style="display:block; color:var(--text-muted); font-size:0.76rem; margin-top:3px;">Default. Pin the same model across providers and route to the best available match.</span>
-                </span>
-              </label>
-              <label style="display:flex; align-items:flex-start; gap:8px; cursor:pointer; background:${mode === 'exact' ? 'var(--status-info-bg)' : 'var(--input-bg)'}; border:1px solid ${mode === 'exact' ? 'var(--status-info-border)' : 'var(--border)'}; border-radius:10px; padding:10px 12px; max-width:320px;">
-                <input type="radio" name="pinning-mode" value="exact" ${mode === 'exact' ? 'checked' : ''} onchange="updatePinningMode('exact')">
-                <span>
-                  <span style="display:block; font-weight:700; font-size:0.82rem;">Exact Provider Row</span>
-                  <span style="display:block; color:var(--text-muted); font-size:0.76rem; margin-top:3px;">Pin only the exact provider/model row you clicked.</span>
-                </span>
-              </label>
-            </div>
-          </div>
-        </div>
-      `;
-    }
-
-    async function updatePinningMode(mode) {
-      const nextMode = mode === 'exact' ? 'exact' : 'canonical';
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pinningMode: nextMode })
-      });
-      pinningMode = nextMode;
-      await loadSettings();
-      await fetchData();
-    }
-
-    function renderFilterRules(filterRulesFromServer, providers) {
-      const container = document.getElementById('filter-rules-container');
-      if (!container || !filterRulesFromServer) return;
-
-      // Store globally for immediate table filtering
-      filterRules = {
-        minSweScore: filterRulesFromServer.minSweScore,
-        excludedProviders: filterRulesFromServer.excludedProviders || []
-      };
-
-      const minSweScore = filterRules.minSweScore;
-      const excludedProviders = filterRules.excludedProviders || [];
-
-      const providerCheckboxes = providers.map(p => `
-        <label style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--input-bg-alt); border-radius: 8px; cursor: pointer; font-size: 0.875rem;">
-          <input type="checkbox" class="excluded-provider-checkbox" value="${escapeHtml(p.key)}" ${excludedProviders.includes(p.key) ? 'checked' : ''}>
-          ${escapeHtml(p.name)}
-        </label>
-      `).join('');
-
-      container.innerHTML = `
-        <div class="autoupdate-panel">
-          <div style="display: flex; flex-direction: column; gap: 20px;">
-            <div>
-              <label style="display: block; font-weight: 600; margin-bottom: 6px; font-size: 0.875rem;">
-                Minimum Intelligence Score
-              </label>
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <input type="number" id="min-swe-score" min="0" max="100" step="1" value="${minSweScore !== null ? Math.round(minSweScore * 100) : ''}" placeholder="e.g. 50" style="width: 80px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; font-size: 0.875rem;">
-                <span style="color: var(--text-muted); font-size: 0.875rem;">%</span>
-              </div>
-              <p style="color: var(--text-muted); font-size: 0.78rem; margin-top: 6px;">Models with an intelligence score below this threshold will be excluded from pinging and routing.</p>
-            </div>
-
-            <div>
-              <label style="display: block; font-weight: 600; margin-bottom: 8px; font-size: 0.875rem;">
-                Excluded Providers
-              </label>
-              <div style="display: flex; flex-wrap: wrap; gap: 8px;">
-                ${providerCheckboxes}
-              </div>
-              <p style="color: var(--text-muted); font-size: 0.78rem; margin-top: 6px;">All models from these providers will be excluded from pinging and routing.</p>
-            </div>
-
-            <div>
-              <button class="btn" onclick="saveFilterRules()">Save Filter Rules</button>
-              <span id="filter-rules-save-status" class="autoupdate-save-status"></span>
+          <div>
+            <h3 style="margin:0 0 6px; font-size:1rem;">Pin targets</h3>
+            <div style="color:var(--text-muted); font-size:0.82rem; line-height:1.5;">
+              <div><strong>Model heading:</strong> pin the model family. Provider failover stays inside that family.</div>
+              <div><strong>Provider row:</strong> pin that exact provider/model. Its errors are exposed without fallback.</div>
+              <div style="margin-top:6px;">Pins last for this server session and reset when Hammer restarts.</div>
             </div>
           </div>
         </div>
@@ -5219,39 +5465,6 @@
       }
     }
 
-    async function saveFilterRules() {
-      const minSweInput = document.getElementById('min-swe-score');
-      const minSweValue = minSweInput.value.trim();
-      let minSweScore = null;
-      if (minSweValue !== '') {
-        const parsed = parseInt(minSweValue, 10);
-        if (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 100) {
-          minSweScore = parsed / 100;
-        }
-      }
-
-      const checkboxes = document.querySelectorAll('.excluded-provider-checkbox:checked');
-      const excludedProviders = Array.from(checkboxes).map(cb => cb.value);
-
-      try {
-        const res = await fetch('/api/filter-rules', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ minSweScore, excludedProviders })
-        });
-        if (!res.ok) throw new Error('Failed to save filter rules');
-        const data = await res.json();
-        document.getElementById('filter-rules-save-status').textContent = 'Saved!';
-        setTimeout(() => {
-          document.getElementById('filter-rules-save-status').textContent = '';
-        }, 2000);
-        fetchData();
-      } catch (err) {
-        document.getElementById('filter-rules-save-status').textContent = err.message || 'Failed to save.';
-        document.getElementById('filter-rules-save-status').style.color = 'var(--error)';
-      }
-    }
-
     function setConfigTransferStatus(message, tone = '') {
       const statusEl = document.getElementById('config-transfer-status');
       if (!statusEl) return;
@@ -5336,22 +5549,15 @@
         } catch (e) { console.error('loadSettings: config fetch failed:', e); }
       }
 
-      // Fetch secondary settings in parallel; failures are non-fatal.
-      let filterRules = {}, pinning = {}, meta = {};
+      // Fetch secondary settings; failure is non-fatal.
+      let meta = {};
       try {
-        const [filterRulesRes, pinningRes, metaRes] = await Promise.all([
-          fetch('/api/filter-rules'),
-          fetch('/api/pinning'),
-          fetch('/api/meta'),
-        ]);
-        if (filterRulesRes.ok) filterRules = await filterRulesRes.json();
-        if (pinningRes.ok) pinning = await pinningRes.json();
+        const metaRes = await fetch('/api/meta');
         if (metaRes.ok) meta = await metaRes.json();
       } catch (e) { console.error('loadSettings: secondary settings fetch failed:', e); }
 
       renderLoggingSettings((meta && meta.logging) || {});
-      renderPinningSettings(pinning);
-      renderFilterRules(filterRules, providers);
+      renderPinningSettings();
 
       const activeContainer = document.getElementById('active-providers-container');
       const setupContainer = document.getElementById('setup-providers-container');
@@ -5451,6 +5657,11 @@
           const providerError = errorModel ? errorModel.lastError : null;
 
           const tokenOptional = p.supportsOptionalBearerAuth === true;
+          // Active generic providers already have their credentials represented by the Accounts
+          // panel below. Keep the single top-level input for setup, and for active providers that
+          // do not have an account list to manage yet.
+          const hasApiKeyAccounts = Array.isArray(p.apiKeyPool) && p.apiKeyPool.length > 0;
+          const showTopCredentialInput = !providerIsActive || !hasApiKeyAccounts;
           const statusIcon = p.hasKey ? '✅' : (tokenOptional ? 'ℹ️' : '⚠️');
           const statusColor = p.hasKey ? 'var(--status-success-text)' : (tokenOptional ? 'var(--status-info-text)' : 'var(--status-warning-text)');
           const statusBg = p.hasKey ? 'var(--status-success-bg)' : (tokenOptional ? 'var(--status-info-bg)' : 'var(--status-warning-bg)');
@@ -5458,6 +5669,9 @@
             ? (tokenOptional ? 'API Key configured' : 'Key configured')
             : (tokenOptional ? 'API Key optional' : 'No API key');
 
+          // The provider's complete quota snapshot is account-scoped, unlike a single
+          // model's response headers. Draw it beside the credential-rotation bar below.
+          const providerQuotaHtml = quotaBarsHtml(p, rl);
           let rateLimitHtml = '';
           if (rl) {
             const fmtNum = n => n >= 1000 ? (n / 1000).toFixed(0) + 'k' : String(n);
@@ -5627,6 +5841,7 @@
               ${kiroDeviceAuthHtml}
               ${kiroBrowserAuthHtml}
               ${kiroMessageHtml}
+              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
@@ -5703,6 +5918,7 @@
               </div>
               ${copilotDeviceAuthHtml}
               ${copilotMessageHtml}
+              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
@@ -5823,6 +6039,7 @@
               </div>
               ${codexDeviceAuthHtml}
               ${codexMessageHtml}
+              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
@@ -5882,6 +6099,7 @@
                 <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
               </div>
               ${devinMessageHtml}
+              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
               ${providerErrorHtml}
               ${rateLimitHtml}
@@ -5904,10 +6122,12 @@
               </div>
             </div>
             ${discoveryStateHtml(p, modelCount)}
+            ${showTopCredentialInput ? `
             <div class="form-group" style="display:flex; gap:8px; align-items:center;">
               <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (' + (tokenOptional ? 'API Key Configured' : 'Key Configured') + ')' : (tokenOptional ? 'Enter API Key (optional)...' : 'Enter API Key...')}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
               <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide API key" aria-label="Show or hide API key" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
             </div>
+            ` : ''}
             ${credentialFieldsHtml(p)}
             ${(Array.isArray(p.apiKeyPool) && p.apiKeyPool.length > 0) ? `
             <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
@@ -5945,6 +6165,7 @@
             ` : ''}
             ${optionalBearerAuthHtml}
             ${openAiCompatibleFieldsHtml}
+            ${providerQuotaHtml}
             ${credentialBarHtml(p)}
             ${providerErrorHtml}
             ${rateLimitHtml}
@@ -6175,7 +6396,6 @@
         input.value = '';
         await loadSettings();
         await fetchData();
-        await loadAccountStatus();
       } catch (err) {
         console.error('Failed to add provider key:', err);
         alert(`Could not add provider key: ${err.message || err}`);
@@ -6199,81 +6419,9 @@
         if (!saveRes.ok) throw new Error((await saveRes.json().catch(() => ({}))).error || `HTTP ${saveRes.status}`);
         await loadSettings();
         await fetchData();
-        await loadAccountStatus();
       } catch (err) {
         console.error('Failed to remove provider key:', err);
         alert(`Could not remove provider key: ${err.message || err}`);
-      }
-    }
-
-    async function loadAccountStatus() {
-      const body = document.getElementById('account-status-body');
-      if (!body) return;
-      body.innerHTML = '<div style="padding:32px; text-align:center; color:var(--text-muted);">Loading account status...</div>';
-      try {
-        const [statusRes, configRes] = await Promise.all([
-          fetch('/api/account-status'),
-          fetch('/api/config')
-        ]);
-        const status = await statusRes.json();
-        const config = await configRes.json();
-        const providers = status.providers || {};
-        const providerNames = {};
-        for (const p of config) { providerNames[p.key] = p.name; }
-
-        const providerKeys = Object.keys(providers);
-        if (providerKeys.length === 0) {
-          body.innerHTML = '<div style="padding:32px; text-align:center; color:var(--text-muted);">No credential pools in use yet.<br><br>Add more than one API key, or sign in another account, and the router spends one before falling through to the next.</div>';
-          return;
-        }
-
-        let html = `<table style="width:100%;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Provider</th>
-              <th style="text-align:left; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Account</th>
-              <th style="text-align:left; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Status</th>
-              <th style="text-align:right; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Requests</th>
-              <th style="text-align:center; padding:12px 24px; font-size:0.75rem; color:var(--text-muted); font-weight:600; background:var(--chat-bg);">Serving</th>
-            </tr>
-          </thead>
-          <tbody>`;
-
-        for (const [key, info] of Object.entries(providers)) {
-          const name = providerNames[key] || key;
-          for (const acct of info.accounts) {
-            const isRateLimited = acct.rateLimited;
-            let statusIcon = '🟢';
-            let statusColor = 'var(--status-success-text)';
-            let statusBg = 'var(--status-success-bg)';
-            let statusText = 'Active';
-            if (isRateLimited) {
-              statusIcon = '🔴';
-              statusColor = 'var(--status-error-text)';
-              statusBg = 'var(--status-error-bg)';
-              statusText = 'Rate Limited';
-            }
-            const isServing = acct.index === info.currentIdx;
-            const resetText = acct.rateLimited && Number.isFinite(Number(acct.resetsInMs)) && Number(acct.resetsInMs) > 0
-              ? ` \u00b7 resets in ${formatCountdown(acct.resetsInMs)}`
-              : '';
-            html += `<tr style="border-bottom:1px solid var(--border);">
-              <td style="padding:14px 24px; font-size:0.875rem; font-weight:600;">${escapeHtml(name)}</td>
-              <td style="padding:14px 24px; font-size:0.875rem;">
-                <span style="font-family:monospace; background:var(--surface-alt); padding:2px 6px; border-radius:4px; font-size:0.78rem;">[${acct.index}] ${escapeHtml(acct.label || acct.masked)}</span>${resetText ? `<span style="margin-left:8px; font-size:0.72rem; color:var(--text-muted);">${escapeHtml(resetText.replace(/^ \u00b7 /, ''))}</span>` : ''}
-              </td>
-              <td style="padding:14px 24px;">
-                <span style="background:${statusBg}; color:${statusColor}; border-radius:999px; padding:2px 10px; font-size:0.72rem; font-weight:700;">${statusIcon} ${statusText}</span>
-              </td>
-              <td style="padding:14px 24px; text-align:right; font-size:0.875rem; font-weight:600; font-variant-numeric:tabular-nums;">${acct.requests}</td>
-              <td style="padding:14px 24px; text-align:center; font-size:1.1rem;">${isServing ? '→' : ''}</td>
-            </tr>`;
-          }
-        }
-        html += '</tbody></table>';
-        body.innerHTML = html;
-      } catch (err) {
-        body.innerHTML = '<div style="padding:32px; text-align:center; color:var(--error);">Failed to load account status.</div>';
       }
     }
 
@@ -7673,6 +7821,314 @@
       return `<a class="provider-title-link" href="${escapeHtml(provider.signupUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(tooltip)}">${name}</a>`;
     }
 
+    function quotaNumber(value, unit = '') {
+      const number = Number(value);
+      if (!Number.isFinite(number)) return '?';
+      const formatted = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(number);
+      return unit === 'percent' ? `${formatted}%` : formatted;
+    }
+
+    function quotaUnitLabel(report) {
+      const metric = String(report?.metric || '').toLowerCase();
+      if (metric === 'requests' || report?.unit === 'requests') return 'requests';
+      if (metric === 'tokens' || report?.unit === 'tokens') return 'tokens';
+      if (metric === 'credits' || report?.unit === 'credits') return 'credits';
+      if (metric === 'percent' || report?.unit === 'percent') return 'percent';
+      return report?.unit || 'quota';
+    }
+
+    function quotaWindowLabel(report) {
+      const window = report?.window ? String(report.window).trim() : '';
+      if (window) return window;
+      const scope = report?.scope ? String(report.scope).trim() : '';
+      return scope && scope !== 'account' ? scope : 'quota';
+    }
+
+    function quotaMetricLabel(report) {
+      const metric = String(report?.metric || '').toLowerCase();
+      if (metric === 'requests') return 'Requests';
+      if (metric === 'tokens') return 'Tokens';
+      if (metric === 'credits') return 'Credits';
+      if (metric === 'percent') return 'Quota';
+      return 'Quota';
+    }
+
+    function quotaReportBarHtml(report) {
+      const limit = report?.limit == null ? null : Number(report.limit);
+      const remaining = report?.remaining == null ? null : Number(report.remaining);
+      const used = report?.used == null ? null : Number(report.used);
+      const unit = quotaUnitLabel(report);
+      const isPercent = unit === 'percent';
+      const window = quotaWindowLabel(report);
+      const hasCompleteQuota = Number.isFinite(limit) && limit > 0 && Number.isFinite(remaining);
+      if (!hasCompleteQuota) {
+        // A provider that reports consumption without an allowance is still reporting
+        // something. Saying "no original total" while hiding the number it did send was
+        // the least useful line on the card.
+        const detail = Number.isFinite(used)
+          ? `${quotaNumber(used, isPercent ? 'percent' : '')}${isPercent ? '' : ` ${unit}`} used`
+          : 'no amount reported';
+        const title = `${quotaMetricLabel(report)}: ${detail}; the provider reports no original total, so a percentage cannot be drawn (${window}).`;
+        return `<div class="quota-unavailable" title="${escapeHtml(title)}">${escapeHtml(quotaMetricLabel(report))}: ${escapeHtml(detail)} · no original total reported.</div>`;
+      }
+
+      const percentage = Math.max(0, Math.min(100, (remaining / limit) * 100));
+      const remainingText = quotaNumber(remaining, isPercent ? 'percent' : '');
+      // A percentage window is already its own percentage: "87% / 100% remaining" said the
+      // same thing twice and read as a fraction of a fraction.
+      const amount = isPercent
+        ? `${remainingText} remaining`
+        : `${remainingText} / ${quotaNumber(limit, '')} ${unit} remaining`;
+      const title = `${quotaMetricLabel(report)}: ${amount}; ${percentage.toFixed(1)}% of the original total remains (${window}).`;
+      const stale = report?.freshness === 'stale' ? ' · stale' : '';
+      const reset = Number.isFinite(Number(report?.resetAt)) && Number(report.resetAt) > Date.now()
+        ? `<span data-quota-reset-at="${Number(report.resetAt)}" class="quota-reset"> · resets in ${escapeHtml(formatCountdown(Number(report.resetAt) - Date.now()))}</span>`
+        : '';
+      const fillColor = percentage <= 10 ? 'var(--error)' : percentage <= 30 ? 'var(--warning)' : 'var(--success)';
+
+      return `
+        <div class="quota-report" title="${escapeHtml(title)}">
+          <div class="quota-report-heading">
+            <span>${escapeHtml(quotaMetricLabel(report))} · ${escapeHtml(window)}</span>
+            <strong>${percentage.toFixed(1)}%</strong>
+          </div>
+          <div class="quota-track" role="progressbar" aria-label="${escapeHtml(title)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percentage.toFixed(1)}" aria-valuetext="${escapeHtml(amount)}">
+            <div class="quota-fill" style="width:${percentage.toFixed(3)}%; background:${fillColor};"></div>
+          </div>
+          <div class="quota-report-meta">${escapeHtml(amount)}${reset}<span class="quota-stale">${escapeHtml(stale)}</span></div>
+        </div>`;
+    }
+
+    // Only http(s) is ever rendered as a link. A quota source URL can come from an imported
+    // provider catalog, so it is untrusted text even though hammer's own descriptors are not.
+    function safeExternalHref(value) {
+      const raw = typeof value === 'string' ? value.trim() : '';
+      if (!raw) return null;
+      try {
+        const parsed = new URL(raw, window.location.origin);
+        return (parsed.protocol === 'http:' || parsed.protocol === 'https:') ? parsed.href : null;
+      } catch {
+        return null;
+      }
+    }
+
+    // A published record only earns a card when it actually says something. A descriptor can
+    // carry an empty `quota: {}` (all fields normalize to null), and rendering that would put
+    // a reassuring "Published limits" box on a provider that has published nothing.
+    function hasPublishedQuota(known) {
+      if (!known || typeof known !== 'object') return false;
+      if (Array.isArray(known.limits) && known.limits.some(limit => Number.isFinite(Number(limit?.limit)) && Number(limit.limit) > 0)) return true;
+      if (typeof known.source === 'string' && known.source.trim()) return true;
+      if (typeof known.sourceUrl === 'string' && known.sourceUrl.trim()) return true;
+      if (known.window || known.limitScope) return true;
+      return (known.steadyTokensPerMonth != null && Number.isFinite(Number(known.steadyTokensPerMonth)))
+        || (known.signupCreditTokens != null && Number.isFinite(Number(known.signupCreditTokens)));
+    }
+
+    // Which recorded counter answers a published limit, by the period that limit applies to.
+    // Pairing them explicitly is the point: a monthly grant drawn against one day's traffic,
+    // or a daily cap drawn against a month's, is a percentage of nothing.
+    // [counter, window phrase, empty-window phrase]. The third is spelled out rather than
+    // composed from the second: "nothing recorded so far yet" is what a template produces when
+    // a lifetime window is treated like a month.
+    const RECORDED_BY_PERIOD = {
+      tokens: {
+        day: ['tokensToday', 'today', 'Nothing recorded today yet'],
+        week: ['tokensThisWeek', 'this week', 'Nothing recorded this week yet'],
+        month: ['tokensThisMonth', 'this month', 'Nothing recorded this month yet'],
+        lifetime: ['tokensLifetime', 'so far', 'Nothing recorded yet'],
+      },
+      requests: {
+        day: ['requestsToday', 'today', 'Nothing recorded today yet'],
+        week: ['requestsThisWeek', 'this week', 'Nothing recorded this week yet'],
+        month: ['requestsThisMonth', 'this month', 'Nothing recorded this month yet'],
+        lifetime: [null, 'so far', 'Nothing recorded yet'],
+      },
+      // Credits have no recorded counterpart: hammer counts tokens and requests, never the
+      // provider's money, so a credit cap shows as a number without a bar.
+      credits: {
+        day: [null, 'today', 'Nothing recorded today yet'],
+        week: [null, 'this week', 'Nothing recorded this week yet'],
+        month: [null, 'this month', 'Nothing recorded this month yet'],
+        lifetime: [null, 'so far', 'Nothing recorded yet'],
+      },
+    };
+
+    const QUOTA_PERIOD_LABEL = { day: 'day', week: 'week', month: 'month', lifetime: 'one-off' };
+
+    function recordedForLimit(limit, recorded) {
+      const spec = RECORDED_BY_PERIOD[limit?.metric]?.[limit?.period];
+      if (!spec || !spec[0] || !recorded) return null;
+      const value = Number(recorded[spec[0]]);
+      if (!Number.isFinite(value)) return null;
+      return { value, window: spec[1], empty: spec[2] };
+    }
+
+    function publishedLimitHtml(limit, recorded) {
+      const total = Number(limit.limit);
+      if (!Number.isFinite(total) || total <= 0) return '';
+      const unit = limit.metric === 'requests' ? 'requests' : limit.metric === 'credits' ? 'credits' : 'tokens';
+      const period = QUOTA_PERIOD_LABEL[limit.period] || limit.period || 'month';
+      const measured = recordedForLimit(limit, recorded);
+      const label = [limit.label, `${total.toLocaleString()} ${unit} / ${period}`].filter(Boolean).join(' · ');
+      if (!measured) {
+        return `
+          <div class="quota-published-limit">
+            <div class="quota-published-limit-meta">${escapeHtml(label)}</div>
+          </div>`;
+      }
+      // Percent *remaining* drives the tone, matching every other bar on the card: the tone
+      // answers "how much is left", not "how much was spent", so a nearly-spent grant cannot
+      // read as healthy. The width is clamped because a bar cannot overflow its own track, but
+      // the number beside it is not: past 100% the recorded spend is the whole fact, and
+      // printing "100% used" for an account that has spent its grant four times over would be
+      // the same kind of rounding the card exists to avoid.
+      const usedPercentRaw = Math.max(0, (measured.value / total) * 100);
+      const usedPercent = Math.min(100, usedPercentRaw);
+      const remainingPercent = 100 - usedPercent;
+      const tone = remainingPercent <= 10 ? 'error' : remainingPercent <= 30 ? 'warning' : 'success';
+      const percentText = measured.value <= 0 ? '0' : usedPercentRaw < 0.01 ? '<0.01' : usedPercentRaw.toFixed(usedPercentRaw < 10 ? 2 : 1);
+      return `
+        <div class="quota-published-limit">
+          <div class="quota-published-limit-meta">${escapeHtml(label)}</div>
+          <div class="quota-track quota-track-published" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(remainingPercent)}" aria-label="${escapeHtml(`${limit.metric} recorded against the published ${period} limit`)}" title="${escapeHtml(`${measured.value.toLocaleString()} of ${total.toLocaleString()} ${unit} recorded ${measured.window} · ${percentText}% used`)}">
+            <div class="quota-fill quota-fill-${tone}" style="width:${usedPercent.toFixed(2)}%"></div>
+          </div>
+          <div class="quota-published-recorded">${measured.value <= 0 ? escapeHtml(measured.empty) : `${measured.value.toLocaleString()} recorded by hammer ${escapeHtml(measured.window)} · ${percentText}% used`}</div>
+        </div>`;
+    }
+
+    function publishedQuotaHtml(known, extraClass = '', recorded = null) {
+      if (!hasPublishedQuota(known)) return '';
+      const meta = [];
+      if (known.window || known.limitScope) meta.push([known.window, known.limitScope].filter(Boolean).join(' · '));
+      const limits = Array.isArray(known.limits) ? known.limits.filter(limit => limit && Number(limit.limit) > 0) : [];
+      const bars = limits.map(limit => publishedLimitHtml(limit, recorded)).join('');
+      // The number's own provenance, when it came from somewhere other than the page the
+      // citation points at (the vendored roster documents figures hammer's own rows do not).
+      if (typeof known.numericSource === 'string' && known.numericSource.trim()) meta.push(known.numericSource.trim());
+      const href = safeExternalHref(known.sourceUrl);
+      const source = escapeHtml(known.source || 'Published provider limits');
+      return `
+        <div class="quota-published${extraClass ? ` ${extraClass}` : ''}">
+          <div class="quota-published-title">Published limits</div>
+          ${bars}
+          <div class="quota-published-source">${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${source}</a>` : source}</div>
+          ${meta.length > 0 ? `<div class="quota-published-meta">${escapeHtml(meta.join(' · '))}</div>` : ''}
+        </div>`;
+    }
+
+    function observedQuotaNotesHtml(provider) {
+      const notes = Array.isArray(provider?.observedQuotaNotes)
+        ? provider.observedQuotaNotes.filter(note => typeof note === 'string' && note.trim()).map(note => note.trim())
+        : [];
+      const servedToday = Number(provider?.observedRequestsToday);
+      if (Number.isFinite(servedToday) && servedToday > 0) {
+        notes.push(`${servedToday.toLocaleString()} request${servedToday === 1 ? '' : 's'} served today`);
+      }
+      if (notes.length === 0) return '';
+      return `<ul class="quota-observed-notes">${notes.map(note => `<li>${escapeHtml(note)}</li>`).join('')}</ul>`;
+    }
+
+    // ── The provider quota bars ──────────────────────────────────────────────────
+    //
+    // These are the provider's own reported allowances: requests, tokens, credits, or a
+    // percentage window. A request count made by Hammer is deliberately not used here;
+    // the credential-pool bar below is the separate account-rotation view.
+    // The card always answers "what is this provider's quota?", naming where the answer came
+    // from. A measured usage API, a limit seen in the last response headers, an amount the
+    // card can observe itself, the catalog's published record, and "nothing published" are
+    // five different claims, and the box says which one it is making rather than leaving the
+    // provider silently unrepresented.
+    function quotaBarsHtml(provider, rateLimit = null) {
+      let reports = Array.isArray(provider?.quotaReports) ? provider.quotaReports : [];
+      let provenance = 'measured';
+      let provenanceLabel = 'Provider-reported';
+      if (reports.length === 0 && Array.isArray(provider?.observedQuota) && provider.observedQuota.length > 0) {
+        reports = provider.observedQuota;
+        provenance = 'observed';
+        provenanceLabel = 'Observed';
+      }
+      // A provider may expose numeric limits only in the last response headers. Those
+      // limits are still a real provider quota, so use them when the account usage
+      // endpoint did not return a snapshot. They are deliberately a fallback, not a
+      // second source that can overwrite the account-wide reports.
+      if (reports.length === 0 && rateLimit) {
+        const headerReports = [];
+        if (rateLimit.limitRequests != null) headerReports.push({ metric: 'requests', unit: 'requests', limit: rateLimit.limitRequests, remaining: rateLimit.remainingRequests, window: 'provider rate-limit window' });
+        if (rateLimit.limitTokens != null) headerReports.push({ metric: 'tokens', unit: 'tokens', limit: rateLimit.limitTokens, remaining: rateLimit.remainingTokens, window: 'provider rate-limit window' });
+        if (rateLimit.creditLimit != null) headerReports.push({ metric: 'credits', unit: 'credits', limit: rateLimit.creditLimit, remaining: rateLimit.creditRemaining, window: 'provider credit window', resetAt: rateLimit.creditResetAt });
+        if (headerReports.length > 0) {
+          reports = headerReports;
+          provenance = 'headers';
+          provenanceLabel = 'From the last response';
+        }
+      }
+
+      const known = hasPublishedQuota(provider?.knownQuota) ? provider.knownQuota : null;
+      const notes = observedQuotaNotesHtml(provider);
+      // The real error, not a generic one: "No credentials configured" and "Usage endpoint
+      // unavailable" are different facts about different problems.
+      const error = provider?.quotaError
+        ? `<div class="quota-error">${escapeHtml(String(provider.quotaError))}${reports.length > 0 ? ' Showing the quota data that is still available.' : ''}</div>`
+        : '';
+
+      if (reports.length === 0) {
+        if (!known && !error && !notes) {
+          return `
+            <div class="quota-bars-section quota-bars-empty" aria-label="Provider quota">
+              <div class="quota-bars-heading">Quota <span class="quota-provenance">Not reported</span></div>
+              <div class="quota-unavailable">This provider publishes no usage or quota endpoint, and hammer has not observed a limit yet.</div>
+            </div>`;
+        }
+        provenance = known ? 'published' : (notes ? 'observed' : 'none');
+        provenanceLabel = known ? 'Published limits' : (notes ? 'Observed' : 'Not reported');
+        return `
+          <div class="quota-bars-section quota-bars-${provenance}" aria-label="Provider quota">
+            <div class="quota-bars-heading">Quota <span class="quota-provenance">${escapeHtml(provenanceLabel)}</span></div>
+            ${known ? publishedQuotaHtml(known, '', provider?.recordedUsage) : ''}
+            ${!known && !error && !notes ? '<div class="quota-unavailable">This provider publishes no usage or quota endpoint, and hammer has not observed a limit yet.</div>' : ''}
+            ${notes}
+            ${error}
+          </div>`;
+      }
+
+      const byAccount = new Map();
+      reports.forEach((report) => {
+        const index = Number.isInteger(report?.accountIndex) ? report.accountIndex : null;
+        const key = index != null ? `index:${index}` : `label:${report?.accountLabel || report?.account || 'account'}`;
+        if (!byAccount.has(key)) byAccount.set(key, { index, label: report?.accountLabel || report?.account || 'Account', reports: [] });
+        byAccount.get(key).reports.push(report);
+      });
+
+      const pool = provider?.credentialPool;
+      const groups = Array.from(byAccount.values()).map((group, position) => {
+        const fallback = Number.isInteger(group.index) && Array.isArray(pool?.accounts) ? pool.accounts[group.index] : null;
+        const label = group.label || fallback?.label || (group.index != null ? `Account ${group.index + 1}` : 'Account');
+        return { ...group, position, label: String(label) };
+      }).sort((a, b) => {
+        if (a.index != null && b.index != null) return a.index - b.index;
+        if (a.index != null) return -1;
+        if (b.index != null) return 1;
+        return a.position - b.position;
+      });
+
+      return `
+        <div class="quota-bars-section quota-bars-${provenance}" aria-label="Provider quota">
+          <div class="quota-bars-heading">${groups.length > 1 ? 'Account quotas' : 'Quota'} <span class="quota-provenance">${escapeHtml(provenanceLabel)}</span></div>
+          <div class="quota-account-grid">
+            ${groups.map(group => `
+              <div class="quota-account-card">
+                <div class="quota-account-label" title="${escapeHtml(group.label)}">${escapeHtml(group.label)}</div>
+                <div class="quota-reports">${group.reports.map(quotaReportBarHtml).join('')}</div>
+              </div>`).join('')}
+          </div>
+          ${known ? publishedQuotaHtml(known, 'quota-published-footnote', provider?.recordedUsage) : ''}
+          ${notes}
+          ${error}
+        </div>`;
+    }
+
     // ── The credential pool bar ────────────────────────────────────────────────
     //
     // One segment per credential, in the order the router spends them: the first is used until
@@ -7750,11 +8206,13 @@
     // The bars' reset countdowns tick down locally, like the rate-limit ones: the server sends a
     // remaining duration once per render, and this walks it down without asking again.
     function updatePoolBarCountdowns() {
-      document.querySelectorAll('[data-pool-reset-at]').forEach(element => {
-        const at = Number(element.dataset.poolResetAt);
+      document.querySelectorAll('[data-pool-reset-at], [data-quota-reset-at]').forEach(element => {
+        const at = Number(element.dataset.poolResetAt ?? element.dataset.quotaResetAt);
         if (!Number.isFinite(at)) return;
         const remaining = at - Date.now();
-        element.textContent = remaining > 0 ? `resets in ${formatCountdown(remaining)}` : 'window passed';
+        const isQuota = element.hasAttribute('data-quota-reset-at');
+        const prefix = isQuota ? ' · ' : '';
+        element.textContent = remaining > 0 ? `${prefix}resets in ${formatCountdown(remaining)}` : `${prefix}window passed`;
       });
     }
 
@@ -7954,6 +8412,36 @@
     document.addEventListener('visibilitychange', () => {
       if (!document.hidden) fetchData().catch(() => {}); // re-read when the user looks again
     });
+
+    // The one thing that moves server state without the user doing anything: a proxied request
+    // that had to fall back to another model. The router pushes it (see /api/events in
+    // lib/server.js) because a snapshot this page only re-reads on user actions could never see
+    // it — the KPI and both plots would keep naming the model that had just stopped answering.
+    // EventSource reconnects on its own, so a router restart only costs the events it missed.
+    function connectRouterEvents() {
+      if (!window.EventSource) return;
+      let source = null;
+      try {
+        source = new EventSource('/api/events');
+      } catch (e) {
+        console.error('Router event stream unavailable:', e);
+        return;
+      }
+      source.onmessage = (event) => {
+        let payload = null;
+        try { payload = JSON.parse(event.data); } catch { return; }
+        // A selection move is the case this stream exists for; evidence is the reason it
+        // happened. Both change what the table and the plots should be saying, so both re-read.
+        if (payload && (payload.type === 'selection' || payload.type === 'evidence' || payload.type === 'pin')) {
+          scheduleRefresh();
+        }
+      };
+      source.onerror = () => {
+        // Browsers reconnect a dropped stream themselves; nothing to do but let them. The
+        // connection is re-established on the next message, and that message also refreshes.
+      };
+    }
+    connectRouterEvents();
 
     fetchData().catch(() => {});
     // Always populate the providers panel on initial page load, even if the

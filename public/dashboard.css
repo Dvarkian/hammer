@@ -204,7 +204,7 @@
     }
 
     .dashboard-heading {
-      margin: 14px 0 0 -0.18em;
+      margin: 14px 0 0 0;
       font-size: clamp(2.5rem, 6vw, 3.5rem);
       font-weight: 900;
       text-transform: uppercase;
@@ -278,6 +278,36 @@
     }
     #bg-topology-svg.dragging {
       cursor: grabbing;
+    }
+
+    /* Readout strip: sits above the two plots, states the three
+       headline counts the KPI card otherwise summarizes in dots. */
+    .readout-strip {
+      display: flex;
+      gap: 24px;
+      padding: 10px 20px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      align-items: center;
+    }
+    .readout-item {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+    }
+    .readout-label {
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .readout-value {
+      font-size: 1.15rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
     }
 
     /* Side-by-side plots row: the provider/model network plot and the
@@ -548,14 +578,6 @@
       padding: 32px;
     }
 
-    #setup-view {
-      display: none;
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 20px;
-      padding: 32px;
-    }
-
     #chat-view {
       display: none;
       background: var(--card);
@@ -741,67 +763,12 @@
       cursor: not-allowed;
     }
 
-    .setup-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 20px;
-    }
-
-    .setup-card {
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px;
-      background: var(--chat-bg);
-    }
-
-    .setup-card h3 {
-      margin: 0 0 10px;
-      font-size: 1rem;
-    }
-
-    .setup-method {
-      margin-top: 14px;
-    }
-
-    .setup-method-title {
-      margin: 0 0 8px;
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      font-weight: 700;
-    }
-
-    .setup-steps {
-      margin: 0;
-      padding-left: 18px;
-      font-size: 0.85rem;
-      line-height: 1.5;
-    }
-
-    .setup-snippet {
-      margin: 10px 0 0;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-      font-size: 0.78rem;
-      line-height: 1.45;
-      background: var(--input-bg);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 10px;
-      white-space: pre;
-      overflow-x: auto;
-    }
-
     @media (max-width: 920px) {
-      .setup-grid {
-        grid-template-columns: 1fr;
-      }
-
       .dashboard-header {
         align-items: center;
       }
 
-      #settings-view, #setup-view {
+      #settings-view {
         padding: 24px 20px;
       }
 
@@ -813,6 +780,10 @@
       .search-bar {
         max-width: 100%;
         width: 100%;
+      }
+
+      .quota-account-grid {
+        grid-template-columns: 1fr;
       }
     }
 
@@ -842,7 +813,7 @@
         width: 28px;
       }
 
-      #settings-view, #setup-view {
+      #settings-view {
         padding: 20px 14px;
         border-radius: 14px;
       }
@@ -884,7 +855,7 @@
         margin-bottom: 20px;
       }
 
-      #settings-view, #setup-view {
+      #settings-view {
         padding: 16px 10px;
         border-radius: 12px;
       }
@@ -1046,11 +1017,13 @@
       padding-left: 40px;
     }
 
-    /* Fit the model table to its container: fixed layout with explicit column
-       proportions so every column (including the Response column) stays visible
-       without horizontal scrolling. Overwide content wraps or clips gracefully. */
+    /* Columns size to their own content (table-layout: auto, the default): the Model column gets
+       the room its names need, a numeric column only what a number needs, and the Response column
+       widens when an answer is long. `width: 100%` still stretches the table to the card, and the
+       scroll container above carries the rare case where the automatic widths add up to more than
+       the card — a horizontal scroll beats squeezing every column down to fit it. */
     .table-wrap table {
-      table-layout: fixed;
+      table-layout: auto;
       width: 100%;
     }
 
@@ -1059,15 +1032,6 @@
       overflow: hidden;
       vertical-align: middle;
     }
-
-    .table-wrap th:nth-child(1),  .table-wrap td:nth-child(1)  { width: 26%; }
-    .table-wrap th:nth-child(2),  .table-wrap td:nth-child(2)  { width: 6%; }
-    .table-wrap th:nth-child(3),  .table-wrap td:nth-child(3)  { width: 8%; }
-    .table-wrap th:nth-child(4),  .table-wrap td:nth-child(4)  { width: 7%; }
-    .table-wrap th:nth-child(5),  .table-wrap td:nth-child(5)  { width: 7%; }
-    .table-wrap th:nth-child(6),  .table-wrap td:nth-child(6)  { width: 10%; }
-    .table-wrap th:nth-child(7),  .table-wrap td:nth-child(7)  { width: 14%; }
-    .table-wrap th:nth-child(8),  .table-wrap td:nth-child(8)  { width: 22%; }
 
     /* Model/name column: never truncate names — write them out in full, wrapping */
     .table-wrap td:first-child {
@@ -1079,13 +1043,19 @@
       flex: 0 1 auto;
     }
 
-    /* Status and response values may contain provider errors, so keep them
-       readable inside the fixed table layout. */
+    /* Status and response values may contain provider errors, so they wrap instead of pushing the
+       table wider. The aggressive breaking belongs to the *cells*, which have to fit an error
+       message into whatever width the column ends up with: a header only names its column, and
+       breaking it mid-word ("Stat / us") is what a narrow column made of "Status". */
     .table-wrap th:nth-child(6),
-    .table-wrap td:nth-child(6),
     .table-wrap th:nth-child(7),
+    .table-wrap th:nth-child(8) {
+      white-space: normal;
+      line-height: 1.35;
+    }
+
+    .table-wrap td:nth-child(6),
     .table-wrap td:nth-child(7),
-    .table-wrap th:nth-child(8),
     .table-wrap td:nth-child(8) {
       white-space: normal;
       overflow-wrap: anywhere;
@@ -1101,9 +1071,9 @@
     }
 
     @media (max-width: 640px) {
-      /* Phones: fall back to a scrollable table with readable columns */
+      /* Phones: the automatic widths do not fit the screen, so hold a readable minimum and let the
+         wrapper scroll sideways instead of collapsing every column to a few characters. */
       .table-wrap table {
-        table-layout: auto;
         min-width: 720px;
       }
     }
@@ -1425,6 +1395,7 @@
 
     /* Pin Model */
     .pin-badge {
+      cursor: pointer;
       font-size: 0.7rem;
       font-weight: 700;
       padding: 2px 7px;
@@ -1445,6 +1416,10 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
       border-radius: 4px;
       opacity: 0.5;
       transition: opacity 0.15s, background 0.15s;
@@ -1473,6 +1448,16 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .provider-capability-note {
+      max-width: 260px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--warning);
+      font-size: 0.64rem;
+      margin-top: 2px;
     }
 
     .pin-row-btn.pinned {
@@ -1511,14 +1496,15 @@
       opacity: 0.6;
     }
 
+    /* A test answer is shown whole. It wraps inside the column and the row grows to fit it: no
+       height cap and no inner scrollbar, because a clipped answer is the one thing the column's
+       header promises not to do ("the full response (or error) is shown here"). */
     .test-response {
       font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
       font-size: 0.72rem;
       line-height: 1.35;
       white-space: pre-wrap;
       word-break: break-word;
-      max-height: 4.2em;
-      overflow: auto;
       cursor: default;
     }
 
@@ -1718,6 +1704,193 @@
       text-decoration: underline;
     }
 
+    .quota-bars-section {
+      margin-top: 14px;
+      padding: 12px 14px;
+      background: var(--input-bg-alt);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+
+    .quota-bars-heading,
+    .quota-account-label {
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .quota-bars-heading {
+      margin-bottom: 10px;
+    }
+
+    .quota-account-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .quota-account-card {
+      min-width: 0;
+      padding: 10px;
+      background: var(--card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .quota-account-label {
+      overflow: hidden;
+      margin-bottom: 8px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .quota-reports {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .quota-report-heading,
+    .quota-report-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 0.7rem;
+    }
+
+    .quota-report-heading {
+      color: var(--text-muted);
+    }
+
+    .quota-report-heading strong {
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .quota-report-meta {
+      margin-top: 5px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    .quota-track {
+      height: 8px;
+      margin-top: 5px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--input-bg);
+    }
+
+    .quota-fill {
+      height: 100%;
+      min-width: 0;
+      border-radius: inherit;
+    }
+
+    .quota-reset,
+    .quota-stale {
+      white-space: nowrap;
+    }
+
+    .quota-unavailable,
+    .quota-error {
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      line-height: 1.4;
+    }
+
+    .quota-error {
+      margin-top: 8px;
+      color: var(--status-warning-text);
+    }
+
+    .quota-provenance {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text-muted);
+      font-size: 0.6rem;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      vertical-align: middle;
+    }
+
+    .quota-published {
+      padding: 9px 10px;
+      background: var(--card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .quota-published-title {
+      color: var(--text-muted);
+      font-size: 0.65rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* One published limit: its label, the recorded-vs-published bar, and the count. */
+    .quota-published-limit {
+      margin-top: 8px;
+    }
+
+    .quota-published-limit-meta {
+      color: var(--text);
+      font-size: 0.74rem;
+      line-height: 1.35;
+    }
+
+    /* The recorded side of a published limit is a measurement hammer made, so the bar is
+       drawn at the same weight as the provider-reported ones above it. */
+    .quota-track-published {
+      height: 6px;
+    }
+
+    .quota-published-recorded {
+      margin-top: 4px;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      line-height: 1.35;
+    }
+
+    .quota-published-source {
+      margin-top: 4px;
+      color: var(--text);
+      font-size: 0.74rem;
+      line-height: 1.4;
+    }
+
+    .quota-published-source a {
+      color: inherit;
+      text-decoration: underline;
+    }
+
+    .quota-published-meta {
+      margin-top: 4px;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+    }
+
+    .quota-published-footnote {
+      margin-top: 10px;
+      background: transparent;
+    }
+
+    .quota-observed-notes {
+      margin: 8px 0 0;
+      padding-left: 16px;
+      color: var(--text-muted);
+      font-size: 0.7rem;
+      line-height: 1.5;
+    }
+
     .sync-result-list {
       margin: 0;
       padding-left: 18px;
@@ -1754,7 +1927,14 @@
     }
     .scatter-card #speed-intell-svg {
       position: relative;
-      flex: 1 1 auto;
+      /* flex-basis 0, not auto. The scatter plot writes its viewBox from this element's own
+         measured height, and an SVG with a viewBox has that viewBox's aspect ratio as its
+         *intrinsic* height — so with an automatic base size the plot's own output became the
+         thing that sized it: each redraw made the element (and with it the whole KPI row) taller,
+         which the next redraw wrote into the viewBox, and a slow loader could leave the two plots
+         stretched thousands of pixels down the page. A zero basis takes the element's height from
+         the space it is given and nothing else. */
+      flex: 1 1 0;
       width: 100%;
       /* Floor for stacked/narrow layouts, where nothing stretches the card and
          the SVG would otherwise sit at its 150px default: the plot keeps the

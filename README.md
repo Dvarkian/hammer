@@ -194,7 +194,7 @@ hammer config export | hammer config import
 - Use a grouped model ID such as `minimax-m2.5`, `kimi-k2.5`, or `glm4.7` to route within that model group
 - For grouped IDs, hammer selects the provider with the best current QoS for that group
 - Append `+min_ctx:<size>` to `best` to additionally require a minimum context window, e.g. `best+min_ctx:128k`. `<size>` accepts a raw token count or a `k`/`m` suffix. Models whose context window can't be determined, or is smaller than the requirement, are excluded. See [Minimum context window](#minimum-context-window-min_ctx).
-- In the Web UI, pinned models can now use either `Canonical Group` mode (default, pins the same model across providers) or `Exact Provider Row` mode from `Settings`
+- In the Web UI, pinning is session-only and the clicked control defines its scope: a model-heading pin stays inside that model family and tries each provider in turn, while a provider-row pin uses exactly that provider/model and exposes its error without fallback. Pin state survives page refreshes but resets when Hammer restarts.
 - Streaming and non-streaming requests are both supported
 
 ### `/v1/models`
@@ -309,6 +309,20 @@ Read this part before relying on it:
 - **Expect the site's own speed and quality.** In testing, simple factual answers came back in ~2s, longer prompt-driven tests at ~4 tokens/s, and output quality tracked the small model behind it rather than any frontier model.
 - To route somewhere else — including your own local shim that mimics the site — set a `baseUrl` for `gptfree` in `~/.hammer.json`.
 
+### FreeModels continuity and tools
+
+FreeModels is a stateless relay. Its public web client stores the transcript in browser `localStorage` and sends the messages again on every request; the relay itself exposes no session or conversation id. Hammer forwards the request transcript and exposes the provider as `continuity: local-transcript` / `toolSupport: best-effort` in `/api/models`.
+
+For clients that send only the newest turn, opt in to Hammer's short-lived local continuity store by sending a stable conversation id:
+
+```text
+X-Hammer-Conversation-Id: my-thread-123
+```
+
+`metadata.conversation_id` is also accepted, including through `/v1/messages` compatibility requests. The store is memory-only, expires entries after 30 minutes, and caps the process at 128 conversations, 256 messages per conversation, and 1 MiB per conversation. It never guesses a thread from an IP address or the OpenAI `user` field. Clients that send a complete transcript remain authoritative. On the wire, FreeModels receives at most the newest 40-message role/content window while system and developer instructions remain packed in their original positions, subject to the hard context byte cap.
+
+FreeModels requests retain tool declarations and tool history so a future native tool response is not lost. The current relay may answer in prose instead of returning an executable tool call; OpenAI-compatible responses (and non-streaming `/v1/messages` responses) carry `X-Hammer-FreeModels-Tools: best-effort` so clients do not mistake that for native tool support.
+
 ### GitHub Copilot
 
 GitHub Copilot is available as a provider, so a Copilot (including free) plan can back the router instead of an API key. Copilot has no static API keys — it authenticates with a GitHub OAuth token obtained from the device flow:
@@ -370,7 +384,7 @@ hammer supports configuring multiple OpenAI-compatible upstream endpoints (vLLM,
 ### Config migration (CLI + Web UI)
 
 - In the Web UI, open `Settings` -> `Configuration Transfer` to export/copy/import a token.
-- The token includes your full config (including API keys, pinning mode, bans, and filter rules).
+- The token includes your full config (including API keys, bans, and filter rules). The active session pin is not transferred.
 - Treat tokens as secrets. Anyone with the token can import your keys/settings.
 - Alternative: copy the config file directly from `~/.hammer.json` to the other machine at the same path (`~/.hammer.json`).
 

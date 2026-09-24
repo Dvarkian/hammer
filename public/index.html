@@ -35,6 +35,24 @@
 
     <div class="kpi-grid">
       <div id="proxy-error-banner" style="display:none; margin-bottom:12px; padding:10px 14px; border:1px solid var(--status-error-border); border-radius:8px; background:var(--status-error-bg); color:var(--status-error-text); font-size:0.82rem;"></div>
+      <div class="readout-strip">
+        <div class="readout-item">
+          <span class="readout-label">Models online (with at least one provider)</span>
+          <span class="readout-value" id="readout-models">0</span>
+        </div>
+        <div class="readout-item">
+          <span class="readout-label">Endpoints online</span>
+          <span class="readout-value" id="readout-combos">0</span>
+        </div>
+        <div class="readout-item">
+          <span class="readout-label">Providers online</span>
+          <span class="readout-value" id="readout-providers">0</span>
+        </div>
+        <div class="readout-item">
+          <span class="readout-label">Rows</span>
+          <span class="readout-value" id="readout-rows">0</span>
+        </div>
+      </div>
       <div class="plots-grid">
         <div class="kpi-card topology-card">
         <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
@@ -62,8 +80,8 @@
                 <span class="kpi-label" style="font-size:0.72rem;">Current</span>
                 <span class="kpi-value" id="kpi-best" style="font-size:0.85rem;">Calculating...</span>
               </div>
-              <span class="pin-badge" id="pin-badge" style="display:none; cursor:pointer;" onclick="pinModel('')"
-                title="Click to unpin">📌 Pinned ×</span>
+              <button type="button" class="pin-badge" id="pin-badge" style="display:none;" onclick="pinModel('')"
+                title="Click to unpin">📌 Pinned ×</button>
             </div>
           </div>
           <!-- Shown only when this page is newer than the running router, so the plot's logos
@@ -93,9 +111,7 @@
       <div class="tab active" id="tab-models" onclick="switchTab('models')">Live Telemetry</div>
       <div class="tab" id="tab-chat" onclick="switchTab('chat')">Chat</div>
       <div class="tab" id="tab-logs" onclick="switchTab('logs')">Request Logs</div>
-      <div class="tab" id="tab-status" onclick="switchTab('status')">Account Status</div>
       <div class="tab" id="tab-settings" onclick="switchTab('settings')">Settings</div>
-      <div class="tab" id="tab-setup" onclick="switchTab('setup')">Setup Instructions</div>
     </div>
 
     <div id="models-view">
@@ -208,14 +224,9 @@
         <!-- Logging settings generated here -->
       </div>
       <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Pinning</h3>
-      <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Choose whether pinning locks one exact provider model or the whole canonical model family across providers.</p>
+      <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">The clicked control determines scope: a model heading pins its provider family; a provider row is an exact, no-fallback pin.</p>
       <div id="pinning-settings-container" class="provider-section">
         <!-- Pinning settings generated here -->
-      </div>
-      <h3 style="margin: 0 0 0.25rem; font-size: 1rem;">Ping Filtering Exceptions</h3>
-      <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Exclude models from pinging and routing based on criteria.</p>
-      <div id="filter-rules-container">
-        <!-- Filter rules UI generated here -->
       </div>
       <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Configuration Transfer</h3>
       <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Export/import all settings (including API keys) as a single encoded token for copy/paste migration.</p>
@@ -257,20 +268,6 @@
       </div>
     </div>
 
-    <div id="status-view" style="display: none;">
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">Account Status</div>
-          <div style="display:flex; align-items:center; gap:10px;">
-            <button onclick="loadAccountStatus()" class="btn" style="background:var(--input-bg); color:var(--text); border:1px solid var(--border);">Refresh</button>
-          </div>
-        </div>
-        <div id="account-status-body">
-          <div style="padding:32px; text-align:center; color:var(--text-muted);">Loading account status...</div>
-        </div>
-      </div>
-    </div>
-
     <div id="chat-view" style="display: none;">
       <div class="chat-layout">
         <div class="chat-toolbar">
@@ -306,92 +303,7 @@
       </div>
     </div>
 
-    <div id="setup-view" style="display: none;">
-      <h2 style="margin-top: 0; font-size: 1.25rem;">Setup Instructions</h2>
-      <p style="color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.875rem;">Configure OpenClaw and OpenCode
-        (Opencode) to use this router.</p>
 
-      <div class="setup-grid">
-        <div class="setup-card">
-          <h3>OpenClaw</h3>
-
-          <div class="setup-method">
-            <p class="setup-method-title">Automatic</p>
-            <ol class="setup-steps">
-              <li>Run <code>hammer onboard</code>.</li>
-              <li>When asked <code>Auto-configure OpenClaw now? [Y/n]</code>, answer <code>Y</code>.</li>
-              <li>Start the router with <code>hammer</code>.</li>
-            </ol>
-          </div>
-
-          <div class="setup-method">
-            <p class="setup-method-title">Manual</p>
-            <div style="font-size:0.83rem; color:var(--text-muted);">Merge this into
-              <code>~/.openclaw/openclaw.json</code>:
-            </div>
-            <pre class="setup-snippet">{
-  "models": {
-    "providers": {
-      "hammer": {
-        "baseUrl": "http://127.0.0.1:7352/v1",
-        "api": "openai-completions"
-      }
-    }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "hammer/best"
-      },
-      "models": {
-        "hammer/best": {}
-      }
-    }
-  }
-}</pre>
-          </div>
-        </div>
-
-        <div class="setup-card">
-          <h3>OpenCode (Opencode)</h3>
-
-          <div class="setup-method">
-            <p class="setup-method-title">Automatic</p>
-            <ol class="setup-steps">
-              <li>Run <code>hammer onboard</code>.</li>
-              <li>When asked <code>Auto-configure OpenCode now? [Y/n]</code>, answer <code>Y</code>.</li>
-              <li>Start the router with <code>hammer</code>.</li>
-            </ol>
-          </div>
-
-          <div class="setup-method">
-            <p class="setup-method-title">Manual</p>
-            <div style="font-size:0.83rem; color:var(--text-muted);">Put this in
-              <code>~/.config/opencode/opencode.json</code>:
-            </div>
-            <pre class="setup-snippet">{
-  "$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "router": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "hammer",
-      "options": {
-        "baseURL": "http://127.0.0.1:7352/v1",
-        "apiKey": "dummy-key"
-      },
-      "models": {
-        "best": {
-          "name": "Best"
-        }
-      }
-    }
-  },
-  "model": "router/best"
-}</pre>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 
   <div id="provider-sync-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:min(720px, calc(100vw - 32px)); max-height:min(80vh, 760px); background:var(--card); border:1px solid var(--border); border-radius:18px; box-shadow:0 24px 80px rgba(15, 23, 42, 0.22); z-index:1001; overflow:hidden;">

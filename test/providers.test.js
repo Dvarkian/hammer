@@ -68,6 +68,7 @@ import {
 } from '../lib/providers/adapters.js'
 import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
+  accountRefusalIn,
   buildModelTestPrompt,
   buildProviderRequestBody,
   buildProviderRequestHeaders,
@@ -79,6 +80,7 @@ import {
   providerCanServe,
   providerFaviconDomain,
   providerFaviconDomains,
+  transformStreamingUpstreamErrorResponse,
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
@@ -573,6 +575,25 @@ test('llm7\'s chat-endpoint refusal for its image/video rows is classified Incom
   assert.ok(isIncompatibleModelError("Model 'dark-beast-krea2' does not support chat endpoints."))
   assert.ok(isIncompatibleModelError("Model 'kling-v3.0-pro' does not support chat endpoints.", 400))
   // Unrelated failures keep their own classifications rather than joining this one.
+  assert.equal(isIncompatibleModelError('upstream timeout'), false)
+  assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
+})
+
+test('a model named Transcribe is classified Incompatible', () => {
+  assert.ok(isIncompatibleModelError('Model "openai/whisper-transcribe" is not supported for text chat.'))
+  assert.ok(isIncompatibleModelError('Transcribe models require a different endpoint.'))
+  assert.equal(isIncompatibleModelError('upstream timeout'), false)
+  assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
+})
+
+test('an audio model refusal on Pollinations is classified Incompatible', () => {
+  assert.ok(isIncompatibleModelError('Model "assemblyai/universal-3.5-pro" is a audio model and cannot be used on the text endpoint. Use the audio endpoint instead.'))
+  assert.equal(isIncompatibleModelError('upstream timeout'), false)
+  assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
+})
+
+test('Pollinations realtime model refusal is classified Incompatible', () => {
+  assert.ok(isIncompatibleModelError('Model "openai/gpt-realtime-2.1-mini" is a realtime model and cannot be used on the text endpoint. Use the realtime endpoint instead.'))
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
@@ -1220,6 +1241,104 @@ test('a spent credit balance is a refusal even when the provider renders it as a
   assert.equal(isAccountBudgetRefusalText('You have enough credits in your account to continue.'), false)
   assert.equal(isAccountBudgetRefusalText('Your account has enough credits for this request.'), false)
   assert.equal(isAccountBudgetRefusalText('The account of the expedition is long, and the budget was discussed at length.'), false)
+})
+
+/** An SSE response over the given frames, one frame per chunk as a real relay sends them. */
+const sseResponse = (frames) => new Response(
+  new ReadableStream({
+    start(controller) {
+      for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame))
+      controller.close()
+    },
+  }),
+  { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+)
+const sseFrame = (payload) => `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`
+
+const SPENT_KEY_NOTICE = "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
+
+test('an account refusal streamed as the answer is refused instead of delivered', async () => {
+  // The failure this pins: Pollinations answers HTTP 200 and then streams "the account behind this
+  // API key doesn't have enough credits…" as ordinary content deltas. Every frame is well formed,
+  // so the stream reads as a real answer — it reached the caller as the model's reply and the
+  // request never failed over. The notice is split across two deltas here on purpose: a guard that
+  // only inspected the first content frame would still let it through.
+  const refused = await transformStreamingUpstreamErrorResponse(sseResponse([
+    sseFrame({ id: 'x', choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }),
+    sseFrame({ id: 'x', choices: [{ index: 0, delta: { content: "The account behind this API key doesn't have " } }] }),
+    sseFrame({ id: 'x', choices: [{ index: 0, delta: { content: 'enough credits. Please top up or complete a quest, then try again.' } }] }),
+    sseFrame('[DONE]'),
+  ]))
+  assert.equal(refused.status, 429, 'the notice is the 429 it means, so the loop benches the key and fails over')
+  assert.equal((await refused.json()).error.message, SPENT_KEY_NOTICE)
+
+  // A real answer is handed on untouched, byte for byte — the guard must not cost a caller its
+  // first token beyond the frame or two it needs to see that this is prose and not a notice.
+  const answerFrames = [
+    sseFrame({ id: 'y', choices: [{ index: 0, delta: { role: 'assistant' } }] }),
+    sseFrame({ id: 'y', choices: [{ index: 0, delta: { content: 'Hallo' } }] }),
+    sseFrame({ id: 'y', choices: [{ index: 0, delta: { content: ' Welt. Wie geht es dir?' } }] }),
+    sseFrame('[DONE]'),
+  ]
+  const passed = await transformStreamingUpstreamErrorResponse(sseResponse(answerFrames))
+  assert.equal(passed.status, 200)
+  assert.equal(await passed.text(), answerFrames.join(''), 'the stream arrives exactly as the provider sent it')
+
+  // A model of its own accord writing about credits is not a provider notice.
+  const prose = await transformStreamingUpstreamErrorResponse(sseResponse([
+    sseFrame({ id: 'z', choices: [{ index: 0, delta: { content: 'The account behind your plan has enough credits for this request.' } }] }),
+    sseFrame('[DONE]'),
+  ]))
+  assert.equal(prose.status, 200)
+  assert.match(await prose.text(), /has enough credits/)
+})
+
+test('the refusal peek hands a real answer on while the provider is still streaming', async () => {
+  // The cost side of the guard: it must decide on the answer's *first sentence* and let go, not wait
+  // for the stream to finish. This provider sends one sentence of prose and then leaves the pipe
+  // open forever, so a peek that kept reading would never resolve — the assertion is that the
+  // transform returns anyway, with the sentence intact.
+  let holdOpen
+  const stalled = new Promise(resolve => { holdOpen = resolve })
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(sseFrame({ choices: [{ delta: { content: 'Hallo Welt. Wie geht es dir heute?' } }] })))
+    },
+    async pull() { await stalled },
+  })
+  const firstFrame = await Promise.race([
+    transformStreamingUpstreamErrorResponse(new Response(stream, { status: 200 })),
+    new Promise(resolve => setTimeout(() => resolve('still-peeking'), 2000)),
+  ])
+  assert.notEqual(firstFrame, 'still-peeking', 'prose is released while the provider is still generating')
+  assert.equal(firstFrame.status, 200)
+  holdOpen()
+})
+
+test('the same refusal in a JSON body is named before the caller sees it', async () => {
+  // The non-streaming half: a 200 whose message *is* the notice. It is a valid completion to every
+  // structural check, which is how it came to be delivered and recorded as an answer.
+  const body = JSON.stringify({
+    id: 'resp_1',
+    model: 'community/vendouple/gemini-3.8-flash',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: SPENT_KEY_NOTICE } }],
+  })
+  assert.equal(accountRefusalIn(body), SPENT_KEY_NOTICE)
+  // Prose, an ordinary answer, and a body larger than a notice may be: all left alone.
+  assert.equal(accountRefusalIn(JSON.stringify({ choices: [{ message: { content: 'Hallo Welt' } }] })), '')
+  assert.equal(accountRefusalIn(JSON.stringify({ choices: [{ message: { content: 'You have enough credits in your account to continue.' } }] })), '')
+  const huge = JSON.stringify({ choices: [{ message: { content: `${'x'.repeat(70 * 1024)} ${SPENT_KEY_NOTICE}` } }] })
+  assert.equal(accountRefusalIn(huge), '', 'a body past the scan bound is never read a second time')
+})
+
+test('a folded-in upstream error envelope still reports itself as unavailable', async () => {
+  // The guard's older job, unchanged by the refusal peek added beside it: a relay that opens a
+  // "success" stream with an error frame is a broken upstream, not a spent account.
+  const folded = await transformStreamingUpstreamErrorResponse(sseResponse([
+    sseFrame({ error: { message: 'Service temporarily overloaded' } }),
+  ]))
+  assert.equal(folded.status, 503)
+  assert.equal((await folded.json()).error.message, 'Service temporarily overloaded')
 })
 
 test('a probe refusal about the account is believed at once, not forgiven by recent liveness', () => {
