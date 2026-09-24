@@ -125,30 +125,6 @@ const OPENAI_COMPATIBLE_OVERRIDES = {
 const KEYLESS_OVERRIDES = {}
 
 /**
- * The mirror of {@link KEYLESS_OVERRIDES}: a declaration of keylessness that observation has
- * since contradicted.
- *
- * A provider's `authType` is its own statement about itself, which is normally the best
- * evidence available — but it goes stale silently, and the failure mode is expensive. Marking
- * a provider keyless when it now demands a key means every request is dispatched with no
- * credential, the 401 is attributed to the *provider's* health, and a healthy row is reported
- * down while the router keeps choosing it.
- *
- * `pollinations` carried `authType: "optional"` with a note dated 2026-07-20 saying a
- * completion succeeds with no credential. It does not any more. The declaration is recorded as
- * overridden rather than deleted, so the divergence stays visible and reversible: if the
- * keyless tier returns, removing the entry restores it.
- *
- * Evidence format: `<completion|declared> — <date> — <what was actually observed>`.
- */
-const REQUIRES_KEY_EVIDENCE = {
-  pollinations:
-    'completion — 2026-09-22 — POST /v1/chat/completions with no credential returned HTTP 401 '
-    + '{"success":false,"error":{"code":"UNAUTHORIZED","message":"A valid API key is required"}}, so the '
-    + 'registry\'s `authType: "optional"` and its 2026-07-20 note are both stale',
-}
-
-/**
  * Executors that are `DefaultExecutor` plus data rather than bespoke transports.
  *
  * `executor: "default"` is the plain OpenAI-compatible path, but several providers point at
@@ -171,17 +147,6 @@ const EXECUTOR_PROFILES = {
   glm: {
     requestDefaults: { max_tokens: 16384 },
     timeoutMs: 3000000,
-  },
-  /**
-   * Pollinations answers anonymously and only 401s on its premium ids, which the executor
-   * pre-empts with an explanatory error rather than dispatching (see its PREMIUM_MODELS).
-   * `jsonMode` is added by the executor only when the caller asked for JSON: Pollinations
-   * reads `jsonMode` as "must return JSON" and 400s any request whose messages don't
-   * mention it.
-   */
-  pollinations: {
-    jsonMode: true,
-    premiumModels: ['claude', 'claude-fast', 'claude-large', 'gemini', 'gemini-fast', 'midijourney', 'midijourney-large'],
   },
   /**
    * CloudflareAIExecutor's only imperative work is building the account-scoped URL and
@@ -678,8 +643,7 @@ export function decideResolution({ key, access, tos, note, entry }) {
 
   // `optional`/`none` is the provider's own declaration that no key is required. An
   // override can add to that, but only with completion-level evidence (KEYLESS_OVERRIDES).
-  const keyless = (authType === 'optional' || authType === 'none' || Boolean(KEYLESS_OVERRIDES[key]))
-    && !REQUIRES_KEY_EVIDENCE[key]
+  const keyless = authType === 'optional' || authType === 'none' || Boolean(KEYLESS_OVERRIDES[key])
 
   // A declared prefix (`authPrefix: "Bearer"`) is the provider telling us the scheme; absent
   // one, the OpenAI convention applies to `Authorization` and a bare value to everything else.
@@ -704,8 +668,6 @@ export function decideResolution({ key, access, tos, note, entry }) {
     ...(entry.requestDefaults || profile?.requestDefaults
       ? { requestDefaults: { ...(entry.requestDefaults || {}), ...(profile?.requestDefaults || {}) } }
       : {}),
-    ...(profile?.jsonMode ? { jsonMode: true } : {}),
-    ...(profile?.premiumModels ? { premiumModels: profile.premiumModels } : {}),
     ...(profile?.flattenTextContent || entry.requiresPlainStringContent ? { flattenTextContent: true } : {}),
     ...(entry.modelIdPrefix ? { modelIdPrefix: entry.modelIdPrefix } : {}),
     ...(profile?.chatUrlTemplate ? { urlTemplate: true } : {}),
@@ -733,7 +695,6 @@ export function decideResolution({ key, access, tos, note, entry }) {
         ...(override ? { endpointOverride: override.why } : {}),
         ...(alternate ? { alternateFormatUsed: alternate.label || alternate.format } : {}),
         ...(KEYLESS_OVERRIDES[key] ? { keylessEvidence: KEYLESS_OVERRIDES[key] } : {}),
-        ...(REQUIRES_KEY_EVIDENCE[key] ? { requiresKeyEvidence: REQUIRES_KEY_EVIDENCE[key] } : {}),
         ...(entry.executor !== 'default' && profile ? { executor: entry.executor } : {}),
         // Recorded as provenance, not used for routing: discovery supplies the live list.
         modelCount: entry.models.length,

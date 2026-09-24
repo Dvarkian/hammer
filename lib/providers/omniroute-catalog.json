@@ -42,7 +42,6 @@
     { "key": "kilo-gateway", "access": "permanent", "tos": "caution", "modelCount": 7, "note": "Rotating 'Auto Free' set: NVIDIA Nemotron 3 family, StepFun, Poolside, Nex-N2-Pro." },
     { "key": "opencode-zen", "access": "permanent", "tos": "caution", "modelCount": 6, "note": "Six rotating free coding models." },
     { "key": "siliconflow", "access": "permanent", "tos": "caution", "modelCount": 10 },
-    { "key": "tencent", "access": "permanent", "tos": "caution", "modelCount": 1 },
 
     { "key": "vertex", "access": "signup-credit", "signupCreditTokens": 300000000, "tos": "caution", "modelCount": 10 },
     { "key": "agentrouter", "access": "signup-credit", "signupCreditTokens": 200000000, "tos": "caution", "modelCount": 4, "note": "Signup coupon is $100 for standard signups; the $200 figure applies to referral signups only." },
@@ -77,7 +76,6 @@
     { "key": "nous-research", "access": "keyless", "tos": "ambiguous", "modelCount": 2 },
     { "key": "nvidia", "access": "keyless", "tos": "caution", "modelCount": 13, "note": "Free tier is for prototyping, development, research and evaluation; production use requires a paid plan." },
     { "key": "opencode", "access": "keyless", "tos": "avoid", "modelCount": 7, "note": "Terms restrict use to your own internal use and not on behalf of a third party." },
-    { "key": "pollinations", "access": "keyless", "tos": "caution", "modelCount": 31 },
     { "key": "publicai", "access": "keyless", "tos": "caution", "modelCount": 3, "note": "Designated primarily for research and educational use." },
     { "key": "qwen-web", "access": "keyless", "tos": "avoid", "modelCount": 3, "note": "No terms permit a self-hosted proxy using session tokens against the web chat." },
     { "key": "reka", "access": "keyless", "tos": "caution", "modelCount": 2 },

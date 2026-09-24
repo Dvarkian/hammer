@@ -495,27 +495,6 @@
         ]
       }
     },
-    "tencent": {
-      "activation": "active",
-      "chatUrl": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 6,
-        "declaredModels": [
-          "hunyuan-turbos-latest",
-          "hunyuan-t1-latest",
-          "hunyuan-pro",
-          "hunyuan-vision",
-          "hunyuan-functioncall",
-          "hunyuan-lite"
-        ]
-      }
-    },
     "vertex": {
       "activation": "active",
       "chatUrl": "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions",
@@ -1082,66 +1061,6 @@
     "opencode": {
       "activation": "refused",
       "reason": "not free: the grant is `keyless` access to Zen's free-tier ids, and Zen refuses its free tier to every client but its own — HTTP 403 `FreeTierError`, \"OpenCode's free tier can only be used from within OpenCode\". Verified live 2026-09-22 by capturing the official client's own request (its configured base URL redirected to a local logger, so the real headers were read rather than guessed) and replaying that request byte-for-byte: the captured `Authorization: Bearer sk-…`, `User-Agent: opencode/1.18.25 …` and the `x-opencode-client/project/request/session` headers are refused with that 403, while the same credential in the official client streams a completion. The gate is therefore outside the request — the client's transport fingerprint — so nothing this router can send clears it. The row's own `tos` flag is `avoid` for the same reason: \"Terms restrict use to your own internal use and not on behalf of a third party.\" Declined at the operator's instruction, 2026-09-22."
-    },
-    "pollinations": {
-      "activation": "active",
-      "chatUrl": "https://gen.pollinations.ai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "shaping": {
-        "jsonMode": true,
-        "premiumModels": [
-          "claude",
-          "claude-fast",
-          "claude-large",
-          "gemini",
-          "gemini-fast",
-          "midijourney",
-          "midijourney-large"
-        ]
-      },
-      "provenance": {
-        "requiresKeyEvidence": "completion — 2026-09-22 — POST /v1/chat/completions with no credential returned HTTP 401 {\"success\":false,\"error\":{\"code\":\"UNAUTHORIZED\",\"message\":\"A valid API key is required\"}}, so the registry's `authType: \"optional\"` and its 2026-07-20 note are both stale",
-        "executor": "pollinations",
-        "modelCount": 31,
-        "declaredModels": [
-          "openai",
-          "openai-fast",
-          "openai-large",
-          "qwen-coder",
-          "mistral",
-          "gemini",
-          "gemini-flash-lite-3.1",
-          "gemini-fast",
-          "deepseek",
-          "grok",
-          "grok-large",
-          "gemini-search",
-          "midijourney",
-          "midijourney-large",
-          "claude-fast",
-          "claude",
-          "claude-large",
-          "perplexity-fast",
-          "perplexity-reasoning",
-          "kimi",
-          "gemini-large",
-          "nova-fast",
-          "nova",
-          "glm",
-          "minimax",
-          "mistral-large",
-          "polly",
-          "qwen-coder-large",
-          "qwen-large",
-          "qwen-vision",
-          "qwen-safety"
-        ]
-      }
     },
     "publicai": {
       "activation": "active",

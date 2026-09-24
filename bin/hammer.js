@@ -212,6 +212,7 @@ async function main() {
       ? Object.groupBy(audit.entries, entry => entry.source)
       : audit.entries.reduce((groups, entry) => ((groups[entry.source] ||= []).push(entry), groups), {});
     console.log('\nSources: ' + Object.entries(counts).map(([source, rows]) => `${source}=${rows.length}`).join(', '));
+    console.log(`Coverage: measured=${audit.coverage.measured} estimated=${audit.coverage.estimated} family-matched=${audit.coverage.familyMatched} floored=${audit.coverage.floored} total=${audit.coverage.total}`);
     if (audit.regression) {
       console.log(chalk.dim(`Design Arena regression trained on ${audit.regression.sampleSize} catalog models.`));
     }

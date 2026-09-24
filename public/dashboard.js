@@ -180,11 +180,14 @@
     let selectorSaveTimer = null;
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
-    // Set while the router's current model is one it had to *move to* mid-request, because the
-    // model it had selected refused the request that triggered it (see /api/models → selection,
-    // and fallbackSelection in lib/server.js). It is explanatory metadata only: the current
-    // model still comes from pin > slope > intelligence, and a stale fallback never overrides it.
+    // The model the router moved to mid-request, because the model it had selected refused the
+    // request. A fallback never changes the next request's pin > slope > intelligence rule, but
+    // it is temporarily shown as the serving model everywhere in the UI until the next snapshot
+    // confirms the router's current state.
     let routerFallbackSelection = null;
+    // Incremented for every event delivered by the router. A snapshot that was already in flight
+    // when an event arrived must not roll the UI back to the selection it read before the event.
+    let routerEventRevision = 0;
     let proxyErrorState = null;
     let scatterDrag = null;       // active threshold-line drag
     let scatterScales = null;     // plot extents, refreshed by every draw
@@ -409,6 +412,7 @@
     async function fetchData() {
       const pinRevisionAtStart = pinMutationRevision;
       const pinWasPendingAtStart = pendingPinMutations > 0;
+      const routerEventRevisionAtStart = routerEventRevision;
       try {
         const [modelsRes, configRes] = await Promise.all([
           fetch('/api/models'),
@@ -416,6 +420,10 @@
         ]);
         const data = await modelsRes.json();
         const providers = await configRes.json();
+        // A live event can arrive while these two requests are in flight. Its row and
+        // selection are newer than this snapshot, so leave the DOM alone and let the queued
+        // refresh repaint from a fresh server read instead of flashing the old model back.
+        if (routerEventRevisionAtStart !== routerEventRevision) return true;
         updateProxyErrorBanner(data.proxyError);
 
         // Calculate QoS for each model. Quota reports are already attached by
@@ -437,11 +445,9 @@
           .some(p => p && Object.prototype.hasOwnProperty.call(p, 'faviconDomain'));
         updateLogoSourceNote();
 
-        // Providers that relay persona entries over a rotating backend (FreeModels)
-        // report the real upstream model in every response. When the router captured
-        // one that differs from the catalog id, show it as the model's name — the
-        // catalog entry is just a booking label, and the real backend can change at
-        // any time, so this follows live responses instead of a hardcoded list.
+        // Relay-backed entries may report a real upstream model in every response. When
+        // the router captures one that differs from the catalog id, show it as the model's
+        // name so the label follows live responses instead of a hardcoded list.
         for (const m of allModels) {
           if (m.realModelId && m.realModelLabel) {
             m.label = m.realModelLabel;
@@ -473,9 +479,12 @@
             data.pinnedAvailable,
           );
         }
+        // A response that started before a live router event can finish after it. Keep the
+        // event's selection in that case; the next coalesced refresh will reconcile everything
+        // else without making the UI briefly jump back to the model that just failed.
         currentBestModelId = data.best || null;
         currentBestProviderKey = data.bestProviderKey || null;
-        // A fallback is an event, not a current-selection rule. Keep its explanation only when
+        // A fallback is an event, not a fourth selection rule. Keep its explanation only when
         // the model it named is still the server's current pin/slope/ranking pick; after a
         // slope or pin change, the old fallback must not relabel the new current model.
         const fallback = data.selection && data.selection.fallback;
@@ -488,10 +497,9 @@
 
         try { render(); } catch (e) { console.error('Render error:', e); }
         scheduleContradictoryRetests();
-        updateKPIs(allModels, data.best);
-        // Show the 'Rerun Tests' button when there are models whose last response
-        // is not a clean 'Ready' (and they have auth configured).
-        updateRerunButtonVisibility();
+        updateKPIs(allModels, currentBestModelId, currentBestProviderKey);
+        // Show the 'Test All' button when the rendered main table has inactive rows.
+        updateTestAllButtonVisibility();
         // Live-update logs if that tab is currently active
         if (document.getElementById('logs-view').style.display !== 'none') {
           loadLogs();
@@ -569,6 +577,14 @@
     function getPinnedRowKeysForSelection(modelId, providerKey = null, scope = 'family', groupKey = null) {
       if (!modelId) return [];
       if (scope === 'exact') return providerKey ? [getModelRowKey(providerKey, modelId)] : [];
+      // A current router supplies the opaque group id. Use it directly when present so a
+      // family pin follows the server's partition even when two similarly named models
+      // share a family prefix or differ only by size/variant. The identity fallback keeps
+      // the dashboard usable against an older router that predates the metadata field.
+      if (groupKey) {
+        const serverMatches = allModels.filter(m => m.modelGroupId && m.modelGroupId === groupKey);
+        if (serverMatches.length > 0) return serverMatches.map(m => getModelRowKey(m));
+      }
       const selectedUnprefixed = canonicalizeClientModelId(modelId).unprefixed;
       const selectedGroup = String(groupKey || selectedUnprefixed).toLowerCase();
       return allModels
@@ -619,7 +635,7 @@
       syncPinnedModelUI();
     }
 
-    function updateKPIs(models, bestModelId) {
+    function updateKPIs(models, bestModelId, bestProviderKey = null) {
       // Both counts read the same verdict the table's dots do — a model is 'active' when
       // something can actually serve it right now (see rowVerdict). One definition, or the
       // KPIs and the rows they summarise disagree.
@@ -663,7 +679,9 @@
       document.getElementById('kpi-active').textContent = onlineModelCount;
       document.getElementById('kpi-providers').textContent = onlineProviders.size;
 
-      const bestModel = bestModelId ? models.find(m => m.modelId === bestModelId) : null;
+      const bestModel = bestModelId
+        ? models.find(m => m.modelId === bestModelId && (!bestProviderKey || m.providerKey === bestProviderKey))
+        : null;
       setKpiBest(bestModel ? kpiBestText(bestModel) : 'None Online');
 
       drawBipartiteTopology(models, bestModel);
@@ -910,10 +928,10 @@
       const plotRight = scales.pad.left + scales.plotW - 4;
       const axisLimit = scales.xMax;
       // Every row is a single filled point, whatever its verdict: a routable model is a
-      // provider-hued dot and an exhausted or otherwise inactive model is a far smaller mark in
-      // the verdict's colour. Size and colour now carry the verdict instead of shape — which is
-      // why the colour still comes from rowVerdict: a dot can never be drawn healthy while its
-      // table row reads 'Rate limited'. The plot needs no per-dot status labels.
+      // provider-hued dot and an exhausted, benched, or otherwise inactive model is a far
+      // smaller mark in the verdict's colour. Full size follows the router's authoritative
+      // `routingEligible` flag, not merely the row's last successful test: a healthy model whose
+      // provider has been benched still reads `up` locally but must not be advertised as active.
       const verdictColorFor = (r) => {
         const kind = rowVerdict(r.m);
         if (kind === 'up') return ring;
@@ -923,11 +941,11 @@
       };
       for (const r of rows) {
         const hue = scatterProviderHue(r.m.providerKey);
-        const up = isRowUp(r.m);
+        const routable = isRoutableRow(r);
         const verdictColor = verdictColorFor(r);
         const cx = scales.xOf(r.speed);
         const cy = scales.yOf(r.intell);
-        const c = svgEl('circle', up ? {
+        const c = svgEl('circle', routable ? {
           cx, cy, r: rSize,
           fill: `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
           stroke: verdictColor, 'stroke-width': 1,
@@ -1008,7 +1026,7 @@
         if (pickRow && r === pickRow) p += 1000;
         if (r.intell >= maxIntell) p += 200;
         if (r.speed >= maxSpeed) p += 200;
-        if (!isRowUp(r.m)) p -= 400;
+        if (!isRoutableRow(r)) p -= 400;
         // Remaining rows: higher intelligence than speed, so the top of the
         // field — where routing decisions actually happen — is labeled first.
         return p + ((r.intell - scales.yMin) / scales.ySpan) * 100;
@@ -1206,8 +1224,11 @@
         pinned, pinnedSelRow, pinnedModel, slopeNum, slopeActive, atMaxSlope, slopePick,
         fallbackRow, fallbackModel,
         routedFallbackRow, routedFallbackModel,
-        shownSelRow: pinnedSelRow || slopePick || fallbackRow,
-        labelRow: pinnedSelRow || (pinIsCurrent ? pinnedModel : null) || slopePick || fallbackRow || fallbackModel || pinnedModel,
+        // A live fallback is the model answering this request right now, so it gets the
+        // selection ring/label while the ordinary slope or ranking pick remains the line's
+        // underlying rule. This is display state only; the next server snapshot re-evaluates it.
+        shownSelRow: routedFallbackRow || pinnedSelRow || slopePick || fallbackRow,
+        labelRow: routedFallbackModel || routedFallbackRow || pinnedSelRow || (pinIsCurrent ? pinnedModel : null) || slopePick || fallbackRow || fallbackModel || pinnedModel,
       };
     }
 
@@ -1380,8 +1401,14 @@
       // The routed best and pin are part of the redraw key too: when the server
       // reports a new best (pin toggled, slope save landed) the selection label
       // and KPI must re-render even though the rows and slider state didn't move.
+      // Verdict and routing eligibility are row state even when every plotted number is
+      // unchanged. Omitting them let a live failure or provider bench leave the old full-size
+      // mark and selection ring in the SVG until some unrelated metric happened to change.
       const selHash = `${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'},best=${currentBestModelId ?? 'n'}/${currentBestProviderKey ?? 'n'},pin=${activePinnedModelId ?? 'n'}/${activePinnedProviderKey ?? 'n'},fb=${routerFallbackSelection ? `${routerFallbackSelection.modelId}/${routerFallbackSelection.providerKey}` : 'n'}`;
-      const hash = rows.map(r => `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}`).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
+      const hash = rows.map(r => {
+        const routing = typeof r.m.routingEligible === 'boolean' ? r.m.routingEligible : 'legacy';
+        return `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}|v=${rowVerdict(r.m)}|route=${routing}`;
+      }).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
       if (svg.dataset.hash === hash) return;
       svg.dataset.hash = hash;
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
@@ -1717,11 +1744,21 @@
       const MODEL_DOMAINS = {
         // --- Chinese open-weight labs ---
         'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com',
-        'qwen': 'qwen.ai', 'qwq': 'qwen.ai',
+        'qwen': 'qwen.ai', 'qwq': 'qwen.ai', 'qvq': 'qwen.ai',
         'glm': 'zhipuai.cn', 'z-ai': 'zhipuai.cn', 'zai': 'zhipuai.cn',
         'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
-        'minimax': 'minimax.io', 'minimaxai': 'minimax.io',
+        'minimax': 'minimax.io', 'minimaxai': 'minimax.io', 'abab': 'minimax.io',
         'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
+        // Baidu's ERNIE, Doubao's own ids on a gateway, Meituan's LongCat, and the two labs
+        // whose HF org name is all a node ever carries.
+        'baidu': 'baidu.com', 'ernie': 'baidu.com',
+        'doubao': 'doubao.com',
+        'longcat': 'longcat.chat', 'meituan': 'longcat.chat',
+        'nex-agi': 'nex-agi.com', 'dots-studio': 'dots.studio',
+        // SenseTime's SenseNova and iFlytek's Spark: `sensenova.cn` serves no icon, the
+        // company's own site does, and Spark's brand site is the console it sends users to.
+        'sensenova': 'sensetime.com',
+        'sparkdesk': 'xfyun.cn',
         'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
         'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
         'bytedance': 'bytedance.com', 'bytedance-seed': 'bytedance.com', 'seed': 'bytedance.com', 'dola': 'bytedance.com',
@@ -1732,13 +1769,58 @@
         'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
         'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
         'llama': 'meta.com', 'meta': 'meta.com',
+        // Meta's named open families — Muse Glimmer and Muse Spark sit beside Llama without it.
+        'muse': 'meta.com',
         'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
         'gpt': 'openai.com', 'openai': 'openai.com',
-        'mistral': 'mistral.ai', 'magistral': 'mistral.ai', 'ministral': 'mistral.ai', 'codestral': 'mistral.ai',
+        // OpenAI's other wire names: the Codex models that do not say `gpt`, the bare o-series
+        // ids an aggregator relays, a gateway's own name for a GPT chat model, and OpenAI's
+        // `chatgpt-*`/`chat-latest` aliases.
+        'codex': 'openai.com', 'o1': 'openai.com', 'o3': 'openai.com', 'o4': 'openai.com',
+        'chatgpt': 'openai.com', 'chat-latest': 'openai.com', 'unmoderated-gpt': 'openai.com',
+        'mistral': 'mistral.ai', 'mistralai': 'mistral.ai', 'magistral': 'mistral.ai',
+        'ministral': 'mistral.ai', 'codestral': 'mistral.ai', 'voxtral': 'mistral.ai',
         'devstral': 'mistral.ai', 'pixtral': 'mistral.ai', 'mixtral': 'mistral.ai',
-        'grok': 'x.ai', 'x-ai': 'x.ai',
-        'phi': 'microsoft.com',
+        // Mistral's own `open-*` aliases for the models it opens.
+        'open-mistral-nemo': 'mistral.ai',
+        // --- The open-weight labs behind the aggregators' catalogs ---
+        'morph': 'morphllm.com', 'relace': 'relace.ai', 'writer': 'writer.com', 'palmyra': 'writer.com',
+        'inception': 'inceptionlabs.ai',
+        'liquid': 'liquid.ai',
+        'sakana': 'sakana.ai', 'fugu': 'sakana.ai',
+        'thinkingmachines': 'thinkingmachines.ai', 'inkling': 'thinkingmachines.ai',
+        'perplexity': 'perplexity.ai', 'sonar': 'perplexity.ai',
+        'nousresearch': 'nousresearch.com', 'nous': 'nousresearch.com', 'hermes': 'nousresearch.com',
+        'databricks': 'databricks.com', 'dbrx': 'databricks.com',
+        'adept': 'adept.ai', 'fuyu': 'adept.ai',
+        'perceptron': 'perceptron.inc',
+        'allenai': 'allenai.org', 'olmocr': 'allenai.org',
+        'venice': 'venice.ai',
+        'prism-ml': 'prismml.com',
+        'essentialai': 'essential.ai', 'rnj': 'essential.ai',
+        'zyphra': 'zyphra.com', 'zamba': 'zyphra.com',
+        'speakleash': 'speakleash.org', 'bielik': 'speakleash.org',
+        'swiss-ai': 'swiss-ai.org', 'apertus': 'swiss-ai.org',
+        'aisingapore': 'aisingapore.org', 'sea-lion': 'aisingapore.org',
+        'bigcode': 'bigcode-project.org', 'starcoder': 'bigcode-project.org',
+        '01-ai': '01.ai', 'yi': '01.ai',
+        // GitHub's own Copilot-only catalog: its agent, search and compaction models exist
+        // nowhere else, so GitHub is their vendor as well as their host.
+        'exec-agent': 'github.com', 'copilot-search': 'github.com', 'trajectory-compaction': 'github.com',
+        // The gateways' own router rows. Their id *is* the gateway's product, which is the
+        // opposite of a third-party model relayed by one — there the vendor is the brand.
+        'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai',
+        // xAI appears as `x-ai`, `xai-org` and g4f's `xai-z`, all of them its own name.
+        'grok': 'x.ai', 'x-ai': 'x.ai', 'xai': 'x.ai',
+        'microsoft': 'microsoft.com', 'phi': 'microsoft.com', 'mai': 'microsoft.com', 'wizardlm': 'microsoft.com',
         'command': 'cohere.com', 'north': 'cohere.com', 'cohere': 'cohere.com',
+        // Cohere Labs' multilingual family, under every org name its ids carry — HuggingFace's
+        // current `CohereLabs/`, the `CohereForAI/` these weights were first published under —
+        // and under the bare C4AI/aya ids an aggregator publishes (`c4ai-aya-expanse-32b`).
+        'coherelabs': 'cohere.com', 'cohereforai': 'cohere.com', 'c4ai': 'cohere.com',
+        'tiny-aya': 'cohere.com', 'aya': 'cohere.com',
+        // Cohere's Parse family is its own model and says so only in the id (`parse-v5.0`).
+        'parse': 'cohere.com',
         'aria': 'ai21.com', 'jamba': 'ai21.com',
         'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com', 'titan': 'aws.amazon.com',
         'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
@@ -1759,6 +1841,12 @@
       // arbitrary trailing letters are not. The full id is tried first so vendor
       // names still resolve (igenius/colosseum→), then the model part alone
       // (z-ai/glm5 → glm5, @cf/qwen/qwen3.8-27b → qwen3.8-27b).
+      //
+      // A gateway also names the backend it routed through, in front of the model it
+      // routed to (`Airforce:claude-fable-5.1`, `community/user/o3-mini`), so the part
+      // after that namespace is offered beside the whole id — the brand is in the model
+      // name, never in the gateway's own prefix. And when no name in the id resolves at
+      // all, the row's label gets the last word: it is hammer's name for the model.
       const DOMAIN_SPLIT_RE = /[-_./:\s]+/;
       function domainTokens(value) {
         return String(value || '')
@@ -1777,16 +1865,31 @@
         }
         return true;
       }
-      function getModelDomain(m) {
-        const raw = String(m.modelId || m.label || '').toLowerCase().replace(/^srv_[a-z0-9]+:/i, '');
-        if (!raw) return '';
-        const segments = raw.split('/');
-        const candidates = [domainTokens(raw), domainTokens(segments[segments.length - 1])];
+      // The names one row offers, most authoritative first: the id's own leading word, then the
+      // part a gateway namespaced behind its `/` or `:`.
+      function domainNameCandidates(name) {
+        const value = String(name || '').toLowerCase().replace(/^srv_[a-z0-9]+:/i, '');
+        if (!value) return [];
+        return [
+          domainTokens(value),
+          domainTokens(value.split('/').pop()),
+          domainTokens(value.split(':').pop()),
+        ].filter(tokens => tokens.length > 0);
+      }
+      function domainForNames(candidates) {
+        if (!candidates.length) return '';
         for (const [key, domain] of Object.entries(MODEL_DOMAINS)) {
           const keyTokens = String(key).split(DOMAIN_SPLIT_RE).filter(Boolean);
           if (candidates.some(tokens => isDomainKeyPrefix(keyTokens, tokens))) return domain;
         }
         return '';
+      }
+      // The label is the last word, and only when the id names no brand at all. An anonymous id
+      // keeps resolving to '' on purpose: a stealth model's monogram is the honest mark, since
+      // there is no brand to draw.
+      function getModelDomain(m) {
+        return domainForNames(domainNameCandidates(m.modelId))
+          || domainForNames(domainNameCandidates(m.label));
       }
 
       // Display identity per node. A federated origin is named by its catalog and marked by
@@ -3093,7 +3196,8 @@
     function modelGroupingSignature(models) {
       let sig = '';
       for (const m of models) {
-        sig += (m.modelId || '') + '\u0000' + (m.realModelId || '') + '\u0000' + (m.label || '') + '\u0001';
+        sig += (m.modelId || '') + '\u0000' + (m.realModelId || '') + '\u0000' + (m.label || '')
+          + '\u0000' + (m.modelGroupId || '') + '\u0000' + (m.modelGroupLabel || '') + '\u0001';
       }
       return sig;
     }
@@ -3136,6 +3240,27 @@
     // The grouping itself. Identical inputs always produce an identical partition, which is what
     // lets the wrapper above hand back a cached shape instead of re-deriving it.
     function computeModelGroups(models) {
+      // Current routers include the canonical partition on every row. Trust that
+      // contract completely; the historical client-side alias/identity pass below is
+      // retained only for an older router and is never allowed to widen a server group.
+      if (models.length > 0 && models.every(m => typeof m.modelGroupId === 'string' && m.modelGroupId)) {
+        const serverGroups = new Map();
+        for (const m of models) {
+          let group = serverGroups.get(m.modelGroupId);
+          if (!group) {
+            group = {
+              key: m.modelGroupId,
+              label: m.modelGroupLabel || m.label,
+              canonicalId: m.modelGroupId,
+              members: [],
+            };
+            serverGroups.set(m.modelGroupId, group);
+          }
+          group.members.push(m);
+        }
+        return [...serverGroups.values()];
+      }
+
       const groups = new Map();
       for (const m of models) {
         const key = getModelGroupKey(m);
@@ -3174,7 +3299,7 @@
       // (qwen/qwen3.8-27b vs qwen-3.8-27b, or a size-qualified alias such as
       // nemotron-3-super vs nvidia/nemotron-3-super-120b-a12b). Matching uses
       // each group's ids, its learned real backend id, and its heading label, so
-      // g4f/freemodels mirrors land under the manufacturer's row.
+      // g4f mirrors land under the manufacturer's row.
       let mergedGroups = [...byLabel.values()];
       const identityBuckets = [];
       for (const group of mergedGroups) {
@@ -3403,7 +3528,6 @@
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
-            ${providerCapabilityNote(members) ? `<div class="provider-capability-note" title="This provider uses a stateless relay; Hammer can reconstruct an explicitly identified local transcript, but the upstream has no session affinity.">${escapeHtml(providerCapabilityNote(members))}</div>` : ''}
           </td>
           <td><div style="font-weight: 600;">${(() => {
             const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
@@ -3759,7 +3883,10 @@
         ? { rowKey: opts.rowKey, members: opts.members.map(x => ({ providerKey: x.providerKey, modelId: x.modelId })) }
         : { rowKey: opts.rowKey, providerKey: opts.providerKey, modelId: opts.modelId };
       const btnArgs = JSON.stringify(args).replace(/"/g, '&quot;');
-      return `<button class="test-btn" onclick="event.stopPropagation(); testModelButton(this, ${btnArgs})" title="Send 'Please respond with a creative, funny, inspiring 30 words about hammers.' to this model">Test</button>`;
+      const action = (opts && opts.members && opts.members.length > 1)
+        ? 'testModelGroupButton'
+        : 'testModelButton';
+      return `<button class="test-btn" onclick="event.stopPropagation(); ${action}(this, ${btnArgs})" title="Send 'Please respond with a creative, funny, inspiring 30 words about hammers.' to this model">Test</button>`;
     }
 
     // Builds the Response cell: the Test button plus the latest response text.
@@ -3783,13 +3910,13 @@
       const owner = (opts && opts.owner) || ((opts && opts.rowKey) ? allModels.find(mm => getModelRowKey(mm) === opts.rowKey) : null);
       const ownerVerdict = owner ? rowVerdict(owner) : null;
       const ownerUp = ownerVerdict == null ? null : ownerVerdict === 'up';
-      // A row showing the rate-limit clock is already saying this: when the response on
-      // screen is the rate-limit statement that put the clock up, its raw dump would only
-      // repeat it — the countdown and the quota tooltip carry the detail — so it waits
-      // until that window closes. A *different* failure on the same row (a 500 behind a
-      // rate limit) is not the same statement and still shows.
+      // Live fallback errors must be visible in the Response column the moment they happen:
+      // the router writes them as this row's own test-like failure (see recordRoutedModelFailure)
+      // and the Response cell shows that error plus the "live request \u2014 fallback" marker below,
+      // even when the row's Status cell is already showing a rate-limit clock for the same window.
       const clocked = owner ? isRateLimitedRow(owner) && testRateLimitWindow(owner) != null : false;
-      const errText = !clocked && !expired && lastResponse.error ? String(lastResponse.error) : '';
+      void clocked; // kept for the Status-cell clock logic above; errText no longer gates on it so fallbacks stay visible during the window
+      const errText = !expired && lastResponse.error ? String(lastResponse.error) : '';
       const okText = !errText && !expired && lastResponse.ok !== false && lastResponse.text != null ? String(lastResponse.text) : '';
       const text = stripThoughtTags(errText || okText);
       // A result that outlives the state of the row it came from is history, not a live
@@ -3850,7 +3977,7 @@
       // happened while I was working". The router writes this marker (see
       // recordRoutedModelFailure) and never for a Test, so its presence is the whole answer.
       if (!expired && lastResponse.routedFailure) {
-        metaBits.push('<span title="Recorded from live traffic, not from a Test click: the router sent this model a request and it refused, so the failure above is this row\'s own answer to a real request.">live request</span>');
+        metaBits.push('<span title="Fallback triggered by live traffic, not by a Test click: the router sent this model a real request and it failed, so the error above caused a fallback to the next available model.">live request — fallback</span>');
       }
       if (stale) {
         const when = new Date(Number(lastResponse.at)).toLocaleString();
@@ -4016,7 +4143,7 @@
       if (m.microContext === true) return 'micro';
 
       // The verdicts the browser cannot reach for itself. A row whose model id names a non-chat
-      // family (isBlockedModelName: audio, translation, calibration) and one the liveness probe
+      // family (isBlockedModelName: audio, translation, search, calibration) and one the liveness probe
       // refused as paid, dead or incompatible have no lastResponse for the classification below
       // to read — the server states them in `status`, so the one authority that can see them is
       // trusted, as isOverloadedRow already trusts 'overloaded'. These are properties of the
@@ -4308,10 +4435,12 @@
     async function testModelButton(btn, opts) {
       const cell = btn.closest('td');
       const rowKey = opts && opts.rowKey;
+      if (testAllRunning && testAllCurrentRowKey !== rowKey) return;
       if (!cell || !rowKey || inflightTests.has(rowKey)) return;
       inflightTests.add(rowKey);
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
       const tr = cell.closest('tr');
+      tr?.classList.add('row-testing');
       const statusCell = tr && tr.cells[5];
       if (statusCell) {
         statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
@@ -4394,163 +4523,205 @@
         }
       } finally {
         inflightTests.delete(rowKey);
+        tr?.classList.remove('row-testing');
         if (refreshAfterTest) scheduleRefresh(); // catch up the stats a completed test recorded
       }
     }
 
-    // State for the bulk 'Rerun Tests' operation
-    let restestJobId = null;
-    let restestPollTimer = null;
-    let restestCancelToken = null;
+    // State for the sequential Test All operation. The queue is deliberately client-side: the
+    // server bulk endpoint knows about catalog rows, not the rows the user can see in the main
+    // table, and it cannot highlight the one provider currently being tested.
+    let testAllRunning = false;
+    let testAllCancelRequested = false;
+    let testAllCurrentRowKey = null;
+    let testAllQueue = [];
+    let testAllCompleted = 0;
 
-    // Shows or hides the 'Rerun Tests' button based on whether there are models
-    // that need retesting (have auth but no clean Ready response).
-    function updateRerunButtonVisibility() {
-      const btn = document.getElementById('rerun-tests-btn');
-      if (!btn) return;
-      if (restestJobId) return; // don't touch while a job is running
-      const needsRetest = allModels.some(m =>
-        m.status !== 'noauth' &&
-        m.status !== 'banned' &&
-        m.status !== 'excluded' &&
-        m.status !== 'disabled' &&
-        !isLastResponseReady(m.lastResponse)
+    // The same main-table split used by render(). Unavailable rows are deliberately absent.
+    function testableMainGroups() {
+      const filtered = allModels.filter(m =>
+        m.label.toLowerCase().includes(searchTerm) ||
+        m.providerKey.toLowerCase().includes(searchTerm) ||
+        (m.originLabel || '').toLowerCase().includes(searchTerm) ||
+        m.modelId.toLowerCase().includes(searchTerm) ||
+        (m.realModelId || '').toLowerCase().includes(searchTerm)
       );
-      btn.style.display = needsRetest ? 'inline-block' : 'none';
+      return splitDisplayGroups(sortedGroups(groupModels(filtered))).mainGroups;
     }
 
-    // Kicks off a bulk retest of every model whose last test response is not a
-    // clean 'Ready', then polls until the job completes.
-    async function rerunTests() {
-      if (restestJobId) return; // already running
-      const btn = document.getElementById('rerun-tests-btn');
+    // Test All follows the visible table order. A multi-provider heading contributes each of its
+    // inactive provider rows; a single-provider heading contributes its own one row. Active rows
+    // are skipped even when their previous response is stale or empty.
+    function buildTestAllQueue() {
+      const queue = [];
+      const seen = new Set();
+      for (const group of testableMainGroups()) {
+        for (const model of group.members) {
+          if (isRowUp(model)) continue;
+          const modelKey = getModelRowKey(model);
+          if (seen.has(modelKey)) continue;
+          seen.add(modelKey);
+          const rowKey = group.members.length === 1 ? `g:${group.key}` : modelKey;
+          queue.push({ model, rowKey, modelKey, groupKey: group.key });
+        }
+      }
+      // render() preserves the visible order while the cursor is over the table. Use that order
+      // when it is available so "top to bottom" means the order the user is actually looking at.
+      const visibleOrder = new Map(currentRenderedOrder.map((key, index) => [key, index]));
+      if (visibleOrder.size) {
+        queue.sort((a, b) => {
+          const aKey = a.rowKey.startsWith('g:') ? a.rowKey : (visibleOrder.has(a.rowKey) ? a.rowKey : `g:${a.groupKey}`);
+          const bKey = b.rowKey.startsWith('g:') ? b.rowKey : (visibleOrder.has(b.rowKey) ? b.rowKey : `g:${b.groupKey}`);
+          return (visibleOrder.get(aKey) ?? Infinity) - (visibleOrder.get(bKey) ?? Infinity);
+        });
+      }
+      return queue;
+    }
+
+    function setTestAllButtonState(text, background = 'var(--success)', onclick = () => testAll()) {
+      const btn = document.getElementById('test-all-btn');
       if (!btn) return;
-      btn.style.display = 'none';
+      btn.textContent = text;
+      btn.style.background = background;
+      btn.onclick = onclick;
+      btn.style.display = 'inline-block';
+    }
 
+    function clearTestingRow(rowKey) {
+      if (rowKey) {
+        const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
+        row?.classList.remove('row-testing');
+      }
+      document.querySelectorAll('tr.row-testing').forEach(row => row.classList.remove('row-testing'));
+      testAllCurrentRowKey = null;
+    }
+
+    function updateTestAllButtonVisibility() {
+      const btn = document.getElementById('test-all-btn');
+      if (!btn || testAllRunning) return;
+      btn.style.display = buildTestAllQueue().length > 0 ? 'inline-block' : 'none';
+    }
+
+    // A model heading's Test button has the same sequential fan-out as Test All, but starts with
+    // that heading's inactive main-table providers. Each request is exact-provider, so a healthy
+    // sibling is never selected accidentally and the visual order is preserved.
+    async function testModelGroupButton(btn, opts) {
+      if (testAllRunning || !opts?.members?.length) return;
+      const members = opts.members
+        .map(member => allModels.find(m => m.providerKey === member.providerKey && m.modelId === member.modelId))
+        .filter(m => m && !isRowUp(m) && !isRowStruck(m));
+      if (members.length === 0) return;
+      const groupKey = opts.rowKey?.startsWith('g:') ? opts.rowKey.slice(2) : null;
+      if (groupKey && collapsedModelGroups.has(groupKey)) {
+        collapsedModelGroups.delete(groupKey);
+        render(true);
+      }
+      testAllQueue = members.map(model => ({ model, rowKey: getModelRowKey(model), modelKey: getModelRowKey(model), groupKey: opts.rowKey?.startsWith('g:') ? opts.rowKey.slice(2) : null }));
+      testAllCompleted = 0;
+      testAllRunning = true;
+      testAllCancelRequested = false;
+      setTestAllButtonState('↻ Testing…', 'var(--success)', () => cancelTestAll());
       try {
-        const res = await fetch('/api/restest-models', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        });
-        const data = await res.json();
-        if (!data.ok || !data.jobId) {
-          btn.textContent = '↻ Rerun Tests';
-          btn.style.display = 'inline-block';
-          return;
+        for (const item of testAllQueue) {
+          if (testAllCancelRequested) break;
+          const current = allModels.find(m => getModelRowKey(m) === (item.modelKey || item.rowKey));
+          if (!current || isRowUp(current) || isRowStruck(current)) continue;
+          await runTestAllItem(item);
         }
-        restestJobId = data.jobId;
-        restestCancelToken = { cancelled: false };
-        btn.textContent = '&#x21bb; Testing…';
-        btn.style.background = 'var(--success)';
-        btn.onclick = () => cancelRerun();
-        btn.style.display = 'inline-block';
-        pollRestestStatus(data.jobId);
-      } catch (err) {
-        btn.textContent = '&#x21bb; Rerun Tests';
-        btn.style.background = 'var(--success)';
-        btn.style.display = 'inline-block';
+      } finally {
+        finishTestAll(testAllCancelRequested ? 'cancelled' : 'done');
       }
     }
 
-    async function cancelRerun() {
-      if (!restestJobId) return;
-      restestCancelToken.cancelled = true;
-      if (restestPollTimer) {
-        clearTimeout(restestPollTimer);
-        restestPollTimer = null;
+    async function runTestAllItem(item) {
+      if (item.groupKey && collapsedModelGroups.has(item.groupKey)) {
+        collapsedModelGroups.delete(item.groupKey);
+        for (const group of lastMainGroups) {
+          if (group.key !== item.groupKey && group.members.length > 1) collapsedModelGroups.add(group.key);
+        }
+        render(true);
       }
+      const row = document.querySelector(`[data-row-key="${CSS.escape(item.rowKey)}"]`);
+      if (!row) return false;
+      testAllCurrentRowKey = item.rowKey;
+      row.classList.add('row-testing');
+      const button = row.querySelector('.test-btn:not([disabled])');
+      if (!button) {
+        clearTestingRow(item.rowKey);
+        return false;
+      }
+      await testModelButton(button, {
+        rowKey: item.rowKey,
+        providerKey: item.model.providerKey,
+        modelId: item.model.modelId,
+      });
+      testAllCompleted++;
+      const btn = document.getElementById('test-all-btn');
+      if (btn && testAllRunning) {
+        btn.textContent = `↻ ${testAllCompleted}/${testAllQueue.length}`;
+      }
+      clearTestingRow(item.rowKey);
+      return true;
+    }
+
+    async function testAll() {
+      if (testAllRunning) return;
+      testAllQueue = buildTestAllQueue();
+      if (testAllQueue.length === 0) {
+        updateTestAllButtonVisibility();
+        return;
+      }
+      testAllRunning = true;
+      testAllCancelRequested = false;
+      testAllCompleted = 0;
+      setTestAllButtonState('↻ Testing…', 'var(--success)', () => cancelTestAll());
       try {
-        await fetch('/api/restest-cancel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jobId: restestJobId }),
-        });
-      } catch {
-        // Best-effort cancel; the server-side job will stop on its own eventually.
+        for (const item of testAllQueue) {
+          if (testAllCancelRequested) break;
+          // Revalidate against the current main-table snapshot before every request. This prevents
+          // a successful test from moving into the unavailable table and still being picked up later.
+          const current = testableMainGroups().flatMap(g => g.members)
+            .find(m => getModelRowKey(m) === (item.modelKey || item.rowKey));
+          if (!current || isRowUp(current) || isRowStruck(current)) continue;
+          await runTestAllItem({ model: current, rowKey: item.rowKey, modelKey: item.modelKey, groupKey: item.groupKey });
+        }
+      } finally {
+        finishTestAll(testAllCancelRequested ? 'cancelled' : 'done');
       }
-      restestJobId = null;
-      const btn = document.getElementById('rerun-tests-btn');
+    }
+
+    function cancelTestAll() {
+      if (!testAllRunning) return;
+      testAllCancelRequested = true;
+      clearTestingRow(testAllCurrentRowKey);
+      setTestAllButtonState('↻ Cancelled', 'var(--text-muted)', () => testAll());
+    }
+
+    function finishTestAll(status) {
+      clearTestingRow(testAllCurrentRowKey);
+      testAllRunning = false;
+      testAllCancelRequested = false;
+      const btn = document.getElementById('test-all-btn');
       if (btn) {
-        btn.textContent = '&#x21bb; Cancelled';
-        btn.style.background = 'var(--text-muted)';
-        btn.onclick = () => rerunTests();
+        btn.textContent = status === 'cancelled' ? '↻ Cancelled' : '✓ Done';
+        btn.style.background = status === 'cancelled' ? 'var(--text-muted)' : 'var(--success)';
+        btn.onclick = () => testAll();
         setTimeout(() => {
-          if (btn) {
-            btn.textContent = '↻ Rerun Tests';
+          if (!testAllRunning && btn.textContent.includes('Done')) {
+            btn.textContent = '↻ Test All';
             btn.style.background = 'var(--success)';
-            btn.onclick = () => rerunTests();
+            btn.onclick = () => testAll();
           }
         }, 3000);
       }
-    }
-
-    function pollRestestStatus(jobId) {
-      if (!jobId || restestCancelToken?.cancelled) return;
-      fetch('/api/restest-status?jobId=' + encodeURIComponent(jobId))
-        .then(res => res.json())
-        .then(data => {
-          if (!data.ok || !data.job) {
-            finishRerun('error');
-            return;
-          }
-          const job = data.job;
-          const btn = document.getElementById('rerun-tests-btn');
-          // 'interrupted' is what the server writes when it restarted mid-job. The work is gone
-          // server-side, so this has to end the poll instead of spinning forever on a job that can
-          // never advance (the restart-under-an-open-tab case).
-          if (job.status === 'done' || job.status === 'partial' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'interrupted') {
-            finishRerun(job.status);
-          } else {
-            // Update button to show progress
-            if (btn && job.total > 0) {
-              btn.textContent = `&#x21bb; ${job.completed}/${job.total}`;
-            }
-            restestPollTimer = setTimeout(() => pollRestestStatus(jobId), 1500);
-          }
-        })
-        .catch(() => {
-          restestPollTimer = setTimeout(() => pollRestestStatus(jobId), 1500);
-        });
-    }
-
-    function finishRerun(status) {
-      if (restestPollTimer) {
-        clearTimeout(restestPollTimer);
-        restestPollTimer = null;
-      }
-      const btn = document.getElementById('rerun-tests-btn');
-      if (btn) {
-        if (status === 'done') {
-          btn.textContent = '&#x2713; Done';
-          btn.style.background = 'var(--success)';
-        } else if (status === 'partial') {
-          btn.textContent = '&#x26a0;&#xfe0f; Partial';
-          btn.style.background = 'var(--warning)';
-        } else if (status === 'cancelled') {
-          btn.textContent = '&#x21bb; Cancelled';
-          btn.style.background = 'var(--text-muted)';
-        } else if (status === 'interrupted') {
-          btn.textContent = '\u26a0\ufe0f Interrupted';
-          btn.style.background = 'var(--warning)';
-        } else {
-          btn.textContent = '↻ Rerun Tests';
-          btn.style.background = 'var(--success)';
-        }
-        btn.onclick = () => rerunTests();
-        setTimeout(() => {
-          if (btn) {
-            btn.textContent = '↻ Rerun Tests';
-            btn.style.background = 'var(--success)';
-            btn.onclick = () => rerunTests();
-          }
-        }, 3000);
-      }
-      restestJobId = null;
-      restestCancelToken = null;
-      // Refresh the table to pick up the new test results
+      testAllQueue = [];
+      testAllCompleted = 0;
       fetchData().catch(() => {});
+      updateTestAllButtonVisibility();
     }
+
+
+
 
     // The provider's own reset header inside a JSON error body, when it names one.
     function rateLimitResetFromBody(errorText) {
@@ -4861,6 +5032,11 @@
         }
       });
     }
+    // rowVerdict is partly time-dependent: a ready response or provider window can
+    // expire without any API snapshot changing. Re-evaluate the scatter once per
+    // second so its redraw guard catches that transition; the guard still leaves the
+    // existing SVG untouched unless a verdict or eligibility state actually changed.
+    drawSpeedIntellScatter(allModels);
     setInterval(updateRateLimitCountdowns, 1000);
     setInterval(updatePoolBarCountdowns, 1000);
 
@@ -5030,21 +5206,6 @@
             : '<div class="test-cell"></div>'}</td>`;
     }
 
-    function providerCapabilityNote(m) {
-      const models = Array.isArray(m) ? m : [m];
-      // A model heading can cover several unrelated providers. Do not put one child's
-      // FreeModels caveat on the whole heading; its provider row carries that disclosure.
-      // Uniform groups can still surface the caveat without implying anything false.
-      if (models.length > 1 && (
-        models.some(model => model?.continuity !== 'local-transcript')
-        || models.some(model => model?.toolSupport !== 'best-effort')
-      )) return '';
-      const notes = [];
-      if (models.some(model => model?.continuity === 'local-transcript')) notes.push('stateless relay · local transcript continuity');
-      if (models.some(model => model?.toolSupport === 'best-effort')) notes.push('tools best-effort');
-      return notes.join(' · ');
-    }
-
     function createRow(m) {
       const tr = document.createElement('tr');
       tr.dataset.rowType = 'row';
@@ -5061,7 +5222,6 @@
               <button type="button" class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" data-pin-model="${escapeAttr(m.modelId)}" data-pin-provider="${escapeAttr(m.providerKey)}" title="${isPinnedRow ? 'Unpin exact provider row' : 'Pin exact provider row'}">📌</button>
             </div>
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
-            ${providerCapabilityNote(m) ? `<div class="provider-capability-note" title="This provider uses a stateless relay; Hammer can reconstruct an explicitly identified local transcript, but the upstream has no session affinity.">${escapeHtml(providerCapabilityNote(m))}</div>` : ''}
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
@@ -5109,14 +5269,16 @@
         case 'design-arena': return { short: 'Arena*', label: 'Design Arena Elo, AA-interpolated' };
         case 'metadata': return { short: 'Meta*', label: 'Metadata estimate' };
         case 'local-fallback': return { short: 'Offline*', label: 'Offline fallback' };
-        case 'default-fallback': return { short: 'Default*', label: 'Default fallback' };
+        case 'family-estimate': return { short: 'Family*', label: 'Same-family estimate' };
+        case 'default-fallback': return { short: 'Floor*', label: 'Conservative AA floor' };
         default: return { short: 'Estimate*', label: 'Estimated intelligence score' };
       }
     }
 
     // Every row displays one number: the Artificial Analysis Intelligence Index.
     // AA's own rating is shown plain; a value interpolated from an Elo (or calibrated
-    // from a metadata/offline score) is an estimate and gets an asterisk.
+    // from a metadata/offline/family score) is an estimate and gets an asterisk. Even
+    // the unresolved fallback is an explicit AA-scale value (0.1), never a blank.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);
@@ -5220,23 +5382,6 @@
         btn.style.opacity = '1';
         setTimeout(() => { statusEl.textContent = ''; }, 5000);
       }
-    }
-
-    function renderPinningSettings() {
-      const container = document.getElementById('pinning-settings-container');
-      if (!container) return;
-      container.innerHTML = `
-        <div class="autoupdate-panel">
-          <div>
-            <h3 style="margin:0 0 6px; font-size:1rem;">Pin targets</h3>
-            <div style="color:var(--text-muted); font-size:0.82rem; line-height:1.5;">
-              <div><strong>Model heading:</strong> pin the model family. Provider failover stays inside that family.</div>
-              <div><strong>Provider row:</strong> pin that exact provider/model. Its errors are exposed without fallback.</div>
-              <div style="margin-top:6px;">Pins last for this server session and reset when Hammer restarts.</div>
-            </div>
-          </div>
-        </div>
-      `;
     }
 
     function closeProviderSyncModal() {
@@ -5406,32 +5551,6 @@
       }
     }
 
-    // Opening the providers view is demand, and imported providers are only discovered on demand.
-    // Without this the page could only ever show "0 models" for every import that no request had
-    // happened to touch — which is what it did. Once per page load: the server keeps its own
-    // cache, and only providers that can actually answer are probed.
-    let discoverySweepStarted = false;
-    async function discoverPendingProviders() {
-      if (discoverySweepStarted) return;
-      discoverySweepStarted = true;
-      try {
-        const res = await fetch('/api/providers/discover-pending', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
-        });
-        if (!res.ok) return;
-        const data = await res.json().catch(() => ({}));
-        const found = (data.providers || []).filter(entry => (entry.modelCount || 0) > 0);
-        // Only rebuild the panels when something actually arrived: a sweep that found nothing
-        // must not tear down the DOM under the user's cursor.
-        if (found.length === 0) return;
-        await fetchData();
-        await loadSettings();
-      } catch (err) {
-        console.error('discovery sweep failed:', err);
-      }
-    }
-
     function renderProviderSyncError(providerName, errorMessage) {
       openProviderSyncModal(
         `${providerName} Model Sync`,
@@ -5557,7 +5676,6 @@
       } catch (e) { console.error('loadSettings: secondary settings fetch failed:', e); }
 
       renderLoggingSettings((meta && meta.logging) || {});
-      renderPinningSettings();
 
       const activeContainer = document.getElementById('active-providers-container');
       const setupContainer = document.getElementById('setup-providers-container');
@@ -6174,10 +6292,8 @@
         });
         restoreInputState();
       } catch (err) { console.error(err); }
-      // After the panels are up, so a slow sweep never delays the page: read the model lists of
-      // the imported providers that have none yet. This is the only automatic discovery trigger;
-      // everything else is a click or a request that needs a model.
-      void discoverPendingProviders();
+      // Pending imported-provider discovery is completed during server startup. Explicit
+      // provider refreshes and request-triggered discovery remain available for later recovery.
     }
 
     // Saving a provider key/enable state makes the server refresh that
@@ -7808,9 +7924,8 @@
     // provider fact the server sends (`signupUrl`, derived from the provider descriptor).
     //
     // A provider with no credential page keeps the plain heading rather than a link to
-    // nowhere. That is not an oversight, and it is the signature of an unfinished fact
-    // rather than of a missing feature: FreeModels routes real keyless browser traffic and
-    // has no dashboard key to obtain, so its heading is final. An imported provider with no
+    // nowhere. That is not an oversight: it is the signature of an unfinished fact
+    // rather than of a missing feature. An imported provider with no
     // URL is a gap in `key-pages.json` waiting for someone to confirm the page, which is why
     // the curator refuses to guess one.
     function providerTitleHtml(provider, tooltip = 'Get API key') {
@@ -8430,9 +8545,68 @@
       source.onmessage = (event) => {
         let payload = null;
         try { payload = JSON.parse(event.data); } catch { return; }
-        // A selection move is the case this stream exists for; evidence is the reason it
-        // happened. Both change what the table and the plots should be saying, so both re-read.
-        if (payload && (payload.type === 'selection' || payload.type === 'evidence' || payload.type === 'pin')) {
+        if (!payload || payload.type === 'hello') return;
+        routerEventRevision++;
+
+        // Paint the event before starting the relatively expensive snapshot request. A fallback
+        // is a live routing decision, so every surface that names the current model — the table
+        // highlight, KPI, topology, and speed/intelligence plot — must move on the SSE frame.
+        if (payload.type === 'selection' && payload.source === 'fallback'
+          && payload.modelId && payload.providerKey) {
+          routerFallbackSelection = {
+            modelId: payload.modelId,
+            providerKey: payload.providerKey,
+            fromModelId: payload.fromModelId || null,
+            fromProviderKey: payload.fromProviderKey || null,
+            reason: payload.reason || 'the selected model refused the request',
+            at: payload.at || Date.now(),
+          };
+          currentBestModelId = payload.modelId;
+          currentBestProviderKey = payload.providerKey;
+          render();
+          updateKPIs(allModels, currentBestModelId, currentBestProviderKey);
+        } else if (payload.type === 'provider-health' && payload.scopeKey) {
+          // Provider bench/recovery is part of the same live routing story. Mark the matching
+          // rows immediately; the next snapshot replaces these optimistic fields with the full
+          // provider-health object and its exact expiry.
+          for (const row of allModels) {
+            if (providerInstanceKey(row) !== payload.scopeKey) continue;
+            row.providerBenched = payload.benched === true;
+            row.routingEligible = !row.providerBenched && row.status === 'up';
+            row.providerOutage = payload.benched
+              ? { since: payload.since, until: payload.until, reason: payload.reason }
+              : null;
+          }
+          render();
+          updateKPIs(allModels, currentBestModelId, currentBestProviderKey);
+        } else if (payload.type === 'evidence' && payload.providerKey && payload.modelId) {
+          // The failed row's status and response are part of the same visible event. Patch the
+          // local snapshot now; the refresh below supplies any fields the event intentionally
+          // omits (quota windows, usage counters, and the complete server verdict).
+          const row = allModels.find(m => m.providerKey === payload.providerKey && m.modelId === payload.modelId);
+          if (row) {
+            row.status = payload.status || row.status;
+            row.lastError = { code: row.httpCode || '', message: payload.reason || 'The provider refused the request.', updatedAt: payload.at || Date.now() };
+            row.lastResponse = {
+              ...(row.lastResponse || {}),
+              text: null,
+              error: payload.reason || 'The provider refused the request.',
+              ok: false,
+              at: payload.at || Date.now(),
+              routedFailure: payload.source || 'upstream',
+            };
+            row.routingEligible = false;
+            render();
+            updateKPIs(allModels, currentBestModelId, currentBestProviderKey);
+          }
+        } else if (payload.type === 'selection' && payload.source === 'restored') {
+          routerFallbackSelection = null;
+        }
+
+        // Reconcile against the server in the background. The immediate paint above is never
+        // removed merely because this request was queued; the event revision guard in fetchData
+        // protects it from an older in-flight response.
+        if (payload.type === 'selection' || payload.type === 'evidence' || payload.type === 'provider-health' || payload.type === 'pin') {
           scheduleRefresh();
         }
       };

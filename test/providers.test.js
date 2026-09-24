@@ -61,16 +61,17 @@ import {
   requiredCredentialFields,
   resolveShapedChatUrl,
   shapedHeaders,
-  shapedModelNeedsKey,
   shapedTimeoutMs,
   shapingReadiness,
   substituteCredentialFields,
 } from '../lib/providers/adapters.js'
 import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
+  clearKiroTokenCaches,
   accountRefusalIn,
   buildModelTestPrompt,
   buildProviderRequestBody,
+  classifyTestTransportError,
   buildProviderRequestHeaders,
   credentialFieldWrites,
   faviconDomainFromUrl,
@@ -84,6 +85,8 @@ import {
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
+  fetchJsonWithRetry,
+  isRetryableDiscoveryError,
   extractOpenAICompatibleModelRecords,
   isChatCompatibleDiscoveredModel,
   isProviderAuthOptional,
@@ -94,7 +97,7 @@ import {
   resolveRequestModels,
 } from '../lib/providers/discovery.js'
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
-import { sources, canonicalizeModelId, MODELS } from '../sources.js'
+import { sources, canonicalizeModelId, getScore, MODELS } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import { isAccountBudgetRefusalText, isAuthoritativeProbeFailure, isCachedReplayResponse, isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
 import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
@@ -111,6 +114,20 @@ const imported = () => listProviders().filter(d => d.origin === 'omniroute')
 const activationOf = activation => imported().filter(d => d.activation === activation)
 
 // ── Behavior parity with the tables the registry replaced ──────────────────────────────
+
+test("Cohere's live Command models all have offline intelligence fallbacks", () => {
+  const expected = {
+    'command-a-reasoning-08-2025': 0.49,
+    'command-a-vision-07-2025': 0.44,
+    'command-a-03-2025': 0.4341,
+    'command-r7b-12-2024': 0.286,
+    'command-r-plus-08-2024': 0.404,
+    'command-r-08-2024': 0.3297,
+  }
+  for (const [modelId, score] of Object.entries(expected)) {
+    assert.equal(getScore(modelId), score, `${modelId} should keep its researched fallback`)
+  }
+})
 
 test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', () => {
   sortsDeepEqual(apiKeyEnvVarTable(), {
@@ -169,16 +186,11 @@ test('github-copilot is a bearer but never joins the OAuth account pool', () => 
   assert.equal(oauthAccountProviders().has('github-copilot'), false)
 })
 
-test('freemodels has no signup URL, matching the gap in the old table', () => {
-  assert.equal('freemodels' in signupUrlTable(), false)
-})
-
-test('the optional-auth set stays the pre-refactor five, and ollama stays local-only', () => {
+test('the optional-auth set stays keyless, and ollama stays local-only', () => {
   // The refactor replaced a hardcoded `OPTIONAL_BEARER_AUTH_PROVIDERS` set with a lookup on
-  // `auth.optional`. These are the five it held, less `opencode`, which hammer no longer
-  // ships: each must still declare it.
+  // `auth.optional`. These providers must still declare it.
   const config = { apiKeys: {}, providers: {} }
-  for (const key of ['kilocode', 'empero', 'freemodels', 'gptfree']) {
+  for (const key of ['kilocode', 'empero', 'gptfree']) {
     assert.equal(getProvider(key).auth.optional, true, `${key} must declare optional`)
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
@@ -213,19 +225,34 @@ test('a public catalog on a key-gated provider is not read as capability', () =>
   assert.equal(providerDiscoveryNeedsCredential(hosted, 'uncloseai'), false)
 })
 
-test('a provider that cannot authenticate contributes no rows, whatever its catalog declares', () => {
+test('a provider that cannot authenticate contributes no rows, whatever its catalog declares', async () => {
   // The invariant the model table holds now: a row exists only for a provider that can answer.
   // Its absence produced the same bug three times, each a provider whose *catalog* was
   // reachable while its *credential* was not — Kilo's gateway (391 models, 21 of them keyless),
   // Ollama Cloud (public `/api/tags`, key-gated chat), and GitHub Copilot, whose twelve curated
   // rows were merged back by name whenever no token was configured. Every one of those rows
   // answered NO_KEY: capability in the table, an auth error on the first request.
-  const cleared = ['GITHUB_COPILOT_TOKEN', 'DEVIN_API_KEY', 'DEVIN_SESSION_TOKEN', 'OLLAMA_API_KEY']
+  const cleared = ['GITHUB_COPILOT_TOKEN', 'DEVIN_API_KEY', 'DEVIN_SESSION_TOKEN', 'OLLAMA_API_KEY', 'KIRO_REFRESH_TOKEN']
   const saved = cleared.map(name => [name, process.env[name]])
+  // Kiro also discovers a refresh token from ~/.aws/sso/cache/kiro-auth-token.json, so clearing
+  // the env alone does not make it unconfigured on a dev machine that has that cache.
+  // Clear the in-memory discovery cache and hide the on-disk file for the duration of this test.
+  const { existsSync: _existsSyncForTest, renameSync: _renameSyncForTest } = await import('node:fs');
+  const { homedir: _homedirForTest } = await import('node:os');
+  const { join: _joinForTest } = await import('node:path');
+  const _kiroCachePath = _joinForTest(_homedirForTest(), '.aws', 'sso', 'cache', 'kiro-auth-token.json');
+  const _kiroCacheBackupPath = _kiroCachePath + '.test-backup';
+  let _kiroCacheWasPresent = false;
   try {
     // A credential in the environment is a configured credential, so the negative cases below
     // are only meaningful with these unset. Restored in the `finally`.
     for (const name of cleared) delete process.env[name]
+    clearKiroTokenCaches();
+    if (_existsSyncForTest(_kiroCachePath) && !_existsSyncForTest(_kiroCacheBackupPath)) {
+      _renameSyncForTest(_kiroCachePath, _kiroCacheBackupPath);
+      _kiroCacheWasPresent = true;
+    }
+    clearKiroTokenCaches();
     const empty = { apiKeys: {}, providers: {} }
 
     for (const key of ['github-copilot', 'openai-codex', 'kiro', 'devin', 'ollama', 'cohere']) {
@@ -249,7 +276,7 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
     // Keyless by declaration is not gated. Asking rather than assuming is what keeps this from
     // hardening into "an unconfigured provider is never listed", which would delete providers
     // that work fine and are the reason the import exists.
-    for (const key of ['gptfree', 'freemodels', 'kilocode', 'empero', 'uncloseai']) {
+    for (const key of ['gptfree', 'kilocode', 'empero', 'uncloseai']) {
       assert.equal(providerCanServe(empty, key), true, `${key} is keyless by declaration`)
     }
     // Ollama is keyless by where it points instead: a local base URL needs no credential, and
@@ -260,14 +287,18 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    clearKiroTokenCaches();
+    if (_kiroCacheWasPresent && _existsSyncForTest(_kiroCacheBackupPath)) {
+      try { _renameSyncForTest(_kiroCacheBackupPath, _kiroCachePath); } catch {}
+    }
+    clearKiroTokenCaches();
   }
 })
 
 test('a Test asks its question in prose, and asks a different one on every click', () => {
   // A test has to ask something the provider has not answered before, or a provider that caches
   // completions answers it from cache forever. Only the text can carry that: measured live on
-  // g4f's route to Pollinations, `seed`, `temperature` and `user` are all normalised out of the
-  // cache key (five bodies differing only in those fields returned one identical `x-cache-key`),
+  // a caching route, `seed`, `temperature` and `user` are all normalised out of the
   // while two different marker words produced two different keys and two fresh generations.
   const QUESTION = 'Please respond with a creative, funny, inspiring 30 words about hammers.'
   const prompts = Array.from({ length: 500 }, () => buildModelTestPrompt())
@@ -304,6 +335,37 @@ test('a Test asks its question in prose, and asks a different one on every click
   assert.match(buildModelTestPrompt(() => 0), /Mention an (amber|anchor)/)
 })
 
+test('a Test timeout is identified by its own deadline, not an arbitrary AbortError', () => {
+  const upstreamAbort = Object.assign(new Error('upstream stream aborted'), { name: 'AbortError' })
+
+  assert.deepEqual(
+    classifyTestTransportError(upstreamAbort, { timedOut: false, elapsedMs: 12_345, timeoutMs: 60_000 }),
+    { error: 'upstream stream aborted', isTimeout: false, elapsedMs: 12_345 },
+  )
+
+  assert.deepEqual(
+    classifyTestTransportError(new Error('aborted by the test timer'), { timedOut: true, elapsedMs: 60_001, timeoutMs: 60_000 }),
+    { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 60_001 },
+  )
+  assert.deepEqual(
+    classifyTestTransportError(new Error('deadline'), { timedOut: true, elapsedMs: 59_500, timeoutMs: 60_000 }),
+    { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 59_500 },
+  )
+  assert.deepEqual(
+    classifyTestTransportError(new Error('deadline'), { timedOut: true, elapsedMs: 60_500, timeoutMs: 60_000 }),
+    { error: 'Request timed out after 61s.', isTimeout: true, elapsedMs: 60_500 },
+  )
+
+  assert.deepEqual(
+    classifyTestTransportError(null, { timedOut: true, elapsedMs: -1, timeoutMs: 0 }),
+    { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 60_000 },
+  )
+  assert.deepEqual(
+    classifyTestTransportError(new Error(''), null),
+    { error: 'Network error', isTimeout: false, elapsedMs: 0 },
+  )
+})
+
 test('a chat endpoint names the site a provider\'s brand mark comes from', () => {
   // The plot used to draw every imported provider as a blank disc, because the domain it used
   // came from a hand-written list of hammer's own fifteen providers. The derivation replaces it:
@@ -318,7 +380,6 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
   // platform's icon rather than the provider's, and a single label is a machine.
   assert.equal(faviconDomainFromUrl('https://{region}-aiplatform.googleapis.com/v1/chat'), '')
   assert.equal(faviconDomainFromUrl('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'), '')
-  assert.equal(faviconDomainFromUrl('https://freemodels-chat.freemodels.workers.dev'), '')
   assert.equal(faviconDomainFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/agent_stream'), '')
   assert.equal(faviconDomainFromUrl('http://localhost:11434/v1/chat/completions'), '')
   assert.equal(faviconDomainFromUrl('not a url'), '')
@@ -329,7 +390,6 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
   // exists — but a host that *is* a hosting platform, or sits under one, is refused here too: its
   // mark would be the platform's.
   assert.equal(faviconHostFromUrl('https://spark-api-open.xf-yun.com/v1/chat/completions'), 'spark-api-open.xf-yun.com')
-  assert.equal(faviconHostFromUrl('https://freemodels-chat.freemodels.workers.dev'), '')
   assert.equal(faviconHostFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/x'), '')
   assert.equal(faviconHostFromUrl('file:///etc/passwd'), '')
 
@@ -362,11 +422,9 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
 test('a provider offers every site it names, so a missing icon is not a missing logo', () => {
   // One derived domain is one guess, and the ways it misses are ordinary: the endpoint is on a
   // hosting platform, the endpoint is a template, or the company domain simply has no icon while
-  // the console the provider names does. FreeModels is the first case — its chat URL is a
-  // Cloudflare function, and its own site is named by `contextUrl` — and Vertex the second, whose
+  // the console the provider names does. Vertex is one case whose endpoint is a template and
   // endpoint is a template and whose mark is only reachable through the site its signup page
   // belongs to.
-  assert.deepEqual(providerFaviconDomains('freemodels'), ['freemodels.pro'])
   assert.equal(providerFaviconDomains('vertex')[0], 'cloud.google.com')
 
   // iFlytek is the third: `spark-api-open.xf-yun.com` names the cloud it is served from first,
@@ -423,6 +481,100 @@ test('the plot asks one place for a brand mark, and keeps no second domain list'
   // tried.
   assert.match(src, /const markHrefs = node\.markHrefs\b/, 'the node must carry its candidates')
   assert.match(src, /while \(\+\+markIdx < markHrefs\.length/, 'the walk must be bounded by the list')
+})
+
+// The plot keeps its model→brand map in the dashboard source, so the tests evaluate exactly the
+// block the page runs (the map, its tokenizer, the prefix test and the resolver) instead of a copy
+// of it here that could drift away from what the nodes actually draw.
+function modelDomainResolverFromPlot() {
+  const src = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const from = src.indexOf('const MODEL_DOMAINS = {')
+  const fnStart = src.indexOf('function getModelDomain(m)', from)
+  assert.ok(from !== -1 && fnStart !== -1, 'the plot must keep its model→brand map and resolver')
+  // The block runs to the end of `getModelDomain`, brace-matched so the helpers beside it come
+  // with it. A rename that breaks this is a changed shape, which is what the assertion means.
+  let depth = 0, end = -1
+  for (let i = src.indexOf('{', fnStart); i < src.length; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+  }
+  assert.ok(end > 0, 'getModelDomain must be a complete function')
+  return new Function(`${src.slice(from, end)}; return getModelDomain;`)()
+}
+
+test('a model node resolves its brand from the id, its gateway namespace, or its label', () => {
+  const getModelDomain = modelDomainResolverFromPlot()
+
+  // The nodes that drew a blank disc: Cohere Labs' Tiny Aya family — under the org name
+  // HuggingFace's router prefixes and under the bare ids an aggregator publishes — and GitHub's
+  // Copilot-only catalog, whose agent, search and compaction models exist nowhere else, so GitHub
+  // is their vendor as well as their host. Every one of these domains answers with a real icon:
+  // a domain with no icon of its own is not a logo, it is the same blank disc one request later.
+  assert.equal(getModelDomain({ modelId: 'CohereLabs/tiny-aya-global' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'tiny-aya-fire' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'CohereLabs/aya-expanse-32b' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'CohereLabs/c4ai-command-r-08-2024' }), 'cohere.com')
+  // The same family under the org name its weights were first published under, and under the
+  // bare C4AI ids an aggregator relays: `C4AI Aya` is Cohere Labs' mark or it is nothing.
+  assert.equal(getModelDomain({ modelId: 'CohereForAI/c4ai-aya-expanse-32b' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'c4ai-aya-expanse-32b' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'hf.co/CohereForAI/c4ai-aya-23-35b' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'unmoderated-gpt' }), 'openai.com')
+  // Cohere's Parse 5 vision model: the brand is in neither the provider nor the label's words.
+  assert.equal(getModelDomain({ modelId: 'parse-v5.0', label: 'Parse V5.0' }), 'cohere.com')
+  assert.equal(getModelDomain({ modelId: 'xai-z/grok-4-fast' }), 'x.ai')
+  assert.equal(getModelDomain({ modelId: 'meta/muse-glimmer-30b' }), 'meta.com')
+  assert.equal(getModelDomain({ modelId: 'allenai/OLMo-2-1124-7B-Instruct' }), 'allenai.org')
+  assert.equal(getModelDomain({ modelId: 'exec-agent-a' }), 'github.com')
+  assert.equal(getModelDomain({ modelId: 'copilot-search-c' }), 'github.com')
+  assert.equal(getModelDomain({ modelId: 'trajectory-compaction' }), 'github.com')
+  assert.equal(getModelDomain({ modelId: 'mai-code-1' }), 'microsoft.com')
+  assert.equal(getModelDomain({ modelId: 'codex-mini-latest' }), 'openai.com')
+  assert.equal(getModelDomain({ modelId: 'qvq-max-latest' }), 'qwen.ai')
+  assert.equal(getModelDomain({ modelId: 'ERNIE-4.0-8K' }), 'baidu.com')
+  assert.equal(getModelDomain({ modelId: 'abab5.5-chat' }), 'minimax.io')
+  assert.equal(getModelDomain({ modelId: 'yi-lightning' }), '01.ai')
+  assert.equal(getModelDomain({ modelId: 'rnj-1' }), 'essential.ai')
+  assert.equal(getModelDomain({ modelId: 'sensenova-6.7-flash-lite' }), 'sensetime.com')
+  assert.equal(getModelDomain({ modelId: 'sparkdesk-v2.1' }), 'xfyun.cn')
+
+  // A gateway names its own backend in front of the model it routed to, and the brand is still
+  // found behind that prefix: the gateway's name is never what the node is marked with.
+  assert.equal(getModelDomain({ modelId: 'srv_mp5miql908c8738d71be:Airforce:claude-fable-5.1' }), 'anthropic.com')
+  assert.equal(getModelDomain({ modelId: 'community/AkshayCoder48/o3-mini' }), 'openai.com')
+  assert.equal(getModelDomain({ modelId: 'pa:f06eca84:llama3-8b' }), 'meta.com')
+  assert.equal(getModelDomain({ modelId: 'z-ai/glm5' }), 'zhipuai.cn')
+  assert.equal(getModelDomain({ modelId: '@cf/qwen/qwen3.8-27b' }), 'qwen.ai')
+  assert.equal(getModelDomain({ modelId: 'kilo-auto/free' }), 'kilocode.com')
+  assert.equal(getModelDomain({ modelId: 'openrouter/free' }), 'openrouter.ai')
+
+  // The negative that keeps the map honest: an anonymous model has no brand to draw, and a
+  // gateway's routing row is a verb, not a product — both keep their monogram rather than
+  // borrowing the mark of whoever happens to serve them.
+  for (const id of ['corethink:free', 'giga-potato-thinking:free', 'stealth/space-bunny-alpha', 'auto']) {
+    assert.equal(getModelDomain({ modelId: id }), '', `${id} names no brand and must stay a monogram`)
+  }
+  assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (G4F)' }), '')
+  assert.equal(getModelDomain({ modelId: '' }), '')
+})
+
+test('every model row hammer ships resolves to a brand mark unless it names no brand', () => {
+  // The same invariant the provider table holds, for the other kind of node: a curated row exists
+  // because hammer offers the model, so its node should arrive carrying a mark instead of an empty
+  // disc. The exceptions are ids that name no brand at all — the two stealth models OpenRouter
+  // publishes anonymously and the gateways' own `auto` routers — and they are listed here so that
+  // a third one cannot appear unnoticed.
+  const getModelDomain = modelDomainResolverFromPlot()
+  const anonymous = new Set(['corethink:free', 'giga-potato-thinking:free', 'auto'])
+  for (const [modelId, label] of MODELS) {
+    const domain = getModelDomain({ modelId, label })
+    if (anonymous.has(modelId)) {
+      assert.equal(domain, '', `${modelId} is listed as anonymous, so it must not borrow a brand`)
+      continue
+    }
+    assert.ok(domain, `${modelId} (${label}) would draw as a blank disc`)
+    assert.equal(normalizeFaviconDomain(domain), domain, `${modelId}: ${domain} is not a domain the router will fetch`)
+  }
 })
 
 test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
@@ -506,8 +658,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 17 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 17)
+test('hammer ships 16 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 16)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -546,7 +698,6 @@ test('derivedModelsUrl only rewrites the OpenAI-shaped paths', () => {
     derivedModelsUrl('https://api.groq.com/openai/v1/chat/completions'),
     'https://api.groq.com/openai/v1/models',
   )
-  assert.equal(derivedModelsUrl('https://freemodels-chat.freemodels.workers.dev'), null)
   assert.equal(derivedModelsUrl(null), null)
 })
 
@@ -586,13 +737,13 @@ test('a model named Transcribe is classified Incompatible', () => {
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
 
-test('an audio model refusal on Pollinations is classified Incompatible', () => {
+test('an audio model refusal is classified Incompatible', () => {
   assert.ok(isIncompatibleModelError('Model "assemblyai/universal-3.5-pro" is a audio model and cannot be used on the text endpoint. Use the audio endpoint instead.'))
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
 
-test('Pollinations realtime model refusal is classified Incompatible', () => {
+test('a realtime model refusal is classified Incompatible', () => {
   assert.ok(isIncompatibleModelError('Model "openai/gpt-realtime-2.1-mini" is a realtime model and cannot be used on the text endpoint. Use the realtime endpoint instead.'))
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
@@ -805,11 +956,9 @@ test('the NO_KEY gate reads the registry, so a keyless import is actually callab
   assert.equal(isProviderAuthOptional(config, 'llm7'), false)
   assert.equal(isProviderAuthOptional(config, 'cohere'), false)
   // And hammer's own optional providers keep working, now via their descriptors.
-  for (const key of ['gptfree', 'kilocode', 'empero', 'freemodels']) {
+  for (const key of ['gptfree', 'kilocode', 'empero']) {
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
-  // FreeModels never sends a bearer even when a key exists (Cloudflare bot path).
-  assert.equal(isProviderBearerAuthEnabled(config, 'freemodels'), false)
 })
 
 test('the credential header shape is data, so a non-bearer provider needs no new branch', () => {
@@ -1221,7 +1370,7 @@ test('a plain server error stays a failure rather than becoming a clock', () => 
 })
 
 test('a spent credit balance is a refusal even when the provider renders it as an answer', () => {
-  // Pollinations answers HTTP 200 with the refusal *as the assistant's message*, which is the
+  // A provider can render an account refusal as the assistant's message, which is the
   // one place no status code can reach (see isAccountBudgetRefusalText). This exact wording —
   // live 2026-09-22 — read as an ordinary completion for as long as the predicate only knew
   // "has reached its budget" and "insufficient credit balance": the proxy streamed it to the
@@ -1258,8 +1407,8 @@ const sseFrame = (payload) => `data: ${typeof payload === 'string' ? payload : J
 const SPENT_KEY_NOTICE = "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
 
 test('an account refusal streamed as the answer is refused instead of delivered', async () => {
-  // The failure this pins: Pollinations answers HTTP 200 and then streams "the account behind this
-  // API key doesn't have enough credits…" as ordinary content deltas. Every frame is well formed,
+  // The failure this pins: a provider can answer HTTP 200 and then stream an account refusal as
+  // ordinary content deltas. Every frame is well formed,
   // so the stream reads as a real answer — it reached the caller as the model's reply and the
   // request never failed over. The notice is split across two deltas here on purpose: a guard that
   // only inspected the first content frame would still let it through.
@@ -1375,12 +1524,10 @@ test('a probe refusal about the account is believed at once, not forgiven by rec
 })
 
 test('a cached provider answer is recognized as a replay, not as this request being served', () => {
-  // Pollinations answers a stored prompt from its own cache and does NOT debit the account for
-  // it (live 2026-09-22: `x-cache: HIT` with a year-long immutable `cache-control`, on a key
-  // whose every uncached request was refused for lack of credit). So the header is the only
-  // thing that distinguishes "this model answered" from "this answer was already on file" — and
-  // a manual Test that reads the latter as the former passes on a key that cannot serve real
-  // traffic (see the per-click prompt marker in lib/server.js).
+  // A cached provider answer is distinguished by cache headers from a fresh completion. The
+  // header is the only thing that distinguishes "this model answered" from "this answer was
+  // already on file" — and a manual Test that reads the latter as the former can pass on a
+  // key that cannot serve real traffic.
   assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT' })), true)
   assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT, HIT' })), true, 'Fastly lists one hit per hop')
   assert.equal(isCachedReplayResponse(new Headers({ 'cf-cache-status': 'HIT' })), true)
@@ -1468,7 +1615,6 @@ test('a missing credential field is what unreadable model lists have in common',
 test('keyless providers are identified across both origins', () => {
   const keyless = keylessProviders().map(d => d.key)
   assert.ok(keyless.includes('gptfree'))
-  assert.ok(keyless.includes('freemodels'))
 })
 
 // ── Tool parsers ───────────────────────────────────────────────────────────────────────
@@ -1579,10 +1725,6 @@ test('a bare-credential provider activates with the scheme recorded as null', ()
 
 test('the activation rule holds back what has no declarative equivalent, and only that', () => {
   const base = { authType: 'apikey', authHeader: 'bearer', models: [], baseUrl: 'https://x.test/v1/chat/completions' }
-  // A profiled executor resolves, because every difference it makes is data.
-  const shaped = decideResolution({ key: 'pollinations', access: 'keyless', tos: 'ok', entry: { ...base, format: 'openai', executor: 'pollinations' } })
-  assert.equal(shaped.activation, 'active')
-  assert.deepEqual(shaped.resolution.shaping.premiumModels.includes('gemini'), true)
   // An executor with no profile and no declared OpenAI alternate is still held back.
   assert.equal(
     decideResolution({ key: 'p', access: 'keyless', tos: 'ok', entry: { ...base, format: 'openai', executor: 'some-bespoke-thing' } }).activation,
@@ -1796,50 +1938,6 @@ test('an image cannot be flattened into a string, so it is reported instead of d
   assert.deepEqual(result.droppedParts, ['image_url'])
 })
 
-test('a keyless tier that covers only part of the catalog is a statement about the model', () => {
-  assert.equal(shapedModelNeedsKey('pollinations', 'claude'), true)
-  assert.equal(shapedModelNeedsKey('pollinations', 'openai'), false)
-  // jsonMode is only added when the caller actually asked for JSON, because Pollinations
-  // rejects any request whose messages do not mention it.
-  assert.equal(applyRequestShaping('pollinations', { messages: [] }).body.jsonMode, undefined)
-  assert.equal(applyRequestShaping('pollinations', { messages: [], response_format: { type: 'json_object' } }).body.jsonMode, true)
-})
-
-test('observation beats a stale declaration of keylessness', () => {
-  // Pollinations declared itself `optional` on 2026-07-20; a completion with no credential now
-  // answers 401 UNAUTHORIZED. Trusting the declaration would dispatch every request without a
-  // key and then blame the provider's health for the resulting 401.
-  const pollinations = decideResolution({
-    key: 'pollinations', access: 'recurring', tos: 'ok',
-    entry: {
-      format: 'openai', executor: 'pollinations',
-      baseUrl: 'https://gen.pollinations.ai/v1/chat/completions',
-      authType: 'optional', authHeader: 'bearer', models: [],
-    },
-  })
-  assert.equal(pollinations.activation, 'active')
-  assert.equal(pollinations.resolution.auth.kind, 'bearer')
-  assert.equal(pollinations.resolution.auth.optional, undefined)
-  assert.match(pollinations.resolution.provenance.requiresKeyEvidence, /2026-09-22/)
-  // The shaping is unaffected: needing a key does not change how its body is built.
-  assert.deepEqual(pollinations.resolution.shaping.premiumModels.includes('claude'), true)
-
-  // The declaration that observation *did* confirm is left alone, and carries no override —
-  // which is what makes the correction above a statement about one provider rather than a
-  // posture applied to every optional declaration.
-  const confirmed = decideResolution({
-    key: 'uncloseai', access: 'keyless', tos: 'caution',
-    entry: {
-      format: 'openai', executor: 'default',
-      baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions',
-      authType: 'optional', authHeader: 'bearer', models: [],
-    },
-  })
-  assert.equal(confirmed.resolution.auth.kind, 'none')
-  assert.equal(confirmed.resolution.auth.optional, true)
-  assert.equal(confirmed.resolution.provenance.requiresKeyEvidence, undefined)
-})
-
 test('every provider without a shaping block is returned byte-for-byte unchanged', () => {
   const body = { model: 'x', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], max_tokens: 7 }
   assert.deepEqual(buildProviderRequestBody('mistral', body, 'x'), body)
@@ -1860,7 +1958,7 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // hand-maintained object had for a provider it did not describe.
   for (const key of [
     'nvidia', 'groq', 'googleai', 'openrouter', 'codestral', 'scaleway',
-    'kiro', 'kilocode', 'empero', 'freemodels', 'github-copilot',
+    'kiro', 'kilocode', 'empero', 'github-copilot',
     'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
   ]) {
     assert.ok(table[key], `${key} must keep its published quota`)
@@ -1878,6 +1976,42 @@ test('the quota table is read through the registry, and sources.js no longer shi
     false,
     'sources.js must not export a quota table any more — the registry derives it',
   )
+})
+
+test('transient catalog failures retry with bounded backoff', async () => {
+  let calls = 0
+  const sleeps = []
+  const payload = await fetchJsonWithRetry('https://catalog.test/models', {
+    fetchImpl: async () => {
+      calls += 1
+      if (calls === 1) throw Object.assign(new Error('fetch failed'), { cause: { code: 'ETIMEDOUT' } })
+      return { ok: true, json: async () => ({ data: [{ id: 'good-model' }] }) }
+    },
+    sleep: async delay => sleeps.push(delay),
+    random: () => 0,
+  })
+
+  assert.deepEqual(payload.data, [{ id: 'good-model' }])
+  assert.equal(calls, 2)
+  assert.deepEqual(sleeps, [250])
+})
+
+test('permanent catalog failures are not retried', async () => {
+  let calls = 0
+  await assert.rejects(
+    fetchJsonWithRetry('https://catalog.test/models', {
+      fetchImpl: async () => {
+        calls += 1
+        return { ok: false, status: 401, headers: { get: () => null } }
+      },
+      sleep: async () => {},
+    }),
+    /HTTP 401/,
+  )
+  assert.equal(calls, 1)
+  assert.equal(isRetryableDiscoveryError({ status: 401 }), false)
+  assert.equal(isRetryableDiscoveryError({ cause: { code: 'ETIMEDOUT' } }), true)
+  assert.equal(isRetryableDiscoveryError({ status: 503 }), true)
 })
 
 test('discovery shares the router probe window and never reaches back into the server', () => {

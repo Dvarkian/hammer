@@ -20,7 +20,7 @@ const aliasTargets = new Set(Object.values(MODEL_ID_ALIASES))
 const byDomain = new Map()
 const missing = []
 for (const [modelId, label, , , providerKey] of MODELS) {
-  const domain = getModelDomain({ modelId, model: modelId })
+  const domain = getModelDomain({ modelId, label, model: modelId })
   if (!domain) missing.push([modelId, label, providerKey])
   else if (!byDomain.has(domain)) byDomain.set(domain, [[modelId, label, providerKey]])
   else byDomain.get(domain).push([modelId, label, providerKey])

@@ -139,10 +139,10 @@
               onmouseover="this.style.background='var(--surface-alt)';this.style.color='var(--text)'"
               onmouseout="this.style.background='none';this.style.color='var(--text-muted)'">&#x2715; Reset
               sort</button>
-            <button id="rerun-tests-btn" onclick="rerunTests()"
+            <button id="test-all-btn" onclick="testAll()"
               style="border:none; background:var(--success); color:#1a0a00; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
               onmouseover="this.style.opacity='0.85'"
-              onmouseout="this.style.opacity='1'">↻ Rerun Tests</button>
+              onmouseout="this.style.opacity='1'">↻ Test All</button>
           </div>
         </div>
 
@@ -154,7 +154,7 @@
             <tr>
               <th class="sortable" onclick="setSort('model')" id="th-model">Model <i class="sort-arrow"
                   id="arrow-model">↕</i></th>
-              <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, or the one interpolated from Elo where AA has none (marked *). Hover a value for its source.">Intelligence <i class="sort-arrow"
+              <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, interpolated values, same-family estimates, or the explicit 0.1 AA-scale floor when no source exists (marked *). Hover a value for its source.">Intelligence <i class="sort-arrow"
                   id="arrow-intell">↕</i></th>
               <th class="text-right" title="Average time to first token across real requests (seconds)">TTFT</th>
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
@@ -222,11 +222,6 @@
       <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Control whether request bodies are captured and whether logs are written to disk. Prompt/response content can contain sensitive data.</p>
       <div id="logging-container" class="provider-section">
         <!-- Logging settings generated here -->
-      </div>
-      <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Pinning</h3>
-      <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">The clicked control determines scope: a model heading pins its provider family; a provider row is an exact, no-fallback pin.</p>
-      <div id="pinning-settings-container" class="provider-section">
-        <!-- Pinning settings generated here -->
       </div>
       <h3 style="margin: 2rem 0 0.25rem; font-size: 1rem;">Configuration Transfer</h3>
       <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.84rem;">Export/import all settings (including API keys) as a single encoded token for copy/paste migration.</p>

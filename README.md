@@ -129,7 +129,7 @@ hammer config export
 hammer config import <token>
 ```
 
-Request terminal logging is disabled by default. Use `--log` to enable it. Startup waits for model discovery before binding the web UI; use `--verbose` (or `HAMMER_DEBUG_STARTUP=1`) for detailed diagnostics.
+Request terminal logging is disabled by default. Use `--log` to enable it. Startup waits for all eligible provider model discovery, including unresolved imported providers, before binding the web UI; use `--verbose` (or `HAMMER_DEBUG_STARTUP=1`) for detailed diagnostics.
 
 ## Security
 
@@ -175,7 +175,7 @@ Consequences worth knowing:
 
 - A **fresh start shows rows as Down**. The Status column is a slave of the Response column, so a row fills in as you test it or as requests flow through the proxy; nothing is probed at boot.
 - The dashboard is a **snapshot**. It re-reads on page load, after actions you take (Test, Refresh, ban, key/config save), and when you bring the tab back to the foreground.
-- Model **catalog** discovery (which models a provider offers) still runs at startup and from the Refresh controls, because that describes the provider's menu rather than measuring it.
+- Model **catalog** discovery (which models a provider offers) runs for eligible providers during startup and from the Refresh controls, because that describes the provider's menu rather than measuring it. A provider that becomes eligible later can still be discovered by an explicit refresh or a request that needs its list.
 
 Use `hammer config export` to print a transferable config token (base64url-encoded JSON), and `hammer config import <token>` to load it on another machine.
 You can also import by stdin:
@@ -243,7 +243,7 @@ An output-token cap is refused as a context window, but it is not ignored: it is
 
 ### Routing selection
 
-The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, or the one derived where AA has no rating for a model: interpolated from its Elo (LMArena, or Design Arena for catalog entries), or, when there is no Elo either, calibrated from the curated offline score against the models that carry both. Every derived index is marked `*` in the dashboard. Rows with none of those fall back to the local intelligence score. Quota and rate-limit failures advance to the next highest model.
+The `best` selector considers only provider/model rows currently marked `up` and orders them by the **Artificial Analysis Intelligence Index** — AA's own rating, the one derived where AA has no rating for a model: interpolated from its Elo (LMArena, or Design Arena for catalog entries), calibrated from the curated offline score against the models that carry both, or estimated from a conservatively matched same-family model. Every derived index is marked `*` in the dashboard. If a model has no external, exact curated, or same-family score, its explicit conservative floor is **0.1 on the AA scale**; this is a visible fallback, not a claim that the model was benchmarked. Quota and rate-limit failures advance to the next highest model.
 
 Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS score blends model quality, uptime, and recently observed latency. The latency target defaults to 3000ms and can be tuned per deployment via the `qosLatencyTargetMs` key in `~/.hammer.json`.
 
@@ -254,8 +254,8 @@ Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS sc
   - `NVIDIA_API_KEY`
   - `GROQ_API_KEY`
   - `SAMBANOVA_API_KEY`
-- `OPENROUTER_API_KEY`
-- `OLLAMA_API_KEY`
+  - `OPENROUTER_API_KEY`
+  - `OLLAMA_API_KEY`
 - `OLLAMA_BASE_URL`
 - `OLLAMA_MODEL`
   - `CODESTRAL_API_KEY`
@@ -305,23 +305,9 @@ Read this part before relying on it:
 - **It is one auto route, not a model.** The endpoint takes `{message, images, history}` and chooses the backend itself — it ignores any model you ask for. So the provider shows exactly one row, `Auto (GPTFree)`, with no context window stated — it is unknown, and a made-up number would rank it in `min_ctx` on no evidence. The consequence is that any request carrying `+min_ctx:` never selects it (rows without a known window are excluded), and it cannot be picked *by name* the way a real model can: it is one extra candidate for `best`, not a model in the routing decisions.
 - **The credential is short-lived and minted for you.** Hammer signs in an anonymous Firebase account on first use, caches the ID token, and refreshes it from its refresh token; the Firebase web API key involved is public (it identifies the project, it does not authorize anything).
 - **It is an internal endpoint, not a contract.** Hammer uses the same Cloud Function the website calls. gptfree can add App Check, disable anonymous sign-in, rotate keys, or change the response format at any time, and the provider will stop working until hammer is updated.
-- **It is an ad-supported site.** This integration is automated traffic against a service that invites interactive use, which is a fair-use question hammer cannot answer for you. The G4F and FreeModels rows offer free relays with documented APIs if that matters to you.
+- **It is an ad-supported site.** This integration is automated traffic against a service that invites interactive use, which is a fair-use question hammer cannot answer for you. The G4F row offers a free relay with a documented API if that matters to you.
 - **Expect the site's own speed and quality.** In testing, simple factual answers came back in ~2s, longer prompt-driven tests at ~4 tokens/s, and output quality tracked the small model behind it rather than any frontier model.
 - To route somewhere else — including your own local shim that mimics the site — set a `baseUrl` for `gptfree` in `~/.hammer.json`.
-
-### FreeModels continuity and tools
-
-FreeModels is a stateless relay. Its public web client stores the transcript in browser `localStorage` and sends the messages again on every request; the relay itself exposes no session or conversation id. Hammer forwards the request transcript and exposes the provider as `continuity: local-transcript` / `toolSupport: best-effort` in `/api/models`.
-
-For clients that send only the newest turn, opt in to Hammer's short-lived local continuity store by sending a stable conversation id:
-
-```text
-X-Hammer-Conversation-Id: my-thread-123
-```
-
-`metadata.conversation_id` is also accepted, including through `/v1/messages` compatibility requests. The store is memory-only, expires entries after 30 minutes, and caps the process at 128 conversations, 256 messages per conversation, and 1 MiB per conversation. It never guesses a thread from an IP address or the OpenAI `user` field. Clients that send a complete transcript remain authoritative. On the wire, FreeModels receives at most the newest 40-message role/content window while system and developer instructions remain packed in their original positions, subject to the hard context byte cap.
-
-FreeModels requests retain tool declarations and tool history so a future native tool response is not lost. The current relay may answer in prose instead of returning an executable tool call; OpenAI-compatible responses (and non-streaming `/v1/messages` responses) carry `X-Hammer-FreeModels-Tools: best-effort` so clients do not mistake that for native tool support.
 
 ### GitHub Copilot
 

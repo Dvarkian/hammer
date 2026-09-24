@@ -7,6 +7,11 @@ import { scores } from './scores.js'
 import { lazyProviderSourceEntries } from './lib/providers/resolutions.js'
 
 export const MODEL_ID_ALIASES = {
+  // Api.Airforce exposes this as `unmoderated-gpt`, but its live catalog identifies
+  // the backend as `openai/koreai-gpt35-turbo`. The public Airforce model page
+  // does not publish a separate intelligence score, so score the named GPT-3.5
+  // Turbo family rather than leaving this at the generic floor.
+  'unmoderated-gpt': 'openai/gpt-3.5-turbo',
   'cogito-2.1:671b': 'cogito-2.1:671b',
   'deepseek-v3.1:671b': 'deepseek-ai/deepseek-v3.1',
   'deepseek-v3.2': 'deepseek-ai/deepseek-v3.2',
@@ -386,11 +391,9 @@ export const sources = {
   // generic path with no per-provider code. Distinct from the hand-configured providers
   // below in two ways that matter:
   //
-  //   • They carry `lazyDiscovery: true`. The startup probe wave in lib/server.js skips
-  //     that flag, so importing ~40 providers does not become ~40 network probes on every
-  //     boot — which would undo the deliberate removal of background polling. They are
-  //     discovered when something asks for them (a provider refresh, or a request that
-  //     needs their model list).
+  //   • They carry `lazyDiscovery: true`, which keeps them out of the eager provider
+  //     treatment. Eligible unresolved imports are still discovered in the awaited startup
+  //     phase; the flag only preserves the smaller request-triggered recovery path.
   //   • They carry no model rows. A list invented here would be stale the moment the
   //     provider rotated its roster; discovery supplies what is actually served.
   //
@@ -628,20 +631,6 @@ export const sources = {
       ["gpt-5.1-codex-mini", "GPT 5.1 Codex Mini", "400k"],
       ["gpt-5-codex", "GPT 5 Codex", "400k"],
       ["codex-mini-latest", "Codex Mini", "192k"]
-    ]
-  },
-  "freemodels": {
-    "name": "FreeModels",
-    "url": "https://freemodels-chat.freemodels.workers.dev",
-    "contextUrl": "https://freemodels.pro",
-    "models": [
-      ["claude-sonnet-5", "Claude Sonnet 5", "200k"],
-      ["claude-fable-5", "Claude Fable 5", "200k"],
-      ["claude-fable-5.1", "Claude Fable 5.1", "200k"],
-      ["sol", "GPT 5.6 Sol", "128k"],
-      ["terra", "GPT 5.6 Terra", "128k"],
-      ["glm-5.2", "GLM 5.2", "200k"],
-      ["kimi-k3", "Kimi K3", "256k"]
     ]
   },
   // --- gpt4free (g4f) --------------------------------------------------------

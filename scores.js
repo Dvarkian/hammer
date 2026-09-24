@@ -23,6 +23,18 @@ export const scores = {
   "codestral-latest": 0.58,
   "cognitivecomputations/dolphin-mistral-24b-venice-edition": 0.335,
   "cohere/north-mini-code": 0.365,
+  // Cohere Command family. These are offline fallbacks, not claims that Cohere
+  // publishes an Artificial Analysis index for every model. Command A (43.41%),
+  // Command R+ (40.40%) and Command R (32.97%) use Vals AI's aggregate accuracy;
+  // the reasoning, vision and R7B rows are conservative local estimates based
+  // on Cohere's published agentic/vision claims and the available benchmark
+  // comparisons, respectively.
+  "command-a-reasoning-08-2025": 0.49,
+  "command-a-vision-07-2025": 0.44,
+  "command-a-03-2025": 0.4341,
+  "command-r7b-12-2024": 0.286,
+  "command-r-plus-08-2024": 0.404,
+  "command-r-08-2024": 0.3297,
   "corethink": 0.623,
   "deepseek-ai/deepseek-r1-distill-llama-8b": 0.282,
   "deepseek-ai/deepseek-r1-distill-qwen-14b": 0.377,
@@ -79,6 +91,11 @@ export const scores = {
   // GPT-OSS offline fallback. The 120B is the larger, stronger model and must
   // always outrank the 20B; both keys (vendor-prefixed and bare) are kept in
   // sync because getScore() looks up base then unprefixed ids.
+  // Api.Airforce's `unmoderated-gpt` catalog_id is `openai/koreai-gpt35-turbo`.
+  // Its provider page has no separate score, so use the published AA estimate
+  // for GPT-3.5 Turbo (5/100) as the offline fallback.
+  "openai/gpt-3.5-turbo": 0.05,
+  "gpt-3.5-turbo": 0.05,
   "gpt-oss-120b": 0.6,
   "hy3-preview": 0.744,
   "hy3-preview-free": 0.744,

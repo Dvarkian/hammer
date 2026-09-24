@@ -10,7 +10,7 @@ import {
   toPinnedRowKey,
 } from '../lib/server.js';
 import { buildModelGroups } from '../lib/utils.js';
-import { canonicalizeModelId } from '../sources.js';
+import { canonicalizeModelId, MODEL_ID_ALIASES } from '../sources.js';
 
 function row(providerKey, modelId, label, ms = 100) {
   return {
@@ -42,6 +42,55 @@ test('a heading pin resolves the complete canonical model family', () => {
     getPinnedModelMatches(rows, selection).map(toPinnedRowKey),
     ['alpha::vendor/shared-model', 'beta::shared-model', 'gamma::shared-model:free'],
   );
+});
+
+test('server grouping keeps size-distinct model families separate across alias spellings', () => {
+  const rows = [
+    row('groq', 'openai/gpt-oss-120b', 'GPT OSS 120B'),
+    row('ollama', 'gpt-oss:120b', 'GPT OSS 120B'),
+    row('groq', 'openai/gpt-oss-20b', 'GPT OSS 20B'),
+    row('ollama', 'gpt-oss:20b', 'GPT OSS 20B'),
+    row('other', 'gpt-oss-safeguard-20b', 'GPT OSS Safeguard 20B'),
+  ];
+
+  const groups = buildModelGroups(rows, canonicalizeModelId);
+  assert.deepEqual(
+    groups.map(group => ({ id: group.id, models: group.models.map(model => model.modelId) })),
+    [
+      { id: 'gpt-oss-120b', models: ['openai/gpt-oss-120b', 'gpt-oss:120b'] },
+      { id: 'gpt-oss-20b', models: ['openai/gpt-oss-20b', 'gpt-oss:20b'] },
+      { id: 'gpt-oss-safeguard-20b', models: ['gpt-oss-safeguard-20b'] },
+    ],
+  );
+});
+
+test('server grouping applies the shared alias catalog across model families', () => {
+  const families = [
+    ['gpt-oss:20b', 'openai/gpt-oss-20b'],
+    ['gpt-oss:120b', 'openai/gpt-oss-120b'],
+    ['glm-4.7', 'z-ai/glm4.7'],
+    ['claude-sonnet-4-5', 'claude-sonnet-4.5'],
+    ['qwen3:32b', 'qwen/qwen3-32b'],
+    ['xai-z/grok-4-fast', 'grok-4-fast'],
+  ];
+  for (const [alias, canonical] of families) {
+    assert.equal(MODEL_ID_ALIASES[alias], canonical, `${alias} must remain in the shared catalog`);
+    const groups = buildModelGroups([
+      row('alias-provider', alias, 'Alias row'),
+      row('canonical-provider', canonical, 'Canonical row'),
+    ], canonicalizeModelId);
+    assert.equal(groups.length, 1, `${alias} and ${canonical} must share one group`);
+  }
+});
+
+test('the dashboard consumes server model groups instead of rebuilding model identity', () => {
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8');
+  const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8');
+
+  assert.match(server, /modelGroupId: modelGroupByRowKey/);
+  assert.match(server, /modelGroupLabel: modelGroupByRowKey/);
+  assert.match(dashboard, /m\.modelGroupId/);
+  assert.match(dashboard, /m\.modelGroupLabel/);
 });
 
 test('a family pin includes provider-qualified rows that share one raw model id', () => {
@@ -140,9 +189,72 @@ test('the dashboard derives pin scope from heading versus provider-row controls'
   assert.match(dashboard, /function isFamilyPinnedGroup/);
   assert.match(dashboard, /members\.some\(model => activePinnedRowKeys\.includes\(getModelRowKey\(model\)\)\)/);
   assert.doesNotMatch(dashboard, /console\.error\('Failed to pin model'/);
-  assert.match(dashboard, /server session and reset when Hammer restarts/i);
-  assert.match(index, /exact, no-fallback pin/i);
+  assert.doesNotMatch(dashboard, /server session and reset when Hammer restarts/i);
+  assert.doesNotMatch(index, /exact, no-fallback pin/i);
 });
+
+test('Test All is a sequential main-table flow and excludes unavailable rows', () => {
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8');
+  const index = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8');
+
+  assert.match(index, /id="test-all-btn" onclick="testAll\(\)"/);
+  assert.match(index, /Test All/);
+  assert.doesNotMatch(index, /Rerun Tests/);
+  assert.match(dashboard, /function testableMainGroups\(\)/);
+  assert.match(dashboard, /splitDisplayGroups\(sortedGroups\(groupModels\(filtered\)\)\)\.mainGroups/);
+  assert.match(dashboard, /function buildTestAllQueue\(\)/);
+  assert.match(dashboard, /if \(isRowUp\(model\)\) continue/);
+  assert.match(dashboard, /async function testAll\(\)/);
+  assert.match(dashboard, /await runTestAllItem\(/);
+  assert.match(dashboard, /async function testModelGroupButton\(/);
+  assert.match(dashboard, /testModelGroupButton/);
+  assert.match(dashboard, /members = opts\.members[\s\S]{0,500}isRowUp\(m\)/);
+  assert.match(dashboard, /row\.classList\.add\('row-testing'\)/);
+  assert.match(dashboard, /row\?\.classList\.remove\('row-testing'\)/);
+  assert.match(css, /tr\.row-testing td/);
+  assert.match(css, /var\(--warning\)/);
+  assert.doesNotMatch(dashboard, /\/api\/restest-models/);
+  assert.doesNotMatch(dashboard, /rerunTests|restestJobId|updateRerunButtonVisibility/);
+});
+
+test('a live fallback is painted across the dashboard before the next snapshot', () => {
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  assert.match(dashboard, /payload\.type === 'selection' && payload\.source === 'fallback'/)
+  assert.match(dashboard, /currentBestModelId = payload\.modelId/)
+  assert.match(dashboard, /currentBestProviderKey = payload\.providerKey/)
+  assert.match(dashboard, /render\(\);\s*updateKPIs\(allModels, currentBestModelId, currentBestProviderKey\);/)
+  assert.match(dashboard, /payload\.type === 'evidence'/)
+  assert.match(dashboard, /routerEventRevisionAtStart !== routerEventRevision/)
+  assert.match(dashboard, /function updateKPIs\(models, bestModelId, bestProviderKey = null\)/)
+  assert.match(dashboard, /m\.providerKey === bestProviderKey/)
+})
+
+test('the scatter renders a full-size dot only for a currently routable row', () => {
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const pointsStart = dashboard.indexOf('function drawScatterPoints(')
+  const pointsEnd = dashboard.indexOf('function drawScatterLabels(', pointsStart)
+  assert.ok(pointsStart >= 0 && pointsEnd > pointsStart, 'the scatter point renderer must exist')
+
+  const points = dashboard.slice(pointsStart, pointsEnd)
+  assert.match(points, /const routable = isRoutableRow\(r\)/)
+  assert.match(points, /svgEl\('circle', routable \? \{/)
+  assert.doesNotMatch(points, /const up = isRowUp\(r\.m\)/)
+  assert.match(dashboard, /if \(!isRoutableRow\(r\)\) p -= 400/)
+
+  // A live failure or provider bench often changes no speed or intelligence number.
+  // The redraw guard must therefore include both the displayed verdict and the server's
+  // routing decision, or the prior full-size SVG survives the health transition.
+  assert.match(dashboard, /\|v=\$\{rowVerdict\(r\.m\)\}\|route=\$\{routing\}/)
+  assert.match(dashboard, /const routing = typeof r\.m\.routingEligible === 'boolean' \? r\.m\.routingEligible : 'legacy'/)
+
+  // Verdict windows can expire on their own, without a fetch. The existing one-second
+  // status ticker re-evaluates the guarded draw so that transition is rendered promptly.
+  const tickerStart = dashboard.indexOf('function updateRateLimitCountdowns()')
+  const tickerEnd = dashboard.indexOf('setInterval(updateRateLimitCountdowns', tickerStart)
+  assert.ok(tickerStart >= 0 && tickerEnd > tickerStart, 'the status ticker must exist')
+  assert.match(dashboard.slice(tickerStart, tickerEnd), /drawSpeedIntellScatter\(allModels\)/)
+})
 
 test('the request path resolves a pin after discovery and retains the final family failure', () => {
   const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8');

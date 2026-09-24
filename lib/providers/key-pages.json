@@ -119,12 +119,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "tencent": {
-      "url": "https://console.cloud.tencent.com/lkeap",
-      "evidence": "Tencent Cloud console; the LKEAP page that issues the Hunyuan API key",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "vertex": {
       "url": "https://console.cloud.google.com/apis/credentials",
       "evidence": "Google Cloud console; credentials page (Vertex authenticates with a service account, not a bearer key)",
@@ -269,12 +263,6 @@
     "nous-research": {
       "url": "https://portal.nousresearch.com/",
       "evidence": "Nous Research portal; API keys",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "pollinations": {
-      "url": "https://pollinations.ai/",
-      "evidence": "project homepage; the dashboard behind signup issues tokens",
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },

@@ -54,6 +54,9 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
     'vendor/calibration-suite',
     'vendor/saudi-chat',
     'vendor/whisper-audio-large',
+    'vendor/search-preview',
+    'github/copilot-search-c',
+    'openai/gpt-4-search-preview',
   ]) {
     assert.equal(isBlockedModelName(id), true, `${id} names a non-chat family`)
   }
@@ -92,6 +95,10 @@ test('the name rule outranks a successful probe, in every place that reads it', 
   const chatRow = { ...row, modelId: 'nvidia/nemotron-3-ultra-550b-a55b' }
   assert.equal(resolveModelStatus(chatRow, now), 'up')
   assert.equal(isModelEligibleForRouting(chatRow), true)
+
+  const searchRow = { ...row, modelId: 'github/copilot-search-c' }
+  assert.equal(resolveModelStatus(searchRow, now), 'incompatible')
+  assert.equal(isModelEligibleForRouting(searchRow), false)
 })
 
 test('an error envelope is flattened to its message, wherever the message is nested', () => {
@@ -110,7 +117,7 @@ test('an error envelope is flattened to its message, wherever the message is nes
 })
 
 test('an error that tells you to check the details carries them', () => {
-  // Pollinations' validation envelope, captured live 2026-09-23. The message alone is an
+  // A provider validation envelope, captured live 2026-09-23. The message alone is an
   // instruction with nothing to follow: "Something was wrong with the input data, check the
   // details for more info." The details beside it name the field that failed, and that field is
   // the difference between a diagnosable refusal and a Support ticket.
@@ -145,8 +152,8 @@ test('an error that tells you to check the details carries them', () => {
 })
 
 test('a message with no details beside it is passed through untouched', () => {
-  // The same Pollinations message arrives with no `details` at all on the g4f route that relayed
-  // it (captured live 2026-09-23), which is who the instruction is useless to. Nothing is
+  // The same message can arrive with no `details` at all on a relayed route (captured live
+  // 2026-09-23), which is who the instruction is useless to. Nothing is
   // invented and no empty parentheses are appended — an absent detail is the provider's to fix.
   const relayed = {
     message: 'Something was wrong with the input data, check the details for more info.',
@@ -385,8 +392,8 @@ test('a missing credential is not a catalog death', () => {
 
 test('an unfunded account is Paid, not a quota on a clock', () => {
   // SiliconFlow answers a Test with HTTP 200 and the completion "Sorry, your account balance is
-  // insufficient" (live 2026-09-23), which is an account refusal like Pollinations' key-budget
-  // notice and was read as one: the row went on the clock with a countdown to a window that never
+  // insufficient" (live 2026-09-23), which is an account refusal like a key-budget notice and
+  // was read as one: the row went on the clock with a countdown to a window that never
   // reopens, over the one thing that would fix it — money. Nothing about the model is exhausted.
   const now = Date.now()
   const row = {
@@ -407,8 +414,8 @@ test('an unfunded account is Paid, not a quota on a clock', () => {
   assert.equal(isPaymentRequiredError('Your credit balance is too low for this request.', 0), true)
 
   // Negative controls: a balance that is fine is not a wall, and neither is the free credit
-  // allowance a quest refills — Pollinations' pollen is not money, so it keeps its clock — nor
-  // the key budget that is raised rather than topped up.
+  // allowance a quest refills — free credits are not money, so they keep their clock — nor the
+  // key budget that is raised rather than topped up.
   assert.equal(isPaymentRequiredError('You have enough balance on your account to continue.', 0), false)
   assert.equal(isPaymentRequiredError("The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again.", 200), false)
   assert.equal(isPaymentRequiredError('The API key used for this request has reached its budget. Please raise the key budget, then try again.', 200), false)

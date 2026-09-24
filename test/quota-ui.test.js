@@ -9,6 +9,23 @@ import { getDefaultProviderBaseUrl } from '../lib/providers/discovery.js'
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
 const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
 
+test('the UI opens only after imported-provider startup discovery is awaited', () => {
+  const discovery = server.indexOf('const discoverySettled = await Promise.allSettled')
+  const listen = server.indexOf('const httpServer = app.listen')
+  assert.ok(discovery >= 0 && listen > discovery, 'the web UI bind must follow startup discovery')
+  assert.match(server, /startupImportedDiscoveryTasks/)
+  assert.match(server, /lazyDiscoveryCandidates\(/)
+  assert.doesNotMatch(dashboard, /\/api\/providers\/discover-pending/)
+  assert.doesNotMatch(dashboard, /discoverPendingProviders/)
+
+  const discoveryDone = server.indexOf('Discovery completed in')
+  const clearProgress = server.indexOf('clearStartupProgress()', discoveryDone)
+  const listenAfterDiscovery = server.indexOf('const httpServer = app.listen', discoveryDone)
+  assert.ok(discoveryDone >= 0, 'the startup summary must be printed')
+  assert.ok(clearProgress > discoveryDone, 'startup progress must be cleared after the summary')
+  assert.ok(listenAfterDiscovery > clearProgress, 'the UI bind must follow progress cleanup')
+})
+
 // The quota box was the one part of a provider card that could be absent entirely: a
 // provider with no live usage endpoint rendered nothing, which read as "hammer has no
 // opinion" when the catalog in fact publishes a limit for it. These pin the contract that
@@ -141,7 +158,4 @@ test('every published numeric limit renders a bar, and none without a number doe
       assert.ok(['day', 'week', 'month', 'lifetime'].includes(limit.period))
     }
   }
-  // A record with no figure at all still has to exist for providers like Pollinations, whose
-  // plan is credit-based — it renders the citation without inventing a bar.
-  assert.deepEqual(table.pollinations.limits, [])
 })

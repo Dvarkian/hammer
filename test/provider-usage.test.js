@@ -141,17 +141,6 @@ test('non-object entries in a provider payload are ignored, not fatal', () => {
   assert.equal(reports[0].remaining, 5)
 })
 
-test('a bare credit balance is read as what is left, never as a limit', () => {
-  // Pollinations answers `{ balance }` for the calling key's remaining Pollen. Reading it as
-  // a limit would draw a full bar for an account that is nearly empty.
-  const [report] = normalizeProviderUsageReport('pollinations', { balance: 1.5 }, { accountLabel: 'API key' })
-
-  assert.equal(report.metric, 'credits')
-  assert.equal(report.remaining, 1.5)
-  assert.equal(report.limit, null)
-  assert.equal(report.used, null)
-})
-
 test('selection prefers a report for the requested model, then the account-wide report', () => {
   const reports = [
     { providerKey: 'example', metric: 'requests', model: null, remaining: 8 },

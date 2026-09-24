@@ -1438,7 +1438,7 @@
 
     /* Secondary line under a provider name: the concrete model id this provider
        row serves. A model heading can list the same provider key several times
-       (e.g. multiple g4f backends or freemodels personas), so the id is what
+       (e.g. multiple g4f backends), so the id is what
        tells those rows apart. */
     .provider-subtext {
       font-size: 0.68rem;
@@ -1554,6 +1554,14 @@
     }
     tr.row-best td:first-child {
       box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    /* A row currently being tested gets the same strong edge as the active row, in warning yellow. */
+    tr.row-testing td {
+      background: color-mix(in srgb, var(--warning) 7%, transparent);
+    }
+    tr.row-testing td:first-child {
+      box-shadow: inset 3px 0 0 var(--warning);
     }
 
     /* -------- Graveyard table (paid / dead models) -------- */
