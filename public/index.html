@@ -30,27 +30,37 @@
             <span id="theme-icon">🌙</span>
           </button>
         </p>
+        <!-- What the page is doing, in words, for as long as it is doing it. A zeroed dashboard
+             and a loading dashboard used to look identical: every readout shipped a literal
+             `0`, so a slow first snapshot read as a router with nothing online. The line is
+             announced (role=status), and it is the only place an initial-load failure is
+             reported, so the wait has a name and a failure has a way back. -->
+        <p id="load-status" class="load-status" role="status" aria-live="polite">
+          <span class="load-status-dot" aria-hidden="true"></span>
+          <span id="load-status-text">Loading router state…</span>
+          <button id="load-retry-btn" type="button" onclick="retryInitialLoad()" style="display:none;">Retry</button>
+        </p>
       </div>
     </div>
 
-    <div class="kpi-grid">
+    <div class="kpi-grid" id="kpi-grid" aria-busy="true">
       <div id="proxy-error-banner" style="display:none; margin-bottom:12px; padding:10px 14px; border:1px solid var(--status-error-border); border-radius:8px; background:var(--status-error-bg); color:var(--status-error-text); font-size:0.82rem;"></div>
       <div class="readout-strip">
         <div class="readout-item">
           <span class="readout-label">Models online (with at least one provider)</span>
-          <span class="readout-value" id="readout-models">0</span>
+          <span class="readout-value is-loading" id="readout-models"></span>
         </div>
         <div class="readout-item">
           <span class="readout-label">Endpoints online</span>
-          <span class="readout-value" id="readout-combos">0</span>
+          <span class="readout-value is-loading" id="readout-combos"></span>
         </div>
         <div class="readout-item">
           <span class="readout-label">Providers online</span>
-          <span class="readout-value" id="readout-providers">0</span>
+          <span class="readout-value is-loading" id="readout-providers"></span>
         </div>
         <div class="readout-item">
           <span class="readout-label">Rows</span>
-          <span class="readout-value" id="readout-rows">0</span>
+          <span class="readout-value is-loading" id="readout-rows"></span>
         </div>
       </div>
       <div class="plots-grid">
@@ -63,14 +73,14 @@
               <svg class="signal-icon" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" />
               </svg>
-              <span class="kpi-value" id="kpi-active" style="font-size:1.2rem; margin-left:8px;">0</span>
+              <span class="kpi-value is-loading" id="kpi-active" style="font-size:1.2rem; margin-left:8px;"></span>
             </div>
             <div class="kpi-label">
               Providers
               <svg class="signal-icon" viewBox="0 0 24 24">
                 <circle cx="12" cy="12" r="10" />
               </svg>
-              <span class="kpi-value" id="kpi-providers" style="font-size:1.2rem; margin-left:8px;">0</span>
+              <span class="kpi-value is-loading" id="kpi-providers" style="font-size:1.2rem; margin-left:8px;"></span>
             </div>
             <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
               <div style="display:flex; align-items:center; gap:6px;">
@@ -78,7 +88,7 @@
                   <circle cx="12" cy="12" r="10" />
                 </svg>
                 <span class="kpi-label" style="font-size:0.72rem;">Current</span>
-                <span class="kpi-value" id="kpi-best" style="font-size:0.85rem;">Calculating...</span>
+                <span class="kpi-value is-loading" id="kpi-best" style="font-size:0.85rem;"></span>
               </div>
               <button type="button" class="pin-badge" id="pin-badge" style="display:none;" onclick="pinModel('')"
                 title="Click to unpin">📌 Pinned ×</button>
@@ -94,7 +104,7 @@
         <div class="kpi-card topology-card scatter-card">
           <div class="scatter-title">
             <div class="kpi-label" style="margin:0;">Intelligence vs Speed</div>
-            <span class="kpi-value" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;">—</span>
+            <span class="kpi-value is-loading" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;"></span>
           </div>
           <svg id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
           <div class="scatter-controls">
@@ -114,8 +124,8 @@
       <div class="tab" id="tab-settings" onclick="switchTab('settings')">Settings</div>
     </div>
 
-    <div id="models-view">
-      <div class="table-container">
+    <div id="models-view" aria-busy="true">
+      <div class="table-container" id="models-table-container">
         <div class="table-header">
           <div class="table-title">Models</div>
           <div class="search-bar">
@@ -146,9 +156,8 @@
           </div>
         </div>
 
-
         <div class="table-wrap">
-        <table onmouseenter="isTableHovered=true; document.getElementById('hover-pause-badge').style.display='flex';"
+        <table id="models-table" onmouseenter="isTableHovered=true; document.getElementById('hover-pause-badge').style.display='flex';"
           onmouseleave="isTableHovered=false; document.getElementById('hover-pause-badge').style.display='none';">
           <thead>
             <tr>
@@ -166,7 +175,7 @@
               <th title="Click Test to ask the model for a short answer; the full response (or error) is shown here">Response</th>
             </tr>
           </thead>
-          <tbody id="table-body">
+          <tbody id="table-body" data-loading="true">
             <!-- Populated by JS -->
           </tbody>
         </table>
@@ -194,7 +203,7 @@
           </div>
         </details>
       </div>
-      <div id="providers-panel" style="margin-top: 24px;">
+      <div id="providers-panel" style="margin-top: 24px;" aria-busy="true">
         <h2 style="margin: 0 0 0.35rem; font-size: 1.25rem;">Providers</h2>
         <p style="color: var(--text-muted); margin: 0 0 1.25rem; font-size: 0.875rem;">Configure API keys to enable models from different providers.</p>
         <div style="margin-bottom: 1rem;">
@@ -205,8 +214,8 @@
           <span id="refresh-all-status" style="margin-left: 10px; font-size: 0.78rem; color: var(--text-muted);"></span>
         </div>
         <h3 class="providers-group-heading">Active now</h3>
-        <div id="active-providers-container" class="providers-grid">
-          <!-- Active provider cards generated here -->
+        <div id="active-providers-container" class="providers-grid" data-loading="true">
+          <!-- Active provider cards generated here; skeleton cards until the first panel build -->
         </div>
         <h3 class="providers-group-heading">Require setup</h3>
         <div id="setup-providers-container" class="providers-grid">
@@ -311,6 +320,26 @@
     </div>
     <div id="provider-sync-body" style="padding:18px 22px 22px; overflow:auto; max-height:calc(80vh - 84px);"></div>
   </div>
+
+  <!-- The loading shell's shapes, so the table and the provider grid keep their layout while the
+       first snapshot is in flight instead of collapsing to nothing and then jumping. A <template>
+       (not markup) because the dashboard's own renderer owns these containers: a real row left
+       behind by a slow load would be reconciled as if it were data. -->
+  <template id="skeleton-row-template"><tr class="skeleton-row" aria-hidden="true">
+      <td><span class="skeleton skeleton-text" style="width:min(220px, 80%)"></span><span class="skeleton skeleton-text skeleton-sub" style="width:110px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:38px"></span></td>
+      <td class="text-right"><span class="skeleton skeleton-text" style="width:46px"></span></td>
+      <td class="text-right"><span class="skeleton skeleton-text" style="width:46px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:52px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:min(180px, 60%)"></span></td>
+    </tr></template>
+  <template id="skeleton-card-template"><div class="provider-section autoupdate-panel skeleton-card" aria-hidden="true">
+      <span class="skeleton skeleton-text" style="width:45%; height:1.05rem"></span>
+      <span class="skeleton skeleton-text" style="width:70%"></span>
+      <span class="skeleton skeleton-text" style="width:100%; height:8px; margin-top:10px"></span>
+      <span class="skeleton skeleton-text" style="width:60%"></span>
+    </div></template>
 
   <script src="dashboard.js"></script>
 </body>

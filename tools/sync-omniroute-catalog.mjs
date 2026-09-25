@@ -41,6 +41,29 @@ const ACCESS_BY_FREE_TYPE = {
   keyless: 'keyless',
 }
 
+/**
+ * Providers explicitly removed from Hammer. Upstream still listing one does not make it a
+ * Hammer provider, and keeping this exclusion in the sync prevents the next catalog refresh
+ * from silently restoring its routing, quota, or key-page metadata.
+ *
+ * `liquid` joins it at the operator's instruction (2026-09-25). The roster row claims
+ * `keyless` access, which hammer's own resolution already contradicted: `console.liquid.ai`
+ * issues a bearer key for `inference.liquid.ai`. Liquid AI publishes no recurring free
+ * hosted allowance — the free offer is a *licence* to self-host the LFM weights (free below
+ * $10M annual revenue) plus the permanently-free LEAP tooling tier, neither of which is
+ * metered inference — and hosted LFM access is free only through OpenRouter's `:free`
+ * routing, which is OpenRouter's grant rather than Liquid's.
+ *
+ * `novita` joins them at the operator's instruction (2026-09-25). Its access class is not
+ * wrong the way liquid's was — the roster's `signup-credit` is exactly what Novita offers —
+ * but a one-time signup voucher is not the recurring free access this roster exists to find,
+ * so it does not belong in the import. Novita's own docs publish no credit figure and frame
+ * every request as credit-gated, its `$0/token` rows are badged "TIME LIMITED FREE" by
+ * Novita itself, and the free set it listed in June 2026 has since been repriced — which is
+ * to say nothing here recurs.
+ */
+export const EXCLUDED_PROVIDER_KEYS = new Set(['nebius', 'liquid', 'novita'])
+
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
 
 /**
@@ -191,6 +214,7 @@ async function main() {
   const markdown = await fetchSourceDoc()
   const frontmatter = parseFrontmatter(markdown)
   const roster = parseProviderRoster(markdown)
+    .filter(entry => !EXCLUDED_PROVIDER_KEYS.has(entry.key))
 
   if (roster.length === 0) {
     console.error('✖ parsed zero providers — the upstream document format has probably changed.')

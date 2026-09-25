@@ -717,20 +717,6 @@
         ]
       }
     },
-    "nebius": {
-      "activation": "active",
-      "chatUrl": "https://api.tokenfactory.nebius.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "qoder": {
       "activation": "active",
       "chatUrl": "https://api.qoder.com/v1/chat/completions",
@@ -779,34 +765,6 @@
           "mistral-small-3.2-24b-instruct-2506",
           "deepseek-v3-0324",
           "gpt-oss-120b"
-        ]
-      }
-    },
-    "novita": {
-      "activation": "active",
-      "chatUrl": "https://api.novita.ai/openai/v1/chat/completions",
-      "modelsUrl": "https://api.novita.ai/openai/v1/models",
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 13,
-        "declaredModels": [
-          "deepseek/deepseek-v4-pro",
-          "deepseek/deepseek-v4-flash",
-          "deepseek/deepseek-v3.2",
-          "moonshotai/kimi-k2.7-code",
-          "moonshotai/kimi-k2.6",
-          "zai-org/glm-5.1",
-          "zai-org/glm-4.7",
-          "minimax/minimax-m2.7",
-          "qwen/qwen3.6-plus",
-          "qwen/qwen3.5-397b-a17b",
-          "qwen/qwen3-coder-480b-a35b-instruct",
-          "openai/gpt-oss-120b",
-          "google/gemma-4-31b-it"
         ]
       }
     },
@@ -931,20 +889,6 @@
         "declaredModels": []
       }
     },
-    "liquid": {
-      "activation": "active",
-      "chatUrl": "https://inference.liquid.ai/v1/chat/completions",
-      "modelsUrl": "https://inference.liquid.ai/v1/models",
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "monsterapi": {
       "activation": "active",
       "chatUrl": "https://api.monsterapi.ai/v1/chat/completions",
@@ -967,24 +911,8 @@
       "reason": "Muse Spark is a cookie-authenticated GraphQL endpoint, not a chat-completions API, so it needs a wire adapter"
     },
     "nlpcloud": {
-      "activation": "active",
-      "chatUrl": "https://api.nlpcloud.io/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 5,
-        "declaredModels": [
-          "chatdolphin",
-          "dolphin",
-          "finetuned-llama-3-70b",
-          "llama-3-1-405b",
-          "llama-3-8b-instruct"
-        ]
-      }
+      "activation": "staged",
+      "reason": "NLP Cloud uses a model/task-specific chatbot endpoint and a non-OpenAI request/response shape; hammer owns the dedicated adapter instead of importing it as a generic provider."
     },
     "nous-research": {
       "activation": "active",

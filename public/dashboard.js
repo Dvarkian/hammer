@@ -104,6 +104,209 @@
     document.addEventListener('DOMContentLoaded', updateThemeIcon);
     document.addEventListener('DOMContentLoaded', updateLocalFileWarning);
 
+    // ── When the page is allowed to be busy ─────────────────────────────────────────────
+    //
+    // Idle scheduling with a floor and a ceiling. Decoration — the two plots, the provider
+    // grid — is real work but it is not what the user came for, and every bit of it competes
+    // with the table for the same thread. Pushing it to idle means the table is painted,
+    // scrollable and searchable first, while the floor (`setTimeout`) keeps browsers without
+    // requestIdleCallback working and the ceiling keeps a permanently busy page from leaving a
+    // plot blank forever.
+    function whenIdle(fn, timeoutMs = 1000) {
+      // Async tasks are common here (the staged passes await the provider roster) and a rejection
+      // has to land somewhere: an unhandled one is a console error with no stage attached to it.
+      const run = () => {
+        try {
+          const result = fn();
+          if (result && typeof result.catch === 'function') result.catch(e => console.error('Idle task failed:', e));
+        } catch (e) {
+          console.error('Idle task failed:', e);
+        }
+      };
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: timeoutMs });
+      else setTimeout(run, 32);
+    }
+
+    // ── Boot timing (`?perf`) ───────────────────────────────────────────────────────────
+    //
+    // The first snapshot is a sequence of stages that each look cheap and add up to a wait the
+    // user experiences as one thing. Without marks there is no way to tell which stage owns it.
+    // Off by default, on with `?perf`, and it never changes what is drawn.
+    const PERF_ENABLED = /(^|[?&])perf([=&]|$)/.test(window.location.search);
+    const perfMarks = [];
+    let perfReported = false;
+
+    function perfMark(name) {
+      if (!PERF_ENABLED) return;
+      perfMarks.push({ name, at: performance.now() });
+    }
+
+    function perfReport() {
+      if (!PERF_ENABLED || perfReported || perfMarks.length === 0) return;
+      perfReported = true;
+      const first = perfMarks[0].at;
+      const lines = [];
+      let prev = first;
+      for (const mark of perfMarks) {
+        lines.push(`${mark.name.padEnd(18)} +${(mark.at - prev).toFixed(1)}ms  (t+${(mark.at - first).toFixed(1)}ms)`);
+        prev = mark.at;
+      }
+      console.log(`[hammer perf] boot in ${(prev - first).toFixed(1)}ms\n${lines.join('\n')}`);
+    }
+    perfMark('shell');
+
+    // ── The loading shell ───────────────────────────────────────────────────────────────
+    //
+    // Everything the first snapshot fills is one of these containers, and until that snapshot
+    // lands there is nothing honest to put in them: the table, both plots and the provider grid
+    // are all built from it. The page used to answer that with a dashboard full of zeroes and
+    // an empty grid — pixel-for-pixel what it draws when the router genuinely has nothing
+    // online — so a slow first read was indistinguishable from a broken one, and a broken one
+    // offered no way back.
+    const LOADING_CONTAINERS = ['kpi-grid', 'models-view', 'models-table-container', 'providers-panel'];
+    const LOADING_VALUES = [
+      'readout-models', 'readout-combos', 'readout-providers', 'readout-rows',
+      'kpi-active', 'kpi-providers', 'kpi-best', 'speed-intell-count',
+    ];
+    // Whether the shell is still the only thing on screen. Refreshes after the first snapshot
+    // are silent: the skeleton is a first-load affordance, and a page that flashes placeholder
+    // rows every time the user clicks Test would be worse than the wait it describes.
+    let loadingStateActive = false;
+
+    function setLoadStatus(text, kind = 'loading') {
+      const line = document.getElementById('load-status');
+      if (!line) return;
+      const textEl = document.getElementById('load-status-text');
+      if (textEl) textEl.textContent = text || '';
+      line.classList.toggle('is-failed', kind === 'failed');
+      line.classList.toggle('is-settled', kind === 'settled');
+      line.hidden = !text;
+      const retry = document.getElementById('load-retry-btn');
+      if (retry) retry.style.display = kind === 'failed' ? 'inline-block' : 'none';
+    }
+
+    function setContainersBusy(busy) {
+      for (const id of LOADING_CONTAINERS) {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('aria-busy', busy ? 'true' : 'false');
+      }
+    }
+
+    // Placeholder rows and cards, cloned from the templates in index.html. They are what keeps
+    // the model card and the provider grids at something like their real height while empty,
+    // instead of collapsing to a header and then jumping when the rows arrive.
+    function showSkeletonRows(count = 6) {
+      const tbody = document.getElementById('table-body');
+      const tpl = document.getElementById('skeleton-row-template');
+      if (!tbody || !tpl) return;
+      tbody.textContent = '';
+      for (let i = 0; i < count; i++) tbody.appendChild(tpl.content.cloneNode(true));
+    }
+
+    // The network plot is the largest thing on the page and the last to be drawn (it is idle work
+    // and its brand marks are fetched after the first paint), so it says it is coming instead of
+    // sitting empty beside a table that already has rows. The scatter needs no equivalent: it has
+    // its own "No measurements yet" text and draws itself on the one-second status ticker.
+    //
+    // Written into the SVG rather than overlaid, because both draw paths already clear the element
+    // (`svg.innerHTML = ''`) before they paint — so the placeholder cannot survive a real draw, and
+    // nothing outside this pair of functions has to know it exists.
+    function setTopologyPlaceholder(visible) {
+      const svg = document.getElementById('bg-topology-svg');
+      if (!svg) return;
+      if (!visible) {
+        if (svg.dataset.placeholder !== '1') return; // never clear a real plot
+        svg.textContent = '';
+        delete svg.dataset.placeholder;
+        return;
+      }
+      svg.textContent = '';
+      svg.dataset.placeholder = '1';
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', '50%');
+      text.setAttribute('y', '50%');
+      text.setAttribute('text-anchor', 'middle');
+      text.setAttribute('dominant-baseline', 'middle');
+      text.setAttribute('font-size', '11');
+      text.style.fill = 'var(--text-muted)';
+      text.textContent = 'Loading the model network…';
+      svg.appendChild(text);
+    }
+
+    // The placeholder rows carry no `data-row-key`, so the keyed reconciler in render() can
+    // neither match nor retire them: left in place they would sit above the real table forever.
+    // They come out immediately before the first real render, and after a failed one.
+    function clearSkeletonRows() {
+      const tbody = document.getElementById('table-body');
+      if (tbody && tbody.querySelector('.skeleton-row')) tbody.textContent = '';
+    }
+
+    function showSkeletonProviders(count = 6) {
+      const tpl = document.getElementById('skeleton-card-template');
+      if (!tpl) return;
+      for (const id of ['active-providers-container', 'setup-providers-container']) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.textContent = '';
+        for (let i = 0; i < count; i++) el.appendChild(tpl.content.cloneNode(true));
+      }
+    }
+
+    function beginLoadingState() {
+      loadingStateActive = true;
+      perfMark('loading-shell');
+      setContainersBusy(true);
+      setLoadStatus('Loading router state…');
+      showSkeletonRows();
+      showSkeletonProviders();
+      setTopologyPlaceholder(true);
+      // The readouts go back to placeholders too. They are empty in the markup, but a *retry*
+      // after a failed load (or anything that put the shell back up) would otherwise show the
+      // numbers from the snapshot that failed next to a table of skeletons.
+      for (const id of LOADING_VALUES) {
+        const el = document.getElementById(id);
+        if (!el) continue;
+        el.classList.add('is-loading');
+        el.textContent = '';
+      }
+    }
+
+    // The first real numbers have been written, so the readouts stop being placeholders. Called
+    // by the loader that owns the values rather than by a timer, or a slow snapshot would clear
+    // the placeholders while they were still the only thing on screen.
+    function markValuesLoaded() {
+      for (const id of LOADING_VALUES) {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove('is-loading');
+      }
+    }
+
+    function endLoadingState() {
+      loadingStateActive = false;
+      setContainersBusy(false);
+      setLoadStatus('', 'settled');
+      markValuesLoaded();
+    }
+
+    function failLoadingState(err) {
+      loadingStateActive = false;
+      setContainersBusy(false);
+      // Skeleton rows are placeholder *rows*: leaving them in place after a failure would show
+      // six models that do not exist. The plot's placeholder goes the same way — a card waiting on
+      // a load that is not coming is the same lie as a row for a model that does not exist.
+      clearSkeletonRows();
+      setTopologyPlaceholder(false);
+      setLoadStatus(`Could not read the router state (${err && err.message ? err.message : 'request failed'}).`, 'failed');
+    }
+
+    // The one action a failed first load offers. Only the model snapshot is retried: it is the
+    // payload the page is missing, and the provider panel has its own retry in its own section.
+    function retryInitialLoad() {
+      beginLoadingState();
+      perfMark('retry');
+      loadModelSnapshot().catch(() => {});
+    }
+
     let allModels = [];
     // providerKey -> the domains whose favicons may mark it in the topology plot, best first.
     // Sent by the router (see providerFaviconDomains), which derives them from the sites each
@@ -300,12 +503,21 @@
       return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(cleanedOrigin) ? cleanedOrigin : '';
     }
 
+    // Brand marks are the one part of either plot that costs a request per node, and each cold
+    // one costs the router up to three upstream fetches. They are decoration with a monogram
+    // already drawn underneath, so the first paint does without them and the idle pass that
+    // follows the table turns them on (see the boot sequence at the bottom of this file). The
+    // topology includes this flag in its rebuild key, so a plot drawn during the wait redraws
+    // once with marks rather than keeping its monograms until its membership changes.
+    let decorationsReady = false;
+
     // The hrefs to try for one node's mark, in order. The router is preferred: it caches, it works
     // on a machine that cannot reach Google from the browser, and it keeps the provider roster from
     // being handed to a third party on every page load. Domains are deduped because a node's own
     // host and the provider behind it are often the same site, and an empty list means draw no
     // image at all and let the monogram stand.
     function faviconHrefs(domains) {
+      if (!decorationsReady) return [];
       const seen = new Set();
       const hrefs = [];
       for (const domain of Array.isArray(domains) ? domains : [domains]) {
@@ -409,20 +621,93 @@
         });
     }
 
-    async function fetchData() {
+    // The provider roster, as a request the boot sequence can start early and consume late.
+    // Never rejects: a roster hammer cannot read costs the plot its brand marks and is reported
+    // by whoever renders the provider cards, which is a different failure from having no models.
+    function fetchProviderConfig() {
+      return fetch('/api/config')
+        .then(res => (res.ok ? res.json() : null))
+        .catch(() => null);
+    }
+
+    // The provider roster behind the table's decorations: the domains whose favicons may mark a
+    // provider in the topology plot, and whether this router serves those marks itself
+    // (see fetchFavicon in lib/server.js). Applied when the roster arrives rather than as a step
+    // of the snapshot, because the two arrive independently now.
+    function applyProviderRoster(providers) {
+      if (!Array.isArray(providers)) return;
+      providerFaviconDomainLists = new Map(
+        providers
+          .filter(p => p && p.key)
+          .map(p => [p.key, (Array.isArray(p.faviconDomains) && p.faviconDomains.length > 0
+            ? p.faviconDomains
+            : (p.faviconDomain ? [p.faviconDomain] : []))]),
+      );
+      faviconProxyAvailable = providers.some(p => p && Object.prototype.hasOwnProperty.call(p, 'faviconDomain'));
+      updateLogoSourceNote();
+    }
+
+    // The most recent roster /api/config delivered, or null. Held so the staged passes — the
+    // plot's brand marks and the provider grid — read it without awaiting the same promise again,
+    // and so a snapshot that outlives the roster still has one to hand.
+    let lastProviderRoster = null;
+    // Where the provider grid is in its life: 'idle' (never built), 'building' (a build has been
+    // scheduled or is running) or 'ready' (built at least once). One variable rather than a
+    // boolean because the first build is deferred to idle, so a second snapshot can arrive while
+    // it is still queued — and two snapshots each deciding to build the first time is how ~125
+    // provider cards get rendered twice on one page load.
+    let providerPanelState = 'idle';
+    const providerPanelReady = () => providerPanelState === 'ready';
+
+    // A snapshot that arrived before the router had its provider usage reports is complete as far
+    // as the table is concerned — every row is there — and the only thing still filling in is the
+    // quota section of the provider cards. So the follow-up re-reads *that* payload (/api/config,
+    // ~100ms) and not the model snapshot (~2s): the cards are the only surface on this page that
+    // reads these reports at all (the rows' own rate limits are learned from the responses the
+    // router served, not from an account report), so a second full snapshot would re-read and
+    // repaint 341 rows to change none of them. While this page's event stream is attached the
+    // router's own `provider-usage` event drives this; the delay covers the race where that
+    // refresh settled before the stream attached.
+    const USAGE_FOLLOW_UP_MS = 2000;
+    let usageFollowUpTimer = null;
+
+    function scheduleUsageFollowUp() {
+      if (usageFollowUpTimer) return;
+      usageFollowUpTimer = setTimeout(() => {
+        usageFollowUpTimer = null;
+        refreshProviderUsageUi();
+      }, USAGE_FOLLOW_UP_MS);
+    }
+
+    // Re-render the provider grid from a fresh roster, for the one payload that moves without
+    // anything the user did: the router's provider usage reports (see the decoupling in
+    // lib/server.js). A grid that has not been built yet has nothing to update — the snapshot's
+    // own staged pass will read the roster when it gets there.
+    function refreshProviderUsageUi() {
+      if (!providerPanelReady()) return;
+      loadSettings().catch(() => { });
+    }
+
+    // The model snapshot — the page's payload, and now the only thing this function reads. The
+    // table, the KPI numbers and both plots are all built from it, so it is fetched and painted
+    // on its own: /api/models and /api/config used to be joined in one Promise.all, which made the
+    // whole dashboard wait for the slower of the two every time, and the provider half is the one
+    // that can sit on network work (see the usage decoupling in lib/server.js).
+    async function loadModelSnapshot() {
       const pinRevisionAtStart = pinMutationRevision;
       const pinWasPendingAtStart = pendingPinMutations > 0;
       const routerEventRevisionAtStart = routerEventRevision;
+      // Started here, consumed later by the brand marks and the provider grid. Deliberately not
+      // awaited with the snapshot: it must never be able to hold the table back.
+      const providersPromise = fetchProviderConfig();
       try {
-        const [modelsRes, configRes] = await Promise.all([
-          fetch('/api/models'),
-          fetch('/api/config'),
-        ]);
+        const modelsRes = await fetch('/api/models');
+        perfMark('models-response');
         const data = await modelsRes.json();
-        const providers = await configRes.json();
-        // A live event can arrive while these two requests are in flight. Its row and
-        // selection are newer than this snapshot, so leave the DOM alone and let the queued
-        // refresh repaint from a fresh server read instead of flashing the old model back.
+        perfMark('models-parsed');
+        // A live event can arrive while the request is in flight. Its row and selection are
+        // newer than this snapshot, so leave the DOM alone and let the queued refresh repaint
+        // from a fresh server read instead of flashing the old model back.
         if (routerEventRevisionAtStart !== routerEventRevision) return true;
         updateProxyErrorBanner(data.proxyError);
 
@@ -434,16 +719,6 @@
         // point of use by rateLimitEvidence(). Re-deriving it into the field here would
         // feed a snapshot back into the rule that produced it.
         allModels = data.models.map(m => ({ ...m, qos: m.qos || 0 }));
-        providerFaviconDomainLists = new Map(
-          (Array.isArray(providers) ? providers : [])
-            .filter(p => p && p.key)
-            .map(p => [p.key, (Array.isArray(p.faviconDomains) && p.faviconDomains.length > 0
-              ? p.faviconDomains
-              : (p.faviconDomain ? [p.faviconDomain] : []))]),
-        );
-        faviconProxyAvailable = (Array.isArray(providers) ? providers : [])
-          .some(p => p && Object.prototype.hasOwnProperty.call(p, 'faviconDomain'));
-        updateLogoSourceNote();
 
         // Relay-backed entries may report a real upstream model in every response. When
         // the router captures one that differs from the catalog id, show it as the model's
@@ -495,26 +770,94 @@
           : null;
         updateChatModelOptions(allModels);
 
-        try { render(); } catch (e) { console.error('Render error:', e); }
+        // One grouping for the table and the numbers that describe it. Both used to derive it
+        // independently — groupModels, then sortedGroups, then splitDisplayGroups over every row,
+        // twice per snapshot — and the table's split and the readouts' split are the same split.
+        // Only reusable while nothing is filtered: with a search active the table shows a subset
+        // while the readouts must keep describing the whole snapshot.
+        const displayGroups = searchTerm ? null : splitDisplayGroups(sortedGroups(groupModels(allModels)));
+
+        // 1. The table. Everything else on this page describes it, and it is the part the user
+        //    is actually reading, so it is painted on this frame.
+        clearSkeletonRows();
+        try { render(false, displayGroups); } catch (e) { console.error('Render error:', e); }
+        perfMark('table');
+        // The shell's job ends with the first real rows. Later refreshes are silent by design:
+        // placeholder rows flashing on every Test click would be worse than the wait they name.
+        if (loadingStateActive) endLoadingState();
+
+        // 2. The headline numbers — text only, no SVG. Cheap next to the plots and the part of
+        //    the page that answers "is anything online?"
+        updateKpiNumbers(allModels, currentBestModelId, currentBestProviderKey, displayGroups);
+
+        // 3. Everything else, after the table is interactive. The roster is awaited inside this
+        //    pass because the plot's brand marks are resolved from it; if the router answered
+        //    slowly the monograms carry the plot and the marks arrive on the redraw (see
+        //    faviconHrefs and the `dec` term in the topology's rebuild key).
+        whenIdle(async () => {
+          const roster = await providersPromise;
+          if (Array.isArray(roster)) lastProviderRoster = roster;
+          applyProviderRoster(lastProviderRoster);
+          decorationsReady = true;
+          drawPlots(allModels, currentBestModelId, currentBestProviderKey);
+          perfMark('plots');
+          // The grid is only touched when it is on screen (the models or settings tab). It is the
+          // last thing on the page and the most expensive to build — ~125 cards — so it goes
+          // after the plots rather than before them, and the roster handed to it is the one this
+          // snapshot read: the cards' quotaPending state is part of that payload, so reusing an
+          // older roster would leave a card saying "Checking…" after the refresh it was waiting
+          // for had already landed.
+          const panelVisible = document.getElementById('models-view').style.display !== 'none'
+            || document.getElementById('settings-view').style.display !== 'none';
+          if (!panelVisible) {
+            perfReport();
+            return;
+          }
+          if (providerPanelState === 'ready') {
+            await loadSettings(lastProviderRoster);
+            perfReport();
+            return;
+          }
+          // A build is already queued or running for another snapshot: joining it would render
+          // every card twice.
+          if (providerPanelState === 'building') {
+            perfReport();
+            return;
+          }
+          // First build. Its own idle slot again, because painting ~125 cards is itself a long
+          // task and the table must stay interactive through it.
+          providerPanelState = 'building';
+          whenIdle(() => {
+            loadSettings(lastProviderRoster).catch(e => console.error('Initial loadSettings failed:', e));
+          });
+        });
+
         scheduleContradictoryRetests();
-        updateKPIs(allModels, currentBestModelId, currentBestProviderKey);
         // Show the 'Test All' button when the rendered main table has inactive rows.
         updateTestAllButtonVisibility();
         // Live-update logs if that tab is currently active
         if (document.getElementById('logs-view').style.display !== 'none') {
           loadLogs();
         }
-        // Keep provider controls current while visible on the main page or in settings.
-        if (document.getElementById('models-view').style.display !== 'none'
-          || document.getElementById('settings-view').style.display !== 'none') {
-          loadSettings(providers);
-        }
+        // The quota boxes may still be filling in on the router's side. The panel itself is kept
+        // current by the staged pass above, which is the only place that holds a roster matching
+        // this snapshot — see the comment there about quotaPending.
+        if (data.usagePending === true) scheduleUsageFollowUp();
         return true;
       } catch (e) {
         console.error('Fetch error:', e);
         updateProxyErrorBanner({ message: e?.message || 'Could not refresh Hammer status.', fallback: false });
+        // Only the *initial* load owns the loading shell: a failed background refresh must not
+        // replace a working dashboard with an error screen.
+        if (loadingStateActive) failLoadingState(e);
         return false;
       }
+    }
+
+    // `fetchData` is the name every existing caller knows (Tests, key saves, tab switches, the
+    // visibility handler, the coalesced refresh). It is now exactly the model snapshot.
+    function fetchData() {
+      return loadModelSnapshot();
     }
 
     function calculateBestModel(models) {
@@ -635,7 +978,15 @@
       syncPinnedModelUI();
     }
 
-    function updateKPIs(models, bestModelId, bestProviderKey = null) {
+    // The KPI's numbers, without either plot. Split out of updateKPIs so the boot sequence can
+    // paint the headline counts on the frame that paints the table and leave the two SVG draws to
+    // idle: the numbers are text, the plots are the two most expensive things on the page after
+    // the provider grid.
+    //
+    // `displayGroups` is the caller's already-computed main/graveyard split when it has one (see
+    // the snapshot in loadModelSnapshot). Passing it is what makes the table's grouping and the
+    // readouts' grouping one pass instead of two.
+    function updateKpiNumbers(models, bestModelId, bestProviderKey = null, displayGroups = null) {
       // Both counts read the same verdict the table's dots do — a model is 'active' when
       // something can actually serve it right now (see rowVerdict). One definition, or the
       // KPIs and the rows they summarise disagree.
@@ -655,7 +1006,7 @@
       //   Providers = unique provider instances in the main table (only online/up rows)
       //   Rows     = every row the main table shows (provider rows, grouped heads,
       //              excluding graveyard/unavailable rows)
-      const { mainGroups } = splitDisplayGroups(sortedGroups(groupModels(models)));
+      const { mainGroups } = displayGroups || splitDisplayGroups(sortedGroups(groupModels(models)));
       let endpoints = 0;
       const mainProviderKeys = new Set();
       let mainRows = 0;
@@ -676,16 +1027,34 @@
       if (readoutProviders) readoutProviders.textContent = mainProviderKeys.size;
       if (readoutRows) readoutRows.textContent = mainRows;
 
-      document.getElementById('kpi-active').textContent = onlineModelCount;
-      document.getElementById('kpi-providers').textContent = onlineProviders.size;
+      const kpiActive = document.getElementById('kpi-active');
+      const kpiProviders = document.getElementById('kpi-providers');
+      if (kpiActive) kpiActive.textContent = onlineModelCount;
+      if (kpiProviders) kpiProviders.textContent = onlineProviders.size;
 
       const bestModel = bestModelId
         ? models.find(m => m.modelId === bestModelId && (!bestProviderKey || m.providerKey === bestProviderKey))
         : null;
       setKpiBest(bestModel ? kpiBestText(bestModel) : 'None Online');
+    }
 
+    // Both plots, from one snapshot. Deferred to idle by the boot sequence and immediate for every
+    // caller that is painting a live event — a fallback must move the pictures on the SSE frame.
+    function drawPlots(models, bestModelId, bestProviderKey = null) {
+      const bestModel = bestModelId
+        ? models.find(m => m.modelId === bestModelId && (!bestProviderKey || m.providerKey === bestProviderKey))
+        : null;
       drawBipartiteTopology(models, bestModel);
       drawSpeedIntellScatter(models);
+    }
+
+    // Numbers *and* both plots, together and immediately. This is the shape every live-event paint
+    // uses (a fallback, a provider bench, new evidence): the SSE frame names a model, and every
+    // surface that names it — including the pictures — has to move on that same frame. The boot
+    // sequence is the only caller that splits the two (see loadModelSnapshot).
+    function updateKPIs(models, bestModelId, bestProviderKey = null) {
+      updateKpiNumbers(models, bestModelId, bestProviderKey);
+      drawPlots(models, bestModelId, bestProviderKey);
     }
 
     // ---- Intelligence-vs-speed scatter plot ----
@@ -1974,10 +2343,17 @@
       // a pick that moves to a pair the plot has not drawn yet needs the plot to redraw — a
       // signature that only watched membership would leave the serving path unmarked.
       const bestSig = bestModel ? getModelRowKey(bestModel) : '';
-      const svgHash = `${membershipSig}:${providerSig}:${bestSig}:${W}:${H}`;
+      // `dec` is in the key because whether the node marks exist is a property of what was drawn
+      // (see faviconHrefs): a plot built before the idle pass is a different picture from the same
+      // plot built after it, even though every model in it is identical.
+      const svgHash = `${membershipSig}:${providerSig}:${bestSig}:${W}:${H}:dec=${decorationsReady ? 1 : 0}`;
       if (svg.dataset.hash !== svgHash) {
         svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
         svg.innerHTML = '';
+        // Whatever placeholder the loading shell put here is gone with the markup above; the flag
+        // goes with it, so "this element holds a placeholder" stays true of the element rather
+        // than of what it used to hold (see setTopologyPlaceholder).
+        delete svg.dataset.placeholder;
         svg.dataset.hash = svgHash;
         svg._topoZoom = 1;
         svg._topoPanX = 0;
@@ -3611,7 +3987,11 @@
       bindPinButton(pinButton, { modelId: g.members[0]?.modelId, groupKey: g.key, pinned });
     }
 
-    function render(isUserAction = false) {
+    // `precomputedGroups` is the caller's { mainGroups, graveyardGroups } for the unfiltered
+    // snapshot (see loadModelSnapshot). Reusing it is what keeps one grouping pass per snapshot
+    // instead of one for the table and another for the readouts. It is ignored while a search is
+    // active, where the table legitimately shows a subset the readouts must not describe.
+    function render(isUserAction = false, precomputedGroups = null) {
       // While hovering, keep values live but lock row order so rows never
       // reorder or rebuild under the user's cursor.
       const hoverLocked = !isUserAction && isTableHovered;
@@ -3642,8 +4022,9 @@
       // only the order of the rows that remain — it used to hold struck rows in place too,
       // and because the old branch read `allGroups` from the other side of the `if` it
       // threw before it could even do that, so a clicked row never moved at all.
-      const allGroups = sortedGroups(groupModels(filtered));
-      const { mainGroups, graveyardGroups: grave } = splitDisplayGroups(allGroups);
+      const { mainGroups, graveyardGroups: grave } = (precomputedGroups && !searchTerm)
+        ? precomputedGroups
+        : splitDisplayGroups(sortedGroups(groupModels(filtered)));
       graveyardGroups = grave;
 
       if (!hoverLocked) {
@@ -4048,7 +4429,15 @@
     const RATE_LIMIT_UNSTATED_GRACE_MS = 60_000;
 
     // When this row last answered a probe successfully, in epoch ms (0 when never).
+    //
+    // The router states this directly now. The row's 50-entry `pings` history used to ride along
+    // on every snapshot while this scan was the only thing the dashboard ever read out of it, so
+    // the field replaced the array (see the /api/models row payload in lib/server.js). The scan
+    // stays as the fallback for a page newer than the router answering it, which still sends
+    // `pings` and no field.
     function lastProbeSuccessAt(m) {
+      const reported = Number(m?.lastProbeSuccessAt);
+      if (Number.isFinite(reported) && reported > 0) return reported;
       const pings = Array.isArray(m?.pings) ? m.pings : [];
       for (let i = pings.length - 1; i >= 0; i--) {
         if (String(pings[i]?.code) === '200') return Number(pings[i].ts) || 0;
@@ -5652,10 +6041,10 @@
       }
     }
 
-    // `prefetchedProviders` lets a caller that already holds this payload — fetchData()
-    // fetches /api/config a few lines before it calls us — skip a second round trip. Every
-    // dashboard refresh used to pay for that duplicate request. Callers that have not
-    // fetched it pass nothing and the behaviour is exactly as before.
+    // `prefetchedProviders` lets a caller that already holds this payload — the staged boot
+    // sequence, or a snapshot that happened to read the roster — skip a second round trip. Every
+    // dashboard refresh used to pay for that duplicate request. Callers that have not fetched it
+    // pass nothing and the behaviour is exactly as before.
     async function loadSettings(prefetchedProviders = null) {
       // Fetch the critical /api/config endpoint first and render providers
       // independently so the providers panel never stays empty just because a
@@ -6291,6 +6680,11 @@
           (providerIsActive ? activeContainer : setupContainer).appendChild(section);
         });
         restoreInputState();
+        // The panel exists now, so a snapshot may refresh it and the staged boot sequence must
+        // not build it a second time (see loadModelSnapshot).
+        providerPanelState = 'ready';
+        perfMark('providers');
+        perfReport();
       } catch (err) { console.error(err); }
       // Pending imported-provider discovery is completed during server startup. Explicit
       // provider refreshes and request-triggered discovery remain available for later recovery.
@@ -8188,6 +8582,19 @@
         ? `<div class="quota-error">${escapeHtml(String(provider.quotaError))}${reports.length > 0 ? ' Showing the quota data that is still available.' : ''}</div>`
         : '';
 
+      // An empty report list means two different things, and the difference is time: hammer asked
+      // and the provider measures nothing, or hammer asked and the answer has not arrived yet. The
+      // router says which (quotaPending — see the usage decoupling in lib/server.js), because the
+      // snapshot no longer waits for the refresh. A provider that publishes a limit keeps it either
+      // way: that is an answer, not a pending question.
+      if (reports.length === 0 && !known && !error && !notes && provider?.quotaPending === true) {
+        return `
+          <div class="quota-bars-section quota-bars-pending" aria-label="Provider quota" aria-busy="true">
+            <div class="quota-bars-heading">Quota <span class="quota-provenance">Checking…</span></div>
+            <div class="quota-unavailable">Reading this provider's usage. The numbers appear here as soon as it answers.</div>
+          </div>`;
+      }
+
       if (reports.length === 0) {
         if (!known && !error && !notes) {
           return `
@@ -8546,6 +8953,23 @@
         let payload = null;
         try { payload = JSON.parse(event.data); } catch { return; }
         if (!payload || payload.type === 'hello') return;
+
+        // A provider-usage frame is the router saying the reports it could not produce when this
+        // page asked for its snapshot have now landed (see the usage decoupling in lib/server.js).
+        // It is handled before the revision bump below on purpose: it changes no row and no
+        // selection, so it has no business invalidating a snapshot that is already in flight — and
+        // it arrives about a second after boot, which is exactly when the first snapshot is still
+        // on the wire. Counting it as a router event would discard that snapshot (see
+        // routerEventRevisionAtStart in loadModelSnapshot) and leave the page on its skeleton.
+        // The cards' quota boxes are the only thing it moves, so it refreshes that payload alone.
+        if (payload.type === 'provider-usage') {
+          if (usageFollowUpTimer) {
+            clearTimeout(usageFollowUpTimer);
+            usageFollowUpTimer = null;
+          }
+          refreshProviderUsageUi();
+          return;
+        }
         routerEventRevision++;
 
         // Paint the event before starting the relatively expensive snapshot request. A fallback
@@ -8617,8 +9041,26 @@
     }
     connectRouterEvents();
 
-    fetchData().catch(() => {});
-    // Always populate the providers panel on initial page load, even if the
-    // dashboard fetch failed or the models-view is hidden (e.g. the user is on
-    // the settings tab).
-    loadSettings().catch(e => console.error('Initial loadSettings failed:', e));
+    // ── The boot sequence ──────────────────────────────────────────────────────────────
+    //
+    // Four stages, in the order the page becomes useful, and each one starts as soon as the one
+    // before it is on screen rather than as soon as it is finished:
+    //
+    //   0. the loading shell   — synchronously, before any request is sent (beginLoadingState)
+    //   1. the table           — the model snapshot, painted on the frame that parses it
+    //   2. the numbers         — text only, immediately after the table
+    //   3. decoration, idle    — brand marks, both plots, then the provider grid
+    //
+    // The provider grid used to be built straight from this line *and* again from inside
+    // fetchData, so every page load rendered ~125 cards twice and fetched /api/config and
+    // /api/meta twice with them. It is now built exactly once, and last, because it is the
+    // heaviest thing on the page and the least urgent: the user came for the table.
+    //
+    // A failed first snapshot is reported by the loader itself (failLoadingState), which leaves a
+    // Retry button rather than a dashboard of zeroes; the panel is then still attempted below, so
+    // a table that could not be read does not also cost the user their API-key controls.
+    beginLoadingState();
+    loadModelSnapshot().catch(() => {});
+    // Safety net for the `?perf` report: if a stage never completes (a panel build that threw),
+    // whatever was measured is still worth printing.
+    if (PERF_ENABLED) setTimeout(perfReport, 15000);

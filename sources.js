@@ -5,6 +5,7 @@
 
 import { scores } from './scores.js'
 import { lazyProviderSourceEntries } from './lib/providers/resolutions.js'
+import { NLPCLOUD_DEFAULT_CHAT_URL } from './lib/providers/nlpcloud.js'
 
 export const MODEL_ID_ALIASES = {
   // Api.Airforce exposes this as `unmoderated-gpt`, but its live catalog identifies
@@ -647,6 +648,23 @@ export const sources = {
     "discoverable": true,
     "models": [
       ["auto", "Auto (G4F)", "128k"]
+    ]
+  },
+  // --- NLP Cloud ------------------------------------------------------------
+  // NLP Cloud's chatbot API is model/task-specific and does not publish an
+  // OpenAI-style model-list endpoint. These are the current generative models
+  // from its official model list; the adapter builds `/v1/gpu/{model}/chatbot`
+  // and translates the request/response around it.
+  "nlpcloud": {
+    "name": "NLP Cloud",
+    "url": NLPCLOUD_DEFAULT_CHAT_URL,
+    "contextUrl": "https://docs.nlpcloud.com/#chatbot-and-conversational-ai",
+    "models": [
+      ["gpt-oss-120b", "GPT-OSS 120B", "128k"],
+      ["llama-3-1-405b", "LLaMA 3.1 405B", "128k"],
+      ["finetuned-llama-3-70b", "Fine-tuned LLaMA 3.3 70B", "128k"],
+      ["dolphin-yi-34b", "Dolphin Yi 34B"],
+      ["dolphin-mixtral-8x7b", "Dolphin Mixtral 8x7B"]
     ]
   },
   // --- gptfree.com -----------------------------------------------------------

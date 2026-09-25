@@ -65,6 +65,11 @@ import {
   shapingReadiness,
   substituteCredentialFields,
 } from '../lib/providers/adapters.js'
+import {
+  buildNlpCloudRequestBody,
+  buildNlpCloudUrl,
+  transformNlpCloudResponse,
+} from '../lib/providers/nlpcloud.js'
 import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
 import {
   clearKiroTokenCaches,
@@ -100,7 +105,7 @@ import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
 import { sources, canonicalizeModelId, getScore, MODELS } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import { isAccountBudgetRefusalText, isAuthoritativeProbeFailure, isCachedReplayResponse, isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
-import { parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
+import { EXCLUDED_PROVIDER_KEYS, parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
 import { parseRegistryEntry, parseRegistryIndex, decideResolution, termsRefusal } from '../tools/resolve-omniroute-endpoints.mjs'
 
 /** Order-insensitive deep comparison, because these tables are lookups, not sequences. */
@@ -144,6 +149,7 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     devin: 'DEVIN_API_KEY',
     'github-copilot': 'GITHUB_COPILOT_TOKEN',
     g4f: 'G4F_API_KEY',
+    nlpcloud: 'NLPCLOUD_API_KEY',
   })
 })
 
@@ -152,6 +158,7 @@ test('base URL and model id env tables reproduce the old ones', () => {
     'openai-compatible': 'OPENAI_COMPATIBLE_BASE_URL',
     ollama: 'OLLAMA_BASE_URL',
     g4f: 'G4F_BASE_URL',
+    nlpcloud: 'NLPCLOUD_BASE_URL',
   })
   sortsDeepEqual(modelIdEnvVarTable(), {
     'openai-compatible': 'OPENAI_COMPATIBLE_MODEL',
@@ -577,12 +584,12 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
   }
 })
 
-test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 17 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(key => PROVIDER_DESCRIPTORS[key].signupUrl)
-  assert.equal(hammerOwned.length, 16)
+  assert.equal(hammerOwned.length, 17)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
@@ -658,8 +665,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 16 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 16)
+test('hammer ships 17 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 17)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -769,9 +776,25 @@ test('the vendored catalog parses and carries provenance', () => {
   assert.ok(providers.length > 50, `expected a substantial roster, got ${providers.length}`)
 })
 
+test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
+  // Driven by the exclusion set rather than a hardcoded key, so a provider added to the sync
+  // is covered here immediately — including the surfaces that are easy to forget when a row
+  // is deleted by hand: the curated key page, the lazy `sources.js` entry, and the routable
+  // import list.
+  assert.ok(EXCLUDED_PROVIDER_KEYS.size > 0, 'the exclusion set must not be empty')
+  for (const key of EXCLUDED_PROVIDER_KEYS) {
+    assert.equal(loadOmniRouteCatalog().providers.some(provider => provider.key === key), false, `${key}: roster row`)
+    assert.equal(key in loadResolutions().providers, false, `${key}: resolution`)
+    assert.equal(key in loadKeyPages(), false, `${key}: key page`)
+    assert.equal(getProvider(key), null, `${key}: registry`)
+    assert.equal(key in lazyProviderSourceEntries(), false, `${key}: sources entry`)
+    assert.equal(routableImports().some(provider => provider.key === key), false, `${key}: routable import`)
+  }
+})
+
 test('imported providers never overwrite hammer-owned keys', () => {
   const importedKeys = imported().map(d => d.key)
-  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro', 'nlpcloud']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
   }
@@ -976,6 +999,79 @@ test('the credential header shape is data, so a non-bearer provider needs no new
   assert.equal(headers['x-api-key'], 'secret')
   assert.equal(headers.Authorization, undefined)
   initProviders({ reset: true })
+})
+
+test('NLP Cloud is a complete key-gated Hammer provider, not a generic import', () => {
+  const provider = getProvider('nlpcloud')
+  assert.equal(provider.origin, 'hammer')
+  assert.equal(provider.activation, 'active')
+  assert.equal(provider.access, 'permanent')
+  assert.equal(provider.tos, 'caution')
+  assert.equal(provider.auth.scheme, 'Token')
+  assert.equal(provider.auth.envVar, 'NLPCLOUD_API_KEY')
+  assert.equal(provider.auth.baseUrlEnvVar, 'NLPCLOUD_BASE_URL')
+  assert.equal(provider.discoverable, false)
+  assert.equal(provider.toolSupport, 'unsupported')
+  assert.equal(sources.nlpcloud.models.length, 5)
+  assert.ok(sources.nlpcloud.models.some(([id]) => id === 'gpt-oss-120b'))
+  assert.equal(buildNlpCloudUrl('gpt-oss-120b'), 'https://api.nlpcloud.io/v1/gpu/gpt-oss-120b/chatbot')
+  assert.equal(
+    buildNlpCloudUrl('custom-model/42', 'https://example.test/v1/gpu/'),
+    'https://example.test/v1/gpu/custom-model/42/chatbot',
+  )
+  assert.equal(buildProviderRequestHeaders('nlpcloud', { apiKey: 'secret' }).Authorization, 'Token secret')
+})
+
+test('NLP Cloud translates the complete OpenAI conversation into its chatbot shape', () => {
+  const body = buildNlpCloudRequestBody({
+    model: 'gpt-oss-120b',
+    messages: [
+      { role: 'system', content: 'Answer concisely.' },
+      { role: 'user', content: 'What is a router?' },
+      { role: 'assistant', content: 'It selects a backend.' },
+      { role: 'user', content: [{ type: 'text', text: 'Give me an example.' }] },
+    ],
+    stream: true,
+    max_tokens: 500,
+  })
+  assert.deepEqual(body, {
+    input: 'Give me an example.',
+    context: 'system: Answer concisely.',
+    history: [{ input: 'What is a router?', response: 'It selects a backend.' }],
+  })
+  assert.deepEqual(buildProviderRequestBody('nlpcloud', {
+    messages: [{ role: 'user', content: 'hello' }],
+  }, 'gpt-oss-120b'), {
+    input: 'hello',
+    context: null,
+    history: [],
+  })
+})
+
+test('NLP Cloud responses become OpenAI JSON or a synthesized SSE stream', async () => {
+  const upstream = () => new Response(JSON.stringify({
+    response: 'Hello from NLP Cloud.',
+    history: [],
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json', 'x-ratelimit-limit-requests': '3' },
+  })
+
+  const jsonResponse = await transformNlpCloudResponse(upstream(), 'gpt-oss-120b', false)
+  assert.equal(jsonResponse.headers.get('x-ratelimit-limit-requests'), '3')
+  const json = await jsonResponse.json()
+  assert.equal(json.object, 'chat.completion')
+  assert.equal(json.model, 'gpt-oss-120b')
+  assert.equal(json.choices[0].message.content, 'Hello from NLP Cloud.')
+  assert.equal(json.choices[0].finish_reason, 'stop')
+
+  const streamResponse = await transformNlpCloudResponse(upstream(), 'gpt-oss-120b', true)
+  assert.match(streamResponse.headers.get('Content-Type'), /^text\/event-stream/)
+  const stream = await streamResponse.text()
+  assert.match(stream, /"object":"chat\.completion\.chunk"/)
+  assert.match(stream, /"content":"Hello from NLP Cloud\."/)
+  assert.match(stream, /"finish_reason":"stop"/)
+  assert.match(stream, /data: \[DONE\]/)
 })
 
 test('an active import\'s descriptor feeds the real header and body builders', () => {

@@ -183,25 +183,12 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "nebius": {
-      "url": "https://tokenfactory.nebius.com/",
-      "evidence": "Nebius Token Factory; the get-an-API-key entry point",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment."
-    },
     "qoder": {
       "url": "https://qoder.com/",
       "evidence": "Qoder homepage; the account behind signup issues the API key",
       "verifiedAt": null,
       "httpStatus": null,
       "note": "Timed out from this environment."
-    },
-    "novita": {
-      "url": "https://novita.ai/settings/key-management",
-      "evidence": "Novita settings; key management page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
     },
     "baichuan": {
       "url": "https://platform.baichuan-ai.com/console/apikey",
@@ -238,12 +225,6 @@
     "inference-net": {
       "url": "https://inference.net/",
       "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "liquid": {
-      "url": "https://console.liquid.ai/",
-      "evidence": "Liquid console; API keys",
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
