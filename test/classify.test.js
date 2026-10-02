@@ -535,3 +535,84 @@ test('a window ceiling is read from above, never from a lower bound', () => {
   assert.equal(resolveContextUpperBound(null, null), null)
   assert.equal(resolveContextUpperBound(null, {}), null)
 })
+
+test('a decision-model schema refusal is incompatible, not a retryable Down', () => {
+  // Cloudflare's clef entries (live 2026-10-02) are catalogued as "decision models that turn a
+  // state and a schema of typed questions into decisions", so every chat request is refused at
+  // the schema layer before any token is generated:
+  //   Bad input: Error: required properties at '/' are 'model,state,questions'
+  // Nothing this router sends has those root properties, so the refusal is permanent and the
+  // rows belong in the unavailable table instead of being re-probed forever as Down.
+  assert.equal(
+    isIncompatibleModelError(
+      "Bad input: Error: required properties at '/' are 'model,state,questions' (86bda8ad-eced-45c6-8525-6fbfdaa9852a)",
+      400,
+    ),
+    true,
+  )
+  // Same refusal for the flash variant, and through the stored-evidence path the dashboard uses.
+  assert.equal(
+    isIncompatibleModelError(
+      "Bad input: Error: required properties at '/' are 'model,state,questions' (943bc605-aa38-4326-8885-c705d1315c21)",
+      400,
+    ),
+    true,
+  )
+  const now = Date.now()
+  assert.equal(
+    resolveModelStatus({
+      modelId: 'clef',
+      providerKey: 'cloudflare-ai',
+      status: 'up',
+      lastResponse: {
+        ok: false,
+        text: null,
+        status: 400,
+        error: "Bad input: Error: required properties at '/' are 'model,state,questions'",
+        at: now,
+      },
+    }, now),
+    'incompatible',
+  )
+  // The rule names that specific schema, so an ordinary malformed-payload complaint — a refusal
+  // about *this* request's shape, which a well-formed request can avoid — stays a failover.
+  assert.equal(isIncompatibleModelError('Bad input: Error: body must be an object', 400), false)
+})
+
+test("a model whose own window is micro is incompatible; one oversized prompt is not", () => {
+  // Cloudflare's small Workers AI entries (live 2026-10-02) name the model's own window as the
+  // subject of the refusal:
+  //   The estimated number of input and maximum output tokens (16428) exceeded this model
+  //   context window limit (3500).
+  // The ceiling is a property of the model and sits far below MICRO_CONTEXT_MAX_TOKENS, so no
+  // prompt worth routing here could ever fit — permanent, not a payload that was too big today.
+  for (const limit of [3500, 8192]) {
+    const message = `Ai: The estimated number of input and maximum output tokens (16428) exceeded this model context window limit (${limit}).`
+    assert.equal(isIncompatibleModelError(message, 400), true)
+    // The ceiling is still read out for the context table, which is where it is also displayed.
+    assert.equal(parseContextLimitFromError(message), limit)
+  }
+
+  // Negative controls — each of these names a number below MICRO_CONTEXT_MAX_TOKENS that is NOT
+  // the model's window. Reading any of them as a verdict struck healthy rows out of rotation:
+  //  - "Current length is 23592 while limit is 8192" is one oversized payload against a usable
+  //    window; it is a failover signal (isRequestTooLargeErrorText / context overflow).
+  //  - Groq's "Request too large for model in organization: Limit 1000, Requested 1413" is a
+  //    per-minute token quota, and the number says nothing about the model at all.
+  //  - A healthy large-context model reports its real window and must stay in rotation.
+  assert.equal(
+    isIncompatibleModelError('Please reduce the length of the messages or completion. Current length is 23592 while limit is 8192', 400),
+    false,
+  )
+  assert.equal(
+    isIncompatibleModelError('Request too large for model in organization: Limit 1000, Requested 1413', 400),
+    false,
+  )
+  assert.equal(isIncompatibleModelError('This model maximum context length is 131072 tokens', 400), false)
+  assert.equal(isIncompatibleModelError('max_tokens=16384 cannot be greater than max_model_len=max_total_tokens=131072', 400), false)
+  assert.equal(isIncompatibleModelError('prompt is too long: 23592 tokens > 131072 maximum', 400), false)
+
+  // A model that *states* a micro window as its own ceiling is still incompatible by this rule,
+  // even without Cloudflare's "exceeded ... " framing.
+  assert.equal(isIncompatibleModelError("this model's context window is 4096", 400), true)
+})

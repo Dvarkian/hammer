@@ -363,7 +363,14 @@ export function canonicalizeModelId(modelId) {
   const base = resolved.replace(/(?::(?:free|optimized|cloud))+$/i, '');
   // 2. Remove provider prefix like google/
   const unprefixed = base.includes('/') ? base.split('/').pop() : base;
-  return { base, unprefixed };
+  // 3. `unscoped` is `base` without a leading `@namespace/`, which is how Cloudflare
+  //    spells its catalog (`@cf/meta/llama-3.1-8b-instruct-fp8` for the model every other
+  //    catalog publishes as `meta/llama-3.1-8b-instruct`). Nothing else in the registry
+  //    uses an `@` namespace or more than one path segment, so this can only ever add a
+  //    spelling of a model that is already here — `base` and `unprefixed` keep their exact
+  //    previous values, which is what routing, grouping and alias collection read.
+  const unscoped = base.replace(/^@[^/]+\//, '');
+  return { base, unprefixed, unscoped };
 }
 
 export function getPreferredModelLabel(modelId, fallback = null) {
@@ -380,9 +387,10 @@ export function getPreferredModelContext(modelId, fallback = null) {
 }
 
 export function getScore(modelId) {
-  const { base, unprefixed } = canonicalizeModelId(modelId);
-  // Try exact match first (e.g. google/gemma-3-4b-it), then fallback to unprefixed (e.g. gemma-3-4b-it)
-  return scores[base] ?? scores[unprefixed] ?? null;
+  const { base, unprefixed, unscoped } = canonicalizeModelId(modelId);
+  // Try exact match first (e.g. google/gemma-3-4b-it), then the namespace-stripped spelling
+  // (`@cf/qwen/qwq-32b` -> `qwen/qwq-32b`), then the bare leaf (e.g. gemma-3-4b-it).
+  return scores[base] ?? scores[unscoped] ?? scores[unprefixed] ?? null;
 }
 
 export const sources = {

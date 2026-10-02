@@ -56,6 +56,8 @@ import {
 import { normalizeDescriptor, validateDescriptor, derivedModelsUrl } from '../lib/providers/schema.js'
 import {
   applyRequestShaping,
+  credentialFieldList,
+  credentialFieldValues,
   flattenTextContent,
   missingCredentialFields,
   requiredCredentialFields,
@@ -93,6 +95,7 @@ import {
   fetchJsonWithRetry,
   isRetryableDiscoveryError,
   extractOpenAICompatibleModelRecords,
+  toOpenAICompatibleDiscoveredModelMeta,
   isChatCompatibleDiscoveredModel,
   isProviderAuthOptional,
   isProviderBearerAuthEnabled,
@@ -1161,6 +1164,33 @@ test('a record that declares a non-chat task is not imported as a chat model', (
   )
 })
 
+test('a discovered row is identified by the name you can actually request', () => {
+  // Cloudflare's search results put a database UUID in `id` and the routable model name in
+  // `name`. Reading `id` first stored rows whose every request came back `400 No such model`,
+  // so a working account looked like a dead provider. The name is what has to be sent.
+  const cloudflare = toOpenAICompatibleDiscoveredModelMeta(
+    { id: '02c16efa-29f5-4304-8e6c-3d188889f875', name: '@cf/qwen/qwq-32b', task: { name: 'Text Generation' } },
+    'cloudflare-ai',
+  )
+  assert.equal(cloudflare.modelId, '@cf/qwen/qwq-32b')
+
+  // An ordinary catalog still identifies by `id`; nothing about them changes.
+  assert.equal(toOpenAICompatibleDiscoveredModelMeta({ id: 'gpt-4o-mini' }, 'openai').modelId, 'gpt-4o-mini')
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta({ id: 'llama-3.1-8b-instruct' }, 'nvidia').modelId,
+    'llama-3.1-8b-instruct',
+  )
+  // A record whose `name` is itself a UUID is not a model name, so `id` stays the identity
+  // rather than swapping one unusable identifier for another.
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta(
+      { id: '02c16efa-29f5-4304-8e6c-3d188889f875', name: '0a1b2c3d-4e5f-6a7b-8c9d-0e1f2a3b4c5d' },
+      'cloudflare-ai',
+    ).modelId,
+    '02c16efa-29f5-4304-8e6c-3d188889f875',
+  )
+})
+
 test('only unresolved, answerable imports are probed on demand', () => {
   const config = { apiKeys: { cohere: 'k' }, providers: {} }
   const helpers = { isAuthOptional: isProviderAuthOptional, hasApiKey: getApiKey }
@@ -1589,6 +1619,50 @@ test('a templated endpoint receives only the credential fields it declares', () 
   // is never frozen into the config file by a form the user did not change.
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '' }), { accountId: null })
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'from-environment' }), { accountId: null })
+})
+
+test('a second Cloudflare account gets its own account id', () => {
+  // A second Workers AI key belongs to a second account, and the account id is part of the
+  // path, so one id cannot serve two accounts: the second key's requests would be sent
+  // against the first account's URL and refused. The list is what pairs them.
+  const twoAccounts = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: ['acct-a', 'acct-b'] } } }
+
+  // Each credential index resolves to its own account, so key[1] is sent to acct-b.
+  assert.equal(credentialFieldValues(twoAccounts, 'cloudflare-ai', 0).accountId, 'acct-a')
+  assert.equal(credentialFieldValues(twoAccounts, 'cloudflare-ai', 1).accountId, 'acct-b')
+
+  // The URL a request builds therefore differs per credential, which is the whole point.
+  const first = resolveShapedChatUrl(twoAccounts, 'cloudflare-ai', null, 0).url
+  const second = resolveShapedChatUrl(twoAccounts, 'cloudflare-ai', null, 1).url
+  assert.match(first, /\/accounts\/acct-a\//)
+  assert.match(second, /\/accounts\/acct-b\//)
+
+  // One id and several keys is legitimate — every key belongs to that one account — so the
+  // last entry stands in rather than the field reading as missing.
+  const oneAccountManyKeys = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: 'acct-a' } } }
+  assert.equal(credentialFieldValues(oneAccountManyKeys, 'cloudflare-ai', 5).accountId, 'acct-a')
+  assert.deepEqual(missingCredentialFields(oneAccountManyKeys, 'cloudflare-ai'), [])
+
+  // A stored string stays the single-account case: nothing about it changes.
+  const legacy = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: 'acct-a' } } }
+  assert.deepEqual(credentialFieldList(legacy, 'cloudflare-ai', 'accountId'), ['acct-a'])
+  assert.equal(credentialFieldValues(legacy, 'cloudflare-ai', 0).accountId, 'acct-a')
+})
+
+test('a list of account ids round-trips through the save rule', () => {
+  // Blanks and duplicates are dropped rather than stored: an empty slot would shift every
+  // later account id out of line with its key.
+  assert.deepEqual(
+    credentialFieldWrites('cloudflare-ai', { accountId: ['acct-a', '', 'acct-b', 'acct-a'] }),
+    { accountId: ['acct-a', 'acct-b'] },
+  )
+  // One surviving entry is stored as a plain string, so a config never grows an array for
+  // the single-account case.
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['acct-a', ''] }), { accountId: 'acct-a' })
+  // Every entry blank clears the field rather than storing an empty array.
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['', '  '] }), { accountId: null })
+  // An env-supplied value echoed back in a list is still the environment deciding.
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['from-environment', 'acct-b'] }), { accountId: 'acct-b' })
 })
 
 test('a missing credential field is what unreadable model lists have in common', () => {

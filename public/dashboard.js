@@ -4431,7 +4431,25 @@
     // table with an empty Status cell: llm7 refuses every Seedance id with "Model
     // 'seedance-2.0-fast' does not support chat endpoints." (live 2026-09-22), which the router
     // read as incompatible and this file re-read as a generic Down.
-    const INCOMPATIBLE_MODEL_RE = /content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within/i;
+    const INCOMPATIBLE_MODEL_RE = /content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within|is a realtime model and cannot be used on the text endpoint|is a audio model and cannot be used on the text endpoint|Transcribe|required properties at '\/' are 'model,\s*state,\s*questions'?/i;
+    // Kept in step with MICRO_CONTEXT_MAX_TOKENS and isUnusablySmallContextError in
+    // lib/utils.js. Only a refusal whose *subject* is the model's own window counts: Cloudflare
+    // Workers AI answers "… exceeded this model context window limit (3500)". A comparison
+    // against one oversized payload ("Current length is 23592 while limit is 8192") or a
+    // throughput quota ("Limit 1000, Requested 1413") also names a small number, and treating
+    // either as a verdict would strike working rows out of rotation.
+    const MICRO_CONTEXT_MAX_TOKENS = 16384;
+    const MODEL_CONTEXT_WINDOW_RE = /model(?:'s)?\s+(?:context|ctx)\s+(?:window|length)\s+limit\s*[(:=]\s*([\d,.]+)|model(?:'s)?\s+(?:maximum|max)?\s*(?:context|ctx)\s*(?:window|length)?\s+(?:is|of)\s+([\d,.]+)/i;
+    function isUnusablySmallContextError(errText) {
+      const m = MODEL_CONTEXT_WINDOW_RE.exec(String(errText || ''));
+      if (!m) return false;
+      const limit = Number((m[1] || m[2] || '').replace(/,/g, ''));
+      return Number.isFinite(limit) && limit > 0 && limit < MICRO_CONTEXT_MAX_TOKENS;
+    }
+    // Single entry point for both incompatible rules, so neither call site below can drift.
+    function isIncompatibleModelText(errText) {
+      return isUnusablySmallContextError(errText) || INCOMPATIBLE_MODEL_RE.test(errText);
+    }
     // Every state that means "waiting on the provider": the clock is drawn for all of them. An
     // overload belongs here for the same reason a quota does — the provider is refusing for
     // now and the row returns on its own, so nothing is broken and nothing needs fixing.
@@ -4508,7 +4526,7 @@
       const errText = String(lr.error || '');
       if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
       if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
-      if (INCOMPATIBLE_MODEL_RE.test(errText)) return 'incompatible';
+      if (isIncompatibleModelText(errText)) return 'incompatible';
       return null;
     }
 
@@ -4607,7 +4625,7 @@
           if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
           // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
           // before a clause existed still classifies the way the server classifies the same text.
-          if (INCOMPATIBLE_MODEL_RE.test(errText)) return 'incompatible';
+          if (isIncompatibleModelText(errText)) return 'incompatible';
           if (code === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errText)) {
             return 'rate-limited';
           }
@@ -5905,21 +5923,39 @@
      * and region. They are not secrets, but they are embedded in the provider's URL, so without
      * them the provider is wired and unprobeable: its models can never be listed and the card
      * shows an empty table for a reason no other screen explained.
+     *
+     * A Cloudflare account id is per *account*, and a second key belongs to a second account, so
+     * the account id is drawn as a list with one input per entry — the nth input pairs with the
+     * nth key in the pool. One account id with several keys is still legitimate (the keys all
+     * belong to that one account), so the list is allowed to be shorter than the key pool.
      */
     function credentialFieldsHtml(p) {
       const fields = Array.isArray(p.requiredCredentialFields) ? p.requiredCredentialFields : [];
       if (fields.length === 0) return '';
       const missing = new Set(Array.isArray(p.missingCredentialFields) ? p.missingCredentialFields : []);
       const values = p.credentialFieldValues || {};
+      const poolSize = Array.isArray(p.apiKeyPool) ? p.apiKeyPool.length : 0;
       const rows = fields.map(field => {
         const shown = values[field];
         const fromEnv = shown === 'from-environment';
-        const value = (shown && !fromEnv) ? shown : '';
-        const placeholder = fromEnv ? 'set by the environment' : `Enter ${field}...`;
+        // A list is only rendered as one when there is a pool to line it up against;
+        // otherwise it stays a single input rather than an unexplained set of blanks.
+        const isList = Array.isArray(shown) && (shown.length > 1 || poolSize > 1);
+        const entries = isList ? shown : [(shown && !fromEnv) ? shown : ''];
+        const label = isList && entries.length > 1 ? ' — one per account; the nth pairs with key [n]' : '';
+        const inputs = entries.map((entry, i) => {
+          const placeholder = fromEnv ? 'set by the environment' : `Enter ${field}...`;
+          return `
+            <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
+              <span style="font-size:0.72rem; color:var(--text-muted); min-width:16px;">[${i}]</span>
+              <input type="text" id="cred-field-${escapeHtml(p.key)}-${escapeHtml(field)}-${i}" data-cred-field="${escapeHtml(field)}" data-cred-key="${escapeHtml(p.key)}" value="${escapeHtml(entry || '')}" placeholder="${escapeHtml(placeholder)}" style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:0.78rem; background:var(--input-bg); color:var(--text);" onkeydown="if(event.key==='Enter'){event.preventDefault();saveProviderCredentialFields(${jsStringAttr(p.key)});}" title="Press Enter or click Save">
+              <button onclick="saveProviderCredentialFields(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Save</button>
+            </div>`;
+        }).join('');
         return `
-          <div style="display:flex; gap:8px; align-items:center; margin-top:6px;">
-            <input type="text" id="cred-field-${escapeHtml(p.key)}-${escapeHtml(field)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" style="flex:1; padding:6px 10px; border:1px solid var(--border); border-radius:6px; font-size:0.78rem; background:var(--input-bg); color:var(--text);" onkeydown="if(event.key==='Enter'){event.preventDefault();saveProviderCredentialFields(${jsStringAttr(p.key)});}" title="Press Enter or click Save">
-            <button onclick="saveProviderCredentialFields(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Save</button>
+          <div style="margin-top:10px;">
+            <div style="font-size:0.74rem; color:var(--text-muted); margin-bottom:2px;"><code>${escapeHtml(field)}</code>${escapeHtml(label)}</div>
+            ${inputs}
           </div>`;
       }).join('');
       return `
@@ -5931,12 +5967,29 @@
     }
 
     async function saveProviderCredentialFields(key) {
-      const prefix = `cred-field-${key}-`;
-      const credentialFields = {};
+      // Grouped by field and kept in input order, so a field drawn as a list is sent as a
+      // list and the nth entry keeps lining up with the nth key.
+      //
+      // Scoped by data-cred-key, not by an id prefix: provider keys can be prefixes of one
+      // another ("openai" and "openai-compatible" both exist), and every provider card is on
+      // the page at once. A prefix match reads the other provider's input — under its real
+      // field name, which is exactly what this change began trusting — so one provider's Save
+      // would silently overwrite another provider's credential.
+      const byField = new Map();
       document.querySelectorAll('input[id^="cred-field-"]').forEach(el => {
-        if (!el.id.startsWith(prefix)) return;
-        credentialFields[el.id.slice(prefix.length)] = el.value.trim();
+        if (el.getAttribute('data-cred-key') !== key) return;
+        const field = el.getAttribute('data-cred-field');
+        if (!field) return;
+        if (!byField.has(field)) byField.set(field, []);
+        byField.get(field).push(el.value.trim());
       });
+      const credentialFields = {};
+      for (const [field, entries] of byField) {
+        const filled = entries.filter(v => v);
+        // An untouched single input keeps sending a plain string, which is what a config
+        // written before this supported lists looks like.
+        credentialFields[field] = (entries.length === 1 || filled.length === 1) ? (filled[0] || '') : filled;
+      }
       try {
         const res = await fetch('/api/config', {
           method: 'POST',
