@@ -54,6 +54,19 @@ const ACCESS_BY_FREE_TYPE = {
  * metered inference — and hosted LFM access is free only through OpenRouter's `:free`
  * routing, which is OpenRouter's grant rather than Liquid's.
  *
+ * `longcat` joins them at the operator's instruction (2026-09-25). Its access class was not
+ * wrong — the row's `signup-credit` is exactly what LongCat offers — but a one-time voucher
+ * is not the recurring access this roster exists to find. LongCat's only free value is a
+ * **one-time 10M-token grant** unlocked after account signup plus KYC verification, and the
+ * platform's own docs say it does not reset daily or monthly: the Quick Start page lists no
+ * free allowance at all, and billing publishes exactly two modes — Token Pack (one-off,
+ * valid 30 days) and Pay-As-You-Go against prepaid balance. The 150M/mo grant the row was
+ * reclassified from was the LongCat-2.0-Preview allowance (5,000,000 tokens/day,
+ * refreshable up to 120,000,000/day with model feedback, changelog 2026-04-20); it ended
+ * when billing opened with LongCat-2.0 GA (changelog 2026-06-30), and the earlier
+ * 100,000-tokens/day launch tier ended with the Flash models on 2026-05-29. Nothing here
+ * recurs, so nothing here belongs in the import.
+ *
  * `novita` joins them at the operator's instruction (2026-09-25). Its access class is not
  * wrong the way liquid's was — the roster's `signup-credit` is exactly what Novita offers —
  * but a one-time signup voucher is not the recurring free access this roster exists to find,
@@ -61,8 +74,42 @@ const ACCESS_BY_FREE_TYPE = {
  * every request as credit-gated, its `$0/token` rows are badged "TIME LIMITED FREE" by
  * Novita itself, and the free set it listed in June 2026 has since been repriced — which is
  * to say nothing here recurs.
+ *
+ * The whole of bucket C of `docs/PROVIDER-FREE-TIER-AUDIT.md` — every provider whose free access
+ * does *not* recur — joins them at the operator's instruction (2026-09-25). Those rows were
+ * previously carried as a refusal or a staged row, which kept them in the roster and countable in
+ * the registry while carrying no endpoint; excluding them instead removes every trace the way
+ * `longcat` was removed, so nothing reaches a descriptor, a card, a key page or the dashboard.
+ * Grouped by what the audit found:
+ *
+ * - **One-time grants, not tiers**: `scaleway` (1,000,000 tokens once, card required), `vertex`
+ *   (a $300 / 90-day trial balance), `agentrouter` (a $200 signup coupon), `together` (which
+ *   stopped offering trials altogether), `doubao` (a new-user grant), `ai21` ($10), `hyperbolic`
+ *   ($1–$5), `nscale` ($5), `fireworks` ($1), `publicai` (a signup credit, then paid),
+ *   `inference-net` ($25), `baichuan` (80 CNY), `sensenova` (an explicitly temporary public
+ *   beta), `stepfun` (whose free model ended 2026-06-12), `cerebras` (whose $5 trial needs a
+ *   payment method and answers 402 `payment_required`), `deepseek` (5M), `deepinfra` (one-time),
+ *   and `freemodel-dev` ($300, on a row that claims to be keyless).
+ * - **Free only inside the vendor's own client** (`opencode`, `opencode-zen`): Zen answers every
+ *   other caller HTTP 403 `FreeTierError`, which no third-party client can clear.
+ * - **Free somewhere else** (`arcee-ai`): Arcee's own API is key-only, and the `:free` claim
+ *   refers to OpenRouter's routing, which is OpenRouter's grant rather than Arcee's.
+ * - **A duplicate of a host hammer already routes** (`kilo-gateway`): the same chat endpoint and
+ *   the same model list as hammer's own `kilocode`, so every row it reaches is a second copy.
+ * - **Dead services** (`predibase`, `monsterapi`): neither host answers at all any more.
+ *
+ * `scaleway` is listed even though it is hammer's own row rather than an import. The roster lists
+ * it, so leaving it out would let the import re-register it as an OmniRoute provider the moment
+ * hammer's own descriptor is deleted — the exclusion is what makes the removal stick.
  */
-export const EXCLUDED_PROVIDER_KEYS = new Set(['nebius', 'liquid', 'novita'])
+export const EXCLUDED_PROVIDER_KEYS = new Set([
+  'nebius', 'liquid', 'novita', 'longcat',
+  // Bucket C of the free-tier audit: no recurring free usage.
+  'scaleway', 'vertex', 'agentrouter', 'together', 'doubao', 'ai21', 'hyperbolic', 'nscale',
+  'fireworks', 'publicai', 'inference-net', 'stepfun', 'sensenova', 'baichuan', 'arcee-ai',
+  'cerebras', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode', 'opencode-zen',
+  'kilo-gateway', 'predibase', 'monsterapi',
+])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
 

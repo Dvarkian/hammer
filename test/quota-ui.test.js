@@ -67,7 +67,6 @@ test('hammer\'s own rows carry the roster\'s published allowance', () => {
   assert.equal(table.groq.steadyTokensPerMonth, 15_000_000)
   assert.equal(table.openrouter.steadyTokensPerMonth, 1_000_000)
   assert.equal(table.kiro.steadyTokensPerMonth, 25_000)
-  assert.equal(table.scaleway.signupCreditTokens, 1_000_000)
   // Providers the roster owns outright keep their own figures.
   assert.equal(table.llm7.steadyTokensPerMonth, 150_000_000)
   assert.equal(table['ollama-cloud'].steadyTokensPerMonth, 20_000_000)
@@ -151,7 +150,7 @@ test('a refused usage endpoint reports why it was refused', () => {
 test('every published numeric limit renders a bar, and none without a number does', () => {
   const table = providerQuotaTable()
   const numeric = Object.values(table).filter(quota => Array.isArray(quota.limits) && quota.limits.length > 0)
-  assert.ok(numeric.length > 20, `expected a wide spread of published limits, saw ${numeric.length}`)
+  assert.ok(numeric.length >= 20, `expected a wide spread of published limits, saw ${numeric.length}`)
   for (const quota of numeric) {
     for (const limit of quota.limits) {
       assert.ok(limit.limit > 0, `${quota.source} limit must be positive`)

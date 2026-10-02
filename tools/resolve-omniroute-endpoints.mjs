@@ -21,13 +21,14 @@
  *               prefix, a URL suffix or a content shape, because those become fields on the
  *               descriptor that `lib/providers/adapters.js` reads. Discovery stays lazy, so
  *               the model list still comes from `/v1/models` on first use, not from here.
- *   `refused` — withheld by decision, for one of three reasons. Either the terms flag (from
- *               OmniRoute's own `FREE_TIER_TOS`, cross-checked against our vendored row) is
- *               `avoid` **and** `--exclude-avoid` was passed, or the row is in
- *               `NOT_FREE_KEYS` because its free-access premise does not hold, or it is in
- *               `SUPERSEDED_KEYS` because hammer already routes that host under a provider of
- *               its own and the row would only be a second copy of it. No endpoint is written
- *               at all, so the provider cannot route even by accident.
+ *   `refused` — withheld by decision: the terms flag (from OmniRoute's own `FREE_TIER_TOS`,
+ *               cross-checked against our vendored row) is `avoid` **and** `--exclude-avoid`
+ *               was passed. No endpoint is written at all, so the provider cannot route even
+ *               by accident. There is deliberately no "not free" or "superseded" table here
+ *               any more: a row whose free-access premise does not hold, or that duplicates a
+ *               provider hammer already routes, is excluded from the roster outright — see
+ *               `EXCLUDED_PROVIDER_KEYS` in `tools/sync-omniroute-catalog.mjs` — which
+ *               removes it instead of keeping it visible as a refusal.
  *   `staged`  — genuinely not reachable over HTTP: a wire protocol with no declarative
  *               equivalent (a session cookie jar, GraphQL, an OAuth device flow, a second
  *               protocol) or a credential only the user can capture. `BESPOKE_EXECUTORS` names
@@ -41,7 +42,7 @@
  * Usage:
  *   node tools/resolve-omniroute-endpoints.mjs
  *   node tools/resolve-omniroute-endpoints.mjs --check   # report only
- *   node tools/resolve-omniroute-endpoints.mjs --provider mistral,together
+ *   node tools/resolve-omniroute-endpoints.mjs --provider mistral,siliconflow
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -66,7 +67,6 @@ const GENERIC_OPENAI_FORMATS = new Set(['openai'])
  */
 const SLUG_OVERRIDES = {
   'glm-cn': 'glm/cn',
-  'opencode-zen': 'opencode/zen',
   'kimi-coding': 'kimi/coding',
   'qwen-web': 'qwen/web',
 }
@@ -98,10 +98,6 @@ const OPENAI_COMPATIBLE_OVERRIDES = {
   gemini: {
     chatUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     why: "Google publishes an OpenAI-compatible layer at /v1beta/openai; hammer's own googleai provider already calls a sibling of this URL, so the shape is proven in-tree.",
-  },
-  deepseek: {
-    chatUrl: 'https://api.deepseek.com/v1/chat/completions',
-    why: "OmniRoute's entry targets the Responses API, but DeepSeek's documented OpenAI-compatible chat-completions endpoint is available and needs no translator.",
   },
 }
 
@@ -191,17 +187,6 @@ const EXECUTOR_PROFILES = {
     // this is the same credential lifecycle class as hammer's own token-minting providers.
     credentialKind: 'token-mint',
   },
-  /**
-   * VertexExecutor's `urlBuilder` reads a project and region from provider-specific data.
-   * Google publishes an OpenAI-compatible surface for the same models, so the template
-   * below reaches it without a generateContent translator — at the cost of needing two
-   * more credential fields than a plain bearer.
-   */
-  vertex: {
-    chatUrlTemplate:
-      'https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions',
-    credentialFields: ['project', 'region'],
-  },
 }
 
 /**
@@ -222,97 +207,6 @@ const BESPOKE_EXECUTORS = {
   antigravity: "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines)",
 }
 
-/**
- * Rows whose free-access premise does not hold, so this instance declines them outright.
- *
- * The roster's job is to say *which* providers offer free access, and that claim is
- * upstream's rather than ours — occasionally a stale one. A row can be perfectly resolvable,
- * with a clean OpenAI-compatible endpoint and a bearer key, and still not belong here,
- * because that endpoint is only reachable on a prepaid account. Such a row is `refused`
- * rather than `staged`: `staged` records work that is pending, and this is a decision that is
- * finished. Refusing is also what makes the correction survive a re-sync — the row stays in
- * the vendored roster where its provenance lives, and the reason travels with it instead of
- * the provider being quietly deleted from a mirror of somebody else's document.
- */
-const NOT_FREE_KEYS = {
-  cerebras: 'not free: the roster claims recurring access (30,000,000 tokens/month) — the strongest access '
-    + 'classification it has — but Cerebras publishes no free tier at all. Its own FAQ answers "Is there a '
-    + 'permanently free tier?" with a flat "No": the only free usage is a $5 credit that expires 30 days after '
-    + 'signup, API access stays inactive until a payment method is on the account, and a key without one is '
-    + 'answered 402 `payment_required`. Verified live 2026-09-22: both models the key can list return that 402 '
-    + 'with `x-should-retry: false` and no rate-limit headers whatsoever. Declined at the operator\'s '
-    + 'instruction, 2026-09-22.',
-  deepinfra: 'not free: the row\'s only grant is a one-time 1,000,000-token signup credit — its own '
-    + '`access` classification is "signup-credit", never the recurring one — and DeepInfra\'s API is '
-    + 'pay-as-you-go against prepaid credit, so nothing here recurs. Declined at the operator\'s '
-    + 'instruction, 2026-09-22.',
-  deepseek: 'not free: the row\'s only grant is a one-time 5,000,000-token signup credit — its own '
-    + '`access` classification is "signup-credit", never the recurring one — and DeepSeek\'s platform '
-    + 'is prepaid, so nothing here recurs. Declined at the operator\'s instruction, 2026-09-22.',
-  'freemodel-dev': 'not free: the row\'s grant is `keyless`, and there is no keyless access. Verified live '
-    + '2026-09-22: POST https://api.freemodel.dev/v1/chat/completions with no credential at all returns '
-    + 'HTTP 403 {"error":"Unauthorized: No valid credentials provided"}, and the same request with a '
-    + 'placeholder bearer returns HTTP 401 {"error":"Unauthorized - Invalid token"} — so every request '
-    + 'needs a key on a registered account, and the only free value that account carries is a one-time '
-    + 'signup credit rather than a recurring allowance, which is why nothing here recurs. Its '
-    + '`/v1/models` does answer with no credential (gpt-5.6-luna / -sol / -terra), and that is exactly '
-    + 'the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness (see the llm7 case); it '
-    + 'is the only part of the roster row that was ever checked, which is how a key-gated provider came '
-    + 'to be recorded as keyless. The declared models disagree with the live list as well (the roster '
-    + 'names gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex, the endpoint serves none of them), so the row is '
-    + 'stale on both counts. Declined at the operator\'s instruction, 2026-09-22.',
-  opencode: 'not free: the grant is `keyless` access to Zen\'s free-tier ids, and Zen refuses its free '
-    + 'tier to every client but its own — HTTP 403 `FreeTierError`, "OpenCode\'s free tier can only be used '
-    + 'from within OpenCode". Verified live 2026-09-22 by capturing the official client\'s own request (its '
-    + 'configured base URL redirected to a local logger, so the real headers were read rather than guessed) '
-    + 'and replaying that request byte-for-byte: the captured `Authorization: Bearer sk-…`, '
-    + '`User-Agent: opencode/1.18.25 …` and the `x-opencode-client/project/request/session` headers are '
-    + 'refused with that 403, while the same credential in the official client streams a completion. The '
-    + 'gate is therefore outside the request — the client\'s transport fingerprint — so nothing this '
-    + 'router can send clears it. The row\'s own `tos` flag is `avoid` for the same reason: "Terms '
-    + 'restrict use to your own internal use and not on behalf of a third party." Declined at the '
-    + 'operator\'s instruction, 2026-09-22.',
-  'opencode-zen': 'not free: `permanent` describes a grant that only exists inside OpenCode\'s own '
-    + 'client. This is the same Zen endpoint and the same free-tier ids as the `opencode` row, served by '
-    + 'one executor, and Zen answers every one of them with HTTP 403 `FreeTierError`, "OpenCode\'s free tier '
-    + 'can only be used from within OpenCode". Verified live 2026-09-22: the client\'s own captured '
-    + 'request, replayed byte-for-byte with its credential, is refused while the client itself streams a '
-    + 'completion, so the gate is outside the request and cannot be emulated from a third-party harness. '
-    + 'Zen leaves its model list ungated, which is the only reason these rows appear at all. Declined at '
-    + 'the operator\'s instruction, 2026-09-22.',
-}
-
-/**
- * Rows that duplicate a provider hammer already routes, so this instance declines them.
- *
- * A different decision from {@link NOT_FREE_KEYS}, and kept in its own table so the reason
- * cannot lie: that table says the row is *not free*, while these rows can be perfectly free
- * and still belong elsewhere. When an import names the same host and the same chat endpoint as
- * one of hammer's own providers, activating it buys a second copy of every row that provider
- * can reach — and, for a provider whose free access is a *subset* of its catalog, a copy that
- * has lost the filter saying which subset that is. The generic OpenAI-compatible path cannot
- * recover it: it screens records for chat compatibility, not for a free flag.
- *
- * The row stays in the vendored roster where its provenance lives, exactly as a `NOT_FREE_KEYS`
- * refusal does, and the reason travels with it. Declining is a decision that is finished, not
- * work that is pending — `staged` is where pending work lives.
- */
-const SUPERSEDED_KEYS = {
-  'kilo-gateway': 'superseded: hammer already routes this host under its own `kilocode` provider — '
-    + 'the same chat endpoint (`https://api.kilo.ai/api/gateway/chat/completions`) and the same model '
-    + 'list — so every row the import reaches is a second copy of one `kilocode` already owns. Its '
-    + '`authType: "optional"` holds only for the free *subset*, which is the part `kilocode` covers '
-    + 'correctly: verified live 2026-09-23, `GET /api/gateway/models` answers HTTP 200 to an anonymous '
-    + 'caller with 391 records of which 21 carry `isFree: true`, a keyless POST for `kilo-auto/free` '
-    + 'streams a completion, and a paid id such as `anthropic/claude-opus-5.5` is refused HTTP 401 '
-    + '{"error":{"code":"PAID_MODEL_AUTH_REQUIRED","message":"You need to sign in to use this '
-    + 'model."}}. The import could not tell those apart: it rides the generic OpenAI-compatible '
-    + 'discovery path, which screens records for chat compatibility only, so it imported all 391 and '
-    + 'listed 378 of them as keyless rows that cannot answer (0 up in the table, against 12 up for '
-    + '`kilocode` on the same host) — while `kilocode`, which owns Kilo\'s `isFree` convention in '
-    + '`toKiloCodeModelMeta`, served the free set correctly all along. Declined at the operator\'s '
-    + 'instruction, 2026-09-23.',
-}
 
 /**
  * Executors whose "protocol" is a client attestation to defeat rather than a format to
@@ -524,17 +418,6 @@ export function parseRegistryIndex(source) {
  * @returns {{ activation: 'active'|'refused'|'staged', reason: string|null, resolution: object|null }}
  */
 export function decideResolution({ key, access, tos, note, entry }) {
-  // First, before even the missing-entry branch: whether a provider is free has nothing to
-  // do with how clean its endpoint is, so a fetch failure upstream must not be able to
-  // downgrade this refusal into a different reason. The reason here is the decision.
-  const notFree = NOT_FREE_KEYS[key]
-  if (notFree) return { activation: 'refused', reason: notFree, resolution: null }
-  // Also before the missing-entry branch, and for the same reason: a row that duplicates a
-  // provider hammer already routes is declined whatever its endpoint looks like, so a fetch
-  // failure upstream must not be able to restate this decision as "no matching entry".
-  const superseded = SUPERSEDED_KEYS[key]
-  if (superseded) return { activation: 'refused', reason: superseded, resolution: null }
-
   // Terms are recorded but no longer gate activation. OmniRoute treats its own ToS flag as
   // advisory — by their design it "is not a routing gate" and flagged providers stay in
   // routing — and the operator of this instance has confirmed they accept that posture for
@@ -544,15 +427,7 @@ export function decideResolution({ key, access, tos, note, entry }) {
   if (!entry) {
     return {
       activation: 'staged',
-      reason: key === 'arcee-ai'
-        // The roster's note says the free grant arrives through OpenRouter's ":free" layer, but that
-        // layer does not currently serve an Arcee row either: OpenRouter lists exactly one Arcee id
-        // (`arcee-ai/trinity-large-thinking`) and it is not a `:free` variant, while Arcee's own host
-        // is key-only (`GET https://api.arcee.ai/v1/models` -> 401). Checked live 2026-09-22, so the
-        // row records that there is nothing free to point at rather than a duplicate of another row.
-        ? 'no free endpoint on either side: Arcee\'s own API is key-only (GET https://api.arcee.ai/v1/models '
-          + '-> 401) and OpenRouter currently lists no ":free" Arcee variant, verified 2026-09-22'
-        : 'no matching entry in OmniRoute\'s provider registry',
+      reason: 'no matching entry in OmniRoute\'s provider registry',
       resolution: null,
     }
   }

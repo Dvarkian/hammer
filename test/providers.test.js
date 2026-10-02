@@ -143,7 +143,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
     ollama: 'OLLAMA_API_KEY',
     codestral: 'CODESTRAL_API_KEY',
-    scaleway: 'SCALEWAY_API_KEY',
     googleai: 'GOOGLE_API_KEY',
     kilocode: 'KILOCODE_API_KEY',
     devin: 'DEVIN_API_KEY',
@@ -410,7 +409,6 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
   // hostname it is served from — Google's API platform, which resolves to no icon at all.
   assert.equal(providerFaviconDomain('gemini'), 'ai.google.dev')
   // A provider reached through a cloud is named by its own site rather than the cloud's.
-  assert.equal(providerFaviconDomain('doubao'), 'doubao.com')
   assert.equal(providerFaviconDomain('baidu'), 'baidu.com')
   assert.equal(providerFaviconDomain('no-such-provider'), '')
   assert.equal(providerFaviconDomain(''), '')
@@ -429,13 +427,10 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
 test('a provider offers every site it names, so a missing icon is not a missing logo', () => {
   // One derived domain is one guess, and the ways it misses are ordinary: the endpoint is on a
   // hosting platform, the endpoint is a template, or the company domain simply has no icon while
-  // the console the provider names does. Vertex is one case whose endpoint is a template and
-  // endpoint is a template and whose mark is only reachable through the site its signup page
-  // belongs to.
-  assert.equal(providerFaviconDomains('vertex')[0], 'cloud.google.com')
-
-  // iFlytek is the third: `spark-api-open.xf-yun.com` names the cloud it is served from first,
-  // and the console it sends users to is the site with an icon.
+  // the console the provider names does.
+  //
+  // iFlytek is that last case: `spark-api-open.xf-yun.com` names the cloud it is served from
+  // first, and the console it sends users to is the site with an icon.
   const iflytek = providerFaviconDomains('iflytek')
   assert.equal(iflytek[0], 'spark-api-open.xf-yun.com')
   assert.ok(iflytek.includes('xfyun.cn'), 'the signup site must be offered as a candidate')
@@ -542,7 +537,6 @@ test('a model node resolves its brand from the id, its gateway namespace, or its
   assert.equal(getModelDomain({ modelId: 'abab5.5-chat' }), 'minimax.io')
   assert.equal(getModelDomain({ modelId: 'yi-lightning' }), '01.ai')
   assert.equal(getModelDomain({ modelId: 'rnj-1' }), 'essential.ai')
-  assert.equal(getModelDomain({ modelId: 'sensenova-6.7-flash-lite' }), 'sensetime.com')
   assert.equal(getModelDomain({ modelId: 'sparkdesk-v2.1' }), 'xfyun.cn')
 
   // A gateway names its own backend in front of the model it routed to, and the brand is still
@@ -584,12 +578,12 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
   }
 })
 
-test('the 17 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(key => PROVIDER_DESCRIPTORS[key].signupUrl)
-  assert.equal(hammerOwned.length, 17)
+  assert.equal(hammerOwned.length, 16)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
@@ -605,7 +599,7 @@ test('the 17 hammer-owned signup URLs survive the import, which is additive', ()
 
 test('every curated key page is HTTPS and records the evidence behind it', () => {
   const pages = loadKeyPages()
-  assert.ok(Object.keys(pages).length > 40, 'the table should cover the imported fleet')
+  assert.ok(Object.keys(pages).length > 25, 'the table should cover the imported fleet')
   for (const [key, entry] of Object.entries(pages)) {
     assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
     assert.ok(
@@ -665,8 +659,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 17 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 17)
+test('hammer ships 16 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 16)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -773,7 +767,7 @@ test('the vendored catalog parses and carries provenance', () => {
   const { source, providers } = loadOmniRouteCatalog()
   assert.equal(source.project, 'OmniRoute')
   assert.equal(source.license, 'MIT')
-  assert.ok(providers.length > 50, `expected a substantial roster, got ${providers.length}`)
+  assert.ok(providers.length > 30, `expected a substantial roster, got ${providers.length}`)
 })
 
 test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
@@ -794,7 +788,7 @@ test('every explicitly removed provider stays absent from every Hammer provider 
 
 test('imported providers never overwrite hammer-owned keys', () => {
   const importedKeys = imported().map(d => d.key)
-  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway', 'kiro', 'nlpcloud']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'kiro', 'nlpcloud']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
   }
@@ -831,9 +825,9 @@ test('terms flags are advisory by default, but still travel on every descriptor'
   // usable, and the flag remains visible so the decision is never hidden.
   const withheldForTerms = activationOf('refused').filter(d => /terms flag/.test(d.blockedReason || ''))
   assert.equal(withheldForTerms.length, 0, 'nothing is withheld for its terms under the default policy')
-  // The roster's avoid-flagged rows stay registered and visible. Its only one is `opencode`,
-  // which is now refused — but for its free-access premise, not its terms flag, which is the
-  // distinction this test exists to keep: the flag never gates routing, the premise does.
+  // The roster's avoid-flagged rows stay registered and visible. The flag records what a
+  // provider's terms say and never gates routing under the default posture: the only thing that
+  // removes a row is the operator's decision to exclude it from the roster altogether.
   const flagged = providersByTosFlag('avoid')
   assert.ok(flagged.length > 0, 'the roster keeps its avoid-flagged rows')
   for (const provider of flagged) {
@@ -842,106 +836,15 @@ test('terms flags are advisory by default, but still travel on every descriptor'
   }
 })
 
-test('a provider whose free-access premise does not hold is refused, and cannot route', () => {
-  // The roster's own corrections: upstream lists all six as free providers. Two grant only a
-  // one-time signup credit on a prepaid platform, where nothing recurs; freemodel-dev claims
-  // `keyless` but answers every completion without a credential with HTTP 403 (its public
-  // `/v1/models` is the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness),
-  // so its free value is a signup credit behind an account key; Cerebras has no free tier at
-  // all — its trial credit expires after 30 days and its API stays inactive without a payment
-  // method; and both Zen rows are free only *inside OpenCode's own client*, which refuses every
-  // other caller at the transport layer. A refusal is structural, not a flag someone has to
-  // remember to check.
-  // Scoped to this reason on purpose: `refused` holds one more row whose free access is fine
-  // and which is declined for a different decision entirely (see the superseded-import test
-  // below), so the reason is the thing this test pins.
-  const notFreeRefusals = ['cerebras', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode']
-  assert.deepEqual(
-    activationOf('refused').filter(d => /^not free:/.test(d.blockedReason || '')).map(d => d.key),
-    notFreeRefusals,
-  )
-  for (const key of notFreeRefusals) {
-    const provider = getProvider(key)
-    assert.match(provider.blockedReason, /not free/)
-    assert.equal(provider.chatUrl, null, `${key} carries no endpoint`)
-    assert.equal(provider.discoverable, false)
-    // No entry in `sources` is what removes its card from the dashboard: the server builds the
-    // provider list from `Object.keys(sources)`, so this is the whole visible effect.
-    assert.equal(key in lazyProviderSourceEntries(), false)
-    assert.equal(routableImports().some(d => d.key === key), false)
-  }
-})
-
-test('the not-free correction is a decision about the provider, not about its endpoint', () => {
-  // It has to hold when the endpoint is flawless, and when the registry entry could not be
-  // fetched at all — which is why the check sits ahead of the missing-entry branch. A clean
-  // endpoint must never be able to talk a declined provider back into routing.
-  //
-  // `access` is the roster's own claim, and the refusal has to survive the strongest one it can
-  // make. The two signup-credit rows are contradicted by calling their grant one-time, but
-  // Cerebras is contradicted while claiming *recurring* access — so the correction cannot be
-  // reduced to "the roster said signup-credit".
-  const declined = {
-    deepseek: { baseUrl: 'https://api.deepseek.com/v1/chat/completions', access: 'signup-credit' },
-    deepinfra: { baseUrl: 'https://api.deepinfra.com/v1/openai/chat/completions', access: 'signup-credit' },
-    cerebras: { baseUrl: 'https://api.cerebras.ai/v1/chat/completions', access: 'recurring' },
-    // The roster's strongest claim, and the one freemodel-dev makes: keyless. It is contradicted
-    // by the completion probe in NOT_FREE_KEYS, not by anything about the endpoint's shape.
-    'freemodel-dev': { baseUrl: 'https://api.freemodel.dev/v1/chat/completions', access: 'keyless' },
-  }
-  for (const [key, { baseUrl, access }] of Object.entries(declined)) {
-    const flawlessEndpoint = { format: 'openai', executor: 'default', baseUrl, authType: 'apikey', authHeader: 'bearer', models: [] }
-    for (const entry of [flawlessEndpoint, null]) {
-      const decision = decideResolution({ key, access, tos: 'ok', entry })
-      assert.equal(decision.activation, 'refused')
-      assert.match(decision.reason, /not free/)
-      assert.equal(decision.resolution, null)
-    }
-  }
-})
-
-test('an import that duplicates a host hammer already routes is refused, not activated', () => {
-  // `kilo-gateway` named the same chat endpoint and the same model list as hammer's own
-  // `kilocode`, so every row it could reach was a second copy of a row `kilocode` owns. Its
-  // `authType: "optional"` holds for the free *subset* only — 21 of the 391 records that public
-  // list serves carry `isFree: true`, and a paid id is refused HTTP 401 `PAID_MODEL_AUTH_REQUIRED`
-  // ("You need to sign in to use this model.") to a keyless call. The generic OpenAI-compatible
-  // discovery path screens records for chat compatibility, not for that flag, so the import
-  // listed 378 rows that could never answer while `kilocode` — which owns Kilo's `isFree`
-  // convention — served the free set correctly from the same host.
-  const decision = decideResolution({
-    key: 'kilo-gateway', access: 'permanent', tos: 'caution',
-    entry: {
-      format: 'openai', executor: 'default',
-      baseUrl: 'https://api.kilo.ai/api/gateway/chat/completions',
-      authType: 'optional', authHeader: 'bearer', models: [],
-    },
-  })
-  assert.equal(decision.activation, 'refused')
-  assert.match(decision.reason, /superseded/)
-  assert.match(decision.reason, /kilocode/, 'the reason must name what supersedes it')
-  assert.equal(decision.resolution, null, 'a refused row gets no endpoint, so it cannot route')
-
-  // The correction is about the row, not about its endpoint: a flawless entry cannot talk it
-  // back into routing, and neither can a registry entry that failed to fetch.
-  assert.equal(
-    decideResolution({ key: 'kilo-gateway', access: 'permanent', tos: 'caution', entry: null }).activation,
-    'refused',
-  )
-
-  // It reaches the registry as a refusal carrying no endpoint...
-  const provider = getProvider('kilo-gateway')
-  assert.equal(provider.activation, 'refused')
-  assert.equal(provider.chatUrl, null)
-  assert.equal(provider.discoverable, false)
-  // ...which is what keeps its rows out of the table: the server builds the provider list from
-  // `Object.keys(sources)`, and an import absent from that map is never probed on demand either.
-  assert.equal('kilo-gateway' in lazyProviderSourceEntries(), false)
-  assert.equal(routableImports().some(d => d.key === 'kilo-gateway'), false)
-
-  // The whole refused set, so adding a row to either refusal table stays a visible decision.
-  assert.deepEqual(activationOf('refused').map(d => d.key),
-    ['cerebras', 'kilo-gateway', 'opencode-zen', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode'])
+test('rows whose free access does not recur are excluded, so nothing is left refused', () => {
+  // Upstream still lists every one of these as a free provider, and Hammer still declines them —
+  // but by removing them from the roster rather than by carrying a refusal, because a one-time
+  // signup credit, a vendor's own client gate, and a duplicate of a host Hammer already routes are
+  // not "come back later" or "not free yet": they are providers that do not belong here. The
+  // exclusions themselves are asserted by the exclusion-set test above, which covers the roster,
+  // the resolution file, the key pages, the registry and the `sources` table in one loop.
+  assert.deepEqual(activationOf('refused'), [])
+  assert.equal(importSummary().refused, 0)
 })
 
 test('the stricter terms posture is still reachable, and records its reason', () => {
@@ -1156,7 +1059,7 @@ test('imported providers are flagged lazy and absent from eager discovery', () =
 })
 
 test('hammer\'s own hand-configured providers are not lazy', () => {
-  for (const key of ['nvidia', 'groq', 'openrouter', 'scaleway']) {
+  for (const key of ['nvidia', 'groq', 'openrouter']) {
     assert.equal(sources[key].lazyDiscovery, undefined, `${key} must keep participating in startup discovery`)
   }
 })
@@ -1181,19 +1084,19 @@ test('the import layer performs no network I/O at import time', () => {
 // ── On-demand discovery: the request path, not the boot path ───────────────────────────
 
 test('discovery honors a provider-declared models URL, and a base override wins over it', () => {
-  // Fireworks declares a list filtered to serverless models, and ollama-cloud declares its
-  // native /api/tags. Re-deriving the sibling of the chat path returns rows that then 404,
-  // which would mark a healthy provider dead.
-  assert.equal(
-    resolveDiscoveryModelsUrl(sources.fireworks),
-    'https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless=true',
-  )
+  // ollama-cloud declares its native /api/tags, and cloudflare-ai declares an account-scoped
+  // Model Search URL. Re-deriving the sibling of the chat path returns rows that then 404, which
+  // would mark a healthy provider dead.
   assert.equal(resolveDiscoveryModelsUrl(sources['ollama-cloud']), 'https://ollama.com/api/tags')
+  assert.equal(
+    resolveDiscoveryModelsUrl(sources['cloudflare-ai']),
+    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
+  )
   // Hammer's own providers declare none, so the sibling of the chat path is used.
   assert.equal(resolveDiscoveryModelsUrl(sources.nvidia), 'https://integrate.api.nvidia.com/v1/models')
   // A configured base URL redirects traffic, so it redirects discovery too.
   assert.equal(
-    resolveDiscoveryModelsUrl(sources.fireworks, 'https://proxy.test/v1'),
+    resolveDiscoveryModelsUrl(sources['ollama-cloud'], 'https://proxy.test/v1'),
     'https://proxy.test/v1/models',
   )
 })
@@ -1265,17 +1168,14 @@ test('only unresolved, answerable imports are probed on demand', () => {
   const candidates = lazyDiscoveryCandidates(sources, new Set(['nvidia']), config, helpers)
   // The one keyless import is reachable on first use...
   assert.ok(candidates.includes('uncloseai'))
-  // `kilo-gateway` used to be asserted here as the second. It is refused now — it named the same
-  // host and the same model list as hammer's own `kilocode` — so its absence is the point rather
-  // than an omission: a refused row has no source entry for a candidate to come from. (The note
-  // that used to live here said as much: requesting `kilo-auto/free` routed to `kilocode`, so the
-  // import was never proven by it.)
-  assert.equal(candidates.includes('kilo-gateway'), false)
   // ...and a keyed import the user configured is too.
   assert.ok(candidates.includes('cohere'))
   // A credential-requiring import with no key is left to the explicit refresh: probing it
   // would spend somebody else's quota to learn nothing.
-  assert.equal(candidates.includes('fireworks'), false)
+  assert.equal(candidates.includes('mistral'), false)
+  // An excluded row has no source entry at all, so no candidate can come from it. Asserted from
+  // the exclusion set rather than by name, so it holds for every row removed that way.
+  for (const key of EXCLUDED_PROVIDER_KEYS) assert.equal(candidates.includes(key), false, `${key} is excluded`)
   // Hammer's own providers are never probed here; they get the boot wave.
   assert.equal(candidates.includes('nvidia'), false)
   // A provider that already has rows is not probed again.
@@ -1362,8 +1262,8 @@ test('a miss invents nothing: no discovered rows means the request still 404s', 
     canonicalize: canonicalizeModelId,
     isSmartestRequest: false,
     // The production trigger probes only keyless/keyed imports (see the candidate test,
-    // which proves a credential-less import like `fireworks` is never among them). With no
-    // keyless import to answer, it returns nothing and the table is unchanged.
+    // which proves an unconfigured credential-requiring import like `mistral` is never among
+    // them). With no keyless import to answer, it returns nothing and the table is unchanged.
     discover: async () => { consulted += 1; return 0 },
   })
   assert.equal(consulted, 1, 'the trigger is consulted on a miss')
@@ -1676,11 +1576,10 @@ test('humanizeProviderKey renders readable labels without inventing names', () =
 })
 
 test('a templated endpoint receives only the credential fields it declares', () => {
-  // Cloudflare's Worker AI endpoint embeds the account id and Vertex's embeds the project and
-  // region. The dashboard collects them as inputs, and this rule is the only thing standing
-  // between a form post and arbitrary keys in a provider's config entry.
+  // Cloudflare's Workers AI endpoint embeds the account id in its path. The dashboard collects
+  // that as an input, and this rule is the only thing standing between a form post and arbitrary
+  // keys in a provider's config entry.
   assert.deepEqual(requiredCredentialFields('cloudflare-ai'), ['accountId'])
-  assert.deepEqual(requiredCredentialFields('vertex'), ['project', 'region'])
   assert.deepEqual(requiredCredentialFields('cohere'), [])
 
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '  abc123  ' }), { accountId: 'abc123' })
@@ -1690,9 +1589,6 @@ test('a templated endpoint receives only the credential fields it declares', () 
   // is never frozen into the config file by a form the user did not change.
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '' }), { accountId: null })
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'from-environment' }), { accountId: null })
-  // Only the fields present are written, so a partial form cannot clear the others.
-  assert.deepEqual(credentialFieldWrites('vertex', { project: 'p' }), { project: 'p' })
-  assert.deepEqual(credentialFieldWrites('vertex', null), {})
 })
 
 test('a missing credential field is what unreadable model lists have in common', () => {
@@ -1728,7 +1624,7 @@ test('parseProviderRoster maps free types onto the access vocabulary', () => {
     '| Provider | Free type | Steady tokens/mo | First-month credit | ToS | Models |',
     '| -------- | --------- | ---------------- | ------------------ | --- | ------ |',
     '| `mistral` | recurring | ~1.00B | — | caution | 5 |',
-    '| `longcat` | one-time | — | 10M | caution | 1 |',
+    '| `signupvault` | one-time | — | 10M | caution | 1 |',
     '| `glm-cn` | uncapped | uncapped\\* | ~20M | ok | 4 |',
     '| `agy` | keyless | — | — | avoid | 16 |',
     '| `not a provider` | nonsense | — | — | ok | 1 |',
@@ -1736,8 +1632,8 @@ test('parseProviderRoster maps free types onto the access vocabulary', () => {
   const byKey = Object.fromEntries(parseProviderRoster(fixture).map(entry => [entry.key, entry]))
   assert.equal(byKey.mistral.access, 'recurring')
   assert.equal(byKey.mistral.steadyTokensPerMonth, 1_000_000_000)
-  assert.equal(byKey.longcat.access, 'signup-credit')
-  assert.equal(byKey.longcat.steadyTokensPerMonth, undefined)
+  assert.equal(byKey.signupvault.access, 'signup-credit')
+  assert.equal(byKey.signupvault.steadyTokensPerMonth, undefined)
   assert.equal(byKey['glm-cn'].access, 'permanent')
   assert.equal(byKey.agy.tos, 'avoid')
   assert.equal('not a provider' in byKey, false)
@@ -1807,10 +1703,10 @@ test('an OpenAI-compatible endpoint override bypasses a bespoke executor', () =>
 
 test('a bare-credential provider activates with the scheme recorded as null', () => {
   const decision = decideResolution({
-    key: 'longcat', access: 'signup-credit', tos: 'caution',
+    key: 'bare-credential-example', access: 'recurring', tos: 'ok',
     entry: {
       format: 'openai', executor: 'default',
-      baseUrl: 'https://api.longcat.chat/openai/v1/chat/completions',
+      baseUrl: 'https://api.example.test/openai/v1/chat/completions',
       authType: 'apikey', authHeader: 'Authorization', models: [],
     },
   })
@@ -1897,22 +1793,6 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
     'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
   )
 
-  // Profiles are keyed by *executor*, not by roster row, so rows sharing one inherit its
-  // differences. Zen's profile is gone with its rows: both are refused before a profile is
-  // ever consulted, which is the point of the refusal being checked first.
-  const zen = decideResolution({
-    key: 'opencode-zen', access: 'recurring', tos: 'caution',
-    entry: {
-      format: 'openai', executor: 'opencode', baseUrl: 'https://opencode.ai/zen/v1',
-      modelsUrl: 'https://opencode.ai/zen/v1/models',
-      authType: 'apikey', authHeader: 'Authorization', authPrefix: 'Bearer', models: [],
-    },
-  })
-  assert.equal(zen.activation, 'refused')
-  assert.equal(zen.resolution, null, 'a refused row carries no endpoint to inherit')
-  assert.match(zen.reason, /not free/)
-  assert.doesNotMatch(zen.reason, /needs a wire adapter/, 'the refusal must not read as pending work')
-
   // A frozen request default is data too, and the 50-minute budget comes with it.
   const glm = decideResolution({
     key: 'glm-cn', access: 'recurring', tos: 'caution',
@@ -1927,19 +1807,19 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
 })
 
 test("a provider's declared OpenAI alternate resolves without a translator", () => {
-  // agentrouter is written for Anthropic's /v1/messages but declares an OpenAI alternative,
-  // and that declaration carries its own auth header — which is the provider telling us how
-  // to reach it rather than us guessing at a second hostname.
+  // Some registry entries are written for another protocol (Anthropic's /v1/messages, Gemini's
+  // generateContent) but declare an OpenAI alternative, and that declaration carries its own auth
+  // header — the provider telling us how to reach it rather than us guessing at a second hostname.
   const decision = decideResolution({
-    key: 'agentrouter', access: 'recurring', tos: 'caution',
+    key: 'some-anthropic-shaped-thing', access: 'recurring', tos: 'caution',
     entry: {
-      format: 'claude', executor: 'default', baseUrl: 'https://agentrouter.org/v1/messages',
+      format: 'claude', executor: 'default', baseUrl: 'https://x.test/v1/messages',
       authType: 'apikey', authHeader: 'x-api-key', models: [],
-      alternateFormats: [{ format: 'openai', baseUrl: 'https://agentrouter.org/v1/chat/completions', authHeader: 'bearer' }],
+      alternateFormats: [{ format: 'openai', baseUrl: 'https://x.test/v1/chat/completions', authHeader: 'bearer' }],
     },
   })
   assert.equal(decision.activation, 'active')
-  assert.equal(decision.resolution.chatUrl, 'https://agentrouter.org/v1/chat/completions')
+  assert.equal(decision.resolution.chatUrl, 'https://x.test/v1/chat/completions')
   assert.equal(decision.resolution.auth.headerName, 'Authorization')
   assert.ok(decision.resolution.provenance.alternateFormatUsed)
 })
@@ -1960,8 +1840,7 @@ test('a provider with no credential concept activates keyless', () => {
 
 test('an optional-auth provider activates keyless, matching hammer\'s optional-bearer semantics', () => {
   // `uncloseai` is the live example of the rule: an import that declares `authType: "optional"`
-  // and has answered a real completion with no credential. It used to be `kilo-gateway`, which
-  // is refused now — so the rule keeps a provider hammer actually routes.
+  // and has answered a real completion with no credential.
   const decision = decideResolution({
     key: 'uncloseai', access: 'keyless', tos: 'caution',
     entry: { format: 'openai', executor: 'default', baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions', authType: 'optional', authHeader: 'bearer', models: [] },
@@ -1972,9 +1851,12 @@ test('an optional-auth provider activates keyless, matching hammer\'s optional-b
 
 test('lazyProviderSourceEntries only exposes active providers', () => {
   const lazy = Object.keys(lazyEntriesDirect())
-  const refusedKeys = activationOf('refused').map(d => d.key)
-  for (const key of refusedKeys) {
-    assert.equal(lazy.includes(key), false, `${key} is refused and must not be offered as a source`)
+  for (const provider of imported().filter(d => d.activation !== 'active')) {
+    assert.equal(
+      lazy.includes(provider.key),
+      false,
+      `${provider.key} is ${provider.activation} and must not be offered as a source`,
+    )
   }
 })
 
@@ -2016,11 +1898,6 @@ test('a template endpoint resolves from the credential, and says what is missing
   const resolved = resolveShapedChatUrl({ providers: { 'cloudflare-ai': { accountId: 'acct-42' } } }, 'cloudflare-ai', null)
   assert.equal(resolved.url, 'https://api.cloudflare.com/client/v4/accounts/acct-42/ai/v1/chat/completions')
 
-  // Vertex repeats `{region}` in the host and the path, so the missing set is the fields the
-  // operator must supply, not one entry per occurrence. A duplicated `region` would read as
-  // though two values were needed.
-  assert.deepEqual(resolveShapedChatUrl({}, 'vertex', null).missing.sort(), ['project', 'region'])
-
   // A provider with no template is returned untouched, credential or not.
   assert.equal(resolveShapedChatUrl({}, 'mistral', 'https://api.mistral.ai/v1/chat/completions').url,
     'https://api.mistral.ai/v1/chat/completions')
@@ -2053,7 +1930,7 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // descriptor that carries no quota is simply absent, which is the shape the old
   // hand-maintained object had for a provider it did not describe.
   for (const key of [
-    'nvidia', 'groq', 'googleai', 'openrouter', 'codestral', 'scaleway',
+    'nvidia', 'groq', 'googleai', 'openrouter', 'codestral',
     'kiro', 'kilocode', 'empero', 'github-copilot',
     'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
   ]) {

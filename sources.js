@@ -399,7 +399,7 @@ export const sources = {
   //     provider rotated its roster; discovery supplies what is actually served.
   //
   // Spread FIRST so hammer's own providers below win any key collision (nvidia, groq,
-  // openrouter, scaleway, kiro). See lib/providers/resolutions.js for
+  // openrouter, kiro). See lib/providers/resolutions.js for
   // which imports are active and why the rest are not.
   ...lazyProviderSourceEntries(),
   "nvidia": {
@@ -534,21 +534,6 @@ export const sources = {
     "contextUrl": "https://docs.mistral.ai/getting-started/models/models_overview/",
     "models": [
       ["codestral-latest", "Codestral", "256k"]
-    ]
-  },
-  "scaleway": {
-    "name": "Scaleway",
-    "url": "https://api.scaleway.ai/v1/chat/completions",
-    "contextUrl": "https://www.scaleway.com/en/docs/generative-apis/reference-content/supported-models/",
-    "discoverable": true,
-    "models": [
-      ["devstral-2-123b-instruct-2512", "Devstral 2 123B", "200k"],
-      ["qwen3-235b-a22b-instruct-2507", "Qwen3 235B", "250k"],
-      ["gpt-oss-120b", "GPT OSS 120B", "128k"],
-      ["qwen3-coder-30b-a3b-instruct", "Qwen3 Coder 30B", "128k"],
-      ["llama-3.3-70b-instruct", "Llama 3.3 70B", "100k"],
-      ["deepseek-r1-distill-llama-70b", "R1 Distill 70B", "16k"],
-      ["mistral-small-3.2-24b-instruct-2506", "Mistral Small 3.2", "128k"]
     ]
   },
   "kilocode": {

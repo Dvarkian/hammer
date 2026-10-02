@@ -87,12 +87,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "longcat": {
-      "url": "https://longcat.chat/platform/",
-      "evidence": "LongCat open platform console",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "glm-cn": {
       "url": "https://open.bigmodel.cn/usercenter/apikeys",
       "evidence": "BigModel (Zhipu) user center; API keys page",
@@ -107,67 +101,9 @@
       "httpStatus": null,
       "note": "Timed out from this environment; the path comes from Qianfan's own SDK docs."
     },
-    "kilo-gateway": {
-      "url": "https://kilo.ai/",
-      "evidence": "Kilo homepage; the gateway credential is issued from the account here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "siliconflow": {
       "url": "https://cloud.siliconflow.com/me/account/ak",
       "evidence": "SiliconFlow console; API keys page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "vertex": {
-      "url": "https://console.cloud.google.com/apis/credentials",
-      "evidence": "Google Cloud console; credentials page (Vertex authenticates with a service account, not a bearer key)",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "agentrouter": {
-      "url": "https://agentrouter.org/",
-      "evidence": "project homepage; signup lives here",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment."
-    },
-    "predibase": {
-      "url": "https://app.predibase.com/",
-      "evidence": "Predibase console; API token under Settings",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "This environment's resolver cannot find the host, so the check is inconclusive rather than negative. Predibase was acquired by Rubrik, so expect the console to move."
-    },
-    "together": {
-      "url": "https://api.together.ai/settings/api-keys",
-      "evidence": "Together settings; API keys page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "doubao": {
-      "url": "https://console.volcengine.com/ark",
-      "evidence": "Volcengine console; the Ark page that issues the Doubao API key",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200,
-      "note": "Timed out from this environment."
-    },
-    "ai21": {
-      "url": "https://studio.ai21.com/",
-      "evidence": "AI21 Studio; API keys under Settings (per AI21's own create-an-api-key guide)",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200,
-      "note": "Signed-out visitors are redirected to ai21.com, so the keys page sits behind the sign-in."
-    },
-    "hyperbolic": {
-      "url": "https://app.hyperbolic.ai/settings",
-      "evidence": "Hyperbolic settings; API keys",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "nscale": {
-      "url": "https://console.nscale.com/",
-      "evidence": "Nscale console; API keys",
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
@@ -177,22 +113,9 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "fireworks": {
-      "url": "https://fireworks.ai/api-keys",
-      "evidence": "Fireworks; API keys page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "qoder": {
       "url": "https://qoder.com/",
       "evidence": "Qoder homepage; the account behind signup issues the API key",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment."
-    },
-    "baichuan": {
-      "url": "https://platform.baichuan-ai.com/console/apikey",
-      "evidence": "Baichuan platform console; API key page",
       "verifiedAt": null,
       "httpStatus": null,
       "note": "Timed out from this environment."
@@ -222,19 +145,6 @@
       "httpStatus": 200,
       "note": "Timed out from this environment."
     },
-    "inference-net": {
-      "url": "https://inference.net/",
-      "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "monsterapi": {
-      "url": "https://monsterapi.ai/",
-      "evidence": "MonsterAPI homepage; its dashboard's Auth Keys section issues the key",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "This environment's resolver cannot find the host, so the check is inconclusive rather than negative."
-    },
     "nlpcloud": {
       "url": "https://nlpcloud.com/home/token",
       "evidence": "NLP Cloud dashboard; API token page",
@@ -247,24 +157,11 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "publicai": {
-      "url": "https://publicai.co/",
-      "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "reka": {
       "url": "https://platform.reka.ai/",
       "evidence": "Reka platform; API keys in the dashboard",
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
-    },
-    "sensenova": {
-      "url": "https://console.sensecore.cn/",
-      "evidence": "SenseCore console; the page that issues SenseNova tokens",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200,
-      "note": "Timed out from this environment."
     },
     "sparkdesk": {
       "url": "https://console.xfyun.cn/",
@@ -273,21 +170,9 @@
       "httpStatus": 200,
       "note": "Timed out from this environment."
     },
-    "stepfun": {
-      "url": "https://platform.stepfun.ai/",
-      "evidence": "StepFun open platform; the get-an-API-key entry point",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "uncloseai": {
       "url": "https://uncloseai.com/",
       "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "arcee-ai": {
-      "url": "https://www.arcee.ai/",
-      "evidence": "Arcee AI homepage; the console behind signup issues the key",
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },

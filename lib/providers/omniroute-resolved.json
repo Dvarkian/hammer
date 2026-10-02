@@ -6,16 +6,16 @@
     "ref": "main",
     "input": "open-sse/config/providers/index.ts",
     "registryPrefix": "open-sse/config/providers/",
-    "generatedAt": "2026-09-23T00:45:32.207Z",
+    "generatedAt": "2026-09-25T13:37:50.597Z",
     "attribution": "Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute's provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.",
     "activationRule": "active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider's own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.",
     "tosPolicy": "Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead."
   },
   "summary": {
-    "active": 51,
-    "refused": 7,
-    "staged": 8,
-    "registryEntriesRead": 65
+    "active": 29,
+    "refused": 0,
+    "staged": 7,
+    "registryEntriesRead": 36
   },
   "providers": {
     "mistral": {
@@ -80,10 +80,6 @@
           "gemini-2.5-flash-lite"
         ]
       }
-    },
-    "cerebras": {
-      "activation": "refused",
-      "reason": "not free: the roster claims recurring access (30,000,000 tokens/month) — the strongest access classification it has — but Cerebras publishes no free tier at all. Its own FAQ answers \"Is there a permanently free tier?\" with a flat \"No\": the only free usage is a $5 credit that expires 30 days after signup, API access stays inactive until a payment method is on the account, and a key without one is answered 402 `payment_required`. Verified live 2026-09-22: both models the key can list return that 402 with `x-should-retry: false` and no rate-limit headers whatsoever. Declined at the operator's instruction, 2026-09-22."
     },
     "cloudflare-ai": {
       "activation": "active",
@@ -235,10 +231,6 @@
         "declaredModels": []
       }
     },
-    "arcee-ai": {
-      "activation": "staged",
-      "reason": "no free endpoint on either side: Arcee's own API is key-only (GET https://api.arcee.ai/v1/models -> 401) and OpenRouter currently lists no \":free\" Arcee variant, verified 2026-09-22"
-    },
     "bazaarlink": {
       "activation": "active",
       "chatUrl": "https://bazaarlink.ai/api/v1/chat/completions",
@@ -364,22 +356,6 @@
       "activation": "staged",
       "reason": "executor \"kiro\" frames its own request and response with no declarative equivalent"
     },
-    "longcat": {
-      "activation": "active",
-      "chatUrl": "https://api.longcat.chat/openai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 1,
-        "declaredModels": [
-          "LongCat-2.0"
-        ]
-      }
-    },
     "glm-cn": {
       "activation": "active",
       "chatUrl": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
@@ -431,14 +407,6 @@
           "ernie-tiny-8k"
         ]
       }
-    },
-    "kilo-gateway": {
-      "activation": "refused",
-      "reason": "superseded: hammer already routes this host under its own `kilocode` provider — the same chat endpoint (`https://api.kilo.ai/api/gateway/chat/completions`) and the same model list — so every row the import reaches is a second copy of one `kilocode` already owns. Its `authType: \"optional\"` holds only for the free *subset*, which is the part `kilocode` covers correctly: verified live 2026-09-23, `GET /api/gateway/models` answers HTTP 200 to an anonymous caller with 391 records of which 21 carry `isFree: true`, a keyless POST for `kilo-auto/free` streams a completion, and a paid id such as `anthropic/claude-opus-5.5` is refused HTTP 401 {\"error\":{\"code\":\"PAID_MODEL_AUTH_REQUIRED\",\"message\":\"You need to sign in to use this model.\"}}. The import could not tell those apart: it rides the generic OpenAI-compatible discovery path, which screens records for chat compatibility only, so it imported all 391 and listed 378 of them as keyless rows that cannot answer (0 up in the table, against 12 up for `kilocode` on the same host) — while `kilocode`, which owns Kilo's `isFree` convention in `toKiloCodeModelMeta`, served the free set correctly all along. Declined at the operator's instruction, 2026-09-23."
-    },
-    "opencode-zen": {
-      "activation": "refused",
-      "reason": "not free: `permanent` describes a grant that only exists inside OpenCode's own client. This is the same Zen endpoint and the same free-tier ids as the `opencode` row, served by one executor, and Zen answers every one of them with HTTP 403 `FreeTierError`, \"OpenCode's free tier can only be used from within OpenCode\". Verified live 2026-09-22: the client's own captured request, replayed byte-for-byte with its credential, is refused while the client itself streams a completion, so the gate is outside the request and cannot be emulated from a third-party harness. Zen leaves its model list ungated, which is the only reason these rows appear at all. Declined at the operator's instruction, 2026-09-22."
     },
     "siliconflow": {
       "activation": "active",
@@ -495,182 +463,6 @@
         ]
       }
     },
-    "vertex": {
-      "activation": "active",
-      "chatUrl": "https://{region}-aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/endpoints/openapi/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "shaping": {
-        "urlTemplate": true,
-        "credentialFields": [
-          "project",
-          "region"
-        ]
-      },
-      "provenance": {
-        "executor": "vertex",
-        "modelCount": 19,
-        "declaredModels": [
-          "gemini-3.1-pro-preview",
-          "gemini-3.1-flash-lite",
-          "gemini-3-flash-preview",
-          "gemma-4-31b-it",
-          "DeepSeek-V4-Flash",
-          "DeepSeek-V4-Pro",
-          "Qwen3.6-35B-A3B",
-          "GLM-5.1-FP8",
-          "claude-fable-5",
-          "claude-opus-5",
-          "claude-sonnet-5",
-          "claude-opus-4-8",
-          "claude-opus-4-7",
-          "claude-opus-4-6",
-          "claude-sonnet-4-6",
-          "claude-sonnet-4-5-v2",
-          "claude-sonnet-4-5",
-          "claude-opus-4-5",
-          "claude-haiku-4-5"
-        ]
-      }
-    },
-    "agentrouter": {
-      "activation": "active",
-      "chatUrl": "https://agentrouter.org/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "alternateFormatUsed": "openai",
-        "modelCount": 3,
-        "declaredModels": [
-          "claude-opus-4-8",
-          "claude-opus-5",
-          "gpt-5.6-sol"
-        ]
-      }
-    },
-    "predibase": {
-      "activation": "active",
-      "chatUrl": "https://serving.app.predibase.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
-    "together": {
-      "activation": "active",
-      "chatUrl": "https://api.together.xyz/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 7,
-        "declaredModels": [
-          "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
-          "meta-llama/Llama-Vision-Free",
-          "deepseek-ai/DeepSeek-R1-Distill-Llama-70B-Free",
-          "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-          "deepseek-ai/DeepSeek-R1",
-          "Qwen/Qwen3-235B-A22B",
-          "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
-        ]
-      }
-    },
-    "doubao": {
-      "activation": "active",
-      "chatUrl": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 9,
-        "declaredModels": [
-          "doubao-seed-2-0-pro-260215",
-          "doubao-seed-2-0-lite-260215",
-          "doubao-seed-2-0-mini-260215",
-          "doubao-seed-2-0-code-preview-260215",
-          "doubao-seed-1-8-251228",
-          "doubao-seed-1-6-251015",
-          "doubao-seed-1-6-flash-250828",
-          "doubao-1-5-pro-32k-250115",
-          "doubao-pro-32k"
-        ]
-      }
-    },
-    "ai21": {
-      "activation": "active",
-      "chatUrl": "https://api.ai21.com/studio/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
-    "deepseek": {
-      "activation": "refused",
-      "reason": "not free: the row's only grant is a one-time 5,000,000-token signup credit — its own `access` classification is \"signup-credit\", never the recurring one — and DeepSeek's platform is prepaid, so nothing here recurs. Declined at the operator's instruction, 2026-09-22."
-    },
-    "hyperbolic": {
-      "activation": "active",
-      "chatUrl": "https://api.hyperbolic.xyz/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 8,
-        "declaredModels": [
-          "Qwen/QwQ-32B",
-          "deepseek-ai/DeepSeek-R1",
-          "deepseek-ai/DeepSeek-V3",
-          "meta-llama/Llama-3.3-70B-Instruct",
-          "meta-llama/Llama-3.2-3B-Instruct",
-          "Qwen/Qwen2.5-72B-Instruct",
-          "Qwen/Qwen2.5-Coder-32B-Instruct",
-          "NousResearch/Hermes-3-Llama-3.1-70B"
-        ]
-      }
-    },
-    "nscale": {
-      "activation": "active",
-      "chatUrl": "https://inference.api.nscale.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "bytez": {
       "activation": "active",
       "chatUrl": "https://api.bytez.com/models/v2/openai/v1/chat/completions",
@@ -683,38 +475,6 @@
       "provenance": {
         "modelCount": 0,
         "declaredModels": []
-      }
-    },
-    "deepinfra": {
-      "activation": "refused",
-      "reason": "not free: the row's only grant is a one-time 1,000,000-token signup credit — its own `access` classification is \"signup-credit\", never the recurring one — and DeepInfra's API is pay-as-you-go against prepaid credit, so nothing here recurs. Declined at the operator's instruction, 2026-09-22."
-    },
-    "fireworks": {
-      "activation": "active",
-      "chatUrl": "https://api.fireworks.ai/inference/v1/chat/completions",
-      "modelsUrl": "https://api.fireworks.ai/v1/accounts/fireworks/models?filter=supports_serverless=true",
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "shaping": {
-        "modelIdPrefix": "accounts/fireworks/models/"
-      },
-      "provenance": {
-        "modelCount": 10,
-        "declaredModels": [
-          "deepseek-v4-flash",
-          "deepseek-v4-pro",
-          "glm-5p1",
-          "gpt-oss-120b",
-          "gpt-oss-20b",
-          "kimi-k2p5",
-          "kimi-k2p6",
-          "minimax-m2p5",
-          "minimax-m2p7",
-          "qwen3p6-plus"
-        ]
       }
     },
     "qoder": {
@@ -747,50 +507,9 @@
         ]
       }
     },
-    "scaleway": {
-      "activation": "active",
-      "chatUrl": "https://api.scaleway.ai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 6,
-        "declaredModels": [
-          "qwen3-235b-a22b-instruct-2507",
-          "llama-3.1-70b-instruct",
-          "llama-3.1-8b-instruct",
-          "mistral-small-3.2-24b-instruct-2506",
-          "deepseek-v3-0324",
-          "gpt-oss-120b"
-        ]
-      }
-    },
     "agy": {
       "activation": "staged",
       "reason": "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines), so it needs a wire adapter"
-    },
-    "baichuan": {
-      "activation": "active",
-      "chatUrl": "https://api.baichuan-ai.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 5,
-        "declaredModels": [
-          "Baichuan4-Turbo",
-          "Baichuan4-Air",
-          "Baichuan4",
-          "Baichuan3-Turbo",
-          "Baichuan3-Turbo-128k"
-        ]
-      }
     },
     "blackbox": {
       "activation": "active",
@@ -836,10 +555,6 @@
       "activation": "staged",
       "reason": "Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads `navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no legitimate client that talks to this endpoint"
     },
-    "freemodel-dev": {
-      "activation": "refused",
-      "reason": "not free: the row's grant is `keyless`, and there is no keyless access. Verified live 2026-09-22: POST https://api.freemodel.dev/v1/chat/completions with no credential at all returns HTTP 403 {\"error\":\"Unauthorized: No valid credentials provided\"}, and the same request with a placeholder bearer returns HTTP 401 {\"error\":\"Unauthorized - Invalid token\"} — so every request needs a key on a registered account, and the only free value that account carries is a one-time signup credit rather than a recurring allowance, which is why nothing here recurs. Its `/v1/models` does answer with no credential (gpt-5.6-luna / -sol / -terra), and that is exactly the listing KEYLESS_OVERRIDES documents as *not* evidence of keylessness (see the llm7 case); it is the only part of the roster row that was ever checked, which is how a key-gated provider came to be recorded as keyless. The declared models disagree with the live list as well (the roster names gpt-5.5 / 5.4 / 5.4-mini / 5.3-codex, the endpoint serves none of them), so the row is stale on both counts. Declined at the operator's instruction, 2026-09-22."
-    },
     "friendliai": {
       "activation": "active",
       "chatUrl": "https://api.friendli.ai/serverless/v1/chat/completions",
@@ -872,37 +587,6 @@
           "generalv3",
           "pro-128k",
           "lite"
-        ]
-      }
-    },
-    "inference-net": {
-      "activation": "active",
-      "chatUrl": "https://api.inference.net/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
-    "monsterapi": {
-      "activation": "active",
-      "chatUrl": "https://api.monsterapi.ai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 2,
-        "declaredModels": [
-          "meta-llama/Meta-Llama-3.1-8B-Instruct",
-          "meta-llama/Llama-3.3-70B-Instruct"
         ]
       }
     },
@@ -986,24 +670,6 @@
         ]
       }
     },
-    "opencode": {
-      "activation": "refused",
-      "reason": "not free: the grant is `keyless` access to Zen's free-tier ids, and Zen refuses its free tier to every client but its own — HTTP 403 `FreeTierError`, \"OpenCode's free tier can only be used from within OpenCode\". Verified live 2026-09-22 by capturing the official client's own request (its configured base URL redirected to a local logger, so the real headers were read rather than guessed) and replaying that request byte-for-byte: the captured `Authorization: Bearer sk-…`, `User-Agent: opencode/1.18.25 …` and the `x-opencode-client/project/request/session` headers are refused with that 403, while the same credential in the official client streams a completion. The gate is therefore outside the request — the client's transport fingerprint — so nothing this router can send clears it. The row's own `tos` flag is `avoid` for the same reason: \"Terms restrict use to your own internal use and not on behalf of a third party.\" Declined at the operator's instruction, 2026-09-22."
-    },
-    "publicai": {
-      "activation": "active",
-      "chatUrl": "https://api.publicai.co/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "qwen-web": {
       "activation": "staged",
       "reason": "Qwen Chat issues no API key — the bearer its registry entry names is a logged-in browser session token, and the chat endpoint sits behind an Aliyun WAF interstitial (a bodyless POST returns the WAF challenge page rather than an auth error, verified 2026-09-22), so it needs a wire adapter"
@@ -1026,24 +692,6 @@
         ]
       }
     },
-    "sensenova": {
-      "activation": "active",
-      "chatUrl": "https://token.sensenova.cn/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 3,
-        "declaredModels": [
-          "sensenova-6.7-flash-lite",
-          "deepseek-v4-flash",
-          "glm-5.2"
-        ]
-      }
-    },
     "sparkdesk": {
       "activation": "active",
       "chatUrl": "https://spark-api-open.xf-yun.com/v1/chat/completions",
@@ -1060,26 +708,6 @@
           "generalv3",
           "pro-128k",
           "lite"
-        ]
-      }
-    },
-    "stepfun": {
-      "activation": "active",
-      "chatUrl": "https://api.stepfun.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 5,
-        "declaredModels": [
-          "step-3.7-flash",
-          "step-3.5-flash",
-          "step-3.5-flash-2603",
-          "step-1o-turbo-vision",
-          "step-1v"
         ]
       }
     },
