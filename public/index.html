@@ -321,6 +321,22 @@
     <div id="provider-sync-body" style="padding:18px 22px 22px; overflow:auto; max-height:calc(80vh - 84px);"></div>
   </div>
 
+  <!-- Provider onboarding: fetch a provider's models, test each one, sort by current status, and
+       hand the survivors to the main plot. The body is rendered by dashboard.js (renderProviderOnboard)
+       so a live run can repaint the stage track, the progress bar and the model list on every poll. -->
+  <div class="modal-overlay" id="provider-onboard-overlay" onclick="closeProviderOnboardModal()" style="display:none;"></div>
+  <div id="provider-onboard-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:min(760px, calc(100vw - 32px)); max-height:min(86vh, 820px); background:var(--card); border:1px solid var(--border); border-radius:18px; box-shadow:0 24px 80px rgba(15, 23, 42, 0.22); z-index:1002; overflow:hidden; flex-direction:column;">
+    <div class="onboard-head">
+      <div class="onboard-head-main">
+        <div class="onboard-title" id="provider-onboard-title">Provider setup</div>
+        <div class="onboard-subtitle" id="provider-onboard-subtitle"></div>
+      </div>
+      <button class="onboard-close" onclick="closeProviderOnboardModal()" aria-label="Close">&times;</button>
+    </div>
+    <div class="onboard-stages" id="provider-onboard-stages"></div>
+    <div class="onboard-body" id="provider-onboard-body"></div>
+  </div>
+
   <!-- The loading shell's shapes, so the table and the provider grid keep their layout while the
        first snapshot is in flight instead of collapsing to nothing and then jumping. A <template>
        (not markup) because the dashboard's own renderer owns these containers: a real row left

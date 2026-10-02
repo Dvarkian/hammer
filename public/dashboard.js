@@ -401,6 +401,14 @@
     let logsAutoRefreshPaused = false;
     const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;
     let providerRefreshInFlight = new Set();
+    // Provider-onboarding cross-call state (see the onboarding block near refreshProviderModels).
+    // `onboardHighlight` is held here, not passed by the caller, so the idle repaint a finished run
+    // triggers cannot clobber the emphasis back to the router's pick before the user sees it.
+    let onboardHighlight = null;      // { modelId, providerKey } emphasized on the plots for a few seconds
+    let onboardHighlightTimer = null;
+    let onboardSession = 0;           // bumped on close/start so a stale await cannot reopen the popup
+    let onboardStarting = false;      // true between a start request and its response
+    let onboardPollFailures = 0;      // consecutive poll failures, capped so a dead server is not hammered
     let kiroDeviceAuthState = null;
     let kiroDevicePollTimer = null;
     let kiroBrowserAuthState = null;
@@ -444,7 +452,7 @@
     const PROVIDER_NAMES = {
       'groq': 'Groq', 'googleai': 'Google',
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
-      'scaleway': 'Scaleway', 'kilocode': 'KiloCode',
+      'kilocode': 'KiloCode',
       'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
       'gptfree': 'GPTFree',
       'github-copilot': 'GitHub Copilot',
@@ -1041,8 +1049,14 @@
     // Both plots, from one snapshot. Deferred to idle by the boot sequence and immediate for every
     // caller that is painting a live event — a fallback must move the pictures on the SSE frame.
     function drawPlots(models, bestModelId, bestProviderKey = null) {
-      const bestModel = bestModelId
-        ? models.find(m => m.modelId === bestModelId && (!bestProviderKey || m.providerKey === bestProviderKey))
+      // A just-onboarded provider is emphasized for a few seconds. The emphasis is read from state
+      // rather than passed in, so the idle repaint a finished run schedules cannot repaint the plot
+      // back to the router's pick a moment after the highlight was drawn (see emphasizeProviderPlots).
+      const highlight = onboardHighlight;
+      const effectiveId = highlight ? highlight.modelId : bestModelId;
+      const effectiveKey = highlight ? highlight.providerKey : bestProviderKey;
+      const bestModel = effectiveId
+        ? models.find(m => m.modelId === effectiveId && (!effectiveKey || m.providerKey === effectiveKey))
         : null;
       drawBipartiteTopology(models, bestModel);
       drawSpeedIntellScatter(models);
@@ -2118,15 +2132,10 @@
         'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
         'minimax': 'minimax.io', 'minimaxai': 'minimax.io', 'abab': 'minimax.io',
         'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
-        // Baidu's ERNIE, Doubao's own ids on a gateway, Meituan's LongCat, and the two labs
-        // whose HF org name is all a node ever carries.
+        // Baidu's ERNIE, and the two labs whose HF org name is all a node ever carries.
         'baidu': 'baidu.com', 'ernie': 'baidu.com',
-        'doubao': 'doubao.com',
-        'longcat': 'longcat.chat', 'meituan': 'longcat.chat',
         'nex-agi': 'nex-agi.com', 'dots-studio': 'dots.studio',
-        // SenseTime's SenseNova and iFlytek's Spark: `sensenova.cn` serves no icon, the
-        // company's own site does, and Spark's brand site is the console it sends users to.
-        'sensenova': 'sensetime.com',
+        // iFlytek's Spark: its brand site is the console it sends users to, not the cloud host.
         'sparkdesk': 'xfyun.cn',
         'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
         'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
@@ -2138,6 +2147,9 @@
         'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
         'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
         'llama': 'meta.com', 'meta': 'meta.com',
+        // A fine-tune's own leading word still names Llama: NLP Cloud serves this one as
+        // `finetuned-llama-3-70b`, where `llama` is no longer the first token.
+        'finetuned-llama': 'meta.com',
         // Meta's named open families — Muse Glimmer and Muse Spark sit beside Llama without it.
         'muse': 'meta.com',
         'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
@@ -5973,6 +5985,309 @@
       }
     }
 
+    // ---- Provider onboarding popup ---------------------------------------------------------
+    //
+    // A new provider's setup is one arc: fetch its model list, test every model, sort by the
+    // verdicts the tests left behind, then hand the survivors to the plots. It runs as a
+    // server-side job (see /api/providers/:key/onboard) so the popup can be closed and reopened
+    // without losing the run — the client here is only a viewer that polls.
+    let onboardJobId = null;
+    let onboardProviderKey = null;
+    let onboardProviderName = '';
+    let onboardPollTimer = null;
+    const ONBOARD_POLL_MS = 700;
+    const ONBOARD_MAX_POLL_FAILURES = 20;
+    const ONBOARD_FINISHED = new Set(['done', 'empty', 'failed', 'cancelled', 'partial']);
+
+    const ONBOARD_STAGE_DEFS = [
+      { key: 'discovering', label: 'Fetch models' },
+      { key: 'testing', label: 'Test all' },
+      { key: 'done', label: 'Sorted' },
+    ];
+
+    function openProviderOnboardModal(providerName) {
+      const overlay = document.getElementById('provider-onboard-overlay');
+      const modal = document.getElementById('provider-onboard-modal');
+      const title = document.getElementById('provider-onboard-title');
+      const subtitle = document.getElementById('provider-onboard-subtitle');
+      if (!overlay || !modal) return;
+      if (title) title.textContent = `${providerName || 'Provider'} setup`;
+      if (subtitle) subtitle.textContent = 'Fetching models, testing each one, then sorting them by current status.';
+      overlay.style.display = 'block';
+      modal.style.display = 'block';
+    }
+
+    function closeProviderOnboardModal() {
+      const overlay = document.getElementById('provider-onboard-overlay');
+      const modal = document.getElementById('provider-onboard-modal');
+      if (overlay) overlay.style.display = 'none';
+      if (modal) modal.style.display = 'none';
+      // Closing is not cancelling: the server job keeps running and can be resumed later (see
+      // resumeOnboardingIfRunning). Only the local polling stops.
+      if (onboardPollTimer) { clearTimeout(onboardPollTimer); onboardPollTimer = null; }
+      onboardPollFailures = 0;
+      // Invalidate any in-flight start or poll: without this, an await that resolves after the
+      // close would call renderProviderOnboard and reopen the popup the user just dismissed.
+      onboardSession += 1;
+      onboardJobId = null;
+    }
+
+    function onboardStageReached(stage, status) {
+      if (ONBOARD_FINISHED.has(status)) return ONBOARD_STAGE_DEFS.length;
+      const index = ONBOARD_STAGE_DEFS.findIndex(def => def.key === stage);
+      return index === -1 ? 0 : index;
+    }
+
+    function onboardStagesHtml(stage, status) {
+      const reached = onboardStageReached(stage, status);
+      return ONBOARD_STAGE_DEFS.map((def, i) => {
+        const state = i < reached ? 'done' : (i === reached ? 'active' : '');
+        const mark = i < reached ? '\u2713' : String(i + 1);
+        return `<div class="onboard-stage ${state}"><span class="onboard-stage-num">${mark}</span><span>${escapeHtml(def.label)}</span></div>`;
+      }).join('<span class="onboard-stage-sep">\u2192</span>');
+    }
+
+    // The pill colour is the verdict's own family, so a model reads the same colour here as its
+    // status dot in the table.
+    function onboardPillClass(verdict) {
+      const v = String(verdict || '').toLowerCase();
+      if (v === 'perfect' || v === 'normal') return 'up';
+      if (v === 'slow' || v === 'very slow') return 'slow';
+      if (v === 'overloaded') return 'limited';
+      if (v === 'unstable') return 'unstable';
+      return 'down';
+    }
+
+    function onboardRate(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return null;
+      return n >= 100 ? n.toFixed(0) : n.toFixed(1);
+    }
+
+    function onboardRowsHtml(job) {
+      const rows = Array.isArray(job.results) ? job.results : [];
+      if (rows.length === 0) return '';
+      return rows.map(r => {
+        const tested = r.tested === true;
+        const meta = [];
+        if (r.httpCode != null && r.httpCode !== '') meta.push(`HTTP ${escapeHtml(String(r.httpCode))}`);
+        if (r.ttftMs != null) meta.push(`${Math.round(r.ttftMs)}ms TTFT`);
+        const rate = onboardRate(r.tps);
+        if (rate != null) meta.push(`${rate} tok/s`);
+        if (r.ctx) meta.push(escapeHtml(formatContextDisplay(r.ctx)));
+        const err = r.error ? `<div class="onboard-row-error">${escapeHtml(String(r.error))}</div>` : '';
+        return `
+          <div class="onboard-row${tested ? '' : ' pending'}">
+            <div class="onboard-row-main">
+              <div class="onboard-row-model">${escapeHtml(r.label || r.modelId)}</div>
+              <div class="onboard-row-meta">${tested ? (meta.join(' \u00b7 ') || 'Tested') : 'Waiting\u2026'}</div>
+              ${err}
+            </div>
+            <span class="onboard-pill ${tested ? onboardPillClass(r.verdict) : 'wait'}">${tested ? escapeHtml(r.verdict || 'Unknown') : '\u23f3'}</span>
+          </div>`;
+      }).join('');
+    }
+
+    function renderProviderOnboard(job) {
+      if (!job) return;
+      openProviderOnboardModal(job.providerName || onboardProviderName || 'Provider');
+      const stagesEl = document.getElementById('provider-onboard-stages');
+      const bodyEl = document.getElementById('provider-onboard-body');
+      if (!stagesEl || !bodyEl) return;
+      stagesEl.innerHTML = onboardStagesHtml(job.stage, job.status);
+
+      const finished = ONBOARD_FINISHED.has(job.status);
+      const total = job.total || 0;
+      const completed = job.completed || 0;
+      const progress = job.progress || 0;
+      const summary = job.summary || null;
+      const readyText = summary ? `${summary.ready} of ${summary.total} ready` : `${completed} of ${total} tested`;
+
+      let headline;
+      if (job.status === 'failed') {
+        headline = `<div class="onboard-note error">Setup stopped: ${escapeHtml(job.error || 'unknown error')}</div>`;
+      } else if (job.status === 'cancelled') {
+        headline = `<div class="onboard-note warn">Cancelled \u2014 ${escapeHtml(readyText)}.</div>`;
+      } else if (job.status === 'empty') {
+        headline = `<div class="onboard-note warn">${escapeHtml(discoveryEmptyExplanation(job.modelDiscovery))}</div>`;
+      } else if (finished) {
+        headline = `<div class="onboard-note success">${escapeHtml(summary ? `${summary.ready} of ${summary.total} model${summary.total === 1 ? '' : 's'} ready` : 'Setup finished')}.</div>`;
+      } else {
+        headline = `<div class="onboard-note">Discovering and testing\u2026</div>`;
+      }
+
+      const progressHtml = finished ? '' : `<div class="onboard-progress"><div class="onboard-progress-bar" style="width:${Math.max(2, progress)}%"></div></div>`;
+
+      const actions = [];
+      if (!finished) {
+        actions.push('<button class="onboard-btn ghost" onclick="cancelProviderOnboarding()">Cancel</button>');
+      } else {
+        const failedCount = Array.isArray(job.errors) ? job.errors.length : 0;
+        if (failedCount > 0) actions.push(`<button class="onboard-btn ghost" onclick="retryFailedOnboarding()">Retry failed (${failedCount})</button>`);
+        actions.push('<button class="onboard-btn" onclick="closeProviderOnboardModal()">Close</button>');
+      }
+
+      bodyEl.innerHTML = `
+        ${headline}
+        <div class="onboard-meter"><span>${escapeHtml(readyText)}</span><span>${total ? `${completed}/${total}` : ''}</span></div>
+        ${progressHtml}
+        <div class="onboard-list">${onboardRowsHtml(job)}</div>
+        <div class="onboard-actions">${actions.join('')}</div>
+      `;
+    }
+
+    async function runProviderOnboarding(key, name) {
+      if (!key) return;
+      // A key save fires this from both Enter and blur, so two starts for the same provider can be
+      // in flight before either POST resolves. This guard is synchronous, so the second one is
+      // refused instead of launching a duplicate run over the same rows.
+      if (onboardStarting && onboardProviderKey === key) return;
+      onboardStarting = true;
+      onboardProviderKey = key;
+      onboardProviderName = name || PROVIDER_NAMES[key] || key;
+      const session = ++onboardSession;
+      openProviderOnboardModal(onboardProviderName);
+      try {
+        const res = await fetch(`/api/providers/${encodeURIComponent(key)}/onboard`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (session !== onboardSession) return;   // closed or superseded while the request was out
+        if (!res.ok || data.ok === false) throw new Error(data.error || `Failed to start setup for ${onboardProviderName}.`);
+        onboardJobId = data.jobId;
+        renderProviderOnboard(data.job || { providerKey: key, providerName: onboardProviderName, status: 'queued', stage: 'queued', results: [], total: 0, completed: 0, progress: 0 });
+        scheduleOnboardPoll();
+      } catch (err) {
+        if (session !== onboardSession) return;
+        console.error('Failed to start provider onboarding:', err);
+        const bodyEl = document.getElementById('provider-onboard-body');
+        if (bodyEl) bodyEl.innerHTML = `<div class="onboard-note error">Could not start setup: ${escapeHtml(err.message || String(err))}</div><div class="onboard-actions"><button class="onboard-btn" onclick="closeProviderOnboardModal()">Close</button></div>`;
+        onboardJobId = null;
+      } finally {
+        onboardStarting = false;
+      }
+    }
+
+    function scheduleOnboardPoll() {
+      if (onboardPollTimer) clearTimeout(onboardPollTimer);
+      onboardPollTimer = setTimeout(pollOnboardJob, ONBOARD_POLL_MS);
+    }
+
+    async function pollOnboardJob() {
+      onboardPollTimer = null;
+      const jobId = onboardJobId;
+      if (!jobId) return;
+      const session = onboardSession;
+      try {
+        const res = await fetch(`/api/providers/onboard-status?jobId=${encodeURIComponent(jobId)}`);
+        const data = await res.json().catch(() => ({}));
+        // The popup may have been closed, or a new run started, while this request was out. Drop
+        // the stale answer instead of rendering it and reopening the modal.
+        if (session !== onboardSession || onboardJobId !== jobId) return;
+        if (!data.ok || !data.job) {
+          // The job is gone (a server restart forgets in-memory jobs). Stop rather than spin.
+          onboardJobId = null;
+          return;
+        }
+        onboardPollFailures = 0;
+        renderProviderOnboard(data.job);
+        if (ONBOARD_FINISHED.has(data.job.status)) {
+          onboardJobId = null;
+          await finishProviderOnboarding(data.job);
+          return;
+        }
+        scheduleOnboardPoll();
+      } catch (err) {
+        if (session !== onboardSession || onboardJobId !== jobId) return;
+        console.error('Onboarding poll failed:', err);
+        // A server that is down (or a proxy that keeps resetting) must not be polled forever.
+        onboardPollFailures += 1;
+        if (onboardPollFailures > ONBOARD_MAX_POLL_FAILURES) {
+          console.error('Provider onboarding: giving up after repeated poll failures.');
+          onboardPollFailures = 0;
+          onboardJobId = null;
+          return;
+        }
+        scheduleOnboardPoll();
+      }
+    }
+
+    // Every test recorded its own result on the live row, so one snapshot repaints the table, the
+    // numbers and both plots with the models this run just brought online — the "place them into
+    // the main plot" step is that repaint, plus a short highlight of the provider's best model so
+    // the handoff is visible rather than silent.
+    async function finishProviderOnboarding(job) {
+      await fetchData();
+      await loadSettings();
+      emphasizeProviderPlots(job);
+    }
+
+    function emphasizeProviderPlots(job) {
+      const best = (Array.isArray(job.results) ? job.results : []).find(r => r.tested && r.ok);
+      if (!best) return;
+      if (onboardHighlightTimer) clearTimeout(onboardHighlightTimer);
+      // Hold the emphasis in state (see drawPlots) so the idle repaint fetchData just scheduled —
+      // which would otherwise draw the router's pick — keeps the new provider's model highlighted.
+      onboardHighlight = { modelId: best.modelId, providerKey: job.providerKey };
+      drawPlots(allModels, currentBestModelId, currentBestProviderKey);
+      onboardHighlightTimer = setTimeout(() => {
+        onboardHighlightTimer = null;
+        onboardHighlight = null;
+        drawPlots(allModels, currentBestModelId, currentBestProviderKey);
+      }, 5000);
+    }
+
+    async function cancelProviderOnboarding() {
+      if (!onboardJobId) return;
+      try {
+        await fetch('/api/providers/onboard-cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jobId: onboardJobId }),
+        });
+      } catch (err) {
+        console.error('Failed to cancel onboarding:', err);
+      }
+      // The next poll observes the cancelled status and finishes.
+    }
+
+    async function retryFailedOnboarding() {
+      if (!onboardProviderKey) return;
+      await runProviderOnboarding(onboardProviderKey, onboardProviderName);
+    }
+
+    // A key save or an OAuth connect is the moment "setting up a provider" begins. Fire the
+    // setup run for it unless one for the same provider is already on screen.
+    function maybeOnboardProvider(key) {
+      if (!key) return;
+      if (onboardJobId && onboardProviderKey === key) return;
+      runProviderOnboarding(key, PROVIDER_NAMES[key] || key).catch(err => console.error('Provider onboarding failed to start:', err));
+    }
+
+    function onboardButtonHtml(p) {
+      return `<button class="provider-onboard-btn" onclick='runProviderOnboarding(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Fetch this provider's models, test them all, and sort by current status">\u2726 Set up</button>`;
+    }
+
+    // Re-attach to a setup run that was left open when the page was reloaded. The job lives on the
+    // server, so this is a read of the recent jobs, not a restart of one.
+    async function resumeOnboardingIfRunning() {
+      try {
+        const res = await fetch('/api/providers/onboard-status');
+        const data = await res.json().catch(() => ({}));
+        if (!data.ok || !Array.isArray(data.jobs)) return;
+        const running = data.jobs.find(job => job.status === 'running' || job.status === 'queued');
+        if (!running) return;
+        onboardJobId = running.id;
+        onboardProviderKey = running.providerKey;
+        onboardProviderName = running.providerName || running.providerKey;
+        renderProviderOnboard(running);
+        scheduleOnboardPoll();
+      } catch (err) {
+        console.error('Could not resume provider onboarding:', err);
+      }
+    }
+
     function setConfigTransferStatus(message, tone = '') {
       const statusEl = document.getElementById('config-transfer-status');
       if (!statusEl) return;
@@ -6327,6 +6642,7 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
+                  ${onboardButtonHtml(p)}
 
 
                 </div>
@@ -6409,6 +6725,7 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
+                  ${onboardButtonHtml(p)}
                 </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the GitHub account that has Copilot. Hammer stores the resulting GitHub token locally and uses it as the Copilot credential — model traffic is billed against that account's Copilot plan, with no per-token cost.</div>
@@ -6529,6 +6846,7 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
+                  ${onboardButtonHtml(p)}
                 </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing. Sign in again with a different account to add it: the first is spent before the next is used, so one plan's limit is not the ceiling for the whole router.</div>
@@ -6596,6 +6914,7 @@
                     </svg>
                     <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                   </button>
+                  ${onboardButtonHtml(p)}
                 </div>
               </div>
               <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with your Cognition (Devin) account — the same browser flow the Devin CLI uses. Hammer stores the session token locally and uses it for the swe-1.6 / swe-1.5 models.</div>
@@ -6626,6 +6945,7 @@
                   </svg>
                   <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
                 </button>
+                ${onboardButtonHtml(p)}
               </div>
             </div>
             ${discoveryStateHtml(p, modelCount)}
@@ -6722,6 +7042,9 @@
         await loadSettings();
         await fetchData();
         scheduleKeySaveRefetch();
+        // Setting up a provider is exactly this moment: a key just landed for it. Open the setup
+        // popup so its models are fetched, tested and sorted without a second ask.
+        maybeOnboardProvider(key);
       } catch (err) {
         console.error('Failed to save provider key:', err);
         alert(`Could not save provider key: ${err.message || err}`);
@@ -7034,6 +7357,7 @@
           setKiroUiMessage(data.email ? `Connected Kiro via AWS Builder ID as ${data.email}.` : 'Connected Kiro via AWS Builder ID.', 'success');
           await loadSettings();
           await fetchData();
+          maybeOnboardProvider('kiro');
           return;
         }
 
@@ -7194,6 +7518,7 @@
         setKiroUiMessage(data.email ? `Connected Kiro as ${data.email}.` : 'Connected Kiro successfully.', 'success');
         await loadSettings();
         await fetchData();
+        maybeOnboardProvider('kiro');
       } catch (err) {
         setKiroUiMessage(err.message || 'Failed to complete Kiro browser OAuth.', 'error');
       }
@@ -7319,6 +7644,7 @@
           setCopilotUiMessage(data.login ? `Connected GitHub Copilot as ${data.login}.` : 'Connected GitHub Copilot.', 'success');
           await loadSettings();
           await fetchData();
+          maybeOnboardProvider('github-copilot');
           return;
         }
 
@@ -7487,6 +7813,7 @@
           setCodexUiMessage(`Connected OpenAI Codex${identity}${plan}.${pool}`, 'success');
           await loadSettings();
           await fetchData();
+          maybeOnboardProvider('openai-codex');
           return;
         }
 
@@ -7627,6 +7954,7 @@
           await loadSettings();
           await fetchData();
           scheduleKeySaveRefetch();
+          maybeOnboardProvider('devin');
           return;
         }
 
@@ -7764,6 +8092,7 @@
         await loadSettings();
         await fetchData();
         scheduleKeySaveRefetch();
+        maybeOnboardProvider('devin');
       } catch (err) {
         setDevinUiMessage(err.message || 'Failed to complete the Devin sign-in.', 'error');
       }
@@ -7784,6 +8113,7 @@
         setKiroUiMessage('Imported your Kiro refresh token from the AWS cache.', 'success');
         await loadSettings();
         await fetchData();
+        maybeOnboardProvider('kiro');
       } catch (err) {
         setKiroUiMessage(err.message || 'Failed to auto-import a Kiro refresh token.', 'error');
       }
@@ -7813,6 +8143,7 @@
         setKiroUiMessage('Saved the Kiro refresh token.', 'success');
         await loadSettings();
         await fetchData();
+        maybeOnboardProvider('kiro');
       } catch (err) {
         setKiroUiMessage(err.message || 'Failed to save the Kiro refresh token.', 'error');
       }
@@ -9040,6 +9371,9 @@
       };
     }
     connectRouterEvents();
+    // A setup run left open when the page was reloaded is still on the server; re-attach to it
+    // rather than making the user start over. A no-op when nothing is running.
+    resumeOnboardingIfRunning();
 
     // ── The boot sequence ──────────────────────────────────────────────────────────────
     //
