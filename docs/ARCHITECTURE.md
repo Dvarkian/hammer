@@ -159,6 +159,34 @@ cost without polling. A plan that cannot produce a configuration — a provider
 that cannot be written, a Pi with no usable Node — sets `launchError`, and the
 agent is refused (503 on prompt) rather than silently started on Pi's own model.
 
+### The transcript, as the page builds it
+
+The console renders what the agent does, not just what it says, and it takes
+the event vocabulary whole from the harness rather than inventing a summary:
+
+- **One assistant message is several blocks.** Pi restarts `contentIndex` at 0
+  for every assistant message and grows it in production order, so the page
+  keeps blocks keyed by that index and sorts them. Thinking, answer text and a
+  repeated thinking block stay in the order the model made them instead of
+  being merged into one paragraph — collapsing thinking to a placeholder is
+  what made the first port look incomplete.
+- **A tool is announced when it is called.** `toolcall_start`/`toolcall_end`
+  create the box (with its arguments) where the call was made;
+  `tool_execution_start/update/end` then fill the same box with live output and
+  a verdict, so a long `bash` call is legible while it runs.
+- **Notices are first class.** Compaction, provider retries, extension errors
+  and a `message_end` that carries a failure each become a line, because silence
+  during a 30-second retry reads as a hung agent.
+- **Output is clipped, not trusted.** Text is capped at 120k characters and tool
+  output at 24k, cut from the front: the tail is what a reader needs, and
+  `agent_end` carries the whole conversation.
+
+Thinking only appears when there is something to show it: the router's `best`
+model is configured with `reasoning: true` and `compat.supportsReasoningEffort`,
+so `pi.thinking` (or the allowlisted `set_thinking_level` command) produces real
+`thinking_delta` records instead of a level Pi would silently clamp to off. The
+start-up level is still `off`, so no model spends reasoning tokens until asked.
+
 The bridge is driven in tests by `test/support/fake-pi.mjs`, which speaks the
 same protocol and can be told to crash on a command or refuse a new session.
 

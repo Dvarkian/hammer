@@ -348,6 +348,39 @@ test('a stopped bridge leaves nothing to restart', async () => {
   await assert.rejects(() => bridge.start(), /disposed/)
 })
 
+test('the transcript keeps thinking, text and tool calls in the order the model made them', () => {
+  // The page is a classic script, so this guards the shape of the fold rather than running it:
+  // each assertion names a fact a broken port of the harness transcript would lose.
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+
+  // Thinking is content, not a placeholder. Collapsing it to "thinking…" was the port's
+  // biggest omission: the harness shows what the model actually thought.
+  assert.match(dashboard, /piAppendDelta\('thinking', update\.contentIndex, update\.delta\)/)
+  assert.match(dashboard, /class="pi-block-label">thinking</)
+  assert.match(dashboard, /class="pi-thinking-text"/)
+
+  // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
+  // assistant message and grows it in production order.
+  assert.match(dashboard, /function piContentBlock\(item, kind, index\)/)
+  assert.match(dashboard, /item\.blocks\.sort\(\(a, b\) => a\.index - b\.index\)/)
+
+  // A tool is announced when the model calls it, so its box sits where the call was made.
+  assert.match(dashboard, /update\.type === 'toolcall_start'/)
+  assert.match(dashboard, /function ensurePiTool\(id, name\)/)
+
+  // Live output: a long command is legible while it runs, not only once it finishes.
+  assert.match(dashboard, /case 'tool_execution_update'/)
+  assert.match(dashboard, /item\.partial = piClip\(text, PI_MAX_TOOL\)/)
+
+  // A provider that answers without deltas still contributes its thinking and text parts.
+  assert.match(dashboard, /function piContentParts\(content\)/)
+  assert.match(dashboard, /item\.blocks = piContentParts\(message\.content\)/)
+
+  // Runaway output is clipped from the front, where the tail is what a reader needs.
+  assert.match(dashboard, /const PI_MAX_TEXT = 120_000/)
+  assert.match(dashboard, /const PI_MAX_TOOL = 24_000/)
+})
+
 test('the console configures Pi with the router as its only provider', () => {
   const config = hammerModelsConfig('http://127.0.0.1:7352/v1')
   const provider = config.providers[HAMMER_PROVIDER]
@@ -359,6 +392,10 @@ test('the console configures Pi with the router as its only provider', () => {
     provider.models.map((model) => model.id),
     [HAMMER_MODEL],
   )
+  // Pi only emits thinking blocks when the model advertises reasoning, and only sends a level
+  // when the endpoint can express one; without both, `pi.thinking` is silently ignored.
+  assert.equal(provider.models[0].reasoning, true)
+  assert.equal(provider.compat.supportsReasoningEffort, true)
   assert.ok(provider.models[0].contextWindow > 0, 'Pi plans compaction against a window')
   assert.ok(provider.models[0].maxTokens > 0, 'and asks for an output budget')
 })

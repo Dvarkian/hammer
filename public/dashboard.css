@@ -750,6 +750,43 @@
       font-style: italic;
     }
 
+    /* One assistant message can be thinking, then text, then thinking again. The blocks keep
+       that order and are separated by a rule rather than merged into one paragraph. */
+    .pi-block + .pi-block {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--border);
+    }
+
+    .pi-thinking {
+      color: var(--text-muted);
+    }
+
+    .pi-block-label {
+      font-size: 0.64rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+    }
+
+    .pi-thinking-text {
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 0.8rem;
+      line-height: 1.5;
+      font-style: italic;
+      color: var(--text-muted);
+      border-left: 2px solid var(--border);
+      padding-left: 8px;
+    }
+
+    .pi-tool.preparing {
+      border-left-color: var(--text-muted);
+      opacity: 0.85;
+    }
+
     .pi-tool {
       border-left: 3px solid var(--warning);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

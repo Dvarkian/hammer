@@ -8294,6 +8294,20 @@
       });
     }
 
+    /** Ordered thinking/text blocks from a finished message's content parts. */
+    function piContentParts(content) {
+      if (!Array.isArray(content)) return [];
+      const blocks = [];
+      content.forEach((part, index) => {
+        const type = part && typeof part === 'object' ? part.type : null;
+        const kind = type === 'thinking' || type === 'reasoning' ? 'thinking' : type === 'text' ? 'text' : null;
+        if (kind && typeof part.text === 'string' && part.text) {
+          blocks.push({ kind, index, text: piClip(part.text, PI_MAX_TEXT) });
+        }
+      });
+      return blocks;
+    }
+
     // The text of a message's content blocks, for the authoritative `message_end` value that
     // replaces whatever the deltas had accumulated.
     function piTextFromBlocks(content) {
@@ -8332,12 +8346,46 @@
       return null;
     }
 
+    // A tool can print megabytes, and a model can think for longer than anyone will read.
+    // Both are clipped from the front: the tail is what a reader needs.
+    const PI_MAX_TEXT = 120_000;
+    const PI_MAX_TOOL = 24_000;
+
+    function piClip(text, limit) {
+      const value = String(text ?? '');
+      if (value.length <= limit) return value;
+      return `… ${value.length - limit} characters trimmed …\n${value.slice(-limit)}`;
+    }
+
     function piCurrentAssistant() {
       const last = piItems.length ? piItems[piItems.length - 1] : null;
       if (last && last.kind === 'assistant') return last;
-      const item = { kind: 'assistant', text: '', thinking: false };
+      const item = { kind: 'assistant', blocks: [] };
       piItems.push(item);
       return item;
+    }
+
+    /**
+     * The block at one content index. Pi restarts contentIndex at 0 for every assistant
+     * message and grows it in the order the model produced thinking, text and tool calls, so
+     * keying blocks by it is what keeps the transcript in the model's order rather than the
+     * order a reader happens to see the events.
+     */
+    function piContentBlock(item, kind, index) {
+      const key = Number.isInteger(index) ? index : 0;
+      for (const block of item.blocks) if (block.index === key) return block;
+      const block = { kind, index: key, text: '' };
+      item.blocks.push(block);
+      item.blocks.sort((a, b) => a.index - b.index);
+      return block;
+    }
+
+    function piAppendDelta(kind, index, delta) {
+      if (typeof delta !== 'string' || !delta) return;
+      const item = piCurrentAssistant();
+      const block = piContentBlock(item, kind, index);
+      block.text = piClip(block.text + delta, PI_MAX_TEXT);
+      piDirty.add(item);
     }
 
     function piToolItem(toolCallId) {
@@ -8345,6 +8393,28 @@
         if (piItems[i].kind === 'tool' && piItems[i].id === toolCallId) return piItems[i];
       }
       return null;
+    }
+
+    // A tool is announced when the model calls it, before it runs. Creating the box then is
+    // what puts it between the thinking that asked for it and the answer that follows, instead
+    // of at the end of the turn where execution started.
+    function ensurePiTool(id, name) {
+      const existing = id ? piToolItem(id) : null;
+      if (existing) {
+        if (name) existing.name = name;
+        return existing;
+      }
+      const item = {
+        kind: 'tool',
+        id: id || '',
+        name: name || 'tool',
+        args: null,
+        status: 'preparing',
+        result: '',
+        partial: '',
+      };
+      piItems.push(item);
+      return item;
     }
 
     // One record from the agent, folded into the transcript. Every visible change comes
@@ -8363,20 +8433,22 @@
           if (message.role === 'user') {
             piItems.push({ kind: 'user', text: piTextFromBlocks(message.content) });
           } else if (message.role === 'assistant') {
-            piItems.push({ kind: 'assistant', text: '', thinking: false });
+            piItems.push({ kind: 'assistant', blocks: [] });
           }
           break;
         }
         case 'message_update': {
           const update = record.assistantMessageEvent || {};
-          if (update.type === 'text_delta' && typeof update.delta === 'string') {
-            const item = piCurrentAssistant();
-            item.text += update.delta;
-            item.thinking = false;
-            piDirty.add(item);
+          if (update.type === 'text_delta') {
+            piAppendDelta('text', update.contentIndex, update.delta);
           } else if (update.type === 'thinking_delta') {
-            const item = piCurrentAssistant();
-            item.thinking = true;
+            piAppendDelta('thinking', update.contentIndex, update.delta);
+          } else if (update.type === 'toolcall_start') {
+            piDirty.add(ensurePiTool(update.id, update.toolName));
+          } else if (update.type === 'toolcall_end') {
+            const call = update.toolCall || {};
+            const item = ensurePiTool(call.id || update.id, call.name || update.toolName);
+            if (call.arguments) item.args = call.arguments;
             piDirty.add(item);
           }
           break;
@@ -8384,15 +8456,27 @@
         case 'message_end': {
           const message = record.message || {};
           if (message.role !== 'assistant') break;
-          const authoritative = piTextFromBlocks(message.content);
           const item = piLastAssistantItem();
           if (item) {
-            if (authoritative) {
-              item.text = authoritative;
-              item.thinking = false;
+            const streamed = item.blocks.some(block => block.text);
+            if (!streamed) {
+              // A provider that answers in one piece sends no deltas; its content parts are
+              // the only record of what it said, in the order it said it.
+              item.blocks = piContentParts(message.content);
               piDirty.add(item);
-            } else if (!item.text) {
-              // A message that produced no text — an upstream refusal, say — leaves no bubble
+            } else {
+              const texts = item.blocks.filter(block => block.kind === 'text');
+              const thought = item.blocks.some(block => block.kind === 'thinking');
+              const authoritative = piTextFromBlocks(message.content);
+              // With one text block and no thinking, `message_end` is the authority on the
+              // answer: it corrects a delta that was cut off by a dropped frame.
+              if (authoritative && texts.length === 1 && !thought && texts[0].text !== authoritative) {
+                texts[0].text = authoritative;
+                piDirty.add(item);
+              }
+            }
+            if (!item.blocks.length) {
+              // A message that produced nothing — an upstream refusal, say — leaves no bubble
               // at all: the error notice below is the whole story.
               piItems.splice(piItems.indexOf(item), 1);
               piRebuildPending = true;
@@ -8402,24 +8486,31 @@
           if (failure) piItems.push({ kind: 'notice', tone: 'error', text: failure });
           break;
         }
-        case 'tool_execution_start':
-          piItems.push({
-            kind: 'tool',
-            id: record.toolCallId || '',
-            name: record.toolName || 'tool',
-            args: record.args || null,
-            status: 'running',
-            result: '',
-          });
+        case 'tool_execution_start': {
+          const item = ensurePiTool(record.toolCallId, record.toolName);
+          item.args = record.args || item.args;
+          item.status = 'running';
+          piDirty.add(item);
           break;
-        case 'tool_execution_end': {
-          const item = piToolItem(record.toolCallId);
-          if (item) {
-            item.status = record.isError === true ? 'error' : 'ok';
-            item.result = piResultText(record.result);
-            item.durationMs = Number(record.durationMs) || null;
+        }
+        case 'tool_execution_update': {
+          const item = ensurePiTool(record.toolCallId, record.toolName);
+          const text = piResultText(record.partialResult);
+          if (text) {
+            // Live output: a long `bash` call stays legible while it runs.
+            item.partial = piClip(text, PI_MAX_TOOL);
             piDirty.add(item);
           }
+          break;
+        }
+        case 'tool_execution_end': {
+          const item = ensurePiTool(record.toolCallId, record.toolName);
+          item.status = record.isError === true ? 'error' : 'ok';
+          const text = piResultText(record.result);
+          if (text) item.result = piClip(text, PI_MAX_TOOL);
+          item.partial = '';
+          item.durationMs = Number(record.durationMs) || null;
+          piDirty.add(item);
           break;
         }
         case 'auto_retry_start':
@@ -8462,22 +8553,34 @@
         return `<div class="pi-item pi-user"><div class="pi-role">You</div><div class="pi-text">${escapeHtml(item.text)}</div></div>`;
       }
       if (item.kind === 'assistant') {
-        const dim = !item.text;
-        const body = dim ? (item.thinking ? 'thinking…' : '…') : escapeHtml(item.text);
-        return `<div class="pi-item pi-assistant"><div class="pi-role">Pi</div><div class="pi-text${dim ? ' pi-dim' : ''}">${body}</div></div>`;
+        const body = item.blocks.length
+          ? item.blocks.map(piBlockMarkup).join('')
+          : '<div class="pi-block pi-text pi-dim">…</div>';
+        return `<div class="pi-item pi-assistant"><div class="pi-role">Pi</div>${body}</div>`;
       }
       if (item.kind === 'tool') {
-        const label = item.status === 'running' ? 'running…' : item.status === 'error' ? 'failed' : 'done';
+        const label = item.status === 'preparing' ? 'preparing…' : item.status === 'running' ? 'running…' : item.status === 'error' ? 'failed' : 'done';
         const took = item.durationMs != null ? ` · ${(item.durationMs / 1000).toFixed(2)}s` : '';
-        const output = item.result
-          ? `<details class="pi-tool-details"${item.status === 'error' ? ' open' : ''}><summary>output</summary><pre class="pi-tool-out">${escapeHtml(item.result)}</pre></details>`
+        const output = item.result || item.partial;
+        const open = item.status !== 'ok' ? ' open' : '';
+        const summary = item.result ? 'output' : 'live output';
+        const details = output
+          ? `<details class="pi-tool-details"${open}><summary>${summary}</summary><pre class="pi-tool-out">${escapeHtml(output)}</pre></details>`
           : '';
         return `<div class="pi-item pi-tool ${item.status}">
             <div class="pi-tool-head"><span class="pi-tool-name">${escapeHtml(item.name)}</span><span class="pi-tool-cmd">${escapeHtml(piToolSummary(item))}</span><span class="pi-tool-state">${label}${took}</span></div>
-            ${output}
+            ${details}
           </div>`;
       }
       return `<div class="pi-item pi-notice ${item.tone || 'info'}">${escapeHtml(item.text)}</div>`;
+    }
+
+    /** One content block: thinking reads as annotation, text as the answer. */
+    function piBlockMarkup(block) {
+      if (block.kind === 'thinking') {
+        return `<div class="pi-block pi-thinking"><div class="pi-block-label">thinking</div><div class="pi-thinking-text">${escapeHtml(block.text || '')}</div></div>`;
+      }
+      return `<div class="pi-block pi-text${block.text ? '' : ' pi-dim'}">${escapeHtml(block.text || '…')}</div>`;
     }
 
     // A streamed turn is one growing text node, not a rebuild: re-parsing the transcript on
@@ -8486,14 +8589,19 @@
       const holder = item.holder;
       if (!holder) return;
       if (item.kind === 'assistant') {
-        const textEl = holder.firstElementChild && holder.firstElementChild.querySelector('.pi-text');
-        if (!textEl) {
+        const targets = holder.querySelectorAll('.pi-block');
+        // A new block means the shape changed, and only a rebuild can insert it in place.
+        if (targets.length !== item.blocks.length) {
           holder.innerHTML = piItemMarkup(item);
           return;
         }
-        const body = item.text || (item.thinking ? 'thinking…' : '…');
-        if (textEl.textContent !== body) textEl.textContent = body;
-        textEl.classList.toggle('pi-dim', !item.text);
+        item.blocks.forEach((block, index) => {
+          const node = targets[index];
+          const textNode = block.kind === 'thinking' ? node.querySelector('.pi-thinking-text') : node;
+          const value = block.text || (block.kind === 'thinking' ? '' : '…');
+          if (textNode && textNode.textContent !== value) textNode.textContent = value;
+          if (block.kind === 'text') node.classList.toggle('pi-dim', !block.text);
+        });
         return;
       }
       holder.innerHTML = piItemMarkup(item);
@@ -8579,10 +8687,16 @@
       const model = data.model
         ? `${data.model.name || data.model.id} · ${data.model.provider || 'provider'}`
         : 'no model selected';
+      // Only worth saying when it is on: the level is what decides whether thinking blocks
+      // appear at all, and `off` is the default.
+      const thinking =
+        data.thinkingLevel && data.thinkingLevel !== 'off'
+          ? ` · thinking ${data.thinkingLevel}`
+          : '';
       // `piRunning` is the live answer from the event stream; the status payload is only as
       // fresh as the last time it was asked. Either one saying "running" is right.
       const running = piRunning || data.isStreaming || data.phase === 'busy';
-      el.textContent = `pi · ${model} · ${data.cwd}${running ? ' · running' : ''}`;
+      el.textContent = `pi · ${model}${thinking} · ${data.cwd}${running ? ' · running' : ''}`;
       el.dataset.tone = 'muted';
     }
 
