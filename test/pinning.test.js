@@ -11,6 +11,7 @@ import {
 } from '../lib/server.js'
 import { buildModelGroups } from '../lib/utils.js'
 import { canonicalizeModelId, MODEL_ID_ALIASES } from '../sources.js'
+import { serverSource } from './support/server-source.js'
 
 function row(providerKey, modelId, label, ms = 100) {
   return {
@@ -92,7 +93,7 @@ test('server grouping applies the shared alias catalog across model families', (
 
 test('the dashboard consumes server model groups instead of rebuilding model identity', () => {
   const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
-  const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+  const server = serverSource
 
   assert.match(server, /modelGroupId: modelGroupByRowKey/)
   assert.match(server, /modelGroupLabel: modelGroupByRowKey/)
@@ -292,10 +293,13 @@ test('the scatter renders a full-size dot only for a currently routable row', ()
 })
 
 test('the request path resolves a pin after discovery and retains the final family failure', () => {
-  const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+  const server = serverSource
   const discovery = server.indexOf('const requestedModels = await resolveRequestModels({')
+  // The pin is resolved against the row set the awaited discovery just produced.
+  // `results` reaches the handler through the route context, so the argument is
+  // `ctx.results` now; the ordering this asserts is unchanged.
   const pinnedMatches = server.indexOf(
-    'const requestPinnedMatches = getPinnedModelMatches(results, requestPinnedSelection);',
+    'const requestPinnedMatches = getPinnedModelMatches(ctx.results, requestPinnedSelection)',
     discovery,
   )
   assert.ok(

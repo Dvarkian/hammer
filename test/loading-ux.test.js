@@ -1,11 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { serverSource } from './support/server-source.js'
 
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
-const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+const server = serverSource
 
 // ── The loading shell ────────────────────────────────────────────────────────────────────
 //
@@ -201,11 +202,11 @@ test('brand marks are decoration and arrive after the first paint', () => {
 })
 
 test('the ping history is no longer shipped on every row', () => {
-  assert.match(server, /const includePings = String\(req\.query\?\.pings \|\| ''\) === '1';/)
+  assert.match(server, /const includePings = String\(req\.query\?\.pings \|\| ''\) === '1'$/m)
   // The row is built by spreading the internal result, so the history has to be removed rather
   // than merely not added: a key the spread already copied cannot be un-copied by a later
   // property in the same literal.
-  assert.match(server, /if \(!includePings\) delete out\.pings;/)
+  assert.match(server, /if \(!includePings\) delete out\.pings$/m)
   assert.match(server, /lastProbeSuccessAt,/)
   // The dashboard reads the field, keeps the old scan only for a router that predates it.
   assert.match(dashboard, /const reported = Number\(m\?\.lastProbeSuccessAt\);/)
@@ -222,8 +223,8 @@ test('neither boot route waits on the provider-usage refresh', () => {
 
   for (const start of [models, config]) {
     const body = routeWindow(start)
-    assert.match(body, /const usagePending = providerUsagePending\(\);/)
-    assert.match(body, /if \(usagePending\) kickProviderUsageRefresh\(\);/)
+    assert.match(body, /const usagePending = providerUsagePending\(\)$/m)
+    assert.match(body, /if \(usagePending\) kickProviderUsageRefresh\(\)$/m)
     // The statement this replaces — a single slow usage endpoint held the model table, both KPIs
     // and both plots for as long as PING_TIMEOUT while the page showed an empty grid. Matched on
     // its own line, because the comments above it quote the call they are explaining.

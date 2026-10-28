@@ -136,6 +136,7 @@ import {
   decideResolution,
   termsRefusal,
 } from '../tools/resolve-omniroute-endpoints.mjs'
+import { serverSource } from './support/server-source.js'
 
 /** Order-insensitive deep comparison, because these tables are lookups, not sequences. */
 function sortsDeepEqual(actual, expected) {
@@ -1613,7 +1614,7 @@ test('the chat handler actually resolves through the request-path function it is
   // been reverted to a bare `filterModelsByRequested` call that skips the trigger entirely —
   // the failure mode a function-only test cannot catch. Source-level, like the no-network
   // import check, because the handler is closed over by runServer and cannot be imported.
-  const source = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+  const source = serverSource
   assert.match(
     source,
     /const requestedModels = await resolveRequestModels\(/,
