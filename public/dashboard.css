@@ -697,10 +697,10 @@
       border: 1px solid var(--border);
       border-radius: 14px;
       background: var(--chat-bg);
-      padding: 14px;
+      padding: 16px 18px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 4px;
     }
 
     .pi-empty {
@@ -712,29 +712,35 @@
       line-height: 1.5;
     }
 
+    /* The transcript reads as a log, not a stack of cards: a small uppercase label, then the
+       content, aligned on one rail. This is the harness's own format — a box around every
+       paragraph buries the shape of a turn in chrome. */
     .pi-item {
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      background: var(--card);
-      padding: 10px 12px;
-      box-shadow: 0 1px 2px var(--shadow-color);
+      border: 0;
+      border-left: 2px solid transparent;
+      border-radius: 0;
+      background: transparent;
+      padding: 2px 0 2px 12px;
+      box-shadow: none;
     }
 
     .pi-item.pi-user {
-      border-left: 3px solid var(--success);
+      border-left-color: var(--success);
     }
 
     .pi-item.pi-assistant {
-      border-left: 3px solid var(--accent);
+      border-left-color: var(--accent);
     }
 
-    .pi-role {
-      font-size: 0.68rem;
+    .pi-role,
+    .pi-block-label {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.62rem;
       font-weight: 700;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      letter-spacing: 0.06em;
       color: var(--text-muted);
-      margin-bottom: 6px;
+      margin-bottom: 3px;
     }
 
     .pi-text {
@@ -751,24 +757,19 @@
     }
 
     /* One assistant message can be thinking, then text, then thinking again. The blocks keep
-       that order and are separated by a rule rather than merged into one paragraph. */
+       that order; the thinking reads as an aside on its own rail. */
     .pi-block + .pi-block {
       margin-top: 8px;
-      padding-top: 8px;
-      border-top: 1px dashed var(--border);
     }
 
     .pi-thinking {
-      color: var(--text-muted);
+      border-left: 2px solid var(--border);
+      padding-left: 10px;
+      margin: 6px 0;
     }
 
-    .pi-block-label {
-      font-size: 0.64rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.07em;
-      color: var(--text-muted);
-      margin-bottom: 3px;
+    .pi-thinking .pi-block-label {
+      opacity: 0.8;
     }
 
     .pi-thinking-text {
@@ -778,84 +779,99 @@
       line-height: 1.5;
       font-style: italic;
       color: var(--text-muted);
-      border-left: 2px solid var(--border);
-      padding-left: 8px;
     }
 
-    .pi-tool.preparing {
-      border-left-color: var(--text-muted);
-      opacity: 0.85;
-    }
-
+    /* A tool keeps a box, because its output is collapsible: one row names the call, one line
+       opens what it printed. */
     .pi-tool {
-      border-left: 3px solid var(--warning);
+      margin: 4px 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--card);
+      overflow: hidden;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
-    .pi-tool.ok {
-      border-left-color: var(--status-success-text);
+    .pi-tool.preparing {
+      opacity: 0.8;
     }
 
     .pi-tool.error {
-      border-left-color: var(--status-error-text);
+      border-color: var(--status-error-text);
     }
 
     .pi-tool-head {
       display: flex;
       align-items: baseline;
       gap: 10px;
-      flex-wrap: wrap;
+      padding: 5px 10px;
+      background: var(--surface-alt);
+      border-bottom: 1px solid var(--border);
+      font-size: 0.72rem;
     }
 
     .pi-tool-name {
-      font-size: 0.72rem;
+      flex: none;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      color: var(--warning);
     }
 
     .pi-tool-cmd {
       flex: 1;
       min-width: 0;
       font-size: 0.78rem;
-      color: var(--text);
+      color: var(--text-muted);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .pi-tool-state {
-      font-size: 0.72rem;
+      flex: none;
+      margin-left: auto;
+      font-size: 0.7rem;
       color: var(--text-muted);
+      white-space: nowrap;
+    }
+
+    .pi-tool.ok .pi-tool-state {
+      color: var(--status-success-text);
+    }
+
+    .pi-tool.error .pi-tool-state {
+      color: var(--status-error-text);
     }
 
     .pi-tool-details summary {
-      margin-top: 6px;
+      padding: 4px 10px;
       cursor: pointer;
-      font-size: 0.74rem;
+      font-size: 0.7rem;
       color: var(--text-muted);
+      user-select: none;
     }
 
     .pi-tool-out {
-      margin: 6px 0 0;
-      padding: 8px;
-      max-height: 240px;
+      margin: 0;
+      padding: 0 10px 8px;
+      max-height: 300px;
       overflow: auto;
-      background: var(--chat-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 0.74rem;
+      background: transparent;
+      border: 0;
+      font-size: 0.72rem;
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+      color: var(--text-muted);
     }
 
     .pi-notice {
-      border-left: 3px solid var(--border);
+      border-left-color: var(--border);
       color: var(--text-muted);
-      font-size: 0.78rem;
+      font-size: 0.76rem;
       line-height: 1.5;
+      padding-left: 12px;
     }
 
     .pi-notice.error {
@@ -865,7 +881,7 @@
 
     .pi-notice.log {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 0.74rem;
+      font-size: 0.72rem;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
