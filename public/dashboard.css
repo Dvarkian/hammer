@@ -658,13 +658,6 @@
       50% { opacity: 0.25; }
     }
 
-    .pi-usage {
-      font-size: 0.76rem;
-      color: var(--text-muted);
-      font-variant-numeric: tabular-nums;
-      margin-right: 2px;
-    }
-
     .pi-status-line {
       margin-top: 6px;
       font-size: 0.76rem;

@@ -8653,14 +8653,6 @@
       if (label) label.textContent = piPhase === 'dead' ? 'down' : piPhase;
     }
 
-    function renderPiUsage(tokens, cost) {
-      const el = document.getElementById('pi-usage');
-      if (!el) return;
-      const count = Number(tokens) || 0;
-      const dollars = Number(cost) || 0;
-      el.textContent = `${count.toLocaleString()} tokens · $${dollars.toFixed(2)}`;
-    }
-
     function notePiLaunchNotes(notes) {
       for (const note of notes || []) {
         if (piNotesSeen.has(note)) continue;
@@ -8674,7 +8666,6 @@
       if (!el) return;
       if (!data) return;
       if (data.phase) renderPiPhase(data.phase)
-      renderPiUsage(data.tokens, data.cost)
       if (Array.isArray(data.notes) && data.notes.length) {
         notePiLaunchNotes(data.notes)
         piScheduleRender()
@@ -8771,14 +8762,6 @@
           renderPiStatus(payload.status);
           updatePiComposer();
           piScheduleRender();
-          return;
-        }
-        if (payload.type === 'usage') {
-          if (piStatus) {
-            piStatus.tokens = payload.tokens;
-            piStatus.cost = payload.cost;
-          }
-          renderPiUsage(payload.tokens, payload.cost);
           return;
         }
         if (payload.type === 'log' && payload.text) {
