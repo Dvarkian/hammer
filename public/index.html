@@ -119,7 +119,7 @@
 
     <div class="tabs">
       <div class="tab active" id="tab-models" onclick="switchTab('models')">Live Telemetry</div>
-      <div class="tab" id="tab-chat" onclick="switchTab('chat')">Chat</div>
+      <div class="tab" id="tab-pi" onclick="switchTab('pi')">Pi</div>
       <div class="tab" id="tab-logs" onclick="switchTab('logs')">Request Logs</div>
       <div class="tab" id="tab-settings" onclick="switchTab('settings')">Settings</div>
     </div>
@@ -272,36 +272,28 @@
       </div>
     </div>
 
-    <div id="chat-view" style="display: none;">
-      <div class="chat-layout">
-        <div class="chat-toolbar">
-          <div>
-            <h2 style="margin: 0; font-size: 1.25rem;">Chat</h2>
+    <div id="pi-view" style="display: none;">
+      <div class="pi-layout">
+        <div class="pi-toolbar">
+          <div style="min-width:0;">
+            <h2 style="margin: 0; font-size: 1.25rem;">Pi agent</h2>
+            <div id="pi-status" class="pi-status-line">Connecting to Pi…</div>
           </div>
-          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <label for="chat-model-select" style="font-size:0.76rem; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; font-weight:700;">Model</label>
-            <select id="chat-model-select" class="chat-model-select" onchange="onChatModelChange()">
-              <option value="best">Best</option>
-            </select>
-            <button id="chat-clear-btn" class="btn" style="background: var(--input-bg); color: var(--text); border: 1px solid var(--border);" onclick="clearChat()">Clear Chat</button>
+          <div class="pi-actions">
+            <button id="pi-stop-btn" class="btn" onclick="stopPiRun()" disabled>Stop</button>
+            <button id="pi-reset-btn" class="btn" onclick="resetPiSession()">New session</button>
           </div>
         </div>
-        <div id="chat-transcript" class="chat-transcript">
-          <div class="chat-empty">
-            Start a conversation. Press Enter to send and Shift+Enter for a newline.
+        <div id="pi-transcript" class="pi-transcript">
+          <div class="pi-empty">
+            Ask Pi to work in this project. It streams every step it takes: tool calls, output and its answer.
           </div>
         </div>
-        <div id="chat-typing-indicator" class="chat-typing" aria-live="polite">
-          <span>Assistant is thinking</span>
-          <span class="chat-typing-dot"></span>
-          <span class="chat-typing-dot"></span>
-          <span class="chat-typing-dot"></span>
-        </div>
-        <div class="chat-composer">
-          <textarea id="chat-input" class="chat-input" placeholder="Type your message..." onkeydown="handleChatInputKeydown(event)"></textarea>
-          <div class="chat-actions">
-            <div id="chat-status" class="chat-status"></div>
-            <button id="chat-send-btn" class="btn chat-send-btn" onclick="sendChatMessage()">Send</button>
+        <div class="pi-composer">
+          <textarea id="pi-input" class="pi-input" placeholder="Ask Pi to do something in this repo… (Enter to send, Shift+Enter for a newline)"></textarea>
+          <div class="pi-composer-actions">
+            <div id="pi-hint" class="pi-hint"></div>
+            <button id="pi-send-btn" class="btn pi-send-btn" onclick="sendPiPrompt()">Send</button>
           </div>
         </div>
       </div>

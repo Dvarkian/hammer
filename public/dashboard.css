@@ -578,7 +578,9 @@
       padding: 32px;
     }
 
-    #chat-view {
+    /* Pi agent console: a stream of turns, tool calls and notices rather than a chat
+       transcript, because that is what a coding agent actually emits. */
+    #pi-view {
       display: none;
       background: var(--card);
       border: 1px solid var(--border);
@@ -586,14 +588,14 @@
       padding: 24px;
     }
 
-    .chat-layout {
+    .pi-layout {
       display: flex;
       flex-direction: column;
       gap: 14px;
       min-height: 520px;
     }
 
-    .chat-toolbar {
+    .pi-toolbar {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
@@ -601,23 +603,31 @@
       flex-wrap: wrap;
     }
 
-    .chat-model-select {
-      min-width: 280px;
-      background: var(--input-bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px 10px;
-      color: var(--text);
-      font-size: 0.84rem;
-      outline: none;
+    .pi-status-line {
+      margin-top: 6px;
+      font-size: 0.76rem;
+      line-height: 1.4;
+      color: var(--text-muted);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow-wrap: anywhere;
     }
 
-    .chat-model-select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    .pi-status-line[data-tone='error'] {
+      color: var(--status-error-text);
     }
 
-    .chat-transcript {
+    .pi-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pi-actions .btn[disabled] {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .pi-transcript {
       flex: 1;
       min-height: 340px;
       max-height: 62vh;
@@ -631,7 +641,7 @@
       gap: 10px;
     }
 
-    .chat-empty {
+    .pi-empty {
       margin: auto;
       text-align: center;
       color: var(--text-muted);
@@ -640,7 +650,7 @@
       line-height: 1.5;
     }
 
-    .chat-msg {
+    .pi-item {
       border: 1px solid var(--border);
       border-radius: 10px;
       background: var(--card);
@@ -648,19 +658,15 @@
       box-shadow: 0 1px 2px var(--shadow-color);
     }
 
-    .chat-msg.user {
+    .pi-item.pi-user {
       border-left: 3px solid var(--success);
     }
 
-    .chat-msg.assistant {
+    .pi-item.pi-assistant {
       border-left: 3px solid var(--accent);
     }
 
-    .chat-msg.system {
-      border-left: 3px solid var(--warning);
-    }
-
-    .chat-msg-role {
+    .pi-role {
       font-size: 0.68rem;
       font-weight: 700;
       text-transform: uppercase;
@@ -669,53 +675,102 @@
       margin-bottom: 6px;
     }
 
-    .chat-msg-content {
+    .pi-text {
       white-space: pre-wrap;
       word-break: break-word;
       font-size: 0.84rem;
-      line-height: 1.5;
-      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.55;
       color: var(--text);
     }
 
-    .chat-typing {
-      display: none;
-      align-items: center;
-      gap: 8px;
+    .pi-dim {
       color: var(--text-muted);
-      font-size: 0.8rem;
-      padding: 6px 0 0 2px;
+      font-style: italic;
     }
 
-    .chat-typing-dot {
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--text-muted);
-      opacity: 0.3;
-      animation: chatTyping 1.2s infinite ease-in-out;
+    .pi-tool {
+      border-left: 3px solid var(--warning);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
 
-    .chat-typing-dot:nth-child(2) {
-      animation-delay: 0.2s;
+    .pi-tool.ok {
+      border-left-color: var(--status-success-text);
     }
 
-    .chat-typing-dot:nth-child(3) {
-      animation-delay: 0.4s;
+    .pi-tool.error {
+      border-left-color: var(--status-error-text);
     }
 
-    @keyframes chatTyping {
-      0%, 80%, 100% { transform: translateY(0); opacity: 0.25; }
-      40% { transform: translateY(-3px); opacity: 0.9; }
+    .pi-tool-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
     }
 
-    .chat-composer {
+    .pi-tool-name {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    .pi-tool-cmd {
+      flex: 1;
+      min-width: 0;
+      font-size: 0.78rem;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .pi-tool-state {
+      font-size: 0.72rem;
+      color: var(--text-muted);
+    }
+
+    .pi-tool-details summary {
+      margin-top: 6px;
+      cursor: pointer;
+      font-size: 0.74rem;
+      color: var(--text-muted);
+    }
+
+    .pi-tool-out {
+      margin: 6px 0 0;
+      padding: 8px;
+      max-height: 240px;
+      overflow: auto;
+      background: var(--chat-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 0.74rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .pi-notice {
+      border-left: 3px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      line-height: 1.5;
+    }
+
+    .pi-notice.error {
+      border-left-color: var(--status-error-text);
+      color: var(--status-error-text);
+    }
+
+    .pi-composer {
       display: flex;
       flex-direction: column;
       gap: 8px;
     }
 
-    .chat-input {
+    .pi-input {
       width: 100%;
       min-height: 86px;
       box-sizing: border-box;
@@ -731,12 +786,12 @@
       color: var(--text);
     }
 
-    .chat-input:focus {
+    .pi-input:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
     }
 
-    .chat-actions {
+    .pi-composer-actions {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -744,21 +799,21 @@
       flex-wrap: wrap;
     }
 
-    .chat-status {
+    .pi-hint {
       min-height: 1em;
       font-size: 0.78rem;
       color: var(--text-muted);
     }
 
-    .chat-status.error {
+    .pi-hint[data-tone='error'] {
       color: var(--status-error-text);
     }
 
-    .chat-status.success {
+    .pi-hint[data-tone='success'] {
       color: var(--status-success-text);
     }
 
-    .chat-send-btn[disabled] {
+    .pi-send-btn[disabled] {
       opacity: 0.65;
       cursor: not-allowed;
     }
@@ -822,12 +877,7 @@
         border-radius: 14px;
       }
 
-      .chat-model-select {
-        min-width: unset;
-        width: 100%;
-      }
-
-      .chat-transcript {
+      .pi-transcript {
         min-height: 250px;
       }
 

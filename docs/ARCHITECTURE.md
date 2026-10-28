@@ -19,15 +19,16 @@ lib/server.js          composition root: runServer wires discovery, config,
                        the express app, and the remaining 27 routes
 lib/http/routes/       one module per resource; thin handlers only
 lib/http/context.js    the context contract shared by composer and modules
+lib/pi/                the Pi coding agent: child process, JSONL RPC, replay log
 lib/providers/         descriptors, catalog, discovery, resolution
 lib/config.js          config read/write (single writer for the file)
 sources.js, scores.js  model data (to move under lib/data/)
 public/                dashboard, classic script, no build step
 ```
 
-`runServer` is **5,247 lines** and registers **27** routes; on `master` it was
+`runServer` is **5,283 lines** and registers **27** routes; on `master` it was
 7,080 and 38, and at the start of the refactor 7,485 and 58. `lib/server.js` is
-10,543 lines, down from 12,790.
+10,611 lines, down from 12,790. Extracted modules hold 31 routes between them.
 
 ## The route contract
 
@@ -76,13 +77,44 @@ not enumerate; the real fix is to describe those keys, then delete the casts.
 | `http/routes/proxy.js`         | 4      | `/v1/chat/completions` (streaming and not), `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens` |
 | `http/routes/models.js`        | 1      | `/api/models` — the table, QoS map, selector pick                                                     |
 | `http/routes/providers.js`     | 6      | `/api/config`, endpoint CRUD, refresh/discovery                                                       |
+| `http/routes/pi.js`            | 5      | the Pi console: status, SSE event stream, prompt, stop, new session                                   |
 
 Every group has tests that mount it on a bare Express app with stub
 dependencies — no listener on 7352, no config file, no network
-(`test/http-routes.test.js`, `test/oauth-routes.test.js`). The streaming path is
+(`test/http-routes.test.js`, `test/oauth-routes.test.js`, `test/pi-agent.test.js`). The streaming path is
 additionally covered end to end against a fake upstream: a real server boots
 from a clean `HOME`, registers an endpoint, restarts, discovers the model, and
 serves a non-streamed and a streamed completion plus a 404 for an unknown model.
+
+## The Pi console, and why it is shaped differently
+
+`lib/http/routes/pi.js` is the only group that owns an operating-system
+process, so it is also the only one that takes no router state. The direction is
+one way:
+
+```
+browser tab ──SSE──▶ /api/pi/events ──▶ PiBridge ──stdin JSONL──▶ pi --mode rpc
+            ◀──SSE─── event records  ◀──  (child)  ◀──stdout JSONL──
+            ──POST──▶ prompt / abort / reset ──▶ commands ──▶
+```
+
+Three decisions follow from that, and each one is a defect if undone:
+
+1. **The child is the conversation.** The page holds a projection of the event
+   log and nothing else; no transcript is stored in the browser. A reload
+   re-subscribes and the bridge replays its bounded log, so a run in progress
+   survives a refresh. The log is capped by count and by characters, because
+   `agent_end` carries the whole conversation.
+2. **The bridge, not the UI, owns protocol policy.** Steer when a run is active
+   (and retry as a steer when Pi disagrees with tracked state), `clear_queue`
+   then `abort_retry` then `abort` for Stop, `cancelled` honoured for a new
+   session. The page cannot know these rules and must not re-derive them.
+3. **Nothing starts the agent until the tab is opened.** A status request is
+   the only thing that spawns it, and the dashboard makes none until the Pi tab
+   is selected — a router nobody is watching the console on pays for no child.
+
+The bridge is driven in tests by `test/support/fake-pi.mjs`, which speaks the
+same protocol and can be told to crash on a command or refuse a new session.
 
 ## Structural debt this record names
 

@@ -422,11 +422,21 @@
     let codexDeviceAuthState = null;
     let codexDevicePollTimer = null;
     let codexUiMessage = null;
-    let chatMessages = [];
-    let chatInFlight = false;
-    let chatSelectedModel = 'best';
-    const CHAT_STORAGE_KEY = 'hammer-chat-v1';
-    const CHAT_MODEL_STORAGE_KEY = 'hammer-chat-model-v1';
+    // ── Pi console state ─────────────────────────────────────────────────────────────────
+    // The conversation belongs to the Pi child process on the server; this page holds a
+    // projection of its event stream. Nothing is stored in the browser: a reload re-subscribes
+    // and replays the server's bounded log, so a run in progress survives a refresh.
+    let piItems = [];
+    let piRunning = false;
+    let piSending = false;
+    let piStatus = null;
+    let piSource = null;
+    let piRenderPending = false;
+    // How much of `piItems` is already in the DOM, which items changed since the last paint,
+    // and whether a splice means the cheap append path no longer describes the list.
+    let piMounted = 0;
+    const piDirty = new Set();
+    let piRebuildPending = false;
     const MODEL_ID_ALIASES = {
       'mimo-v2-omni-free': 'xiaomi/mimo-v2-omni:free',
       // g4f backends serve these under their own repo spellings; they are the same
@@ -574,7 +584,7 @@
       document.getElementById(`tab-${tab}`).classList.add('active');
 
       document.getElementById('models-view').style.display = tab === 'models' ? 'block' : 'none';
-      document.getElementById('chat-view').style.display = tab === 'chat' ? 'block' : 'none';
+      document.getElementById('pi-view').style.display = tab === 'pi' ? 'block' : 'none';
       document.getElementById('logs-view').style.display = tab === 'logs' ? 'block' : 'none';
       document.getElementById('settings-view').style.display = tab === 'settings' ? 'block' : 'none';
 
@@ -582,9 +592,8 @@
         loadSettings();
       } else if (tab === 'logs') {
         loadLogs(true);
-      } else if (tab === 'chat') {
-        renderChatTranscript();
-        scrollChatToBottom();
+      } else if (tab === 'pi') {
+        openPiTab();
       }
     }
 
@@ -776,8 +785,6 @@
           && (!fallback.providerKey || fallback.providerKey === data.selection.providerKey)
           ? { modelId: data.selection.modelId, providerKey: data.selection.providerKey, ...fallback }
           : null;
-        updateChatModelOptions(allModels);
-
         // One grouping for the table and the numbers that describe it. Both used to derive it
         // independently — groupModels, then sortedGroups, then splitDisplayGroups over every row,
         // twice per snapshot — and the table's split and the readouts' split are the same split.
@@ -8247,263 +8254,471 @@
       }
     }
 
-    function loadChatState() {
-      try {
-        const rawMessages = sessionStorage.getItem(CHAT_STORAGE_KEY);
-        const parsedMessages = rawMessages ? JSON.parse(rawMessages) : [];
-        chatMessages = Array.isArray(parsedMessages)
-          ? parsedMessages
-            .filter(m => m && typeof m.role === 'string' && m.content != null)
-            .map(m => ({
-              role: String(m.role),
-              content: typeof m.content === 'string' ? m.content : formatMessageContent(m.content),
-              ts: typeof m.ts === 'string' ? m.ts : new Date().toISOString(),
-              model: typeof m.model === 'string' && m.model.trim() ? m.model.trim() : null
-            }))
-          : [];
+    // ── Pi coding agent console ───────────────────────────────────────────────────────────
+    //
+    // The agent lives on the server (`lib/pi/bridge.js` owns the child process). This page
+    // renders the event stream that child produces — turns, tool calls, retries, notices —
+    // rather than a chat transcript, because that is what a coding agent actually emits.
+    //
+    // Nothing is persisted: a reload re-subscribes and the server replays its bounded event
+    // log, so a run in progress survives a refresh without the browser holding state.
 
-        const rawModel = sessionStorage.getItem(CHAT_MODEL_STORAGE_KEY);
-        chatSelectedModel = rawModel && typeof rawModel === 'string' ? rawModel : 'best';
-      } catch {
-        chatMessages = [];
-        chatSelectedModel = 'best';
-      }
+    const PI_EMPTY_HTML = '<div class="pi-empty">Ask Pi to work in this project. It streams every step it takes: tool calls, output and its answer.</div>'
+
+    function piSetHint(message, tone = 'muted') {
+      const el = document.getElementById('pi-hint');
+      if (!el) return;
+      el.textContent = message || '';
+      el.dataset.tone = tone;
     }
 
-    function saveChatState() {
-      try {
-        sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatMessages));
-        sessionStorage.setItem(CHAT_MODEL_STORAGE_KEY, chatSelectedModel || 'best');
-      } catch {
-        // Ignore storage failures and keep chat in-memory.
-      }
+    function piAtBottom(transcript) {
+      return transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight < 140;
     }
 
-    function updateChatModelOptions(models = []) {
-      const select = document.getElementById('chat-model-select');
-      if (!select) return;
+    function piScrollToBottom() {
+      const transcript = document.getElementById('pi-transcript');
+      if (transcript) transcript.scrollTop = transcript.scrollHeight;
+    }
 
-      const previousSelection = chatSelectedModel || select.value || 'best';
-      const options = [
-        { value: 'best', label: 'Best' },
-        ...models
-          .filter(m => m && m.modelId)
-          .sort((a, b) => (a.label || a.modelId).localeCompare(b.label || b.modelId))
-          .map(m => ({
-            value: m.modelId,
-            label: `${m.label || m.modelId} · ${providerInstanceName(m)}`
-          }))
-      ];
+    function piScheduleRender() {
+      if (piRenderPending) return;
+      piRenderPending = true;
+      requestAnimationFrame(() => {
+        piRenderPending = false;
+        piSync();
+      });
+    }
 
-      const deduped = [];
-      const seen = new Set();
-      for (const opt of options) {
-        if (seen.has(opt.value)) continue;
-        seen.add(opt.value);
-        deduped.push(opt);
-      }
-
-      select.innerHTML = deduped
-        .map(opt => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`)
+    // The text of a message's content blocks, for the authoritative `message_end` value that
+    // replaces whatever the deltas had accumulated.
+    function piTextFromBlocks(content) {
+      if (typeof content === 'string') return content;
+      if (!Array.isArray(content)) return '';
+      return content
+        .map(part => (typeof part === 'string' ? part : part && part.type === 'text' ? part.text : ''))
+        .filter(Boolean)
         .join('');
-
-      const hasPrevious = deduped.some(opt => opt.value === previousSelection);
-      chatSelectedModel = hasPrevious ? previousSelection : 'best';
-      select.value = chatSelectedModel;
-      saveChatState();
     }
 
-    function onChatModelChange() {
-      const select = document.getElementById('chat-model-select');
-      chatSelectedModel = (select && select.value) ? select.value : 'best';
-      saveChatState();
-      setChatStatus(`Using model: ${chatSelectedModel}`, 'muted');
-    }
-
-    function setChatStatus(message, tone = 'muted') {
-      const statusEl = document.getElementById('chat-status');
-      if (!statusEl) return;
-      statusEl.className = `chat-status${tone === 'error' ? ' error' : tone === 'success' ? ' success' : ''}`;
-      statusEl.textContent = message || '';
-    }
-
-    function scrollChatToBottom() {
-      const transcript = document.getElementById('chat-transcript');
-      if (!transcript) return;
-      transcript.scrollTop = transcript.scrollHeight;
-    }
-
-    function renderChatTranscript() {
-      const transcript = document.getElementById('chat-transcript');
-      if (!transcript) return;
-
-      if (!chatMessages.length) {
-        transcript.innerHTML = `
-          <div class="chat-empty">
-            Start a conversation. Press Enter to send and Shift+Enter for a newline.
-          </div>
-        `;
-        return;
-      }
-
-      transcript.innerHTML = chatMessages.map(msg => {
-        const role = msg && msg.role ? String(msg.role) : 'assistant';
-        const roleClass = role === 'user' ? 'user' : role === 'system' ? 'system' : 'assistant';
-        const content = escapeHtml(formatMessageContent(msg && msg.content != null ? msg.content : ''));
-        const ts = msg && msg.ts ? new Date(msg.ts) : null;
-        const tsLabel = ts && !Number.isNaN(ts.getTime())
-          ? ts.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          : '';
-        const modelLabel = msg && typeof msg.model === 'string' && msg.model.trim() ? msg.model.trim() : '';
-        const headerBits = [role];
-        if (tsLabel) headerBits.push(tsLabel);
-        if (role === 'assistant' && modelLabel) headerBits.push(modelLabel);
-
-        return `
-          <div class="chat-msg ${roleClass}">
-            <div class="chat-msg-role">${headerBits.map(part => escapeHtml(part)).join(' • ')}</div>
-            <div class="chat-msg-content">${content}</div>
-          </div>
-        `;
-      }).join('');
-
-      scrollChatToBottom();
-    }
-
-    function setChatInFlight(inFlight) {
-      chatInFlight = !!inFlight;
-
-      const sendBtn = document.getElementById('chat-send-btn');
-      const clearBtn = document.getElementById('chat-clear-btn');
-      const input = document.getElementById('chat-input');
-      const modelSelect = document.getElementById('chat-model-select');
-      const typing = document.getElementById('chat-typing-indicator');
-
-      if (sendBtn) {
-        sendBtn.disabled = chatInFlight;
-        sendBtn.textContent = chatInFlight ? 'Sending...' : 'Send';
-      }
-      if (clearBtn) clearBtn.disabled = chatInFlight;
-      if (input) input.disabled = chatInFlight;
-      if (modelSelect) modelSelect.disabled = chatInFlight;
-      if (typing) typing.style.display = chatInFlight ? 'flex' : 'none';
-    }
-
-    function handleChatInputKeydown(event) {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendChatMessage();
-      }
-    }
-
-    function clearChat() {
-      if (chatInFlight) return;
-      chatMessages = [];
-      saveChatState();
-      setChatStatus('Chat cleared. Starting fresh.', 'success');
-      renderChatTranscript();
-      const input = document.getElementById('chat-input');
-      if (input) input.focus();
-    }
-
-    function buildChatRequestMessages() {
-      return chatMessages
-        .filter(m => m && typeof m.role === 'string' && m.content != null)
-        .map(m => ({
-          role: String(m.role),
-          content: typeof m.content === 'string' ? m.content : formatMessageContent(m.content)
-        }));
-    }
-
-    function getAssistantTextFromResponse(data) {
-      const choice = data && Array.isArray(data.choices) ? data.choices[0] : null;
-      const message = choice && choice.message ? choice.message : null;
-      if (!message) return '';
-
-      if (typeof message.content === 'string' && message.content.trim() !== '') {
-        return message.content;
-      }
-
-      if (Array.isArray(message.content)) {
-        const joined = message.content.map(part => {
-          if (typeof part === 'string') return part;
-          if (part && part.type === 'text' && typeof part.text === 'string') return part.text;
-          return '';
-        }).filter(Boolean).join('\n');
-        if (joined.trim() !== '') return joined;
-      }
-
-      if (message.tool_calls) {
-        return JSON.stringify(message.tool_calls, null, 2);
-      }
-      if (message.function_call) {
-        return JSON.stringify(message.function_call, null, 2);
-      }
-
-      return '';
-    }
-
-    async function sendChatMessage() {
-      if (chatInFlight) return;
-      const input = document.getElementById('chat-input');
-      if (!input) return;
-
-      const content = input.value.replace(/\r\n/g, '\n').trim();
-      if (!content) {
-        setChatStatus('Type a message before sending.', 'error');
-        return;
-      }
-
-      const userMessage = { role: 'user', content, ts: new Date().toISOString() };
-      chatMessages.push(userMessage);
-      saveChatState();
-      renderChatTranscript();
-      input.value = '';
-      setChatStatus('');
-      setChatInFlight(true);
-
+    function piResultText(result) {
+      if (!result) return '';
+      if (typeof result === 'string') return result;
+      const text = piTextFromBlocks(result.content);
+      if (text) return text;
       try {
-        const requestBody = {
-          model: chatSelectedModel || 'best',
-          messages: buildChatRequestMessages()
-        };
+        return JSON.stringify(result.details ?? result, null, 2);
+      } catch {
+        return '';
+      }
+    }
 
-        const res = await fetch('/v1/chat/completions', {
+    // An upstream failure arrives as a message with an error and no text. Collapsed onto one
+    // line: provider errors are JSON blobs, and a wall of them buries the sentence that matters.
+    function piFailureText(message) {
+      const raw = message.errorMessage || (message.stopReason === 'error' ? 'The model call failed.' : '');
+      if (!raw) return '';
+      return String(raw).replace(/\s+/g, ' ').trim().slice(0, 800);
+    }
+
+    function piLastAssistantItem() {
+      for (let i = piItems.length - 1; i >= 0; i--) {
+        if (piItems[i].kind === 'assistant') return piItems[i];
+      }
+      return null;
+    }
+
+    function piCurrentAssistant() {
+      const last = piItems.length ? piItems[piItems.length - 1] : null;
+      if (last && last.kind === 'assistant') return last;
+      const item = { kind: 'assistant', text: '', thinking: false };
+      piItems.push(item);
+      return item;
+    }
+
+    function piToolItem(toolCallId) {
+      for (let i = piItems.length - 1; i >= 0; i--) {
+        if (piItems[i].kind === 'tool' && piItems[i].id === toolCallId) return piItems[i];
+      }
+      return null;
+    }
+
+    // One record from the agent, folded into the transcript. Every visible change comes
+    // through here; the render below only reflects what this function has accumulated.
+    function applyPiRecord(record) {
+      if (!record || typeof record !== 'object') return;
+      switch (record.type) {
+        case 'agent_start':
+          piRunning = true;
+          break;
+        case 'agent_settled':
+          piRunning = false;
+          break;
+        case 'message_start': {
+          const message = record.message || {};
+          if (message.role === 'user') {
+            piItems.push({ kind: 'user', text: piTextFromBlocks(message.content) });
+          } else if (message.role === 'assistant') {
+            piItems.push({ kind: 'assistant', text: '', thinking: false });
+          }
+          break;
+        }
+        case 'message_update': {
+          const update = record.assistantMessageEvent || {};
+          if (update.type === 'text_delta' && typeof update.delta === 'string') {
+            const item = piCurrentAssistant();
+            item.text += update.delta;
+            item.thinking = false;
+            piDirty.add(item);
+          } else if (update.type === 'thinking_delta') {
+            const item = piCurrentAssistant();
+            item.thinking = true;
+            piDirty.add(item);
+          }
+          break;
+        }
+        case 'message_end': {
+          const message = record.message || {};
+          if (message.role !== 'assistant') break;
+          const authoritative = piTextFromBlocks(message.content);
+          const item = piLastAssistantItem();
+          if (item) {
+            if (authoritative) {
+              item.text = authoritative;
+              item.thinking = false;
+              piDirty.add(item);
+            } else if (!item.text) {
+              // A message that produced no text — an upstream refusal, say — leaves no bubble
+              // at all: the error notice below is the whole story.
+              piItems.splice(piItems.indexOf(item), 1);
+              piRebuildPending = true;
+            }
+          }
+          const failure = piFailureText(message);
+          if (failure) piItems.push({ kind: 'notice', tone: 'error', text: failure });
+          break;
+        }
+        case 'tool_execution_start':
+          piItems.push({
+            kind: 'tool',
+            id: record.toolCallId || '',
+            name: record.toolName || 'tool',
+            args: record.args || null,
+            status: 'running',
+            result: '',
+          });
+          break;
+        case 'tool_execution_end': {
+          const item = piToolItem(record.toolCallId);
+          if (item) {
+            item.status = record.isError === true ? 'error' : 'ok';
+            item.result = piResultText(record.result);
+            item.durationMs = Number(record.durationMs) || null;
+            piDirty.add(item);
+          }
+          break;
+        }
+        case 'auto_retry_start':
+          piItems.push({
+            kind: 'notice',
+            tone: 'info',
+            text: `Retrying (${record.attempt}/${record.maxAttempts}) after: ${piFailureText({ errorMessage: record.errorMessage })}`,
+          });
+          break;
+        case 'auto_retry_end':
+          if (record.success === false) {
+            piItems.push({ kind: 'notice', tone: 'error', text: piFailureText({ errorMessage: record.finalError }) || 'Retries exhausted.' });
+          }
+          break;
+        case 'extension_error':
+          piItems.push({ kind: 'notice', tone: 'error', text: `Extension error: ${record.error}` });
+          break;
+        case 'compaction_start':
+          piItems.push({ kind: 'notice', tone: 'info', text: `Compacting context (${record.reason})…` });
+          break;
+        case 'compaction_end':
+          if (record.errorMessage) {
+            piItems.push({ kind: 'notice', tone: 'error', text: `Compaction failed: ${piFailureText({ errorMessage: record.errorMessage })}` });
+          }
+          break;
+        default:
+          break;
+      }
+    }
+
+    function piToolSummary(item) {
+      if (!item.args || typeof item.args !== 'object') return '';
+      if (item.name === 'bash' && typeof item.args.command === 'string') return item.args.command;
+      const first = Object.values(item.args).find(value => typeof value === 'string');
+      return typeof first === 'string' ? first : '';
+    }
+
+    function piItemMarkup(item) {
+      if (item.kind === 'user') {
+        return `<div class="pi-item pi-user"><div class="pi-role">You</div><div class="pi-text">${escapeHtml(item.text)}</div></div>`;
+      }
+      if (item.kind === 'assistant') {
+        const dim = !item.text;
+        const body = dim ? (item.thinking ? 'thinking…' : '…') : escapeHtml(item.text);
+        return `<div class="pi-item pi-assistant"><div class="pi-role">Pi</div><div class="pi-text${dim ? ' pi-dim' : ''}">${body}</div></div>`;
+      }
+      if (item.kind === 'tool') {
+        const label = item.status === 'running' ? 'running…' : item.status === 'error' ? 'failed' : 'done';
+        const took = item.durationMs != null ? ` · ${(item.durationMs / 1000).toFixed(2)}s` : '';
+        const output = item.result
+          ? `<details class="pi-tool-details"${item.status === 'error' ? ' open' : ''}><summary>output</summary><pre class="pi-tool-out">${escapeHtml(item.result)}</pre></details>`
+          : '';
+        return `<div class="pi-item pi-tool ${item.status}">
+            <div class="pi-tool-head"><span class="pi-tool-name">${escapeHtml(item.name)}</span><span class="pi-tool-cmd">${escapeHtml(piToolSummary(item))}</span><span class="pi-tool-state">${label}${took}</span></div>
+            ${output}
+          </div>`;
+      }
+      return `<div class="pi-item pi-notice ${item.tone || 'info'}">${escapeHtml(item.text)}</div>`;
+    }
+
+    // A streamed turn is one growing text node, not a rebuild: re-parsing the transcript on
+    // every delta would discard open tool output and fight the scroll position.
+    function piPatchItem(item) {
+      const holder = item.holder;
+      if (!holder) return;
+      if (item.kind === 'assistant') {
+        const textEl = holder.firstElementChild && holder.firstElementChild.querySelector('.pi-text');
+        if (!textEl) {
+          holder.innerHTML = piItemMarkup(item);
+          return;
+        }
+        const body = item.text || (item.thinking ? 'thinking…' : '…');
+        if (textEl.textContent !== body) textEl.textContent = body;
+        textEl.classList.toggle('pi-dim', !item.text);
+        return;
+      }
+      holder.innerHTML = piItemMarkup(item);
+    }
+
+    // Renders whatever `applyPiRecord` has accumulated: mounts the items added since the last
+    // pass and patches the ones that changed in place.
+    function piSync({ reset = false } = {}) {
+      const transcript = document.getElementById('pi-transcript');
+      if (!transcript) return;
+      if (piRebuildPending) {
+        piRebuildPending = false;
+        reset = true;
+      }
+      if (reset) {
+        transcript.innerHTML = '';
+        piMounted = 0;
+      }
+      const stick = piAtBottom(transcript);
+      if (!piItems.length) {
+        transcript.innerHTML = PI_EMPTY_HTML;
+        piMounted = 0;
+        piDirty.clear();
+        return;
+      }
+      if (transcript.querySelector('.pi-empty')) transcript.innerHTML = '';
+      for (let i = piMounted; i < piItems.length; i++) {
+        const item = piItems[i];
+        const holder = document.createElement('div');
+        holder.className = 'pi-item-holder';
+        holder.innerHTML = piItemMarkup(item);
+        item.holder = holder;
+        transcript.appendChild(holder);
+      }
+      piMounted = piItems.length;
+      for (const item of piDirty) piPatchItem(item);
+      piDirty.clear();
+      if (stick || reset) transcript.scrollTop = transcript.scrollHeight;
+    }
+
+    function renderPiStatus(data) {
+      const el = document.getElementById('pi-status');
+      if (!el) return;
+      if (!data || data.available === false) {
+        el.textContent = `Pi unavailable — ${data?.error || 'not installed'}`;
+        el.dataset.tone = 'error';
+        return;
+      }
+      const model = data.model
+        ? `${data.model.name || data.model.id} · ${data.model.provider || 'provider'}`
+        : 'no model selected';
+      // `piRunning` is the live answer from the event stream; the status payload is only as
+      // fresh as the last time it was asked. Either one saying "running" is right.
+      const running = piRunning || data.isStreaming;
+      el.textContent = `pi · ${model} · ${data.cwd}${running ? ' · running' : ''}`;
+      el.dataset.tone = 'muted';
+    }
+
+    async function refreshPiStatus() {
+      try {
+        const res = await fetch('/api/pi/status');
+        const data = await res.json();
+        piStatus = data;
+        if (typeof data.isStreaming === 'boolean') piRunning = data.isStreaming;
+        renderPiStatus(data);
+        updatePiComposer();
+      } catch (err) {
+        piSetHint(`Could not reach the Pi bridge: ${err?.message || err}`, 'error');
+      }
+    }
+
+    function updatePiComposer() {
+      const send = document.getElementById('pi-send-btn');
+      const stop = document.getElementById('pi-stop-btn');
+      if (piStatus) renderPiStatus(piStatus);
+
+      const unavailable = Boolean(piStatus) && piStatus.available === false;
+      if (send) {
+        send.disabled = piSending || unavailable;
+        send.textContent = piRunning ? 'Steer' : 'Send';
+        send.title = unavailable ? 'Pi is unavailable — see the status line above' : '';
+      }
+      if (stop) stop.disabled = !piRunning;
+    }
+
+    function connectPiEvents() {
+      if (!window.EventSource) {
+        piSetHint('This browser cannot stream the agent transcript.', 'error');
+        return;
+      }
+      if (piSource) piSource.close();
+      piSource = new EventSource('/api/pi/events');
+      piSource.onmessage = event => {
+        let payload;
+        try {
+          payload = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (payload.type === 'hello') {
+          // The server's log is the transcript: a page opened mid-run replays it rather than
+          // starting from whatever this tab happened to witness.
+          piItems = [];
+          piMounted = 0;
+          piDirty.clear();
+          piRebuildPending = false;
+          (payload.log || []).forEach(applyPiRecord);
+          if (payload.status) {
+            piStatus = payload.status;
+            if (typeof payload.status.isStreaming === 'boolean') piRunning = payload.status.isStreaming;
+            renderPiStatus(payload.status);
+          }
+          updatePiComposer();
+          piSync({ reset: true });
+          return;
+        }
+        if (payload.type === 'event') {
+          applyPiRecord(payload.record);
+          updatePiComposer();
+          piScheduleRender();
+          return;
+        }
+        if (payload.type === 'exit') {
+          piRunning = false;
+          piItems.push({ kind: 'notice', tone: 'error', text: payload.message || 'Pi exited.' });
+          updatePiComposer();
+          piScheduleRender();
+          refreshPiStatus();
+          return;
+        }
+        if (payload.type === 'notice' && payload.text) {
+          piItems.push({ kind: 'notice', tone: 'info', text: String(payload.text) });
+          piScheduleRender();
+        }
+      };
+      piSource.onopen = () => piSetHint('');
+      piSource.onerror = () => piSetHint('Lost the event stream — reconnecting…', 'error');
+    }
+
+    // Everything the tab needs, on first open: the server does not start the agent until then.
+    function openPiTab() {
+      piSync({ reset: true });
+      if (!piSource) connectPiEvents();
+      refreshPiStatus();
+      piScrollToBottom();
+    }
+
+    async function sendPiPrompt() {
+      if (piSending) return;
+      const input = document.getElementById('pi-input');
+      if (!input) return;
+      const text = input.value.replace(/\r\n/g, '\n').trim();
+      if (!text) {
+        piSetHint('Type a message before sending.', 'error');
+        return;
+      }
+      piSending = true;
+      updatePiComposer();
+      piSetHint(piRunning ? 'Steering Pi…' : 'Sending to Pi…');
+      try {
+        const res = await fetch('/api/pi/prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody)
+          body: JSON.stringify({ message: text }),
         });
-
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          const errorMessage = data?.error?.message || data?.error || data?.message || `Chat request failed (${res.status}).`;
-          throw new Error(errorMessage);
-        }
-
-        const assistantText = getAssistantTextFromResponse(data);
-        if (!assistantText) {
-          throw new Error('The provider returned an empty assistant response.');
-        }
-
-        const responseModel = typeof data?.model === 'string' && data.model.trim() ? data.model.trim() : null;
-        chatMessages.push({ role: 'assistant', content: assistantText, ts: new Date().toISOString(), model: responseModel });
-        saveChatState();
-        renderChatTranscript();
-        setChatStatus('Response received.', 'success');
+        if (!res.ok) throw new Error(data?.error || `Pi rejected the prompt (${res.status}).`);
+        input.value = '';
+        if (data.disposition === 'queued') piSetHint('Queued — Pi picks it up after this turn.');
+        else if (data.disposition === 'handled') piSetHint('Pi handled that command.');
+        else piSetHint('');
       } catch (err) {
-        setChatStatus(err?.message || 'Failed to send message.', 'error');
+        piSetHint(err?.message || 'Failed to reach Pi.', 'error');
       } finally {
-        setChatInFlight(false);
+        piSending = false;
+        updatePiComposer();
         if (input) input.focus();
       }
     }
 
-    function initializeChat() {
-      loadChatState();
-      updateChatModelOptions(allModels);
-      renderChatTranscript();
-      setChatInFlight(false);
-      setChatStatus('');
+    async function stopPiRun() {
+      piSetHint('Stopping…');
+      try {
+        const res = await fetch('/api/pi/abort', { method: 'POST' });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data?.error || `Could not stop Pi (${res.status}).`);
+        }
+        piRunning = false;
+        updatePiComposer();
+        piSetHint('Stopped.');
+      } catch (err) {
+        piSetHint(err?.message || 'Could not stop Pi.', 'error');
+      }
+    }
+
+    async function resetPiSession() {
+      try {
+        const res = await fetch('/api/pi/reset', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || `Could not start a new session (${res.status}).`);
+        if (data.cancelled) {
+          piSetHint('Pi declined to start a new session.', 'error');
+          return;
+        }
+        piItems = [];
+        piMounted = 0;
+        piDirty.clear();
+        piRebuildPending = false;
+        piSync({ reset: true });
+        piSetHint('New session.', 'success');
+        refreshPiStatus();
+      } catch (err) {
+        piSetHint(err?.message || 'Could not start a new session.', 'error');
+      }
+    }
+
+    function handlePiInputKeydown(event) {
+      if (event.key !== 'Enter' || event.shiftKey) return;
+      if (event.isComposing) return;
+      event.preventDefault();
+      sendPiPrompt();
+    }
+
+    function initializePi() {
+      const input = document.getElementById('pi-input');
+      if (input) input.addEventListener('keydown', handlePiInputKeydown);
+      piSync({ reset: true });
+      updatePiComposer();
     }
 
     function updateLogsPauseButton() {
@@ -9349,7 +9564,7 @@
       }
     }
 
-    initializeChat();
+    initializePi();
     updateLogsPauseButton();
     initScatterControls();
 
