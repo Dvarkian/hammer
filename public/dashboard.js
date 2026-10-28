@@ -4453,7 +4453,7 @@
     // table with an empty Status cell: llm7 refuses every Seedance id with "Model
     // 'seedance-2.0-fast' does not support chat endpoints." (live 2026-09-22), which the router
     // read as incompatible and this file re-read as a generic Down.
-    const INCOMPATIBLE_MODEL_RE = /content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within|is a realtime model and cannot be used on the text endpoint|is a audio model and cannot be used on the text endpoint|Transcribe|required properties at '\/' are 'model,\s*state,\s*questions'?/i;
+    const INCOMPATIBLE_MODEL_RE = /does not exist or you (?:do not|don't) have access to it|content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within|is a realtime model and cannot be used on the text endpoint|is a audio model and cannot be used on the text endpoint|Transcribe|required properties at '\/' are 'model,\s*state,\s*questions'?/i;
     // Kept in step with MICRO_CONTEXT_MAX_TOKENS and isUnusablySmallContextError in
     // lib/utils.js. Only a refusal whose *subject* is the model's own window counts: Cloudflare
     // Workers AI answers "… exceeded this model context window limit (3500)". A comparison
@@ -4547,7 +4547,11 @@
       const code = Number(lr.status || 0);
       const errText = String(lr.error || '');
       if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
-      if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
+      // The access phrasing wins over the generic 'does not exist' tombstone: the provider
+      // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)
+        && !isIncompatibleModelText(errText);
+      if (code === 410 || deadText) return 'dead';
       if (isIncompatibleModelText(errText)) return 'incompatible';
       return null;
     }
@@ -4644,7 +4648,11 @@
           if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
           // 'model does not exist' is kept in step with isDeadModelError in lib/utils.js so a
           // row whose stored evidence predates that rule still reads Dead rather than Down.
-          if (code === 410 || /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)) return 'dead';
+          // The access phrasing wins over the generic 'does not exist' tombstone: the provider
+      // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)
+        && !isIncompatibleModelText(errText);
+      if (code === 410 || deadText) return 'dead';
           // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
           // before a clause existed still classifies the way the server classifies the same text.
           if (isIncompatibleModelText(errText)) return 'incompatible';

@@ -188,6 +188,43 @@ test('a listed model the upstream no longer serves is dead', () => {
   assert.equal(isDeadModelError('Model does not exist. Please check it carefully.', 400), true)
 })
 
+test('a listed model the provider will not grant access to is incompatible, not dead', () => {
+  // Groq answers a Test on its Orpheus TTS rows with 404: "The model `canopy labs orpheus v1
+  // english` does not exist or you do not have access to it." (live 2026-10-28). The id is still
+  // in /v1/models and the refusal is about this org's access, so the generic 'does not exist'
+  // tombstone rule would bury a live row in the graveyard. Incompatible is the state that says
+  // "this model cannot be called from here" and stops the retries that can never succeed.
+  const accessError =
+    'The model `canopy labs orpheus v1 english` does not exist or you do not have access to it.'
+  assert.equal(isIncompatibleModelError(accessError, 404), true)
+  assert.equal(isDeadModelError(accessError, 404), false)
+  assert.equal(
+    permanentTestVerdict({
+      ok: false,
+      text: null,
+      status: 404,
+      error: accessError,
+      at: Date.now(),
+    }),
+    'incompatible',
+  )
+  const row = {
+    modelId: 'canopy labs orpheus v1 english',
+    providerKey: 'groq',
+    status: 'up',
+    lastResponse: { ok: false, text: null, status: 404, error: accessError, at: Date.now() },
+  }
+  assert.equal(resolveModelStatus(row), 'incompatible')
+
+  // The phrasing without a name in the middle: same statement, same verdict.
+  const bareError = 'Model does not exist or you do not have access to it.'
+  assert.equal(isIncompatibleModelError(bareError, 404), true)
+  assert.equal(isDeadModelError(bareError, 404), false)
+
+  // A plain tombstone still belongs in the graveyard.
+  assert.equal(isDeadModelError('Model does not exist. Please check it carefully.', 400), true)
+})
+
 test('410 Gone is dead whatever status spelling it arrives as', () => {
   assert.equal(isDeadModelError('', 410), true)
   assert.equal(isDeadModelError('', '410'), true)
