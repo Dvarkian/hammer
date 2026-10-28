@@ -26,10 +26,14 @@ test('LMArena boards use the official JSON dataset before scraping the large pag
     fetchImpl: async (url) => {
       calls.push(url)
       if (url === LMARENA_DATASET_URLS.coding) {
-        return jsonResponse({ rows: [{ row: { model_name: 'coding-model', rating: 1818, vote_count: 42 } }] })
+        return jsonResponse({
+          rows: [{ row: { model_name: 'coding-model', rating: 1818, vote_count: 42 } }],
+        })
       }
       if (url === LMARENA_DATASET_URLS.overall) {
-        return jsonResponse({ rows: [{ row: { model_name: 'overall-model', rating: 1505, vote_count: 84 } }] })
+        return jsonResponse({
+          rows: [{ row: { model_name: 'overall-model', rating: 1505, vote_count: 84 } }],
+        })
       }
       throw new Error(`unexpected URL: ${url}`)
     },
@@ -38,11 +42,17 @@ test('LMArena boards use the official JSON dataset before scraping the large pag
   assert.deepEqual(boards.coding, [{ displayName: 'coding-model', elo: 1818, votes: 42 }])
   assert.deepEqual(boards.overall, [{ displayName: 'overall-model', elo: 1505, votes: 84 }])
   assert.deepEqual(calls.sort(), [LMARENA_DATASET_URLS.coding, LMARENA_DATASET_URLS.overall].sort())
-  assert.equal(calls.some(url => Object.values(LMARENA_BOARD_URLS).includes(url)), false)
+  assert.equal(
+    calls.some((url) => Object.values(LMARENA_BOARD_URLS).includes(url)),
+    false,
+  )
 })
 
 test('the final quality fallback is an explicit 0.1 AA-scale score', () => {
-  const quality = resolveModelQuality({ index: new Map(), aaValues: [] }, 'srv_unknown:made-up-model')
+  const quality = resolveModelQuality(
+    { index: new Map(), aaValues: [] },
+    'srv_unknown:made-up-model',
+  )
   assert.equal(quality.source, 'default-fallback')
   assert.equal(quality.aa, MODEL_QUALITY_FLOOR_AA)
   assert.equal(quality.aa, 0.1)
@@ -77,12 +87,18 @@ test('an unrelated model receives the floor rather than a guessed family score',
 })
 
 test('LMArena still understands the legacy RSC page payload', () => {
-  const payload = JSON.stringify({ entries: [{
-    modelDisplayName: 'page-model',
-    rating: 1600,
-    votes: 10,
-  }] })
-  assert.deepEqual(extractLMArenaEntries(payload), [{ displayName: 'page-model', elo: 1600, votes: 10 }])
+  const payload = JSON.stringify({
+    entries: [
+      {
+        modelDisplayName: 'page-model',
+        rating: 1600,
+        votes: 10,
+      },
+    ],
+  })
+  assert.deepEqual(extractLMArenaEntries(payload), [
+    { displayName: 'page-model', elo: 1600, votes: 10 },
+  ])
 })
 
 // ── Cloudflare's `@cf/<vendor>/<model>` naming ────────────────────────────────────────
@@ -116,7 +132,12 @@ test('every curated score still resolves to itself', () => {
 })
 
 test('a non-namespace id is untouched by the new spelling', () => {
-  for (const id of ['qwen/qwq-32b', 'deepseek-ai/deepseek-r1-distill-qwen-32b', 'gpt-4o-mini', 'codestral-latest']) {
+  for (const id of [
+    'qwen/qwq-32b',
+    'deepseek-ai/deepseek-r1-distill-qwen-32b',
+    'gpt-4o-mini',
+    'codestral-latest',
+  ]) {
     const { base, unprefixed, unscoped } = canonicalizeModelId(id)
     assert.equal(unscoped, base, `${id} gained an unexpected third spelling`)
     assert.equal(unprefixed, base.split('/').pop())
@@ -156,14 +177,26 @@ test('lookup keys reach the bare weights behind a serving suffix', () => {
   assert.equal(keys[0], '@cf/meta/llama-3.1-8b-instruct-fp8')
 
   // Both halves of a two-token suffix come off, longest match first.
-  assert.ok(qualityLookupKeys('@cf/meta/llama-3.3-70b-instruct-fp8-fast').includes('llama-3.3-70b-instruct'))
+  assert.ok(
+    qualityLookupKeys('@cf/meta/llama-3.3-70b-instruct-fp8-fast').includes(
+      'llama-3.3-70b-instruct',
+    ),
+  )
 })
 
 test('a Cloudflare row resolves through the real resolver instead of the floor', () => {
   // The user-visible symptom: a model that answers gets a real intelligence number rather
   // than the AA floor that ranked it below everything else.
-  const index = new Map([['llama-3.1-8b-instruct', { score: 0.4, source: 'artificial-analysis', aa: 40, isEstimated: false }]])
-  const quality = resolveModelQuality({ index, aaValues: [40] }, '@cf/meta/llama-3.1-8b-instruct-fp8')
+  const index = new Map([
+    [
+      'llama-3.1-8b-instruct',
+      { score: 0.4, source: 'artificial-analysis', aa: 40, isEstimated: false },
+    ],
+  ])
+  const quality = resolveModelQuality(
+    { index, aaValues: [40] },
+    '@cf/meta/llama-3.1-8b-instruct-fp8',
+  )
   assert.equal(quality.source, 'artificial-analysis')
   assert.equal(quality.aa, 40)
 })

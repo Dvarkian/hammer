@@ -251,7 +251,11 @@ export function isLatestModelName(modelId) {
  *   claude-3-7-sonnet-latest -> claude sonnet
  */
 export function getLatestModelFamilyKey(modelId) {
-  let value = stripRoutingNamespace(String(modelId || '').trim().toLowerCase())
+  let value = stripRoutingNamespace(
+    String(modelId || '')
+      .trim()
+      .toLowerCase(),
+  )
   if (!value) return ''
   value = value.replace(/^models\//, '')
   value = value.replace(/^[^/]+\//, '')
@@ -259,14 +263,17 @@ export function getLatestModelFamilyKey(modelId) {
   value = value.replace(/\b(?:latest|current|default)\b/g, ' ')
   value = value.replace(/\b\d+(?:\.\d+)+\b/g, ' ')
   value = value.replace(/\b\d+\b/g, ' ')
-  return value.replace(/[-_:\/.]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return value
+    .replace(/[-_:/.]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Returns numeric version components used to select the newest concrete family member. */
 export function getModelVersionTuple(modelId) {
   const value = stripRoutingNamespace(String(modelId || '').toLowerCase())
   const matches = value.match(/\d+(?:\.\d+)+|\d+/g) || []
-  return matches.flatMap(part => part.split('.').map(Number)).filter(Number.isFinite)
+  return matches.flatMap((part) => part.split('.').map(Number)).filter(Number.isFinite)
 }
 
 /**
@@ -305,7 +312,9 @@ export function getModelIdentityKey(modelId) {
  * such as "lite", "omni", "instruct" or "reasoning".
  */
 export function isModelSizeToken(token) {
-  return /^(?:a\d+b|\d+(?:\.\d+)?x\d+[bemt]|\d+[bemt]|q\d+(?:[_-][a-z0-9]+)*|fp\d+|int\d+|bf16|awq|gptq|gguf)$/i.test(String(token || ''))
+  return /^(?:a\d+b|\d+(?:\.\d+)?x\d+[bemt]|\d+[bemt]|q\d+(?:[_-][a-z0-9]+)*|fp\d+|int\d+|bf16|awq|gptq|gguf)$/i.test(
+    String(token || ''),
+  )
 }
 
 /**
@@ -332,7 +341,10 @@ export function isSameModelIdentity(a, b) {
   // must not be read as a version — so it is ignorable only after a named token.
   if (/^\d+$/.test(shortTokens[shortTokens.length - 1])) return false
   const extra = longTokens.slice(shortTokens.length)
-  return extra.every((token, index) => isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)))
+  return extra.every(
+    (token, index) =>
+      isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)),
+  )
 }
 
 export function resolveAliasedModelId(modelId) {
@@ -360,17 +372,17 @@ export function cleanModelDisplayLabel(label) {
 export function canonicalizeModelId(modelId) {
   const resolved = resolveAliasedModelId(modelId)
   // 1. Remove known runtime suffixes like :free, :optimized:free, or :cloud
-  const base = resolved.replace(/(?::(?:free|optimized|cloud))+$/i, '');
+  const base = resolved.replace(/(?::(?:free|optimized|cloud))+$/i, '')
   // 2. Remove provider prefix like google/
-  const unprefixed = base.includes('/') ? base.split('/').pop() : base;
+  const unprefixed = base.includes('/') ? base.split('/').pop() : base
   // 3. `unscoped` is `base` without a leading `@namespace/`, which is how Cloudflare
   //    spells its catalog (`@cf/meta/llama-3.1-8b-instruct-fp8` for the model every other
   //    catalog publishes as `meta/llama-3.1-8b-instruct`). Nothing else in the registry
   //    uses an `@` namespace or more than one path segment, so this can only ever add a
   //    spelling of a model that is already here — `base` and `unprefixed` keep their exact
   //    previous values, which is what routing, grouping and alias collection read.
-  const unscoped = base.replace(/^@[^/]+\//, '');
-  return { base, unprefixed, unscoped };
+  const unscoped = base.replace(/^@[^/]+\//, '')
+  return { base, unprefixed, unscoped }
 }
 
 export function getPreferredModelLabel(modelId, fallback = null) {
@@ -387,10 +399,10 @@ export function getPreferredModelContext(modelId, fallback = null) {
 }
 
 export function getScore(modelId) {
-  const { base, unprefixed, unscoped } = canonicalizeModelId(modelId);
+  const { base, unprefixed, unscoped } = canonicalizeModelId(modelId)
   // Try exact match first (e.g. google/gemma-3-4b-it), then the namespace-stripped spelling
   // (`@cf/qwen/qwq-32b` -> `qwen/qwq-32b`), then the bare leaf (e.g. gemma-3-4b-it).
-  return scores[base] ?? scores[unscoped] ?? scores[unprefixed] ?? null;
+  return scores[base] ?? scores[unscoped] ?? scores[unprefixed] ?? null
 }
 
 export const sources = {
@@ -410,169 +422,165 @@ export const sources = {
   // openrouter, kiro). See lib/providers/resolutions.js for
   // which imports are active and why the rest are not.
   ...lazyProviderSourceEntries(),
-  "nvidia": {
-    "name": "NIM",
-    "url": "https://integrate.api.nvidia.com/v1/chat/completions",
-    "contextUrl": "https://build.nvidia.com/models",
-    "discoverable": true,
-    "models": [
-      ["z-ai/glm-5.2", "GLM 5.2", "200k"],
-      ["moonshotai/kimi-k2.7-code", "Kimi K2.7 Code", "262k"],
-      ["minimaxai/minimax-m3", "MiniMax M3", "1M"],
-      ["nvidia/nemotron-3-ultra-550b-a55b", "Nemotron 3 Ultra", "1M"],
-      ["stepfun-ai/step-3.7-flash", "Step 3.7 Flash", "262k"],
-      ["deepseek-ai/deepseek-v3.2", "DeepSeek V3.2", "128k"],
-      ["moonshotai/kimi-k2.5", "Kimi K2.5", "128k"],
-      ["z-ai/glm5", "GLM 5", "128k"],
-      ["z-ai/glm4.7", "GLM 4.7", "200k"],
-      ["moonshotai/kimi-k2-thinking", "Kimi K2 Thinking", "256k"],
-      ["minimaxai/minimax-m2.1", "MiniMax M2.1", "200k"],
-      ["stepfun-ai/step-3.5-flash", "Step 3.5 Flash", "256k"],
-      ["qwen/qwen3-coder-480b-a35b-instruct", "Qwen3 Coder 480B", "256k"],
-      ["qwen/qwen3-235b-a22b", "Qwen3 235B", "128k"],
-      ["mistralai/devstral-2-123b-instruct-2512", "Devstral 2 123B", "256k"],
-      ["deepseek-ai/deepseek-v3.1-terminus", "DeepSeek V3.1 Terminus", "128k"],
-      ["moonshotai/kimi-k2-instruct", "Kimi K2 Instruct", "128k"],
-      ["minimaxai/minimax-m2", "MiniMax M2", "128k"],
-      ["qwen/qwen3-next-80b-a3b-thinking", "Qwen3 80B Thinking", "128k"],
-      ["qwen/qwen3-next-80b-a3b-instruct", "Qwen3 80B Instruct", "128k"],
-      ["qwen/qwen3.5-397b-a17b", "Qwen3.5 400B", "128k"],
-      ["openai/gpt-oss-120b", "GPT OSS 120B", "128k"],
-      ["meta/llama-4-maverick-17b-128e-instruct", "Llama 4 Maverick", "1M"],
-      ["deepseek-ai/deepseek-v3.1", "DeepSeek V3.1", "128k"],
-      ["nvidia/llama-3.1-nemotron-ultra-253b-v1", "Nemotron Ultra 253B", "128k"],
-      ["mistralai/mistral-large-3-675b-instruct-2512", "Mistral Large 675B", "256k"],
-      ["qwen/qwq-32b", "QwQ 32B", "131k"],
-      ["igenius/colosseum_355b_instruct_16k", "Colosseum 355B", "16k"],
-      ["mistralai/mistral-medium-3-instruct", "Mistral Medium 3", "128k"],
-      ["mistralai/magistral-small-2506", "Magistral Small", "32k"],
-      ["nvidia/llama-3.3-nemotron-super-49b-v1.5", "Nemotron Super 49B", "128k"],
-      ["meta/llama-4-scout-17b-16e-instruct", "Llama 4 Scout", "10M"],
-      ["nvidia/nemotron-3-nano-30b-a3b", "Nemotron Nano 30B", "128k"],
-      ["deepseek-ai/deepseek-r1-distill-qwen-32b", "R1 Distill 32B", "128k"],
-      ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
-      ["qwen/qwen2.5-coder-32b-instruct", "Qwen2.5 Coder 32B", "32k"],
-      ["meta/llama-3.1-405b-instruct", "Llama 3.1 405B", "128k"],
-      ["meta/llama-3.3-70b-instruct", "Llama 3.3 70B", "128k"],
-      ["deepseek-ai/deepseek-r1-distill-qwen-14b", "R1 Distill 14B", "64k"],
-      ["bytedance/seed-oss-36b-instruct", "Seed OSS 36B", "32k"],
-      ["stockmark/stockmark-2-100b-instruct", "Stockmark 100B", "32k"],
-      ["mistralai/mixtral-8x22b-instruct-v0.1", "Mixtral 8x22B", "64k"],
-      ["mistralai/ministral-14b-instruct-2512", "Ministral 14B", "32k"],
-      ["ibm/granite-34b-code-instruct", "Granite 34B Code", "32k"],
-      ["deepseek-ai/deepseek-r1-distill-llama-8b", "R1 Distill 8B", "32k"],
-      ["deepseek-ai/deepseek-r1-distill-qwen-7b", "R1 Distill 7B", "32k"],
-      ["google/gemma-2-9b-it", "Gemma 2 9B", "8k"],
-      ["microsoft/phi-3.5-mini-instruct", "Phi 3.5 Mini", "128k"],
-      ["microsoft/phi-4-mini-instruct", "Phi 4 Mini", "128k"]
-    ]
+  nvidia: {
+    name: 'NIM',
+    url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+    contextUrl: 'https://build.nvidia.com/models',
+    discoverable: true,
+    models: [
+      ['z-ai/glm-5.2', 'GLM 5.2', '200k'],
+      ['moonshotai/kimi-k2.7-code', 'Kimi K2.7 Code', '262k'],
+      ['minimaxai/minimax-m3', 'MiniMax M3', '1M'],
+      ['nvidia/nemotron-3-ultra-550b-a55b', 'Nemotron 3 Ultra', '1M'],
+      ['stepfun-ai/step-3.7-flash', 'Step 3.7 Flash', '262k'],
+      ['deepseek-ai/deepseek-v3.2', 'DeepSeek V3.2', '128k'],
+      ['moonshotai/kimi-k2.5', 'Kimi K2.5', '128k'],
+      ['z-ai/glm5', 'GLM 5', '128k'],
+      ['z-ai/glm4.7', 'GLM 4.7', '200k'],
+      ['moonshotai/kimi-k2-thinking', 'Kimi K2 Thinking', '256k'],
+      ['minimaxai/minimax-m2.1', 'MiniMax M2.1', '200k'],
+      ['stepfun-ai/step-3.5-flash', 'Step 3.5 Flash', '256k'],
+      ['qwen/qwen3-coder-480b-a35b-instruct', 'Qwen3 Coder 480B', '256k'],
+      ['qwen/qwen3-235b-a22b', 'Qwen3 235B', '128k'],
+      ['mistralai/devstral-2-123b-instruct-2512', 'Devstral 2 123B', '256k'],
+      ['deepseek-ai/deepseek-v3.1-terminus', 'DeepSeek V3.1 Terminus', '128k'],
+      ['moonshotai/kimi-k2-instruct', 'Kimi K2 Instruct', '128k'],
+      ['minimaxai/minimax-m2', 'MiniMax M2', '128k'],
+      ['qwen/qwen3-next-80b-a3b-thinking', 'Qwen3 80B Thinking', '128k'],
+      ['qwen/qwen3-next-80b-a3b-instruct', 'Qwen3 80B Instruct', '128k'],
+      ['qwen/qwen3.5-397b-a17b', 'Qwen3.5 400B', '128k'],
+      ['openai/gpt-oss-120b', 'GPT OSS 120B', '128k'],
+      ['meta/llama-4-maverick-17b-128e-instruct', 'Llama 4 Maverick', '1M'],
+      ['deepseek-ai/deepseek-v3.1', 'DeepSeek V3.1', '128k'],
+      ['nvidia/llama-3.1-nemotron-ultra-253b-v1', 'Nemotron Ultra 253B', '128k'],
+      ['mistralai/mistral-large-3-675b-instruct-2512', 'Mistral Large 675B', '256k'],
+      ['qwen/qwq-32b', 'QwQ 32B', '131k'],
+      ['igenius/colosseum_355b_instruct_16k', 'Colosseum 355B', '16k'],
+      ['mistralai/mistral-medium-3-instruct', 'Mistral Medium 3', '128k'],
+      ['mistralai/magistral-small-2506', 'Magistral Small', '32k'],
+      ['nvidia/llama-3.3-nemotron-super-49b-v1.5', 'Nemotron Super 49B', '128k'],
+      ['meta/llama-4-scout-17b-16e-instruct', 'Llama 4 Scout', '10M'],
+      ['nvidia/nemotron-3-nano-30b-a3b', 'Nemotron Nano 30B', '128k'],
+      ['deepseek-ai/deepseek-r1-distill-qwen-32b', 'R1 Distill 32B', '128k'],
+      ['openai/gpt-oss-20b', 'GPT OSS 20B', '128k'],
+      ['qwen/qwen2.5-coder-32b-instruct', 'Qwen2.5 Coder 32B', '32k'],
+      ['meta/llama-3.1-405b-instruct', 'Llama 3.1 405B', '128k'],
+      ['meta/llama-3.3-70b-instruct', 'Llama 3.3 70B', '128k'],
+      ['deepseek-ai/deepseek-r1-distill-qwen-14b', 'R1 Distill 14B', '64k'],
+      ['bytedance/seed-oss-36b-instruct', 'Seed OSS 36B', '32k'],
+      ['stockmark/stockmark-2-100b-instruct', 'Stockmark 100B', '32k'],
+      ['mistralai/mixtral-8x22b-instruct-v0.1', 'Mixtral 8x22B', '64k'],
+      ['mistralai/ministral-14b-instruct-2512', 'Ministral 14B', '32k'],
+      ['ibm/granite-34b-code-instruct', 'Granite 34B Code', '32k'],
+      ['deepseek-ai/deepseek-r1-distill-llama-8b', 'R1 Distill 8B', '32k'],
+      ['deepseek-ai/deepseek-r1-distill-qwen-7b', 'R1 Distill 7B', '32k'],
+      ['google/gemma-2-9b-it', 'Gemma 2 9B', '8k'],
+      ['microsoft/phi-3.5-mini-instruct', 'Phi 3.5 Mini', '128k'],
+      ['microsoft/phi-4-mini-instruct', 'Phi 4 Mini', '128k'],
+    ],
   },
-  "groq": {
-    "name": "Groq",
-    "url": "https://api.groq.com/openai/v1/chat/completions",
-    "contextUrl": "https://console.groq.com/docs/models",
-    "discoverable": true,
-    "models": [
-      ["llama-3.3-70b-versatile", "Llama 3.3 70B", "128k"],
-      ["meta-llama/llama-4-scout-17b-16e-preview", "Llama 4 Scout", "128k"],
-      ["meta-llama/llama-4-maverick-17b-128e-preview", "Llama 4 Maverick", "128k"],
-      ["deepseek-r1-distill-llama-70b", "R1 Distill 70B", "128k"],
-      ["qwen-qwq-32b", "QwQ 32B", "131k"],
-      ["moonshotai/kimi-k2-instruct", "Kimi K2 Instruct", "131k"],
-      ["llama-3.1-8b-instant", "Llama 3.1 8B", "128k"],
-      ["openai/gpt-oss-120b", "GPT OSS 120B", "128k"],
-      ["openai/gpt-oss-20b", "GPT OSS 20B", "128k"],
-      ["qwen/qwen3-32b", "Qwen3 32B", "131k"]
-    ]
+  groq: {
+    name: 'Groq',
+    url: 'https://api.groq.com/openai/v1/chat/completions',
+    contextUrl: 'https://console.groq.com/docs/models',
+    discoverable: true,
+    models: [
+      ['llama-3.3-70b-versatile', 'Llama 3.3 70B', '128k'],
+      ['meta-llama/llama-4-scout-17b-16e-preview', 'Llama 4 Scout', '128k'],
+      ['meta-llama/llama-4-maverick-17b-128e-preview', 'Llama 4 Maverick', '128k'],
+      ['deepseek-r1-distill-llama-70b', 'R1 Distill 70B', '128k'],
+      ['qwen-qwq-32b', 'QwQ 32B', '131k'],
+      ['moonshotai/kimi-k2-instruct', 'Kimi K2 Instruct', '131k'],
+      ['llama-3.1-8b-instant', 'Llama 3.1 8B', '128k'],
+      ['openai/gpt-oss-120b', 'GPT OSS 120B', '128k'],
+      ['openai/gpt-oss-20b', 'GPT OSS 20B', '128k'],
+      ['qwen/qwen3-32b', 'Qwen3 32B', '131k'],
+    ],
   },
-  "empero": {
-    "name": "Empero Free",
-    "url": "https://free.empero.org/v1/chat/completions",
-    "contextUrl": "https://free.empero.org/",
-    "discoverable": true,
-    "models": [
-      ["glm-5.3-flash", "GLM 5.3 Flash", "128k"],
-      ["qwen3.8-flash", "Qwen3.8 Flash", "128k"]
-    ]
+  empero: {
+    name: 'Empero Free',
+    url: 'https://free.empero.org/v1/chat/completions',
+    contextUrl: 'https://free.empero.org/',
+    discoverable: true,
+    models: [
+      ['glm-5.3-flash', 'GLM 5.3 Flash', '128k'],
+      ['qwen3.8-flash', 'Qwen3.8 Flash', '128k'],
+    ],
   },
-  "openai-compatible": {
-    "name": "OpenAI-Compatible",
-    "url": "",
-    "models": []
+  'openai-compatible': {
+    name: 'OpenAI-Compatible',
+    url: '',
+    models: [],
   },
-  "devin": {
-    "name": "Devin SWE",
-    "url": "https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage",
-    "contextUrl": "https://devin.ai/",
-    "models": [
-      ["swe-1.6", "Devin SWE 1.6", "128k", "curated", "https://devin.ai/"],
-      ["swe-1.5", "Devin SWE 1.5", "128k", "curated", "https://devin.ai/"]
-    ]
+  devin: {
+    name: 'Devin SWE',
+    url: 'https://server.codeium.com/exa.api_server_pb.ApiServerService/GetChatMessage',
+    contextUrl: 'https://devin.ai/',
+    models: [
+      ['swe-1.6', 'Devin SWE 1.6', '128k', 'curated', 'https://devin.ai/'],
+      ['swe-1.5', 'Devin SWE 1.5', '128k', 'curated', 'https://devin.ai/'],
+    ],
   },
-  "ollama": {
-    "name": "Ollama",
-    "url": "",
-    "models": []
+  ollama: {
+    name: 'Ollama',
+    url: '',
+    models: [],
   },
-  "openrouter": {
-    "name": "OpenRouter",
-    "url": "https://openrouter.ai/api/v1/chat/completions",
-    "contextUrl": "https://openrouter.ai/api/v1/models",
-    "models": [
-      ["qwen/qwen3-coder:free", "Qwen3 Coder", "256k"],
-      ["xiaomi/mimo-v2-pro:free", "MiMo V2 Omni Pro", "1M"],
-      ["xiaomi/mimo-v2-omni:free", "MiMo V2 Omni", "1M"],
-      ["stepfun/step-3.5-flash:free", "Step 3.5 Flash", "256k"],
-      ["deepseek/deepseek-r1-0528:free", "DeepSeek R1 0528", "128k"],
-      ["qwen/qwen3-next-80b-a3b-instruct:free", "Qwen3 80B Instruct", "128k"],
-      ["openai/gpt-oss-120b:free", "GPT OSS 120B", "128k"],
-      ["openai/gpt-oss-20b:free", "GPT OSS 20B", "131072"],
-      ["nvidia/nemotron-3-nano-30b-a3b:free", "Nemotron Nano 30B", "256k"],
-      ["meta-llama/llama-3.3-70b-instruct:free", "Llama 3.3 70B", "128k"],
-      ["minimax/minimax-m2.5:free", "MiniMax M2.5", "128k"],
-      ["corethink:free", "CoreThink", "128k"],
-      ["giga-potato-thinking:free", "Giga Potato Thinking", "128k"]
-    ]
+  openrouter: {
+    name: 'OpenRouter',
+    url: 'https://openrouter.ai/api/v1/chat/completions',
+    contextUrl: 'https://openrouter.ai/api/v1/models',
+    models: [
+      ['qwen/qwen3-coder:free', 'Qwen3 Coder', '256k'],
+      ['xiaomi/mimo-v2-pro:free', 'MiMo V2 Omni Pro', '1M'],
+      ['xiaomi/mimo-v2-omni:free', 'MiMo V2 Omni', '1M'],
+      ['stepfun/step-3.5-flash:free', 'Step 3.5 Flash', '256k'],
+      ['deepseek/deepseek-r1-0528:free', 'DeepSeek R1 0528', '128k'],
+      ['qwen/qwen3-next-80b-a3b-instruct:free', 'Qwen3 80B Instruct', '128k'],
+      ['openai/gpt-oss-120b:free', 'GPT OSS 120B', '128k'],
+      ['openai/gpt-oss-20b:free', 'GPT OSS 20B', '131072'],
+      ['nvidia/nemotron-3-nano-30b-a3b:free', 'Nemotron Nano 30B', '256k'],
+      ['meta-llama/llama-3.3-70b-instruct:free', 'Llama 3.3 70B', '128k'],
+      ['minimax/minimax-m2.5:free', 'MiniMax M2.5', '128k'],
+      ['corethink:free', 'CoreThink', '128k'],
+      ['giga-potato-thinking:free', 'Giga Potato Thinking', '128k'],
+    ],
   },
-  "codestral": {
-    "name": "Codestral",
+  codestral: {
+    name: 'Codestral',
     // No public /v1/models endpoint exists on codestral.mistral.ai (verified: 404
     // / no route); the list below is the complete static catalog. Kept manual.
-    "url": "https://codestral.mistral.ai/v1/chat/completions",
-    "contextUrl": "https://docs.mistral.ai/getting-started/models/models_overview/",
-    "models": [
-      ["codestral-latest", "Codestral", "256k"]
-    ]
+    url: 'https://codestral.mistral.ai/v1/chat/completions',
+    contextUrl: 'https://docs.mistral.ai/getting-started/models/models_overview/',
+    models: [['codestral-latest', 'Codestral', '256k']],
   },
-  "kilocode": {
-    "name": "KiloCode",
-    "url": "https://api.kilo.ai/api/gateway/chat/completions",
-    "contextUrl": "https://api.kilo.ai/api/gateway/models",
-    "models": [
-      ["arcee-ai/trinity-large-preview", "Trinity Large", "128k"]
-    ]
+  kilocode: {
+    name: 'KiloCode',
+    url: 'https://api.kilo.ai/api/gateway/chat/completions',
+    contextUrl: 'https://api.kilo.ai/api/gateway/models',
+    models: [['arcee-ai/trinity-large-preview', 'Trinity Large', '128k']],
   },
-  "kiro": {
-    "name": "Kiro",
+  kiro: {
+    name: 'Kiro',
     // Proprietary EventStream API (no /v1/models surface) — the catalog below is
     // the complete static list. Kept manual.
-    "url": "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse",
-    "contextUrl": "https://kiro.dev/docs/cli/reference/models/",
-    "models": [
-      ["claude-sonnet-4.5", "Claude Sonnet 4.5", "200k"],
-      ["claude-haiku-4.5", "Claude Haiku 4.5", "200k"]
-    ]
+    url: 'https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse',
+    contextUrl: 'https://kiro.dev/docs/cli/reference/models/',
+    models: [
+      ['claude-sonnet-4.5', 'Claude Sonnet 4.5', '200k'],
+      ['claude-haiku-4.5', 'Claude Haiku 4.5', '200k'],
+    ],
   },
-  "googleai": {
-    "name": "Google AI",
-    "url": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-    "contextUrl": "https://ai.google.dev/gemma/docs/core/model_card_3",
-    "discoverable": true,
-    "models": [
-      ["gemma-3-27b-it", "Gemma 3 27B", "128k"],
-      ["gemma-3-12b-it", "Gemma 3 12B", "128k"],
-      ["gemma-3-4b-it", "Gemma 3 4B", "128k"]
-    ]
+  googleai: {
+    name: 'Google AI',
+    url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    contextUrl: 'https://ai.google.dev/gemma/docs/core/model_card_3',
+    discoverable: true,
+    models: [
+      ['gemma-3-27b-it', 'Gemma 3 27B', '128k'],
+      ['gemma-3-12b-it', 'Gemma 3 12B', '128k'],
+      ['gemma-3-4b-it', 'Gemma 3 4B', '128k'],
+    ],
   },
   // --- GitHub Copilot ---------------------------------------------------------
   // Copilot is OpenAI-compatible on the wire (api.githubcopilot.com/chat/completions)
@@ -586,24 +594,25 @@ export const sources = {
   // /v1/models probe, while Copilot serves /models at the host root behind its
   // own client-identity headers. lib/server.js refreshes it through the
   // Copilot-specific path instead.
-  "github-copilot": {
-    "name": "GitHub Copilot",
-    "url": "https://api.githubcopilot.com/chat/completions",
-    "contextUrl": "https://docs.github.com/en/copilot/managing-copilot/monitoring-usage-and-entitlements",
-    "models": [
-      ["gpt-5.5", "GPT 5.5", "400k"],
-      ["gpt-5.1-codex", "GPT 5.1 Codex", "400k"],
-      ["gpt-5.1-codex-max", "GPT 5.1 Codex Max", "400k"],
-      ["gpt-5.1-codex-mini", "GPT 5.1 Codex Mini", "400k"],
-      ["gpt-4.1", "GPT 4.1", "128k"],
-      ["claude-sonnet-5", "Claude Sonnet 5", "200k"],
-      ["claude-sonnet-4.5", "Claude Sonnet 4.5", "200k"],
-      ["claude-haiku-4.5", "Claude Haiku 4.5", "200k"],
-      ["gemini-3.1-pro-preview", "Gemini 3.1 Pro", "1M"],
-      ["gemini-3-flash-preview", "Gemini 3 Flash", "1M"],
-      ["grok-4.5", "Grok 4.5", "256k"],
-      ["grok-code-fast-1", "Grok Code Fast", "256k"]
-    ]
+  'github-copilot': {
+    name: 'GitHub Copilot',
+    url: 'https://api.githubcopilot.com/chat/completions',
+    contextUrl:
+      'https://docs.github.com/en/copilot/managing-copilot/monitoring-usage-and-entitlements',
+    models: [
+      ['gpt-5.5', 'GPT 5.5', '400k'],
+      ['gpt-5.1-codex', 'GPT 5.1 Codex', '400k'],
+      ['gpt-5.1-codex-max', 'GPT 5.1 Codex Max', '400k'],
+      ['gpt-5.1-codex-mini', 'GPT 5.1 Codex Mini', '400k'],
+      ['gpt-4.1', 'GPT 4.1', '128k'],
+      ['claude-sonnet-5', 'Claude Sonnet 5', '200k'],
+      ['claude-sonnet-4.5', 'Claude Sonnet 4.5', '200k'],
+      ['claude-haiku-4.5', 'Claude Haiku 4.5', '200k'],
+      ['gemini-3.1-pro-preview', 'Gemini 3.1 Pro', '1M'],
+      ['gemini-3-flash-preview', 'Gemini 3 Flash', '1M'],
+      ['grok-4.5', 'Grok 4.5', '256k'],
+      ['grok-code-fast-1', 'Grok Code Fast', '256k'],
+    ],
   },
   // --- OpenAI Codex --------------------------------------------------------
   // The ChatGPT subscription surface. It is *not* OpenAI-compatible: calls go to
@@ -615,17 +624,17 @@ export const sources = {
   // in the account's own /codex/models list replaces it. Deliberately NOT flagged
   // `discoverable`: that path assumes an OpenAI-style /v1/models probe, while Codex
   // serves its own model list from the account-authenticated backend.
-  "openai-codex": {
-    "name": "OpenAI Codex",
-    "url": "https://chatgpt.com/backend-api/codex/responses",
-    "contextUrl": "https://developers.openai.com/codex/",
-    "models": [
-      ["gpt-5.1-codex", "GPT 5.1 Codex", "400k"],
-      ["gpt-5.1-codex-max", "GPT 5.1 Codex Max", "400k"],
-      ["gpt-5.1-codex-mini", "GPT 5.1 Codex Mini", "400k"],
-      ["gpt-5-codex", "GPT 5 Codex", "400k"],
-      ["codex-mini-latest", "Codex Mini", "192k"]
-    ]
+  'openai-codex': {
+    name: 'OpenAI Codex',
+    url: 'https://chatgpt.com/backend-api/codex/responses',
+    contextUrl: 'https://developers.openai.com/codex/',
+    models: [
+      ['gpt-5.1-codex', 'GPT 5.1 Codex', '400k'],
+      ['gpt-5.1-codex-max', 'GPT 5.1 Codex Max', '400k'],
+      ['gpt-5.1-codex-mini', 'GPT 5.1 Codex Mini', '400k'],
+      ['gpt-5-codex', 'GPT 5 Codex', '400k'],
+      ['codex-mini-latest', 'Codex Mini', '192k'],
+    ],
   },
   // --- gpt4free (g4f) --------------------------------------------------------
   // One provider for the whole gpt4free service. g4f.space/v1 is the hosted
@@ -634,31 +643,29 @@ export const sources = {
   // from https://g4f.dev/members.html — set it once as `apiKeys.g4f` or
   // `G4F_API_KEY` and it covers the whole gateway.
   // Docs: https://g4f.dev/docs/ready_to_use.html
-  "g4f": {
-    "name": "G4F",
-    "url": "https://g4f.space/v1/chat/completions",
-    "contextUrl": "https://g4f.dev/members.html",
-    "discoverable": true,
-    "models": [
-      ["auto", "Auto (G4F)", "128k"]
-    ]
+  g4f: {
+    name: 'G4F',
+    url: 'https://g4f.space/v1/chat/completions',
+    contextUrl: 'https://g4f.dev/members.html',
+    discoverable: true,
+    models: [['auto', 'Auto (G4F)', '128k']],
   },
   // --- NLP Cloud ------------------------------------------------------------
   // NLP Cloud's chatbot API is model/task-specific and does not publish an
   // OpenAI-style model-list endpoint. These are the current generative models
   // from its official model list; the adapter builds `/v1/gpu/{model}/chatbot`
   // and translates the request/response around it.
-  "nlpcloud": {
-    "name": "NLP Cloud",
-    "url": NLPCLOUD_DEFAULT_CHAT_URL,
-    "contextUrl": "https://docs.nlpcloud.com/#chatbot-and-conversational-ai",
-    "models": [
-      ["gpt-oss-120b", "GPT-OSS 120B", "128k"],
-      ["llama-3-1-405b", "LLaMA 3.1 405B", "128k"],
-      ["finetuned-llama-3-70b", "Fine-tuned LLaMA 3.3 70B", "128k"],
-      ["dolphin-yi-34b", "Dolphin Yi 34B"],
-      ["dolphin-mixtral-8x7b", "Dolphin Mixtral 8x7B"]
-    ]
+  nlpcloud: {
+    name: 'NLP Cloud',
+    url: NLPCLOUD_DEFAULT_CHAT_URL,
+    contextUrl: 'https://docs.nlpcloud.com/#chatbot-and-conversational-ai',
+    models: [
+      ['gpt-oss-120b', 'GPT-OSS 120B', '128k'],
+      ['llama-3-1-405b', 'LLaMA 3.1 405B', '128k'],
+      ['finetuned-llama-3-70b', 'Fine-tuned LLaMA 3.3 70B', '128k'],
+      ['dolphin-yi-34b', 'Dolphin Yi 34B'],
+      ['dolphin-mixtral-8x7b', 'Dolphin Mixtral 8x7B'],
+    ],
   },
   // --- gptfree.com -----------------------------------------------------------
   // A consumer chat site, not a platform: no published API, no keys, no /v1
@@ -675,14 +682,12 @@ export const sources = {
   // min_ctx filter on no evidence at all.
   //
   // Deliberately NOT `discoverable` — there is no model list to discover from.
-  "gptfree": {
-    "name": "GPTFree",
-    "url": "https://us-central1-gptfree-2.cloudfunctions.net/agent_stream",
-    "contextUrl": "https://gptfree.com/",
-    "models": [
-      ["auto", "Auto (GPTFree)"]
-    ]
-  }
+  gptfree: {
+    name: 'GPTFree',
+    url: 'https://us-central1-gptfree-2.cloudfunctions.net/agent_stream',
+    contextUrl: 'https://gptfree.com/',
+    models: [['auto', 'Auto (GPTFree)']],
+  },
 }
 
 function buildModels() {
@@ -691,7 +696,15 @@ function buildModels() {
     for (const m of provider.models) {
       const [modelId, label, ctx] = m
       const intell = getScore(modelId)
-      result.push([modelId, label, intell, ctx, providerKey, ctx ? 'curated' : null, ctx ? provider.contextUrl || null : null])
+      result.push([
+        modelId,
+        label,
+        intell,
+        ctx,
+        providerKey,
+        ctx ? 'curated' : null,
+        ctx ? provider.contextUrl || null : null,
+      ])
     }
   }
   return result

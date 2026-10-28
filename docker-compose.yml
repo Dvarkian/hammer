@@ -4,7 +4,7 @@ services:
     container_name: hammer
     restart: unless-stopped
     ports:
-      - "7352:7352"
+      - '7352:7352'
     volumes:
       - hammer_config:/app/config
     environment:

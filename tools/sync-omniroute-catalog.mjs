@@ -26,7 +26,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const CATALOG_PATH = new URL('../lib/providers/omniroute-catalog.json', import.meta.url)
-const SOURCE_DOC_URL = 'https://raw.githubusercontent.com/diegosouzapw/OmniRoute/main/docs/reference/FREE_TIERS.md'
+const SOURCE_DOC_URL =
+  'https://raw.githubusercontent.com/diegosouzapw/OmniRoute/main/docs/reference/FREE_TIERS.md'
 
 /**
  * 📖 The free-type column maps onto our access vocabulary. `one-time` and `uncapped` are
@@ -103,12 +104,35 @@ const ACCESS_BY_FREE_TYPE = {
  * hammer's own descriptor is deleted — the exclusion is what makes the removal stick.
  */
 export const EXCLUDED_PROVIDER_KEYS = new Set([
-  'nebius', 'liquid', 'novita', 'longcat',
+  'nebius',
+  'liquid',
+  'novita',
+  'longcat',
   // Bucket C of the free-tier audit: no recurring free usage.
-  'scaleway', 'vertex', 'agentrouter', 'together', 'doubao', 'ai21', 'hyperbolic', 'nscale',
-  'fireworks', 'publicai', 'inference-net', 'stepfun', 'sensenova', 'baichuan', 'arcee-ai',
-  'cerebras', 'deepseek', 'deepinfra', 'freemodel-dev', 'opencode', 'opencode-zen',
-  'kilo-gateway', 'predibase', 'monsterapi',
+  'scaleway',
+  'vertex',
+  'agentrouter',
+  'together',
+  'doubao',
+  'ai21',
+  'hyperbolic',
+  'nscale',
+  'fireworks',
+  'publicai',
+  'inference-net',
+  'stepfun',
+  'sensenova',
+  'baichuan',
+  'arcee-ai',
+  'cerebras',
+  'deepseek',
+  'deepinfra',
+  'freemodel-dev',
+  'opencode',
+  'opencode-zen',
+  'kilo-gateway',
+  'predibase',
+  'monsterapi',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
@@ -120,7 +144,9 @@ const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
  * @returns {number|null} null for the `—` / `uncapped*` cells, which carry no figure
  */
 export function parseTokenFigure(value) {
-  const text = String(value || '').trim().replace(/[~,\s]/g, '')
+  const text = String(value || '')
+    .trim()
+    .replace(/[~,\s]/g, '')
   const match = text.match(/^([0-9]*\.?[0-9]+)([KkMmBb])$/)
   if (!match) return null
   const amount = Number.parseFloat(match[1])
@@ -158,7 +184,7 @@ export function parseProviderRoster(markdown) {
 
   for (const line of String(markdown).split('\n')) {
     if (!line.trim().startsWith('|')) continue
-    const cells = line.split('|').map(cell => cell.trim())
+    const cells = line.split('|').map((cell) => cell.trim())
     // "| a | b |" splits into ['', 'a', 'b', ''] — six columns means eight parts.
     if (cells.length !== 8) continue
 
@@ -201,7 +227,7 @@ function existingNotes() {
   try {
     const raw = JSON.parse(readFileSync(CATALOG_PATH, 'utf8'))
     return Object.fromEntries(
-      (raw.providers || []).filter(p => p.note).map(p => [p.key, p.note]),
+      (raw.providers || []).filter((p) => p.note).map((p) => [p.key, p.note]),
     )
   } catch {
     return {}
@@ -224,11 +250,10 @@ function buildCatalog({ roster, frontmatter, previous }) {
         'open-sse/config/freeTierCatalog.ts',
       ],
       attribution:
-        'Free-tier roster, token economics and terms-of-service flags imported from OmniRoute (MIT). OmniRoute\'s own methodology: one-time signup credits do not recur and are reported separately from steady monthly grants; providers with rate limits but no published token cap are classified \'permanent\' and deliberately never summed.',
-      note:
-        'This is the roster and its economics. It is NOT yet endpoint configuration: the per-provider base URL, credential shape and model list live in OmniRoute\'s `freeTierCatalog.ts` / `freeModelCatalog.ts`, which the sync tool resolves. Rows without a resolved endpoint register as `resolved: false` so the roster is visible and countable without pretending it is routable.',
+        "Free-tier roster, token economics and terms-of-service flags imported from OmniRoute (MIT). OmniRoute's own methodology: one-time signup credits do not recur and are reported separately from steady monthly grants; providers with rate limits but no published token cap are classified 'permanent' and deliberately never summed.",
+      note: "This is the roster and its economics. It is NOT yet endpoint configuration: the per-provider base URL, credential shape and model list live in OmniRoute's `freeTierCatalog.ts` / `freeModelCatalog.ts`, which the sync tool resolves. Rows without a resolved endpoint register as `resolved: false` so the roster is visible and countable without pretending it is routable.",
     },
-    providers: roster.map(entry => {
+    providers: roster.map((entry) => {
       const note = notes[entry.key]
       return note ? { ...entry, note } : entry
     }),
@@ -236,14 +261,16 @@ function buildCatalog({ roster, frontmatter, previous }) {
 }
 
 function describeDrift(previous, next) {
-  const before = new Map((previous.providers || []).map(p => [p.key, p]))
-  const after = new Map(next.providers.map(p => [p.key, p]))
-  const added = [...after.keys()].filter(k => !before.has(k))
-  const removed = [...before.keys()].filter(k => !after.has(k))
-  const changed = [...after.keys()].filter(k => {
+  const before = new Map((previous.providers || []).map((p) => [p.key, p]))
+  const after = new Map(next.providers.map((p) => [p.key, p]))
+  const added = [...after.keys()].filter((k) => !before.has(k))
+  const removed = [...before.keys()].filter((k) => !after.has(k))
+  const changed = [...after.keys()].filter((k) => {
     if (!before.has(k)) return false
-    const a = { ...before.get(k) }, b = { ...after.get(k) }
-    delete a.note; delete b.note
+    const a = { ...before.get(k) },
+      b = { ...after.get(k) }
+    delete a.note
+    delete b.note
     return JSON.stringify(a) !== JSON.stringify(b)
   })
   return { added, removed, changed }
@@ -260,8 +287,9 @@ async function main() {
 
   const markdown = await fetchSourceDoc()
   const frontmatter = parseFrontmatter(markdown)
-  const roster = parseProviderRoster(markdown)
-    .filter(entry => !EXCLUDED_PROVIDER_KEYS.has(entry.key))
+  const roster = parseProviderRoster(markdown).filter(
+    (entry) => !EXCLUDED_PROVIDER_KEYS.has(entry.key),
+  )
 
   if (roster.length === 0) {
     console.error('✖ parsed zero providers — the upstream document format has probably changed.')
@@ -277,7 +305,9 @@ async function main() {
   const next = buildCatalog({ roster, frontmatter, previous })
   const { added, removed, changed } = describeDrift(previous, next)
 
-  console.log(`source: ${frontmatter.version || 'unknown'} (updated ${frontmatter.lastUpdated || 'unknown'})`)
+  console.log(
+    `source: ${frontmatter.version || 'unknown'} (updated ${frontmatter.lastUpdated || 'unknown'})`,
+  )
   console.log(`roster: ${roster.length} providers (checked in: ${previous.providers?.length || 0})`)
   console.log(`added:   ${added.length ? added.join(', ') : '(none)'}`)
   console.log(`removed: ${removed.length ? removed.join(', ') : '(none)'}`)
@@ -295,12 +325,14 @@ async function main() {
 
   writeFileSync(CATALOG_PATH, `${JSON.stringify(next, null, 2)}\n`)
   console.log(`\n✔ wrote ${new URL(CATALOG_PATH).pathname}`)
-  console.log('  Run `node tools/verify-providers.mjs` to see which imported rows still lack an endpoint.')
+  console.log(
+    '  Run `node tools/verify-providers.mjs` to see which imported rows still lack an endpoint.',
+  )
 }
 
 // Only run when invoked directly, so the parsers stay importable by the test suite.
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => {
+  main().catch((error) => {
     console.error(`✖ ${error.message}`)
     process.exit(1)
   })

@@ -1,0 +1,20 @@
+name: check
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      # The suite is self-contained: no provider keys, no network discovery, no
+      # listener on 7352. If a test ever needs those it belongs behind a stub.
+      - run: npm ci
+      - run: npm run check

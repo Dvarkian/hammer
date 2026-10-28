@@ -93,9 +93,7 @@
       "shaping": {
         "flattenTextContent": true,
         "urlTemplate": true,
-        "credentialFields": [
-          "accountId"
-        ]
+        "credentialFields": ["accountId"]
       },
       "provenance": {
         "executor": "cloudflare-ai",
@@ -580,14 +578,7 @@
       },
       "provenance": {
         "modelCount": 6,
-        "declaredModels": [
-          "4.0Ultra",
-          "generalv3.5",
-          "max-32k",
-          "generalv3",
-          "pro-128k",
-          "lite"
-        ]
+        "declaredModels": ["4.0Ultra", "generalv3.5", "max-32k", "generalv3", "pro-128k", "lite"]
       }
     },
     "muse-spark-web": {
@@ -609,10 +600,7 @@
       },
       "provenance": {
         "modelCount": 2,
-        "declaredModels": [
-          "Hermes-4-405B",
-          "Hermes-4-70B"
-        ]
+        "declaredModels": ["Hermes-4-405B", "Hermes-4-70B"]
       }
     },
     "nvidia": {
@@ -685,11 +673,7 @@
       },
       "provenance": {
         "modelCount": 3,
-        "declaredModels": [
-          "reka-flash-3",
-          "reka-flash",
-          "reka-edge-2603"
-        ]
+        "declaredModels": ["reka-flash-3", "reka-flash", "reka-edge-2603"]
       }
     },
     "sparkdesk": {
@@ -703,12 +687,7 @@
       },
       "provenance": {
         "modelCount": 4,
-        "declaredModels": [
-          "4.0Ultra",
-          "generalv3",
-          "pro-128k",
-          "lite"
-        ]
+        "declaredModels": ["4.0Ultra", "generalv3", "pro-128k", "lite"]
       }
     },
     "t3-web": {

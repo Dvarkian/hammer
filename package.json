@@ -29,6 +29,11 @@
   "scripts": {
     "start": "node bin/hammer.js",
     "test": "node --test \"test/**/*.test.js\"",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run lint && npm run typecheck && npm run format:check && npm test",
     "verify:providers": "node tools/verify-providers.mjs",
     "sync:omniroute": "node tools/sync-omniroute-catalog.mjs"
   },
@@ -39,12 +44,15 @@
   "overrides": {
     "path-to-regexp": "8.4.0"
   },
-  "pnpm": {
-    "overrides": {
-      "path-to-regexp": "8.4.0"
-    }
-  },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2"
   }
 }

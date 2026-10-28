@@ -16,44 +16,234 @@
     "note": "This is the roster and its economics. It is NOT yet endpoint configuration: the per-provider base URL, credential shape and model list live in OmniRoute's `freeTierCatalog.ts` / `freeModelCatalog.ts`, which the sync tool resolves. Rows without a resolved endpoint register as `resolved: false` so the roster is visible and countable without pretending it is routable."
   },
   "providers": [
-    { "key": "mistral", "access": "recurring", "steadyTokensPerMonth": 1000000000, "tos": "caution", "modelCount": 5 },
-    { "key": "llm7", "access": "recurring", "steadyTokensPerMonth": 150000000, "tos": "caution", "modelCount": 4 },
-    { "key": "gemini", "access": "recurring", "steadyTokensPerMonth": 60000000, "tos": "caution", "modelCount": 6, "note": "Free tier is Flash-family only; Pro left the free tier 2026-04." },
-    { "key": "cloudflare-ai", "access": "recurring", "steadyTokensPerMonth": 30000000, "tos": "caution", "modelCount": 6 },
-    { "key": "api-airforce", "access": "recurring", "steadyTokensPerMonth": 24000000, "tos": "caution", "modelCount": 7 },
-    { "key": "ollama-cloud", "access": "recurring", "steadyTokensPerMonth": 20000000, "tos": "ambiguous", "modelCount": 8 },
-    { "key": "groq", "access": "recurring", "steadyTokensPerMonth": 15000000, "tos": "caution", "modelCount": 5 },
-    { "key": "bluesminds", "access": "recurring", "steadyTokensPerMonth": 7000000, "tos": "ambiguous", "modelCount": 22 },
-    { "key": "sambanova", "access": "recurring", "steadyTokensPerMonth": 6000000, "tos": "caution", "modelCount": 5 },
-    { "key": "bazaarlink", "access": "recurring", "steadyTokensPerMonth": 4000000, "tos": "caution", "modelCount": 32 },
-    { "key": "openrouter", "access": "recurring", "steadyTokensPerMonth": 1000000, "tos": "caution", "modelCount": 1, "note": "A one-time $10 top-up raises the free pool from 50 to 1000 requests/day." },
-    { "key": "cohere", "access": "recurring", "steadyTokensPerMonth": 800000, "tos": "caution", "modelCount": 6 },
-    { "key": "huggingchat", "access": "recurring", "steadyTokensPerMonth": 500000, "tos": "caution", "modelCount": 4 },
-    { "key": "morph", "access": "recurring", "steadyTokensPerMonth": 400000, "tos": "ok", "modelCount": 2 },
-    { "key": "huggingface", "access": "recurring", "steadyTokensPerMonth": 200000, "tos": "caution", "modelCount": 6 },
-    { "key": "kiro", "access": "recurring", "steadyTokensPerMonth": 25000, "tos": "avoid", "modelCount": 12, "note": "Kiro FAQ explicitly prohibits use with third-party harnesses, which is what a self-hosted proxy is." },
+    {
+      "key": "mistral",
+      "access": "recurring",
+      "steadyTokensPerMonth": 1000000000,
+      "tos": "caution",
+      "modelCount": 5
+    },
+    {
+      "key": "llm7",
+      "access": "recurring",
+      "steadyTokensPerMonth": 150000000,
+      "tos": "caution",
+      "modelCount": 4
+    },
+    {
+      "key": "gemini",
+      "access": "recurring",
+      "steadyTokensPerMonth": 60000000,
+      "tos": "caution",
+      "modelCount": 6,
+      "note": "Free tier is Flash-family only; Pro left the free tier 2026-04."
+    },
+    {
+      "key": "cloudflare-ai",
+      "access": "recurring",
+      "steadyTokensPerMonth": 30000000,
+      "tos": "caution",
+      "modelCount": 6
+    },
+    {
+      "key": "api-airforce",
+      "access": "recurring",
+      "steadyTokensPerMonth": 24000000,
+      "tos": "caution",
+      "modelCount": 7
+    },
+    {
+      "key": "ollama-cloud",
+      "access": "recurring",
+      "steadyTokensPerMonth": 20000000,
+      "tos": "ambiguous",
+      "modelCount": 8
+    },
+    {
+      "key": "groq",
+      "access": "recurring",
+      "steadyTokensPerMonth": 15000000,
+      "tos": "caution",
+      "modelCount": 5
+    },
+    {
+      "key": "bluesminds",
+      "access": "recurring",
+      "steadyTokensPerMonth": 7000000,
+      "tos": "ambiguous",
+      "modelCount": 22
+    },
+    {
+      "key": "sambanova",
+      "access": "recurring",
+      "steadyTokensPerMonth": 6000000,
+      "tos": "caution",
+      "modelCount": 5
+    },
+    {
+      "key": "bazaarlink",
+      "access": "recurring",
+      "steadyTokensPerMonth": 4000000,
+      "tos": "caution",
+      "modelCount": 32
+    },
+    {
+      "key": "openrouter",
+      "access": "recurring",
+      "steadyTokensPerMonth": 1000000,
+      "tos": "caution",
+      "modelCount": 1,
+      "note": "A one-time $10 top-up raises the free pool from 50 to 1000 requests/day."
+    },
+    {
+      "key": "cohere",
+      "access": "recurring",
+      "steadyTokensPerMonth": 800000,
+      "tos": "caution",
+      "modelCount": 6
+    },
+    {
+      "key": "huggingchat",
+      "access": "recurring",
+      "steadyTokensPerMonth": 500000,
+      "tos": "caution",
+      "modelCount": 4
+    },
+    {
+      "key": "morph",
+      "access": "recurring",
+      "steadyTokensPerMonth": 400000,
+      "tos": "ok",
+      "modelCount": 2
+    },
+    {
+      "key": "huggingface",
+      "access": "recurring",
+      "steadyTokensPerMonth": 200000,
+      "tos": "caution",
+      "modelCount": 6
+    },
+    {
+      "key": "kiro",
+      "access": "recurring",
+      "steadyTokensPerMonth": 25000,
+      "tos": "avoid",
+      "modelCount": 12,
+      "note": "Kiro FAQ explicitly prohibits use with third-party harnesses, which is what a self-hosted proxy is."
+    },
 
-    { "key": "glm-cn", "access": "permanent", "signupCreditTokens": 20000000, "tos": "ok", "modelCount": 4, "note": "GLM-4-Flash / 4.5-Flash / 4.7-Flash permanently free, rate-limited, no published token cap." },
-    { "key": "baidu", "access": "permanent", "tos": "caution", "modelCount": 1, "note": "ERNIE Speed/Lite/Tiny free; platform requires real-name authentication." },
+    {
+      "key": "glm-cn",
+      "access": "permanent",
+      "signupCreditTokens": 20000000,
+      "tos": "ok",
+      "modelCount": 4,
+      "note": "GLM-4-Flash / 4.5-Flash / 4.7-Flash permanently free, rate-limited, no published token cap."
+    },
+    {
+      "key": "baidu",
+      "access": "permanent",
+      "tos": "caution",
+      "modelCount": 1,
+      "note": "ERNIE Speed/Lite/Tiny free; platform requires real-name authentication."
+    },
     { "key": "siliconflow", "access": "permanent", "tos": "caution", "modelCount": 10 },
 
-    { "key": "bytez", "access": "signup-credit", "signupCreditTokens": 1000000, "tos": "ambiguous", "modelCount": 3 },
-    { "key": "qoder", "access": "signup-credit", "signupCreditTokens": 1000000, "tos": "caution", "modelCount": 14 },
+    {
+      "key": "bytez",
+      "access": "signup-credit",
+      "signupCreditTokens": 1000000,
+      "tos": "ambiguous",
+      "modelCount": 3
+    },
+    {
+      "key": "qoder",
+      "access": "signup-credit",
+      "signupCreditTokens": 1000000,
+      "tos": "caution",
+      "modelCount": 14
+    },
 
-    { "key": "agy", "access": "keyless", "tos": "avoid", "modelCount": 16, "note": "Google Antigravity terms explicitly prohibit accessing the service through third-party proxies via OAuth." },
-    { "key": "blackbox", "access": "keyless", "tos": "avoid", "modelCount": 6, "note": "Terms prohibit sublicensing and building derivative services." },
-    { "key": "coze", "access": "keyless", "tos": "avoid", "modelCount": 1, "note": "Restricted to personal, non-commercial use; prohibits resale and sublicensing." },
-    { "key": "duckduckgo-web", "access": "keyless", "tos": "avoid", "modelCount": 6, "note": "Duck.ai terms prohibit automated querying and building AI services on it." },
-    { "key": "friendliai", "access": "keyless", "tos": "avoid", "modelCount": 2, "note": "Terms explicitly prohibit use as a proxy and third-party access." },
-    { "key": "iflytek", "access": "keyless", "tos": "avoid", "modelCount": 1, "note": "Spark Lite is free but the agreement prohibits automated extraction and proxy/relay use." },
-    { "key": "muse-spark-web", "access": "keyless", "tos": "avoid", "modelCount": 3, "note": "Meta terms prohibit automated access without prior permission." },
-    { "key": "nlpcloud", "access": "permanent", "tos": "caution", "modelCount": 5, "note": "The recurring free plan is limited to development and testing; NLP Cloud publishes no numeric monthly token allowance." },
+    {
+      "key": "agy",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 16,
+      "note": "Google Antigravity terms explicitly prohibit accessing the service through third-party proxies via OAuth."
+    },
+    {
+      "key": "blackbox",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 6,
+      "note": "Terms prohibit sublicensing and building derivative services."
+    },
+    {
+      "key": "coze",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 1,
+      "note": "Restricted to personal, non-commercial use; prohibits resale and sublicensing."
+    },
+    {
+      "key": "duckduckgo-web",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 6,
+      "note": "Duck.ai terms prohibit automated querying and building AI services on it."
+    },
+    {
+      "key": "friendliai",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 2,
+      "note": "Terms explicitly prohibit use as a proxy and third-party access."
+    },
+    {
+      "key": "iflytek",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 1,
+      "note": "Spark Lite is free but the agreement prohibits automated extraction and proxy/relay use."
+    },
+    {
+      "key": "muse-spark-web",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 3,
+      "note": "Meta terms prohibit automated access without prior permission."
+    },
+    {
+      "key": "nlpcloud",
+      "access": "permanent",
+      "tos": "caution",
+      "modelCount": 5,
+      "note": "The recurring free plan is limited to development and testing; NLP Cloud publishes no numeric monthly token allowance."
+    },
     { "key": "nous-research", "access": "keyless", "tos": "ambiguous", "modelCount": 2 },
-    { "key": "nvidia", "access": "keyless", "tos": "caution", "modelCount": 13, "note": "Free tier is for prototyping, development, research and evaluation; production use requires a paid plan." },
-    { "key": "qwen-web", "access": "keyless", "tos": "avoid", "modelCount": 3, "note": "No terms permit a self-hosted proxy using session tokens against the web chat." },
+    {
+      "key": "nvidia",
+      "access": "keyless",
+      "tos": "caution",
+      "modelCount": 13,
+      "note": "Free tier is for prototyping, development, research and evaluation; production use requires a paid plan."
+    },
+    {
+      "key": "qwen-web",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 3,
+      "note": "No terms permit a self-hosted proxy using session tokens against the web chat."
+    },
     { "key": "reka", "access": "keyless", "tos": "caution", "modelCount": 2 },
     { "key": "sparkdesk", "access": "keyless", "tos": "caution", "modelCount": 1 },
-    { "key": "t3-web", "access": "keyless", "tos": "avoid", "modelCount": 23, "note": "Terms restrict accounts to personal use and ban automated access." },
+    {
+      "key": "t3-web",
+      "access": "keyless",
+      "tos": "avoid",
+      "modelCount": 23,
+      "note": "Terms restrict accounts to personal use and ban automated access."
+    },
     { "key": "uncloseai", "access": "keyless", "tos": "caution", "modelCount": 3 }
   ]
 }

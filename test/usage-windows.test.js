@@ -70,7 +70,7 @@ test('a rolled-over window reports nothing while the lifetime total keeps counti
   assert.equal(entry.recorded.lifetime.tokens, 300)
 })
 
-test('recorded usage sums a provider\'s models and excludes every other provider', () => {
+test("recorded usage sums a provider's models and excludes every other provider", () => {
   const usageStats = new Map()
   const gpt = {}
   recordUsageBuckets(gpt, { contextTokens: 1000, completionTokens: 0 }, at('2026-09-24'))
@@ -84,7 +84,12 @@ test('recorded usage sums a provider\'s models and excludes every other provider
   usageStats.set('llm7::gpt-oss', stranger)
   // A bucket from an earlier month must not be counted as the current one when the caller asks
   // in September — the limit it belonged to has already reset.
-  const stale = { recorded: { month: { key: '2026-08', requests: 40, tokens: 40000 }, lifetime: { requests: 40, tokens: 40000 } } }
+  const stale = {
+    recorded: {
+      month: { key: '2026-08', requests: 40, tokens: 40000 },
+      lifetime: { requests: 40, tokens: 40000 },
+    },
+  }
   usageStats.set('groq::deprecated', stale)
 
   const recorded = buildRecordedUsage(usageStats, 'groq', at('2026-09-24'))

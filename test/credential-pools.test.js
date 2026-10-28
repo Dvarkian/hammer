@@ -27,11 +27,7 @@ import {
   selectNextApiKeyFromPool,
 } from '../lib/utils.js'
 
-import {
-  _setKeyPoolState,
-  credentialResetHintMs,
-  describeCredentialPool,
-} from '../lib/server.js'
+import { _setKeyPoolState, credentialResetHintMs, describeCredentialPool } from '../lib/server.js'
 
 /** Pool state in the shape the server keeps: one entry per provider. */
 function poolState(entries = []) {
@@ -140,37 +136,66 @@ test('a stored timestamp from before this policy still reads as spent', () => {
   // Credentials benched by the previous code carry `rateLimitedAt` and no `exhaustedUntil`.
   const now = Date.now()
   assert.equal(isCredentialSpent({ requests: 1, rateLimitedAt: now }, now, COOLDOWN), true)
-  assert.equal(isCredentialSpent({ requests: 1, rateLimitedAt: now - COOLDOWN - 1 }, now, COOLDOWN), false)
+  assert.equal(
+    isCredentialSpent({ requests: 1, rateLimitedAt: now - COOLDOWN - 1 }, now, COOLDOWN),
+    false,
+  )
   assert.equal(isCredentialSpent(null, now, COOLDOWN), false)
   assert.equal(isCredentialSpent({ requests: 3 }, now, COOLDOWN), false)
   // A stated window wins over the fallback, which is the whole point of storing it.
-  assert.equal(isCredentialSpent({ rateLimitedAt: now - COOLDOWN - 1, exhaustedUntil: now + 1000 }, now, COOLDOWN), true)
+  assert.equal(
+    isCredentialSpent(
+      { rateLimitedAt: now - COOLDOWN - 1, exhaustedUntil: now + 1000 },
+      now,
+      COOLDOWN,
+    ),
+    true,
+  )
 })
 
 // ── Reading the provider's own answer ──────────────────────────────────────────────────
 
 test('retry-after is read as seconds or as an HTTP date, and nothing else is invented', () => {
-  assert.equal(credentialResetHintMs(new Response('', { status: 429, headers: { 'retry-after': '120' } })), 120_000)
+  assert.equal(
+    credentialResetHintMs(new Response('', { status: 429, headers: { 'retry-after': '120' } })),
+    120_000,
+  )
   const at = new Date(Date.now() + 90_000).toUTCString()
-  const fromDate = credentialResetHintMs(new Response('', { status: 429, headers: { 'retry-after': at } }))
+  const fromDate = credentialResetHintMs(
+    new Response('', { status: 429, headers: { 'retry-after': at } }),
+  )
   assert.ok(fromDate > 80_000 && fromDate <= 90_000, `expected ~90s, got ${fromDate}`)
   assert.equal(credentialResetHintMs(new Response('', { status: 429 })), null)
-  assert.equal(credentialResetHintMs(new Response('', { status: 429, headers: { 'retry-after': 'soon' } })), null)
+  assert.equal(
+    credentialResetHintMs(new Response('', { status: 429, headers: { 'retry-after': 'soon' } })),
+    null,
+  )
 })
 
 // ── What the dashboard is told ─────────────────────────────────────────────────────────
 
 test('a card is told the pool size, who is serving, and who is spent', () => {
   const now = Date.now()
-  const state = new Map([['googleai', poolState([[0, { requests: 7, rateLimitedAt: now, exhaustedUntil: now + 30_000 }]])]])
+  const state = new Map([
+    [
+      'googleai',
+      poolState([[0, { requests: 7, rateLimitedAt: now, exhaustedUntil: now + 30_000 }]]),
+    ],
+  ])
   _setKeyPoolState(state)
   try {
-    const described = describeCredentialPool({ apiKeys: { googleai: ['key-one-value', 'key-two-value'] }, providers: {} }, 'googleai')
+    const described = describeCredentialPool(
+      { apiKeys: { googleai: ['key-one-value', 'key-two-value'] }, providers: {} },
+      'googleai',
+    )
     assert.equal(described.count, 2)
     assert.equal(described.policy, 'exhaust')
     // The spent credential is first in the pool, so the second one is serving.
     assert.equal(described.servingIndex, 0)
-    assert.deepEqual(described.accounts.map(a => a.exhausted), [true, false])
+    assert.deepEqual(
+      described.accounts.map((a) => a.exhausted),
+      [true, false],
+    )
     assert.equal(described.accounts[0].requests, 7)
     assert.ok(described.accounts[0].resetsInMs > 0 && described.accounts[0].resetsInMs <= 30_000)
     assert.equal(described.accounts[1].resetsInMs, null)
@@ -183,7 +208,10 @@ test('a described pool never carries a credential value', () => {
   const state = new Map([['googleai', poolState()]])
   _setKeyPoolState(state)
   try {
-    const described = describeCredentialPool({ apiKeys: { googleai: ['AIzaSySuperSecretKeyMaterial'] }, providers: {} }, 'googleai')
+    const described = describeCredentialPool(
+      { apiKeys: { googleai: ['AIzaSySuperSecretKeyMaterial'] }, providers: {} },
+      'googleai',
+    )
     const serialized = JSON.stringify(described)
     assert.equal(serialized.includes('AIzaSySuperSecretKeyMaterial'), false)
     // Masked, so the row is still recognisable to the person who pasted it.
@@ -197,7 +225,11 @@ test('an account pool is described by its identities, not its tokens', () => {
   const state = new Map([['openai-codex', poolState()]])
   _setKeyPoolState(state)
   try {
-    const config = { providers: { 'openai-codex': { accounts: [{ secret: 'refresh-secret-value', email: 'a@example.com' }] } } }
+    const config = {
+      providers: {
+        'openai-codex': { accounts: [{ secret: 'refresh-secret-value', email: 'a@example.com' }] },
+      },
+    }
     const described = describeCredentialPool(config, 'openai-codex')
     assert.equal(described.count, 1)
     assert.equal(described.accounts[0].label, 'a@example.com')

@@ -48,7 +48,7 @@ function loadKeyPages() {
   return JSON.parse(readFileSync(KEY_PAGES_URL, 'utf8'))
 }
 
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * Follows a URL and reports where it ended up.
@@ -70,7 +70,12 @@ async function checkUrl(url, timeoutMs) {
       },
       signal: AbortSignal.timeout(timeoutMs),
     })
-    const result = { ok: response.ok, status: response.status, finalUrl: response.url || url, error: null }
+    const result = {
+      ok: response.ok,
+      status: response.status,
+      finalUrl: response.url || url,
+      error: null,
+    }
     await response.body?.cancel()
     return result
   } catch (error) {
@@ -79,7 +84,8 @@ async function checkUrl(url, timeoutMs) {
       ok: false,
       status: null,
       finalUrl: null,
-      error: name === 'TimeoutError' ? 'timeout' : String(error?.cause?.code || error?.message || error),
+      error:
+        name === 'TimeoutError' ? 'timeout' : String(error?.cause?.code || error?.message || error),
     }
   }
 }
@@ -93,14 +99,16 @@ async function checkUrl(url, timeoutMs) {
  */
 function keyPageCoverage(keyPages) {
   const all = listProviders()
-  const needsPage = all.filter(p => p.activation !== 'refused')
+  const needsPage = all.filter((p) => p.activation !== 'refused')
   const curated = new Set(Object.keys(keyPages))
   return {
-    covered: needsPage.filter(p => p.signupUrl),
-    missing: needsPage.filter(p => !p.signupUrl).map(p => ({ key: p.key, activation: p.activation })),
+    covered: needsPage.filter((p) => p.signupUrl),
+    missing: needsPage
+      .filter((p) => !p.signupUrl)
+      .map((p) => ({ key: p.key, activation: p.activation })),
     // Curated rows nothing in the registry claimed: either a typo in a key, or a provider
     // that was dropped upstream and left its link behind.
-    orphans: [...curated].filter(key => !all.some(p => p.key === key)),
+    orphans: [...curated].filter((key) => !all.some((p) => p.key === key)),
   }
 }
 
@@ -116,16 +124,22 @@ async function main() {
     const check = await checkUrl(entry.url, options.timeoutMs)
     report.push({ key, url: entry.url, ...check })
     if (!options.json) {
-      const state = check.ok ? `HTTP ${check.status}` : check.status ? `HTTP ${check.status}` : `FAILED (${check.error})`
+      const state = check.ok
+        ? `HTTP ${check.status}`
+        : check.status
+          ? `HTTP ${check.status}`
+          : `FAILED (${check.error})`
       const moved = check.finalUrl && check.finalUrl !== entry.url ? ` -> ${check.finalUrl}` : ''
-      process.stdout.write(`  ${String(index + 1).padStart(2)}. ${key.padEnd(16)} ${state.padEnd(12)} ${entry.url}${moved}\n`)
+      process.stdout.write(
+        `  ${String(index + 1).padStart(2)}. ${key.padEnd(16)} ${state.padEnd(12)} ${entry.url}${moved}\n`,
+      )
     }
     if (index < keys.length - 1) await sleep(SPACING_MS)
   }
 
   const coverage = keyPageCoverage(pages)
-  const unreachable = report.filter(row => !row.ok)
-  const moved = report.filter(row => row.finalUrl && row.finalUrl !== row.url)
+  const unreachable = report.filter((row) => !row.ok)
+  const moved = report.filter((row) => row.finalUrl && row.finalUrl !== row.url)
 
   if (options.write) {
     const stamp = new Date().toISOString().slice(0, 10)
@@ -143,23 +157,36 @@ async function main() {
   }
 
   if (options.json) {
-    process.stdout.write(`${JSON.stringify({ checked: keys.length, report, coverage, wrote: options.write }, null, 2)}\n`)
+    process.stdout.write(
+      `${JSON.stringify({ checked: keys.length, report, coverage, wrote: options.write }, null, 2)}\n`,
+    )
     return
   }
 
-  process.stdout.write(`\nChecked ${keys.length} key pages: ${report.length - unreachable.length} reachable, ${unreachable.length} unreachable\n`)
+  process.stdout.write(
+    `\nChecked ${keys.length} key pages: ${report.length - unreachable.length} reachable, ${unreachable.length} unreachable\n`,
+  )
   if (unreachable.length) {
-    process.stdout.write(`\nUnreachable (fix or remove — a card linking nowhere is worse than a plain heading):\n`)
-    for (const row of unreachable) process.stdout.write(`  ${row.key.padEnd(16)} ${row.status || row.error}  ${row.url}\n`)
+    process.stdout.write(
+      `\nUnreachable (fix or remove — a card linking nowhere is worse than a plain heading):\n`,
+    )
+    for (const row of unreachable)
+      process.stdout.write(`  ${row.key.padEnd(16)} ${row.status || row.error}  ${row.url}\n`)
   }
   if (moved.length) {
-    process.stdout.write(`\nResolves elsewhere (check the destination is the credential page before trusting it):\n`)
-    for (const row of moved) process.stdout.write(`  ${row.key.padEnd(16)} ${row.url} -> ${row.finalUrl}\n`)
+    process.stdout.write(
+      `\nResolves elsewhere (check the destination is the credential page before trusting it):\n`,
+    )
+    for (const row of moved)
+      process.stdout.write(`  ${row.key.padEnd(16)} ${row.url} -> ${row.finalUrl}\n`)
   }
-  process.stdout.write(`\nRegistry coverage: ${coverage.covered.length} providers have a key page, ${coverage.missing.length} do not.\n`)
+  process.stdout.write(
+    `\nRegistry coverage: ${coverage.covered.length} providers have a key page, ${coverage.missing.length} do not.\n`,
+  )
   if (coverage.missing.length) {
     process.stdout.write(`\nWithout a key page (these render as plain headings):\n`)
-    for (const row of coverage.missing) process.stdout.write(`  ${row.key.padEnd(16)} ${row.activation}\n`)
+    for (const row of coverage.missing)
+      process.stdout.write(`  ${row.key.padEnd(16)} ${row.activation}\n`)
   }
   if (coverage.orphans.length) {
     process.stdout.write(`\nCurated but not registered (stale keys):\n`)

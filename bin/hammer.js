@@ -10,7 +10,13 @@ import { join } from 'node:path'
 import { parseArgs, clearContextBound, parseUsageStatKey } from '../lib/utils.js'
 import { loadConfig, saveConfig, exportConfigToken, importConfigToken } from '../lib/config.js'
 import { runOnboard } from '../lib/onboard.js'
-import { getAutostartStatus, installAutostart, startAutostart, stopAutostart, uninstallAutostart } from '../lib/autostart.js'
+import {
+  getAutostartStatus,
+  installAutostart,
+  startAutostart,
+  stopAutostart,
+  uninstallAutostart,
+} from '../lib/autostart.js'
 import { stopExistingHammerProcesses } from '../lib/instances.js'
 import { runUpdateCommand } from '../lib/update.js'
 import chalk from 'chalk'
@@ -42,7 +48,9 @@ function printHelp() {
   console.log('Flags:')
   console.log('  --port <number>    Router HTTP port (default: 7352)')
   console.log('  --host <address>   Listen address. Loopback 127.0.0.1 by default (local only).')
-  console.log('                     Use --host 0.0.0.0 to expose on the LAN (requires access token)')
+  console.log(
+    '                     Use --host 0.0.0.0 to expose on the LAN (requires access token)',
+  )
   console.log('  --no-log           Disable request payload logging in terminal (legacy/override)')
   console.log('  --verbose, -v        Show detailed startup diagnostics')
   console.log('  --ban <ids>        Comma-separated model IDs to keep banned')
@@ -60,7 +68,9 @@ async function readStdin() {
   for await (const chunk of process.stdin) {
     chunks.push(chunk)
   }
-  return Buffer.concat(chunks.map(c => Buffer.isBuffer(c) ? c : Buffer.from(c))).toString('utf8')
+  return Buffer.concat(chunks.map((c) => (Buffer.isBuffer(c) ? c : Buffer.from(c)))).toString(
+    'utf8',
+  )
 }
 
 function runAutostartAction(action) {
@@ -97,21 +107,31 @@ function runAutostartAction(action) {
 async function runContextReset(cliArgs) {
   const providerKey = cliArgs.contextProvider || null
   const modelId = cliArgs.contextModel || null
-  const scope = [providerKey ? `provider ${providerKey}` : null, modelId ? `model ${modelId}` : null]
-    .filter(Boolean).join(', ')
+  const scope = [
+    providerKey ? `provider ${providerKey}` : null,
+    modelId ? `model ${modelId}` : null,
+  ]
+    .filter(Boolean)
+    .join(', ')
 
   // The running router owns the in-memory copy of these bounds and would write it back
   // on its next save, so ask it first.
   try {
-    const response = await fetch(`http://127.0.0.1:${cliArgs.portValue || 7352}/api/context-bounds/reset`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ providerKey, modelId }),
-    })
+    const response = await fetch(
+      `http://127.0.0.1:${cliArgs.portValue || 7352}/api/context-bounds/reset`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ providerKey, modelId }),
+      },
+    )
     if (response.ok) {
       const body = await response.json().catch(() => ({}))
       const count = Array.isArray(body.cleared) ? body.cleared.length : 0
-      return { ok: true, message: `Cleared learned context bounds for ${count} row${count === 1 ? '' : 's'}${scope ? ` (${scope})` : ''}.` }
+      return {
+        ok: true,
+        message: `Cleared learned context bounds for ${count} row${count === 1 ? '' : 's'}${scope ? ` (${scope})` : ''}.`,
+      }
     }
     // 404 means the router is up but predates this endpoint. Editing the file behind its
     // back would look like it worked and then be overwritten by the next save, so say so.
@@ -121,7 +141,10 @@ async function runContextReset(cliArgs) {
         message: `The router on port ${cliArgs.portValue || 7352} is running a build without context-bound resets. Restart it, then run this again.`,
       }
     }
-    return { ok: false, message: `The router answered HTTP ${response.status} to the context reset.` }
+    return {
+      ok: false,
+      message: `The router answered HTTP ${response.status} to the context reset.`,
+    }
   } catch {
     // No router on that port — fall through to the file.
   }
@@ -170,8 +193,10 @@ async function main() {
     if (result.ok) {
       console.log(result.message)
       if (result.path) console.log(`Path: ${result.path}`)
-        if (cliArgs.autostartAction === 'install') {
-        console.log('Local access only (loopback). To expose on the LAN, set host via `--host 0.0.0.0` or HAMMER_HOST.')
+      if (cliArgs.autostartAction === 'install') {
+        console.log(
+          'Local access only (loopback). To expose on the LAN, set host via `--host 0.0.0.0` or HAMMER_HOST.',
+        )
       }
       return
     }
@@ -195,36 +220,62 @@ async function main() {
   // Failing loudly is the point: without this guard the command falls through to the end of
   // main() and silently starts the router instead, which looks like it worked.
   if (cliArgs.command === 'autoupdate') {
-    console.error('The autoupdate subcommand was removed: hammer no longer updates itself. Use `hammer update` to upgrade on demand.')
+    console.error(
+      'The autoupdate subcommand was removed: hammer no longer updates itself. Use `hammer update` to upgrade on demand.',
+    )
     process.exit(1)
   }
 
   if (cliArgs.command === 'refresh-scores') {
-    const config = loadConfig();
-    const { getModelScoreAudit } = await import('../lib/score-fetcher.js');
-    const audit = await getModelScoreAudit(config);
-    console.log(chalk.green(`Scored ${audit.entries.length} configured or discovered models from OpenRouter catalog data:`));
+    const config = loadConfig()
+    const { getModelScoreAudit } = await import('../lib/score-fetcher.js')
+    const audit = await getModelScoreAudit(config)
+    console.log(
+      chalk.green(
+        `Scored ${audit.entries.length} configured or discovered models from OpenRouter catalog data:`,
+      ),
+    )
     for (const entry of audit.entries) {
-      const fallback = entry.source === 'artificial-analysis' ? '' : ' [fallback]';
-      console.log(`${(entry.score * 100).toFixed(1).padStart(5)}  ${entry.modelId}  ${entry.source}${fallback} — ${entry.detail}`);
+      const fallback = entry.source === 'artificial-analysis' ? '' : ' [fallback]'
+      console.log(
+        `${(entry.score * 100).toFixed(1).padStart(5)}  ${entry.modelId}  ${entry.source}${fallback} — ${entry.detail}`,
+      )
     }
     const counts = Object.groupBy
-      ? Object.groupBy(audit.entries, entry => entry.source)
-      : audit.entries.reduce((groups, entry) => ((groups[entry.source] ||= []).push(entry), groups), {});
-    console.log('\nSources: ' + Object.entries(counts).map(([source, rows]) => `${source}=${rows.length}`).join(', '));
-    console.log(`Coverage: measured=${audit.coverage.measured} estimated=${audit.coverage.estimated} family-matched=${audit.coverage.familyMatched} floored=${audit.coverage.floored} total=${audit.coverage.total}`);
+      ? Object.groupBy(audit.entries, (entry) => entry.source)
+      : audit.entries.reduce(
+          (groups, entry) => ((groups[entry.source] ||= []).push(entry), groups),
+          {},
+        )
+    console.log(
+      '\nSources: ' +
+        Object.entries(counts)
+          .map(([source, rows]) => `${source}=${rows.length}`)
+          .join(', '),
+    )
+    console.log(
+      `Coverage: measured=${audit.coverage.measured} estimated=${audit.coverage.estimated} family-matched=${audit.coverage.familyMatched} floored=${audit.coverage.floored} total=${audit.coverage.total}`,
+    )
     if (audit.regression) {
-      console.log(chalk.dim(`Design Arena regression trained on ${audit.regression.sampleSize} catalog models.`));
+      console.log(
+        chalk.dim(
+          `Design Arena regression trained on ${audit.regression.sampleSize} catalog models.`,
+        ),
+      )
     }
     for (const failure of audit.providerErrors) {
-      console.log(chalk.yellow(`Warning: ${failure.providerKey} discovery failed: ${failure.error}`));
+      console.log(
+        chalk.yellow(`Warning: ${failure.providerKey} discovery failed: ${failure.error}`),
+      )
     }
-    return;
+    return
   }
 
   if (cliArgs.command === 'context') {
     if (cliArgs.contextAction && cliArgs.contextAction !== 'reset') {
-      console.error(`Unknown context action: ${cliArgs.contextAction}. Use: hammer context reset [--provider <key>] [--model <id>]`)
+      console.error(
+        `Unknown context action: ${cliArgs.contextAction}. Use: hammer context reset [--provider <key>] [--model <id>]`,
+      )
       process.exit(1)
     }
     const result = await runContextReset(cliArgs)
@@ -249,7 +300,9 @@ async function main() {
         payload = (await readStdin()).trim()
       }
       if (!payload) {
-        console.error('Missing config token. Use: hammer config import <token> (or pipe token via stdin).')
+        console.error(
+          'Missing config token. Use: hammer config import <token> (or pipe token via stdin).',
+        )
         process.exit(1)
       }
 
@@ -271,7 +324,10 @@ async function main() {
         console.error('Usage: hammer config set-keys <provider> <key1,key2,...>')
         process.exit(1)
       }
-      const keys = keysRaw.split(',').map(k => k.trim()).filter(Boolean)
+      const keys = keysRaw
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean)
       if (keys.length === 0) {
         console.error('No valid keys provided.')
         process.exit(1)
@@ -311,7 +367,11 @@ async function main() {
       } else if (typeof existing === 'string' && existing) {
         config.apiKeys[provider] = [existing, key]
         saveConfig(config)
-        console.log(chalk.green(`✔ Added a second key to ${provider} (the first is spent before the second is used)`))
+        console.log(
+          chalk.green(
+            `✔ Added a second key to ${provider} (the first is spent before the second is used)`,
+          ),
+        )
       } else {
         config.apiKeys[provider] = key
         saveConfig(config)
@@ -362,8 +422,13 @@ async function main() {
         config.apiKeys[provider] = existing
       }
       saveConfig(config)
-      const removedLabel = exactIdx !== -1 ? keyOrIndex.slice(0, 4) : `[${removedIdx}] ${removed.slice(0, 4)}`
-      console.log(chalk.green(`✔ Removed key ${removedLabel}... from ${provider} (${existing.length} remaining)`))
+      const removedLabel =
+        exactIdx !== -1 ? keyOrIndex.slice(0, 4) : `[${removedIdx}] ${removed.slice(0, 4)}`
+      console.log(
+        chalk.green(
+          `✔ Removed key ${removedLabel}... from ${provider} (${existing.length} remaining)`,
+        ),
+      )
       return
     }
 
@@ -385,7 +450,9 @@ async function main() {
       if (maxTurns === 0) {
         delete config.providers[provider].maxTurns
         saveConfig(config)
-        console.log(chalk.green(`✔ maxTurns disabled for ${provider} (unlimited requests per account)`))
+        console.log(
+          chalk.green(`✔ maxTurns disabled for ${provider} (unlimited requests per account)`),
+        )
       } else {
         config.providers[provider].maxTurns = maxTurns
         saveConfig(config)
@@ -414,7 +481,9 @@ async function main() {
     console.log(chalk.bold('hammer account status'))
     console.log()
 
-    const configuredProviders = Object.keys(config.apiKeys || {}).filter(k => getApiKeyPool(config, k).length > 0)
+    const configuredProviders = Object.keys(config.apiKeys || {}).filter(
+      (k) => getApiKeyPool(config, k).length > 0,
+    )
 
     if (configuredProviders.length === 0) {
       console.log(chalk.dim('No accounts configured.'))
@@ -430,12 +499,18 @@ async function main() {
       const pool = getApiKeyPool(config, provider)
       const live = liveStatus.providers[provider]
 
-      console.log(chalk.bold(`${name} (${provider})`) + chalk.dim(` ${isEnabled ? 'enabled' : 'disabled'} | ${pool.length} account${pool.length !== 1 ? 's' : ''} | maxTurns: ${maxTurns > 0 ? maxTurns : 'unlimited'}`))
+      console.log(
+        chalk.bold(`${name} (${provider})`) +
+          chalk.dim(
+            ` ${isEnabled ? 'enabled' : 'disabled'} | ${pool.length} account${pool.length !== 1 ? 's' : ''} | maxTurns: ${maxTurns > 0 ? maxTurns : 'unlimited'}`,
+          ),
+      )
 
       for (let i = 0; i < pool.length; i++) {
         const key = pool[i]
-        const masked = key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : `${key.slice(0, 2)}***`
-        const liveAcct = live?.accounts?.find(a => a.index === i)
+        const masked =
+          key.length > 8 ? `${key.slice(0, 4)}...${key.slice(-4)}` : `${key.slice(0, 2)}***`
+        const liveAcct = live?.accounts?.find((a) => a.index === i)
         const requests = liveAcct?.requests ?? 0
         const isRateLimited = liveAcct?.rateLimited ?? false
         const hitMaxTurns = maxTurns > 0 && requests >= maxTurns
@@ -474,7 +549,8 @@ async function main() {
     try {
       const instanceStop = await stopExistingHammerProcesses()
       if (instanceStop.stopped.length > 0) console.log(chalk.dim(`  ℹ ${instanceStop.message}`))
-      else if (instanceStop.message && process.env.HAMMER_DEBUG_STARTUP === '1') console.log(chalk.dim(`  ℹ ${instanceStop.message}`))
+      else if (instanceStop.message && process.env.HAMMER_DEBUG_STARTUP === '1')
+        console.log(chalk.dim(`  ℹ ${instanceStop.message}`))
     } catch (err) {
       console.error(`Unable to stop existing Hammer processes: ${err?.message || err}`)
       process.exit(1)
@@ -485,10 +561,17 @@ async function main() {
 
   const { runServer } = await import('../lib/server.js')
 
-  await runServer(config, cliArgs.portValue || 7352, cliArgs.enableLog, cliArgs.bannedModels, cliArgs.hostValue, cliArgs.verbose)
+  await runServer(
+    config,
+    cliArgs.portValue || 7352,
+    cliArgs.enableLog,
+    cliArgs.bannedModels,
+    cliArgs.hostValue,
+    cliArgs.verbose,
+  )
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error(err)
   process.exit(1)
 })

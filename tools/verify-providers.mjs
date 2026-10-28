@@ -40,8 +40,8 @@ const REPORT_PATH = new URL('../lib/providers/verification-report.json', import.
 const DEFAULT_TIMEOUT_MS = 20_000
 
 function parseArgs(argv) {
-  const has = flag => argv.includes(flag)
-  const valueOf = flag => {
+  const has = (flag) => argv.includes(flag)
+  const valueOf = (flag) => {
     const index = argv.indexOf(flag)
     return index === -1 ? null : argv[index + 1] || null
   }
@@ -78,14 +78,22 @@ async function probeDiscovery(descriptor, { config, timeoutMs }) {
       headers: { Accept: 'application/json', ...authHeaderFor(descriptor, config) },
       signal: AbortSignal.timeout(timeoutMs),
     })
-    if (!response.ok) return { ok: false, status: response.status, models: null, error: `HTTP ${response.status}` }
+    if (!response.ok)
+      return { ok: false, status: response.status, models: null, error: `HTTP ${response.status}` }
     const payload = await response.json()
-    const models = Array.isArray(payload?.data) ? payload.data.length
-      : Array.isArray(payload?.models) ? payload.models.length
+    const models = Array.isArray(payload?.data)
+      ? payload.data.length
+      : Array.isArray(payload?.models)
+        ? payload.models.length
         : null
     return { ok: true, status: response.status, models, error: null }
   } catch (error) {
-    return { ok: false, status: null, models: null, error: error?.name === 'TimeoutError' ? 'timeout' : String(error?.message || error) }
+    return {
+      ok: false,
+      status: null,
+      models: null,
+      error: error?.name === 'TimeoutError' ? 'timeout' : String(error?.message || error),
+    }
   }
 }
 
@@ -118,9 +126,19 @@ async function probeCompletion(descriptor, { config, timeoutMs, model }) {
     const payload = await response.json().catch(() => null)
     const text = payload?.choices?.[0]?.message?.content
     const usable = typeof text === 'string' && text.trim().length > 0
-    return { ok: usable, status: response.status, usable, error: usable ? null : 'HTTP 200 with no usable text' }
+    return {
+      ok: usable,
+      status: response.status,
+      usable,
+      error: usable ? null : 'HTTP 200 with no usable text',
+    }
   } catch (error) {
-    return { ok: false, status: null, usable: false, error: error?.name === 'TimeoutError' ? 'timeout' : String(error?.message || error) }
+    return {
+      ok: false,
+      status: null,
+      usable: false,
+      error: error?.name === 'TimeoutError' ? 'timeout' : String(error?.message || error),
+    }
   }
 }
 
@@ -130,24 +148,24 @@ async function main() {
   const config = loadConfig()
 
   let targets = listProviders()
-  if (args.provider) targets = targets.filter(d => d.key === args.provider)
+  if (args.provider) targets = targets.filter((d) => d.key === args.provider)
   // Only `active` providers have an endpoint to call at all; `staged` and `refused` rows
   // are reported by coverage, not probed.
-  if (!args.provider) targets = targets.filter(d => d.activation === 'active')
+  if (!args.provider) targets = targets.filter((d) => d.activation === 'active')
 
-  const refused = targets.filter(d => d.tos === 'avoid' && !args.allowAvoid)
-  const probeable = targets.filter(d => d.tos !== 'avoid' || args.allowAvoid)
+  const refused = targets.filter((d) => d.tos === 'avoid' && !args.allowAvoid)
+  const probeable = targets.filter((d) => d.tos !== 'avoid' || args.allowAvoid)
 
   const report = {
     generatedAt: new Date().toISOString(),
     mode: args.live ? 'live' : 'coverage-only',
     coverage: summary,
-    refusedForTerms: refused.map(d => d.key),
+    refusedForTerms: refused.map((d) => d.key),
     results: [],
   }
 
   if (!args.live) {
-    report.plannedProbes = probeable.map(d => ({
+    report.plannedProbes = probeable.map((d) => ({
       key: d.key,
       origin: d.origin,
       tos: d.tos,
@@ -155,16 +173,26 @@ async function main() {
       completion: Boolean(d.chatUrl),
     }))
     emit(report, args)
-    console.log(`\nCoverage: ${summary.total} providers (${summary.hammer} hammer, ${summary.imported} imported)`)
+    console.log(
+      `\nCoverage: ${summary.total} providers (${summary.hammer} hammer, ${summary.imported} imported)`,
+    )
     console.log(`  routable:  ${summary.routable} (${summary.routableImported} of them imported)`)
-    console.log(`  staged:    ${summary.activation.staged}  <- resolvable in principle, needs provider-specific work`)
-    console.log(`  refused:   ${summary.activation.refused}  <- withheld by decision: the stricter terms posture, where --exclude-avoid withholds a row whose upstream terms flag is "avoid". A row whose free-access premise does not hold, or one duplicating a provider hammer already routes, is excluded from the roster outright instead of being carried as a refusal.`)
-    console.log(`  terms:     ok ${summary.tos.ok} / caution ${summary.tos.caution} / ambiguous ${summary.tos.ambiguous} / avoid ${summary.tos.avoid} / unknown ${summary.tos.unknown}`)
+    console.log(
+      `  staged:    ${summary.activation.staged}  <- resolvable in principle, needs provider-specific work`,
+    )
+    console.log(
+      `  refused:   ${summary.activation.refused}  <- withheld by decision: the stricter terms posture, where --exclude-avoid withholds a row whose upstream terms flag is "avoid". A row whose free-access premise does not hold, or one duplicating a provider hammer already routes, is excluded from the roster outright instead of being carried as a refusal.`,
+    )
+    console.log(
+      `  terms:     ok ${summary.tos.ok} / caution ${summary.tos.caution} / ambiguous ${summary.tos.ambiguous} / avoid ${summary.tos.avoid} / unknown ${summary.tos.unknown}`,
+    )
     const notActive = summary.blocked || []
     if (notActive.length) {
       console.log('\n  Not routable, and why:')
       for (const entry of notActive) {
-        console.log(`   ${entry.activation === 'refused' ? '⊘' : '·'} ${entry.key.padEnd(20)} ${entry.reason || '(no reason recorded)'}`)
+        console.log(
+          `   ${entry.activation === 'refused' ? '⊘' : '·'} ${entry.key.padEnd(20)} ${entry.reason || '(no reason recorded)'}`,
+        )
       }
     }
 
@@ -172,21 +200,25 @@ async function main() {
     // project or a region has to be configured before its first request can succeed. Reporting
     // that separately is what separates "not imported" from "imported, waiting on one value".
     const unconfigured = listProviders()
-      .filter(d => d.activation === 'active')
-      .map(d => ({ key: d.key, needs: shapingReadiness(config, d.key) }))
-      .filter(row => row.needs)
+      .filter((d) => d.activation === 'active')
+      .map((d) => ({ key: d.key, needs: shapingReadiness(config, d.key) }))
+      .filter((row) => row.needs)
     if (unconfigured.length) {
       console.log('\n  Routable but not configured (the rest of their shape is already wired):')
       for (const row of unconfigured) console.log(`   · ${row.key.padEnd(20)} ${row.needs}`)
     }
-    console.log(`\nDry run: would probe ${probeable.length} active provider(s). Pass --live to send requests.`)
+    console.log(
+      `\nDry run: would probe ${probeable.length} active provider(s). Pass --live to send requests.`,
+    )
     return
   }
 
   for (const descriptor of probeable) {
     const discovery = descriptor.modelsUrl ? await probeDiscovery(descriptor, args) : null
     const model = descriptor.models?.[0]?.[0] || null
-    const completion = descriptor.chatUrl ? await probeCompletion(descriptor, { ...args, model }) : null
+    const completion = descriptor.chatUrl
+      ? await probeCompletion(descriptor, { ...args, model })
+      : null
     const usable = completion ? completion.usable : false
     report.results.push({
       key: descriptor.key,
@@ -197,12 +229,16 @@ async function main() {
       verification: usable ? 'verified' : 'failed',
     })
     const mark = usable ? '✔' : '✖'
-    console.log(`${mark} ${descriptor.key.padEnd(20)} ${usable ? 'verified' : (completion?.error || discovery?.error || 'unverified')}`)
+    console.log(
+      `${mark} ${descriptor.key.padEnd(20)} ${usable ? 'verified' : completion?.error || discovery?.error || 'unverified'}`,
+    )
   }
 
-  const verified = report.results.filter(r => r.verification === 'verified').length
+  const verified = report.results.filter((r) => r.verification === 'verified').length
   report.verified = verified
-  console.log(`\n${verified}/${report.results.length} probed provider(s) answered with usable text.`)
+  console.log(
+    `\n${verified}/${report.results.length} probed provider(s) answered with usable text.`,
+  )
   emit(report, args)
 }
 
@@ -214,7 +250,7 @@ function emit(report, args) {
   if (args.json) console.log(JSON.stringify(report, null, 2))
 }
 
-main().catch(error => {
+main().catch((error) => {
   console.error(`✖ ${error.message}`)
   process.exit(1)
 })
