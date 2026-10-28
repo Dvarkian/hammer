@@ -62,7 +62,7 @@ test('the published quota table covers every provider that ships a record', () =
 // The published numbers were missing exactly where users look. Hammer registers its own
 // endpoint rows first, so the import skips those keys — including the free-tier figures the
 // vendored roster documents for them, which left the card with a citation and no limit.
-test('hammer\'s own rows carry the roster\'s published allowance', () => {
+test("hammer's own rows carry the roster's published allowance", () => {
   const table = providerQuotaTable()
   assert.equal(table.groq.steadyTokensPerMonth, 15_000_000)
   assert.equal(table.openrouter.steadyTokensPerMonth, 1_000_000)
@@ -72,7 +72,7 @@ test('hammer\'s own rows carry the roster\'s published allowance', () => {
   assert.equal(table['ollama-cloud'].steadyTokensPerMonth, 20_000_000)
 })
 
-test('a published figure is attributed without displacing the provider\'s own citation', () => {
+test("a published figure is attributed without displacing the provider's own citation", () => {
   const table = providerQuotaTable()
   const groq = table.groq
   assert.match(groq.numericSource, /OmniRoute free-tier roster/)
@@ -122,7 +122,10 @@ test('the card pairs each published limit with the recorded window it applies to
   // Counted inside the proxy-request branch, not next to the call: a manual Test is real usage
   // but not traffic the router served, and counting it would inflate the recorded side against
   // a published limit every time somebody pressed Test.
-  assert.match(server, /if \(countProxyRequest\) \{[\s\S]{0,1200}?recordUsageBuckets\(entry, sample\)/)
+  assert.match(
+    server,
+    /if \(countProxyRequest\) \{[\s\S]{0,1200}?recordUsageBuckets\(entry, sample\)/,
+  )
   assert.match(dashboard, /provider\?\.recordedUsage/)
   assert.match(dashboard, /const RECORDED_BY_PERIOD = \{/)
   // A monthly grant draws against this month's tokens, a one-off credit against lifetime
@@ -149,8 +152,13 @@ test('a refused usage endpoint reports why it was refused', () => {
 
 test('every published numeric limit renders a bar, and none without a number does', () => {
   const table = providerQuotaTable()
-  const numeric = Object.values(table).filter(quota => Array.isArray(quota.limits) && quota.limits.length > 0)
-  assert.ok(numeric.length >= 20, `expected a wide spread of published limits, saw ${numeric.length}`)
+  const numeric = Object.values(table).filter(
+    (quota) => Array.isArray(quota.limits) && quota.limits.length > 0,
+  )
+  assert.ok(
+    numeric.length >= 20,
+    `expected a wide spread of published limits, saw ${numeric.length}`,
+  )
   for (const quota of numeric) {
     for (const limit of quota.limits) {
       assert.ok(limit.limit > 0, `${quota.source} limit must be positive`)

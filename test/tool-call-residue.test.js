@@ -37,8 +37,9 @@ test('the leaked envelope remnant is removed byte for byte', () => {
 })
 
 test('a full envelope and its ASCII spelling both go', () => {
-  const full = '<｜DSML｜function▁calls><｜DSML｜invoke name="run_terminal_command">'
-    + '</｜DSML｜invoke></｜DSML｜function▁calls>'
+  const full =
+    '<｜DSML｜function▁calls><｜DSML｜invoke name="run_terminal_command">' +
+    '</｜DSML｜invoke></｜DSML｜function▁calls>'
   assert.equal(stripResidueTags(full), '')
   assert.equal(stripResidueTags('<|DSML|function_calls></|DSML|function_calls>'), '')
   assert.equal(stripResidueTags('answer <｜DSML｜ calls> more'), 'answer  more')
@@ -52,7 +53,10 @@ test('ordinary text, HTML and code are untouched', () => {
 })
 
 test('a message content array is scrubbed part by part', () => {
-  const input = [{ type: 'text', text: LEAKED }, { type: 'image_url', image_url: { url: 'x' } }]
+  const input = [
+    { type: 'text', text: LEAKED },
+    { type: 'image_url', image_url: { url: 'x' } },
+  ]
   const { content, changed } = scrubContentResidue(input)
   assert.equal(changed, true)
   assert.equal(content[0].text, '\n\n\n')
@@ -64,7 +68,9 @@ test('a message content array is scrubbed part by part', () => {
 
 test('a non-streamed body is scrubbed, and an unreadable one is handed over as it arrived', () => {
   const body = JSON.stringify({
-    choices: [{ index: 0, message: { role: 'assistant', content: LEAKED }, finish_reason: 'tool_calls' }],
+    choices: [
+      { index: 0, message: { role: 'assistant', content: LEAKED }, finish_reason: 'tool_calls' },
+    ],
   })
   assert.equal(JSON.parse(scrubChatCompletionBody(body)).choices[0].message.content, '\n\n\n')
 
@@ -121,7 +127,10 @@ test('a replayed transcript loses the remnant whatever role or shape carries it'
     messages: [
       { role: 'assistant', content: LEAKED, tool_calls: [{ id: 'call_1', type: 'function' }] },
       { role: 'user', content: 'Progress note:\n<｜DSML｜ calls>' },
-      { role: 'user', content: [{ type: 'text', text: `<conversation_summary>${LEAKED}</conversation_summary>` }] },
+      {
+        role: 'user',
+        content: [{ type: 'text', text: `<conversation_summary>${LEAKED}</conversation_summary>` }],
+      },
       { role: 'assistant', content: 'clean' },
     ],
   }
@@ -130,7 +139,10 @@ test('a replayed transcript loses the remnant whatever role or shape carries it'
   assert.deepEqual(stripped, ['content[dsml]'])
   assert.equal(out.messages[0].content, '\n\n\n')
   assert.equal(out.messages[1].content, 'Progress note:\n')
-  assert.equal(out.messages[2].content[0].text, '<conversation_summary>\n\n\n</conversation_summary>')
+  assert.equal(
+    out.messages[2].content[0].text,
+    '<conversation_summary>\n\n\n</conversation_summary>',
+  )
   // The scrub touches content and nothing else: the calls the turn must keep are still there.
   assert.equal(out.messages[0].tool_calls, body.messages[0].tool_calls)
   assert.equal(out.messages[3], body.messages[3], 'a clean turn is passed through by reference')

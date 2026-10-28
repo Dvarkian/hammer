@@ -60,7 +60,6 @@ const CACHE_DIR = new URL('./.cache/omniroute/', import.meta.url)
 /** Formats that can be proxied by hammer's generic OpenAI-compatible path. */
 const GENERIC_OPENAI_FORMATS = new Set(['openai'])
 
-
 /**
  * Roster keys whose registry directory is not the same as the key. Kept explicit rather
  * than guessed, so a mismatch is visible instead of silently resolving to nothing.
@@ -153,7 +152,8 @@ const EXECUTOR_PROFILES = {
    * sidebar of dash.cloudflare.com — so the provider stays inert until one is supplied.
    */
   'cloudflare-ai': {
-    chatUrlTemplate: 'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions',
+    chatUrlTemplate:
+      'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions',
     /**
      * The model list is deliberately NOT the sibling of the chat path, because Workers AI has
      * no `GET /ai/v1/models`: its OpenAI-compatible layer serves only `/chat/completions`,
@@ -196,17 +196,20 @@ const EXECUTOR_PROFILES = {
  * "needs an adapter", so the next pass knows what it is signing up for.
  */
 const BESPOKE_EXECUTORS = {
-  huggingchat: 'HuggingChat signs in through HuggingFace OAuth (an unauthenticated GET answers 302 to '
-    + '/oauth/authorize, verified 2026-09-22) and then needs a session cookie plus a create-conversation '
-    + 'round trip before any message is sent',
-  'muse-spark-web': 'Muse Spark is a cookie-authenticated GraphQL endpoint, not a chat-completions API',
-  'qwen-web': 'Qwen Chat issues no API key — the bearer its registry entry names is a logged-in browser '
-    + 'session token, and the chat endpoint sits behind an Aliyun WAF interstitial (a bodyless POST returns '
-    + 'the WAF challenge page rather than an auth error, verified 2026-09-22)',
+  huggingchat:
+    'HuggingChat signs in through HuggingFace OAuth (an unauthenticated GET answers 302 to ' +
+    '/oauth/authorize, verified 2026-09-22) and then needs a session cookie plus a create-conversation ' +
+    'round trip before any message is sent',
+  'muse-spark-web':
+    'Muse Spark is a cookie-authenticated GraphQL endpoint, not a chat-completions API',
+  'qwen-web':
+    'Qwen Chat issues no API key — the bearer its registry entry names is a logged-in browser ' +
+    'session token, and the chat endpoint sits behind an Aliyun WAF interstitial (a bodyless POST returns ' +
+    'the WAF challenge page rather than an auth error, verified 2026-09-22)',
   't3-web': 't3.chat authenticates with a session cookie and streams its own frame shape',
-  antigravity: "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines)",
+  antigravity:
+    "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines)",
 }
-
 
 /**
  * Executors whose "protocol" is a client attestation to defeat rather than a format to
@@ -224,13 +227,14 @@ const BESPOKE_EXECUTORS = {
  * same decision as declining a provider. `NOT_FREE_KEYS` is where the latter lives.
  */
 const DECLINED_EXECUTORS = {
-  'duckduckgo-web': 'Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation '
-    + 'attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads '
-    + '`navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an '
-    + "iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and "
-    + 'expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means '
-    + 'impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no '
-    + 'legitimate client that talks to this endpoint',
+  'duckduckgo-web':
+    'Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation ' +
+    'attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads ' +
+    '`navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an ' +
+    "iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and " +
+    'expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means ' +
+    'impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no ' +
+    'legitimate client that talks to this endpoint',
 }
 
 /**
@@ -243,7 +247,11 @@ const DECLINED_EXECUTORS = {
  */
 function pickOpenAiAlternate(entry) {
   const alternates = Array.isArray(entry.alternateFormats) ? entry.alternateFormats : []
-  return alternates.find(a => a.format === 'openai' && CHAT_COMPLETIONS_SUFFIX.test(a.baseUrl || '')) || null
+  return (
+    alternates.find(
+      (a) => a.format === 'openai' && CHAT_COMPLETIONS_SUFFIX.test(a.baseUrl || ''),
+    ) || null
+  )
 }
 
 /**
@@ -262,7 +270,11 @@ function pickOpenAiAlternate(entry) {
  */
 export function termsRefusal({ tos, note }, excludeAvoid) {
   if (tos !== 'avoid' || !excludeAvoid) return null
-  return { activation: 'refused', reason: `terms flag "avoid"${note ? `: ${note}` : ''}`, resolution: null }
+  return {
+    activation: 'refused',
+    reason: `terms flag "avoid"${note ? `: ${note}` : ''}`,
+    resolution: null,
+  }
 }
 
 function credentialShapeFor(authHeader) {
@@ -311,11 +323,11 @@ async function fetchText(path, { cache = true } = {}) {
  */
 export function parseRegistryEntry(source) {
   const text = String(source || '')
-  const stringField = name => {
+  const stringField = (name) => {
     const match = text.match(new RegExp(`^\\s*${name}:\\s*"([^"]*)"`, 'm'))
     return match ? match[1] : null
   }
-  const numberField = name => {
+  const numberField = (name) => {
     const match = text.match(new RegExp(`^\\s*${name}:\\s*(\\d[\\d_]*)`, 'm'))
     return match ? Number(match[1].replace(/_/g, '')) : null
   }
@@ -411,7 +423,7 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
   if (!entry) {
     return {
       activation: 'staged',
-      reason: 'no matching entry in OmniRoute\'s provider registry',
+      reason: "no matching entry in OmniRoute's provider registry",
       resolution: null,
     }
   }
@@ -444,16 +456,21 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
   }
 
   if (!entry.baseUrl && !alternate && !profile?.chatUrlTemplate) {
-    return { activation: 'staged', reason: 'no base URL published for this provider upstream', resolution: null }
+    return {
+      activation: 'staged',
+      reason: 'no base URL published for this provider upstream',
+      resolution: null,
+    }
   }
 
   // Format: a URL template, an override, an OpenAI alternate, an explicit declaration, or
   // OmniRoute's own OpenAI-compatible builder.
-  const openAiCompatible = Boolean(profile?.chatUrlTemplate)
-    || Boolean(override)
-    || Boolean(alternate)
-    || GENERIC_OPENAI_FORMATS.has(entry.format)
-    || entry.usesOpenAiCompatibleHelper
+  const openAiCompatible =
+    Boolean(profile?.chatUrlTemplate) ||
+    Boolean(override) ||
+    Boolean(alternate) ||
+    GENERIC_OPENAI_FORMATS.has(entry.format) ||
+    entry.usesOpenAiCompatibleHelper
   if (!openAiCompatible) {
     const described = entry.format ? `wire format "${entry.format}"` : 'wire format'
     return {
@@ -511,9 +528,7 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
   // Anything a provider needs beyond a key it must say so, or the first request fails with a
   // URL that has a literal `{accountId}` in it. Naming the fields here is what turns that
   // into a configuration prompt instead of a mystery 404.
-  const credentialFields = [
-    ...(profile?.credentialFields || []),
-  ]
+  const credentialFields = [...(profile?.credentialFields || [])]
 
   /**
    * Request shaping: every difference between this provider and a bare OpenAI endpoint that
@@ -525,13 +540,22 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
       ? { headers: { ...(entry.headers || {}), ...(profile?.headers || {}) } }
       : {}),
     ...(entry.requestDefaults || profile?.requestDefaults
-      ? { requestDefaults: { ...(entry.requestDefaults || {}), ...(profile?.requestDefaults || {}) } }
+      ? {
+          requestDefaults: {
+            ...(entry.requestDefaults || {}),
+            ...(profile?.requestDefaults || {}),
+          },
+        }
       : {}),
-    ...(profile?.flattenTextContent || entry.requiresPlainStringContent ? { flattenTextContent: true } : {}),
+    ...(profile?.flattenTextContent || entry.requiresPlainStringContent
+      ? { flattenTextContent: true }
+      : {}),
     ...(entry.modelIdPrefix ? { modelIdPrefix: entry.modelIdPrefix } : {}),
     ...(profile?.chatUrlTemplate ? { urlTemplate: true } : {}),
     ...(credentialFields.length > 0 ? { credentialFields } : {}),
-    ...(profile?.timeoutMs || entry.timeoutMs ? { timeoutMs: profile?.timeoutMs || entry.timeoutMs } : {}),
+    ...(profile?.timeoutMs || entry.timeoutMs
+      ? { timeoutMs: profile?.timeoutMs || entry.timeoutMs }
+      : {}),
   }
 
   return {
@@ -543,7 +567,7 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
       // served somewhere other than the sibling of their chat path (Cloudflare).
       modelsUrl: profile?.modelsUrl || entry.modelsUrl || null,
       auth: {
-        kind: keyless ? 'none' : (profile?.credentialKind || 'bearer'),
+        kind: keyless ? 'none' : profile?.credentialKind || 'bearer',
         // No key needed, and a key is accepted when present.
         ...(keyless ? { optional: true } : {}),
         ...credentialShape,
@@ -557,7 +581,7 @@ export function decideResolution({ key, access: _access, tos: _tos, note: _note,
         ...(entry.executor !== 'default' && profile ? { executor: entry.executor } : {}),
         // Recorded as provenance, not used for routing: discovery supplies the live list.
         modelCount: entry.models.length,
-        declaredModels: entry.models.slice(0, 40).map(m => m.id),
+        declaredModels: entry.models.slice(0, 40).map((m) => m.id),
       },
     },
   }
@@ -568,17 +592,20 @@ async function main() {
   const checkOnly = args.includes('--check')
   const excludeAvoid = args.includes('--exclude-avoid')
   const onlyIndex = args.indexOf('--provider')
-  const only = onlyIndex === -1 ? null : new Set((args[onlyIndex + 1] || '').split(',').map(s => s.trim()))
+  const only =
+    onlyIndex === -1 ? null : new Set((args[onlyIndex + 1] || '').split(',').map((s) => s.trim()))
 
-  const catalog = JSON.parse(readFileSync(new URL('../lib/providers/omniroute-catalog.json', import.meta.url), 'utf8'))
-  const roster = (catalog.providers || []).filter(p => !only || only.has(p.key))
+  const catalog = JSON.parse(
+    readFileSync(new URL('../lib/providers/omniroute-catalog.json', import.meta.url), 'utf8'),
+  )
+  const roster = (catalog.providers || []).filter((p) => !only || only.has(p.key))
 
   console.log(`fetching ${INDEX_PATH} …`)
   const indexSource = await fetchText(INDEX_PATH)
   const slugs = parseRegistryIndex(indexSource)
   console.log(`registry assembles ${slugs.length} provider entries`)
 
-  const slugByKey = new Map(slugs.map(slug => [slug, slug]))
+  const slugByKey = new Map(slugs.map((slug) => [slug, slug]))
   const resolutions = {}
   const report = { active: [], refused: [], staged: [] }
   let fetched = 0
@@ -645,13 +672,12 @@ async function main() {
       registryPrefix: REGISTRY_PREFIX,
       generatedAt: new Date().toISOString(),
       attribution:
-        'Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute\'s provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.',
+        "Per-provider endpoints, wire formats and auth shapes extracted from OmniRoute's provider registry (MIT). Only entries that ride a generic OpenAI-compatible + bearer path are activated; everything else is recorded as staged with its reason rather than guessed at.",
       activationRule:
-        'active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider\'s own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.',
-      tosPolicy:
-        excludeAvoid
-          ? 'exclude-avoid: providers whose upstream terms flag is "avoid" are refused and given no endpoint.'
-          : 'Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead.',
+        "active = an OpenAI-compatible wire format AND a credential hammer can send (static, optional, or none) AND a chat-completions endpoint. An executor only blocks a provider when nothing about it is declarative — a profile, a URL template, or the provider's own declared OpenAI alternate format all count. Model lists are NOT resolved here: discovery is lazy, so /v1/models supplies them on first use.",
+      tosPolicy: excludeAvoid
+        ? 'exclude-avoid: providers whose upstream terms flag is "avoid" are refused and given no endpoint.'
+        : 'Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead.',
     },
     summary: {
       active: report.active.length,
@@ -662,7 +688,9 @@ async function main() {
     providers: resolutions,
   }
 
-  console.log(`\nactive ${report.active.length} · refused ${report.refused.length} · staged ${report.staged.length}`)
+  console.log(
+    `\nactive ${report.active.length} · refused ${report.refused.length} · staged ${report.staged.length}`,
+  )
 
   if (checkOnly) {
     console.log('--check: nothing written')
@@ -675,7 +703,7 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => {
+  main().catch((error) => {
     console.error(`✖ ${error.message}`)
     process.exit(1)
   })

@@ -53,7 +53,11 @@ import {
   lazyProviderSourceEntries as lazyEntriesDirect,
   loadResolutions,
 } from '../lib/providers/resolutions.js'
-import { normalizeDescriptor, validateDescriptor, derivedModelsUrl } from '../lib/providers/schema.js'
+import {
+  normalizeDescriptor,
+  validateDescriptor,
+  derivedModelsUrl,
+} from '../lib/providers/schema.js'
 import {
   applyRequestShaping,
   credentialFieldList,
@@ -72,7 +76,11 @@ import {
   buildNlpCloudUrl,
   transformNlpCloudResponse,
 } from '../lib/providers/nlpcloud.js'
-import { humanizeProviderKey, loadKeyPages, loadOmniRouteCatalog } from '../lib/providers/omniroute.js'
+import {
+  humanizeProviderKey,
+  loadKeyPages,
+  loadOmniRouteCatalog,
+} from '../lib/providers/omniroute.js'
 import {
   clearKiroTokenCaches,
   accountRefusalIn,
@@ -106,19 +114,38 @@ import {
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
 import { sources, canonicalizeModelId, getScore, MODELS } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
-import { isAccountBudgetRefusalText, isAuthoritativeProbeFailure, isCachedReplayResponse, isIncompatibleModelError, isProviderOverloadedError, isQuotaExhaustionError, isRateLimitedErrorText, rankModelsForRouting } from '../lib/utils.js'
-import { EXCLUDED_PROVIDER_KEYS, parseTokenFigure, parseProviderRoster, parseFrontmatter } from '../tools/sync-omniroute-catalog.mjs'
-import { parseRegistryEntry, parseRegistryIndex, decideResolution, termsRefusal } from '../tools/resolve-omniroute-endpoints.mjs'
+import {
+  isAccountBudgetRefusalText,
+  isAuthoritativeProbeFailure,
+  isCachedReplayResponse,
+  isIncompatibleModelError,
+  isProviderOverloadedError,
+  isQuotaExhaustionError,
+  isRateLimitedErrorText,
+  rankModelsForRouting,
+} from '../lib/utils.js'
+import {
+  EXCLUDED_PROVIDER_KEYS,
+  parseTokenFigure,
+  parseProviderRoster,
+  parseFrontmatter,
+} from '../tools/sync-omniroute-catalog.mjs'
+import {
+  parseRegistryEntry,
+  parseRegistryIndex,
+  decideResolution,
+  termsRefusal,
+} from '../tools/resolve-omniroute-endpoints.mjs'
 
 /** Order-insensitive deep comparison, because these tables are lookups, not sequences. */
 function sortsDeepEqual(actual, expected) {
-  const canonical = value =>
+  const canonical = (value) =>
     Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
   assert.deepEqual(canonical(actual), canonical(expected))
 }
 
-const imported = () => listProviders().filter(d => d.origin === 'omniroute')
-const activationOf = activation => imported().filter(d => d.activation === activation)
+const imported = () => listProviders().filter((d) => d.origin === 'omniroute')
+const activationOf = (activation) => imported().filter((d) => d.activation === activation)
 
 // ── Behavior parity with the tables the registry replaced ──────────────────────────────
 
@@ -207,7 +234,10 @@ test('the optional-auth set stays keyless, and ollama stays local-only', () => {
   assert.equal(getProvider('ollama').auth.optional, false)
   assert.equal(isProviderAuthOptional(config, 'ollama'), false)
   assert.equal(
-    isProviderAuthOptional({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'),
+    isProviderAuthOptional(
+      { providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } },
+      'ollama',
+    ),
     true,
   )
 })
@@ -240,27 +270,39 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
   // Ollama Cloud (public `/api/tags`, key-gated chat), and GitHub Copilot, whose twelve curated
   // rows were merged back by name whenever no token was configured. Every one of those rows
   // answered NO_KEY: capability in the table, an auth error on the first request.
-  const cleared = ['GITHUB_COPILOT_TOKEN', 'DEVIN_API_KEY', 'DEVIN_SESSION_TOKEN', 'OLLAMA_API_KEY', 'KIRO_REFRESH_TOKEN']
-  const saved = cleared.map(name => [name, process.env[name]])
+  const cleared = [
+    'GITHUB_COPILOT_TOKEN',
+    'DEVIN_API_KEY',
+    'DEVIN_SESSION_TOKEN',
+    'OLLAMA_API_KEY',
+    'KIRO_REFRESH_TOKEN',
+  ]
+  const saved = cleared.map((name) => [name, process.env[name]])
   // Kiro also discovers a refresh token from ~/.aws/sso/cache/kiro-auth-token.json, so clearing
   // the env alone does not make it unconfigured on a dev machine that has that cache.
   // Clear the in-memory discovery cache and hide the on-disk file for the duration of this test.
-  const { existsSync: _existsSyncForTest, renameSync: _renameSyncForTest } = await import('node:fs');
-  const { homedir: _homedirForTest } = await import('node:os');
-  const { join: _joinForTest } = await import('node:path');
-  const _kiroCachePath = _joinForTest(_homedirForTest(), '.aws', 'sso', 'cache', 'kiro-auth-token.json');
-  const _kiroCacheBackupPath = _kiroCachePath + '.test-backup';
-  let _kiroCacheWasPresent = false;
+  const { existsSync: _existsSyncForTest, renameSync: _renameSyncForTest } = await import('node:fs')
+  const { homedir: _homedirForTest } = await import('node:os')
+  const { join: _joinForTest } = await import('node:path')
+  const _kiroCachePath = _joinForTest(
+    _homedirForTest(),
+    '.aws',
+    'sso',
+    'cache',
+    'kiro-auth-token.json',
+  )
+  const _kiroCacheBackupPath = _kiroCachePath + '.test-backup'
+  let _kiroCacheWasPresent = false
   try {
     // A credential in the environment is a configured credential, so the negative cases below
     // are only meaningful with these unset. Restored in the `finally`.
     for (const name of cleared) delete process.env[name]
-    clearKiroTokenCaches();
+    clearKiroTokenCaches()
     if (_existsSyncForTest(_kiroCachePath) && !_existsSyncForTest(_kiroCacheBackupPath)) {
-      _renameSyncForTest(_kiroCachePath, _kiroCacheBackupPath);
-      _kiroCacheWasPresent = true;
+      _renameSyncForTest(_kiroCachePath, _kiroCacheBackupPath)
+      _kiroCacheWasPresent = true
     }
-    clearKiroTokenCaches();
+    clearKiroTokenCaches()
     const empty = { apiKeys: {}, providers: {} }
 
     for (const key of ['github-copilot', 'openai-codex', 'kiro', 'devin', 'ollama', 'cohere']) {
@@ -269,17 +311,38 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
     // And each of those really does declare rows, because otherwise the assertions above would
     // hold for the wrong reason: the gate is the only thing between them and the table.
     for (const key of ['github-copilot', 'openai-codex', 'kiro', 'devin']) {
-      assert.ok(MODELS.some(row => row[4] === key), `${key} declares rows that only this gate suppresses`)
+      assert.ok(
+        MODELS.some((row) => row[4] === key),
+        `${key} declares rows that only this gate suppresses`,
+      )
     }
 
     // Each credential form brings its provider back, read where its own card reads it: an API
     // key, an OAuth account, or a session token. Those are three different places, which is why
     // the answer comes from the helpers that own them rather than from `apiKeys` alone.
-    assert.equal(providerCanServe({ apiKeys: { 'github-copilot': 'gho_x' } }, 'github-copilot'), true)
-    assert.equal(providerCanServe({ providers: { 'github-copilot': { oauthToken: 'gho_x' } } }, 'github-copilot'), true)
-    assert.equal(providerCanServe({ providers: { 'openai-codex': { accounts: [{ secret: 'rt' }] } } }, 'openai-codex'), true)
+    assert.equal(
+      providerCanServe({ apiKeys: { 'github-copilot': 'gho_x' } }, 'github-copilot'),
+      true,
+    )
+    assert.equal(
+      providerCanServe(
+        { providers: { 'github-copilot': { oauthToken: 'gho_x' } } },
+        'github-copilot',
+      ),
+      true,
+    )
+    assert.equal(
+      providerCanServe(
+        { providers: { 'openai-codex': { accounts: [{ secret: 'rt' }] } } },
+        'openai-codex',
+      ),
+      true,
+    )
     assert.equal(providerCanServe({ apiKeys: { kiro: 'k' } }, 'kiro'), true)
-    assert.equal(providerCanServe({ providers: { devin: { sessionToken: 'sess' } } }, 'devin'), true)
+    assert.equal(
+      providerCanServe({ providers: { devin: { sessionToken: 'sess' } } }, 'devin'),
+      true,
+    )
 
     // Keyless by declaration is not gated. Asking rather than assuming is what keeps this from
     // hardening into "an unconfigured provider is never listed", which would delete providers
@@ -289,17 +352,22 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
     }
     // Ollama is keyless by where it points instead: a local base URL needs no credential, and
     // the hosted default does.
-    assert.equal(providerCanServe({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'), true)
+    assert.equal(
+      providerCanServe({ providers: { ollama: { baseUrl: 'http://127.0.0.1:11434' } } }, 'ollama'),
+      true,
+    )
   } finally {
     for (const [name, value] of saved) {
-      if (value === undefined) delete process.env[name];
-      else process.env[name] = value;
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
     }
-    clearKiroTokenCaches();
+    clearKiroTokenCaches()
     if (_kiroCacheWasPresent && _existsSyncForTest(_kiroCacheBackupPath)) {
-      try { _renameSyncForTest(_kiroCacheBackupPath, _kiroCachePath); } catch {}
+      try {
+        _renameSyncForTest(_kiroCacheBackupPath, _kiroCachePath)
+      } catch {}
     }
-    clearKiroTokenCaches();
+    clearKiroTokenCaches()
   }
 })
 
@@ -311,8 +379,13 @@ test('a Test asks its question in prose, and asks a different one on every click
   const QUESTION = 'Please respond with a creative, funny, inspiring 30 words about hammers.'
   const prompts = Array.from({ length: 500 }, () => buildModelTestPrompt())
   // The question never moves, which is what keeps two clicks — and two rows — comparable.
-  assert.ok(prompts.every(prompt => prompt.startsWith(QUESTION)), 'the question must not change between clicks')
-  assert.ok(prompts.every(prompt => /^Please respond with[\s\S]+ Mention .+ and .+\.$/.test(prompt)))
+  assert.ok(
+    prompts.every((prompt) => prompt.startsWith(QUESTION)),
+    'the question must not change between clicks',
+  )
+  assert.ok(
+    prompts.every((prompt) => /^Please respond with[\s\S]+ Mention .+ and .+\.$/.test(prompt)),
+  )
   // 500 draws out of 32⁴ ≈ 1M marker combinations: a collision is a cached answer recorded as
   // this row's own measurement, so this is the assertion that keeps the vocabulary honest.
   //
@@ -322,7 +395,10 @@ test('a Test asks its question in prose, and asks a different one on every click
   // distinct made this test flaky at roughly that rate. Six collisions (λ would have to be ~6,
   // i.e. a vocabulary tens of times smaller than the one claimed) is the point where the word
   // lists have collapsed, and it cannot be reached by chance: P(X ≥ 6) at λ = 0.12 is under 1e-7.
-  assert.ok(new Set(prompts).size >= 494, `marker collided ${500 - new Set(prompts).size} times in 500 draws`)
+  assert.ok(
+    new Set(prompts).size >= 494,
+    `marker collided ${500 - new Set(prompts).size} times in 500 draws`,
+  )
   for (const prompt of prompts) {
     // The marker alone is held to this, not the question: "30 words" is a digit by design, and
     // the question is the part that answered when the marker was dropped.
@@ -331,8 +407,16 @@ test('a Test asks its question in prose, and asks a different one on every click
     // `(test id: ab12cd34)` was refused even at 30 characters, while the same question with the
     // marker dropped, and the same marker with its parentheses dropped, both answered.
     const marker = prompt.slice(QUESTION.length)
-    assert.doesNotMatch(marker, /[()[\]:]|\d/, `${marker} carries a parenthesised or metadata shape`)
-    assert.doesNotMatch(marker, /\b(test|session|id|key|token|apikey)\b/i, `${marker} reads as metadata`)
+    assert.doesNotMatch(
+      marker,
+      /[()[\]:]|\d/,
+      `${marker} carries a parenthesised or metadata shape`,
+    )
+    assert.doesNotMatch(
+      marker,
+      /\b(test|session|id|key|token|apikey)\b/i,
+      `${marker} reads as metadata`,
+    )
   }
   // The two pairs are never the same pair: it is an invariant, not a retry, so it holds even for
   // a generator that returns one value forever.
@@ -340,27 +424,46 @@ test('a Test asks its question in prose, and asks a different one on every click
   assert.ok(degenerate, 'the marker must keep the shape the accepted route answered')
   assert.notEqual(degenerate[1], degenerate[2], 'a marker asked for the same thing twice')
   // 'a' or 'an': the vocabulary is open, so the article has to be chosen, not hardcoded.
-  assert.match(buildModelTestPrompt(() => 0), /Mention an (amber|anchor)/)
+  assert.match(
+    buildModelTestPrompt(() => 0),
+    /Mention an (amber|anchor)/,
+  )
 })
 
 test('a Test timeout is identified by its own deadline, not an arbitrary AbortError', () => {
   const upstreamAbort = Object.assign(new Error('upstream stream aborted'), { name: 'AbortError' })
 
   assert.deepEqual(
-    classifyTestTransportError(upstreamAbort, { timedOut: false, elapsedMs: 12_345, timeoutMs: 60_000 }),
+    classifyTestTransportError(upstreamAbort, {
+      timedOut: false,
+      elapsedMs: 12_345,
+      timeoutMs: 60_000,
+    }),
     { error: 'upstream stream aborted', isTimeout: false, elapsedMs: 12_345 },
   )
 
   assert.deepEqual(
-    classifyTestTransportError(new Error('aborted by the test timer'), { timedOut: true, elapsedMs: 60_001, timeoutMs: 60_000 }),
+    classifyTestTransportError(new Error('aborted by the test timer'), {
+      timedOut: true,
+      elapsedMs: 60_001,
+      timeoutMs: 60_000,
+    }),
     { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 60_001 },
   )
   assert.deepEqual(
-    classifyTestTransportError(new Error('deadline'), { timedOut: true, elapsedMs: 59_500, timeoutMs: 60_000 }),
+    classifyTestTransportError(new Error('deadline'), {
+      timedOut: true,
+      elapsedMs: 59_500,
+      timeoutMs: 60_000,
+    }),
     { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 59_500 },
   )
   assert.deepEqual(
-    classifyTestTransportError(new Error('deadline'), { timedOut: true, elapsedMs: 60_500, timeoutMs: 60_000 }),
+    classifyTestTransportError(new Error('deadline'), {
+      timedOut: true,
+      elapsedMs: 60_500,
+      timeoutMs: 60_000,
+    }),
     { error: 'Request timed out after 61s.', isTimeout: true, elapsedMs: 60_500 },
   )
 
@@ -368,27 +471,45 @@ test('a Test timeout is identified by its own deadline, not an arbitrary AbortEr
     classifyTestTransportError(null, { timedOut: true, elapsedMs: -1, timeoutMs: 0 }),
     { error: 'Request timed out after 60s.', isTimeout: true, elapsedMs: 60_000 },
   )
-  assert.deepEqual(
-    classifyTestTransportError(new Error(''), null),
-    { error: 'Network error', isTimeout: false, elapsedMs: 0 },
-  )
+  assert.deepEqual(classifyTestTransportError(new Error(''), null), {
+    error: 'Network error',
+    isTimeout: false,
+    elapsedMs: 0,
+  })
 })
 
-test('a chat endpoint names the site a provider\'s brand mark comes from', () => {
+test("a chat endpoint names the site a provider's brand mark comes from", () => {
   // The plot used to draw every imported provider as a blank disc, because the domain it used
   // came from a hand-written list of hammer's own fifteen providers. The derivation replaces it:
   // the registrable name of the provider's registered chat endpoint.
   assert.equal(faviconDomainFromUrl('https://api.groq.com/openai/v1/chat/completions'), 'groq.com')
-  assert.equal(faviconDomainFromUrl('https://integrate.api.nvidia.com/v1/chat/completions'), 'nvidia.com')
-  assert.equal(faviconDomainFromUrl('https://hermes.ai.unturf.com/v1/chat/completions'), 'unturf.com')
-  assert.equal(faviconDomainFromUrl('https://chatgpt.com/backend-api/codex/responses'), 'chatgpt.com')
+  assert.equal(
+    faviconDomainFromUrl('https://integrate.api.nvidia.com/v1/chat/completions'),
+    'nvidia.com',
+  )
+  assert.equal(
+    faviconDomainFromUrl('https://hermes.ai.unturf.com/v1/chat/completions'),
+    'unturf.com',
+  )
+  assert.equal(
+    faviconDomainFromUrl('https://chatgpt.com/backend-api/codex/responses'),
+    'chatgpt.com',
+  )
 
   // And empty is a supported answer, because the monogram underneath is honest where a wrong
   // brand mark is not. A template host is not a site, a hosting platform's suffix is the
   // platform's icon rather than the provider's, and a single label is a machine.
   assert.equal(faviconDomainFromUrl('https://{region}-aiplatform.googleapis.com/v1/chat'), '')
-  assert.equal(faviconDomainFromUrl('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions'), '')
-  assert.equal(faviconDomainFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/agent_stream'), '')
+  assert.equal(
+    faviconDomainFromUrl(
+      'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    ),
+    '',
+  )
+  assert.equal(
+    faviconDomainFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/agent_stream'),
+    '',
+  )
   assert.equal(faviconDomainFromUrl('http://localhost:11434/v1/chat/completions'), '')
   assert.equal(faviconDomainFromUrl('not a url'), '')
   assert.equal(faviconDomainFromUrl(''), '')
@@ -397,7 +518,10 @@ test('a chat endpoint names the site a provider\'s brand mark comes from', () =>
   // The host is kept as well as its registration, because either may be the site whose icon
   // exists — but a host that *is* a hosting platform, or sits under one, is refused here too: its
   // mark would be the platform's.
-  assert.equal(faviconHostFromUrl('https://spark-api-open.xf-yun.com/v1/chat/completions'), 'spark-api-open.xf-yun.com')
+  assert.equal(
+    faviconHostFromUrl('https://spark-api-open.xf-yun.com/v1/chat/completions'),
+    'spark-api-open.xf-yun.com',
+  )
   assert.equal(faviconHostFromUrl('https://us-central1-gptfree-2.cloudfunctions.net/x'), '')
   assert.equal(faviconHostFromUrl('file:///etc/passwd'), '')
 
@@ -443,7 +567,11 @@ test('a provider offers every site it names, so a missing icon is not a missing 
     const domains = providerFaviconDomains(provider.key)
     assert.equal(new Set(domains).size, domains.length, `${provider.key} repeats a candidate`)
     for (const domain of domains) {
-      assert.equal(normalizeFaviconDomain(domain), domain, `${provider.key}: ${domain} is not a hostname`)
+      assert.equal(
+        normalizeFaviconDomain(domain),
+        domain,
+        `${provider.key}: ${domain} is not a hostname`,
+      )
     }
   }
 })
@@ -454,10 +582,22 @@ test('the favicon endpoint accepts a hostname and nothing else', () => {
     assert.equal(normalizeFaviconDomain(value), value.toLowerCase(), `${value} is a hostname`)
   }
   for (const value of [
-    'https://nvidia.com', 'nvidia.com/path', 'nvidia.com:443', 'a b.com', 'nvidia_corp.com',
-    'nvidia', '..', 'nvidia..com', '-nvidia.com', '', '   ', null, undefined,
+    'https://nvidia.com',
+    'nvidia.com/path',
+    'nvidia.com:443',
+    'a b.com',
+    'nvidia_corp.com',
+    'nvidia',
+    '..',
+    'nvidia..com',
+    '-nvidia.com',
+    '',
+    '   ',
+    null,
+    undefined,
     // A literal address is not a site, and the numeric form must not survive the shape test.
-    '169.254.169.254', '127.0.0.1',
+    '169.254.169.254',
+    '127.0.0.1',
   ]) {
     assert.equal(normalizeFaviconDomain(value), '', `${String(value)} must not be fetched`)
   }
@@ -470,7 +610,11 @@ test('the plot asks one place for a brand mark, and keeps no second domain list'
   // look identical to "the favicon service is down", and why the domain map lives on the router
   // rather than in a list here that covers hammer's own providers and nothing else.
   const src = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
-  assert.equal((src.match(/google\.com\/s2\/favicons/g) || []).length, 1, 'one third-party fallback')
+  assert.equal(
+    (src.match(/google\.com\/s2\/favicons/g) || []).length,
+    1,
+    'one third-party fallback',
+  )
   assert.equal((src.match(/\/api\/favicon\?domain=/g) || []).length, 1, 'one router URL')
   // The helper's definition and its two callers — the model node and the provider node. The old
   // singular helper is gone: a node carries a list now, and one name for the URL is what keeps
@@ -484,7 +628,11 @@ test('the plot asks one place for a brand mark, and keeps no second domain list'
   // bug this replaces — the node's own LAN hostname had no icon and the provider's mark was never
   // tried.
   assert.match(src, /const markHrefs = node\.markHrefs\b/, 'the node must carry its candidates')
-  assert.match(src, /while \(\+\+markIdx < markHrefs\.length/, 'the walk must be bounded by the list')
+  assert.match(
+    src,
+    /while \(\+\+markIdx < markHrefs\.length/,
+    'the walk must be bounded by the list',
+  )
 })
 
 // The plot keeps its model→brand map in the dashboard source, so the tests evaluate exactly the
@@ -497,10 +645,17 @@ function modelDomainResolverFromPlot() {
   assert.ok(from !== -1 && fnStart !== -1, 'the plot must keep its model→brand map and resolver')
   // The block runs to the end of `getModelDomain`, brace-matched so the helpers beside it come
   // with it. A rename that breaks this is a changed shape, which is what the assertion means.
-  let depth = 0, end = -1
+  let depth = 0,
+    end = -1
   for (let i = src.indexOf('{', fnStart); i < src.length; i++) {
     if (src[i] === '{') depth++
-    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break } }
+    else if (src[i] === '}') {
+      depth--
+      if (depth === 0) {
+        end = i + 1
+        break
+      }
+    }
   }
   assert.ok(end > 0, 'getModelDomain must be a complete function')
   return new Function(`${src.slice(from, end)}; return getModelDomain;`)()
@@ -543,7 +698,10 @@ test('a model node resolves its brand from the id, its gateway namespace, or its
 
   // A gateway names its own backend in front of the model it routed to, and the brand is still
   // found behind that prefix: the gateway's name is never what the node is marked with.
-  assert.equal(getModelDomain({ modelId: 'srv_mp5miql908c8738d71be:Airforce:claude-fable-5.1' }), 'anthropic.com')
+  assert.equal(
+    getModelDomain({ modelId: 'srv_mp5miql908c8738d71be:Airforce:claude-fable-5.1' }),
+    'anthropic.com',
+  )
   assert.equal(getModelDomain({ modelId: 'community/AkshayCoder48/o3-mini' }), 'openai.com')
   assert.equal(getModelDomain({ modelId: 'pa:f06eca84:llama3-8b' }), 'meta.com')
   assert.equal(getModelDomain({ modelId: 'z-ai/glm5' }), 'zhipuai.cn')
@@ -554,8 +712,17 @@ test('a model node resolves its brand from the id, its gateway namespace, or its
   // The negative that keeps the map honest: an anonymous model has no brand to draw, and a
   // gateway's routing row is a verb, not a product — both keep their monogram rather than
   // borrowing the mark of whoever happens to serve them.
-  for (const id of ['corethink:free', 'giga-potato-thinking:free', 'stealth/space-bunny-alpha', 'auto']) {
-    assert.equal(getModelDomain({ modelId: id }), '', `${id} names no brand and must stay a monogram`)
+  for (const id of [
+    'corethink:free',
+    'giga-potato-thinking:free',
+    'stealth/space-bunny-alpha',
+    'auto',
+  ]) {
+    assert.equal(
+      getModelDomain({ modelId: id }),
+      '',
+      `${id} names no brand and must stay a monogram`,
+    )
   }
   assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (G4F)' }), '')
   assert.equal(getModelDomain({ modelId: '' }), '')
@@ -576,7 +743,11 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
       continue
     }
     assert.ok(domain, `${modelId} (${label}) would draw as a blank disc`)
-    assert.equal(normalizeFaviconDomain(domain), domain, `${modelId}: ${domain} is not a domain the router will fetch`)
+    assert.equal(
+      normalizeFaviconDomain(domain),
+      domain,
+      `${modelId}: ${domain} is not a domain the router will fetch`,
+    )
   }
 })
 
@@ -584,7 +755,9 @@ test('the 16 hammer-owned signup URLs survive the import, which is additive', ()
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import.
-  const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(key => PROVIDER_DESCRIPTORS[key].signupUrl)
+  const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(
+    (key) => PROVIDER_DESCRIPTORS[key].signupUrl,
+  )
   assert.equal(hammerOwned.length, 16)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
@@ -620,7 +793,11 @@ test('a key page claims a verification date only when the check actually succeed
       assert.equal(entry.verifiedAt, null, `${key} must spell "not verified" as null`)
       continue
     }
-    assert.match(entry.verifiedAt, /^\d{4}-\d{2}-\d{2}$/, `${key} must date its verification as YYYY-MM-DD`)
+    assert.match(
+      entry.verifiedAt,
+      /^\d{4}-\d{2}-\d{2}$/,
+      `${key} must date its verification as YYYY-MM-DD`,
+    )
     assert.ok(
       Number.isFinite(entry.httpStatus) && entry.httpStatus >= 200 && entry.httpStatus < 300,
       `${key} claims verification at ${entry.verifiedAt} but its last check was ${entry.httpStatus}`,
@@ -630,14 +807,20 @@ test('a key page claims a verification date only when the check actually succeed
 
 test('every active import has somewhere to send a user for a credential', () => {
   const orphanless = Object.keys(loadKeyPages())
-  const unregistered = orphanless.filter(key => !listProviders().some(provider => provider.key === key))
+  const unregistered = orphanless.filter(
+    (key) => !listProviders().some((provider) => provider.key === key),
+  )
   assert.deepEqual(unregistered, [], 'these curated keys no longer name a provider')
 
   const unrouted = listProviders()
-    .filter(provider => provider.origin === 'omniroute' && provider.activation === 'active')
-    .filter(provider => !provider.signupUrl)
-    .map(provider => provider.key)
-  assert.deepEqual(unrouted, [], 'an active import with no key page renders a title nobody can click')
+    .filter((provider) => provider.origin === 'omniroute' && provider.activation === 'active')
+    .filter((provider) => !provider.signupUrl)
+    .map((provider) => provider.key)
+  assert.deepEqual(
+    unrouted,
+    [],
+    'an active import with no key page renders a title nobody can click',
+  )
 
   // The server's own lookup, not just the registry's table. `buildProviderConfigEntry` reads
   // `API_KEY_SIGNUP_URLS`, so a URL that reached the table but not this map would still ship
@@ -657,7 +840,11 @@ test('every registered descriptor is valid and unique', () => {
   const keys = providerKeys()
   assert.equal(new Set(keys).size, keys.length, 'provider keys must be unique')
   for (const key of keys) {
-    assert.deepEqual(validateDescriptor(getProvider(key)), [], `descriptor for "${key}" must be valid`)
+    assert.deepEqual(
+      validateDescriptor(getProvider(key)),
+      [],
+      `descriptor for "${key}" must be valid`,
+    )
   }
 })
 
@@ -681,7 +868,10 @@ test('every provider carries a terms flag from the vocabulary', () => {
 test('registration rejects malformed descriptors instead of accepting a dead provider', () => {
   resetRegistry()
   assert.throws(() => registerProvider('Bad Key', {}), /lowercase letters/)
-  assert.throws(() => registerProvider('ok-key', { label: 'x', auth: { kind: 'telepathy' } }), /invalid auth\.kind/)
+  assert.throws(
+    () => registerProvider('ok-key', { label: 'x', auth: { kind: 'telepathy' } }),
+    /invalid auth\.kind/,
+  )
   // No endpoint and no models: it could never be routed to, so it is a catalog bug.
   assert.throws(() => registerProvider('nowhere', { label: 'Nowhere' }), /missing chatUrl/)
   // Unless it is explicitly staged as not-yet-routable.
@@ -692,7 +882,12 @@ test('registration rejects malformed descriptors instead of accepting a dead pro
     /needs a blockedReason/,
   )
   assert.doesNotThrow(() =>
-    registerProvider('refuser', { label: 'Refuser', activation: 'refused', blockedReason: 'terms forbid it' }))
+    registerProvider('refuser', {
+      label: 'Refuser',
+      activation: 'refused',
+      blockedReason: 'terms forbid it',
+    }),
+  )
   initProviders({ reset: true })
 })
 
@@ -705,7 +900,10 @@ test('derivedModelsUrl only rewrites the OpenAI-shaped paths', () => {
 })
 
 test('normalizeDescriptor derives a models URL and defaults to active', () => {
-  const descriptor = normalizeDescriptor('demo', { label: 'Demo', chatUrl: 'https://x.test/v1/chat/completions' })
+  const descriptor = normalizeDescriptor('demo', {
+    label: 'Demo',
+    chatUrl: 'https://x.test/v1/chat/completions',
+  })
   assert.equal(descriptor.modelsUrl, 'https://x.test/v1/models')
   assert.equal(descriptor.activation, 'active')
 })
@@ -720,34 +918,46 @@ test('provider-scoped dead-model evidence is reachable through the registry', ()
   assert.equal(matchesProviderDeadError('nvidia', 'upstream timeout'), false)
 })
 
-test('llm7\'s chat-endpoint refusal for its image/video rows is classified Incompatible', () => {
+test("llm7's chat-endpoint refusal for its image/video rows is classified Incompatible", () => {
   // isIncompatibleModelError is what the manual test, the ping and the probe paths
   // all read (lib/server.js), so this one pin covers every surface the dashboard
   // renders. The exact phrasing is llm7's own: it advertises image/video models in
   // /v1/models whose ids carry no modality hint, then refuses the chat call with
   // this message.
   assert.ok(isIncompatibleModelError("Model 'dark-beast-krea2' does not support chat endpoints."))
-  assert.ok(isIncompatibleModelError("Model 'kling-v3.0-pro' does not support chat endpoints.", 400))
+  assert.ok(
+    isIncompatibleModelError("Model 'kling-v3.0-pro' does not support chat endpoints.", 400),
+  )
   // Unrelated failures keep their own classifications rather than joining this one.
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
 
 test('a model named Transcribe is classified Incompatible', () => {
-  assert.ok(isIncompatibleModelError('Model "openai/whisper-transcribe" is not supported for text chat.'))
+  assert.ok(
+    isIncompatibleModelError('Model "openai/whisper-transcribe" is not supported for text chat.'),
+  )
   assert.ok(isIncompatibleModelError('Transcribe models require a different endpoint.'))
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
 
 test('an audio model refusal is classified Incompatible', () => {
-  assert.ok(isIncompatibleModelError('Model "assemblyai/universal-3.5-pro" is a audio model and cannot be used on the text endpoint. Use the audio endpoint instead.'))
+  assert.ok(
+    isIncompatibleModelError(
+      'Model "assemblyai/universal-3.5-pro" is a audio model and cannot be used on the text endpoint. Use the audio endpoint instead.',
+    ),
+  )
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
 
 test('a realtime model refusal is classified Incompatible', () => {
-  assert.ok(isIncompatibleModelError('Model "openai/gpt-realtime-2.1-mini" is a realtime model and cannot be used on the text endpoint. Use the realtime endpoint instead.'))
+  assert.ok(
+    isIncompatibleModelError(
+      'Model "openai/gpt-realtime-2.1-mini" is a realtime model and cannot be used on the text endpoint. Use the realtime endpoint instead.',
+    ),
+  )
   assert.equal(isIncompatibleModelError('upstream timeout'), false)
   assert.equal(isIncompatibleModelError('Model is unavailable.'), false)
 })
@@ -779,17 +989,25 @@ test('every explicitly removed provider stays absent from every Hammer provider 
   // import list.
   assert.ok(EXCLUDED_PROVIDER_KEYS.size > 0, 'the exclusion set must not be empty')
   for (const key of EXCLUDED_PROVIDER_KEYS) {
-    assert.equal(loadOmniRouteCatalog().providers.some(provider => provider.key === key), false, `${key}: roster row`)
+    assert.equal(
+      loadOmniRouteCatalog().providers.some((provider) => provider.key === key),
+      false,
+      `${key}: roster row`,
+    )
     assert.equal(key in loadResolutions().providers, false, `${key}: resolution`)
     assert.equal(key in loadKeyPages(), false, `${key}: key page`)
     assert.equal(getProvider(key), null, `${key}: registry`)
     assert.equal(key in lazyProviderSourceEntries(), false, `${key}: sources entry`)
-    assert.equal(routableImports().some(provider => provider.key === key), false, `${key}: routable import`)
+    assert.equal(
+      routableImports().some((provider) => provider.key === key),
+      false,
+      `${key}: routable import`,
+    )
   }
 })
 
 test('imported providers never overwrite hammer-owned keys', () => {
-  const importedKeys = imported().map(d => d.key)
+  const importedKeys = imported().map((d) => d.key)
   for (const key of ['nvidia', 'groq', 'openrouter', 'kiro', 'nlpcloud']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
@@ -800,7 +1018,10 @@ test('every imported provider is active, staged or refused — never undefined',
   const rows = imported()
   assert.ok(rows.length > 0)
   for (const row of rows) {
-    assert.ok(['active', 'staged', 'refused'].includes(row.activation), `${row.key}: ${row.activation}`)
+    assert.ok(
+      ['active', 'staged', 'refused'].includes(row.activation),
+      `${row.key}: ${row.activation}`,
+    )
   }
 })
 
@@ -809,14 +1030,25 @@ test('the import actually resolves providers to real endpoints', () => {
   assert.ok(active.length >= 20, `expected a substantial routable import, got ${active.length}`)
   for (const provider of active) {
     assert.match(provider.chatUrl, /^https:\/\//, `${provider.key} needs a real https endpoint`)
-    assert.ok(provider.discoverable, `${provider.key} must be discoverable so its models can be fetched`)
-    assert.equal(provider.blockedReason, null, `${provider.key} is active, so it has no blocked reason`)
+    assert.ok(
+      provider.discoverable,
+      `${provider.key} must be discoverable so its models can be fetched`,
+    )
+    assert.equal(
+      provider.blockedReason,
+      null,
+      `${provider.key} is active, so it has no blocked reason`,
+    )
   }
 })
 
 test('every provider that is not active records exactly why', () => {
-  for (const provider of imported().filter(d => d.activation !== 'active')) {
-    assert.equal(provider.chatUrl, null, `${provider.key} must not carry an endpoint while not active`)
+  for (const provider of imported().filter((d) => d.activation !== 'active')) {
+    assert.equal(
+      provider.chatUrl,
+      null,
+      `${provider.key} must not carry an endpoint while not active`,
+    )
     assert.ok(provider.blockedReason, `${provider.key} must record a reason`)
     assert.equal(provider.discoverable, false)
   }
@@ -825,8 +1057,14 @@ test('every provider that is not active records exactly why', () => {
 test('terms flags are advisory by default, but still travel on every descriptor', () => {
   // Matches OmniRoute, whose flag is documented as "not a routing gate". The provider is
   // usable, and the flag remains visible so the decision is never hidden.
-  const withheldForTerms = activationOf('refused').filter(d => /terms flag/.test(d.blockedReason || ''))
-  assert.equal(withheldForTerms.length, 0, 'nothing is withheld for its terms under the default policy')
+  const withheldForTerms = activationOf('refused').filter((d) =>
+    /terms flag/.test(d.blockedReason || ''),
+  )
+  assert.equal(
+    withheldForTerms.length,
+    0,
+    'nothing is withheld for its terms under the default policy',
+  )
   // The roster's avoid-flagged rows stay registered and visible. The flag records what a
   // provider's terms say and never gates routing under the default posture: the only thing that
   // removes a row is the operator's decision to exclude it from the roster altogether.
@@ -919,12 +1157,18 @@ test('NLP Cloud is a complete key-gated Hammer provider, not a generic import', 
   assert.equal(provider.toolSupport, 'unsupported')
   assert.equal(sources.nlpcloud.models.length, 5)
   assert.ok(sources.nlpcloud.models.some(([id]) => id === 'gpt-oss-120b'))
-  assert.equal(buildNlpCloudUrl('gpt-oss-120b'), 'https://api.nlpcloud.io/v1/gpu/gpt-oss-120b/chatbot')
+  assert.equal(
+    buildNlpCloudUrl('gpt-oss-120b'),
+    'https://api.nlpcloud.io/v1/gpu/gpt-oss-120b/chatbot',
+  )
   assert.equal(
     buildNlpCloudUrl('custom-model/42', 'https://example.test/v1/gpu/'),
     'https://example.test/v1/gpu/custom-model/42/chatbot',
   )
-  assert.equal(buildProviderRequestHeaders('nlpcloud', { apiKey: 'secret' }).Authorization, 'Token secret')
+  assert.equal(
+    buildProviderRequestHeaders('nlpcloud', { apiKey: 'secret' }).Authorization,
+    'Token secret',
+  )
 })
 
 test('NLP Cloud translates the complete OpenAI conversation into its chatbot shape', () => {
@@ -944,23 +1188,34 @@ test('NLP Cloud translates the complete OpenAI conversation into its chatbot sha
     context: 'system: Answer concisely.',
     history: [{ input: 'What is a router?', response: 'It selects a backend.' }],
   })
-  assert.deepEqual(buildProviderRequestBody('nlpcloud', {
-    messages: [{ role: 'user', content: 'hello' }],
-  }, 'gpt-oss-120b'), {
-    input: 'hello',
-    context: null,
-    history: [],
-  })
+  assert.deepEqual(
+    buildProviderRequestBody(
+      'nlpcloud',
+      {
+        messages: [{ role: 'user', content: 'hello' }],
+      },
+      'gpt-oss-120b',
+    ),
+    {
+      input: 'hello',
+      context: null,
+      history: [],
+    },
+  )
 })
 
 test('NLP Cloud responses become OpenAI JSON or a synthesized SSE stream', async () => {
-  const upstream = () => new Response(JSON.stringify({
-    response: 'Hello from NLP Cloud.',
-    history: [],
-  }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json', 'x-ratelimit-limit-requests': '3' },
-  })
+  const upstream = () =>
+    new Response(
+      JSON.stringify({
+        response: 'Hello from NLP Cloud.',
+        history: [],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'x-ratelimit-limit-requests': '3' },
+      },
+    )
 
   const jsonResponse = await transformNlpCloudResponse(upstream(), 'gpt-oss-120b', false)
   assert.equal(jsonResponse.headers.get('x-ratelimit-limit-requests'), '3')
@@ -979,7 +1234,7 @@ test('NLP Cloud responses become OpenAI JSON or a synthesized SSE stream', async
   assert.match(stream, /data: \[DONE\]/)
 })
 
-test('an active import\'s descriptor feeds the real header and body builders', () => {
+test("an active import's descriptor feeds the real header and body builders", () => {
   // `mistral` is imported (hammer does not ship it) and resolves to a plain OpenAI endpoint.
   // This exercises the builders only — it does not dispatch, and the name says so. Dispatch
   // after on-demand discovery is proven by the request-path tests below.
@@ -1011,16 +1266,19 @@ test('a withheld provider is structurally incapable of routing, whichever way it
   // (currently the staged ones) must contribute no provider table entry at all.
   resetRegistry()
   registerProvider('withheld', {
-    label: 'Withheld', activation: 'refused', blockedReason: 'terms forbid it',
+    label: 'Withheld',
+    activation: 'refused',
+    blockedReason: 'terms forbid it',
     // Even given a perfectly good endpoint, a non-active row must not become reachable.
-    chatUrl: 'https://withheld.test/v1/chat/completions', discoverable: true,
+    chatUrl: 'https://withheld.test/v1/chat/completions',
+    discoverable: true,
   })
   const withheld = getProvider('withheld')
   assert.equal(withheld.activation, 'refused')
   initProviders({ reset: true })
   assert.equal(getProvider('withheld'), null, 'the synthetic row is gone after reset')
 
-  for (const provider of imported().filter(d => d.activation !== 'active')) {
+  for (const provider of imported().filter((d) => d.activation !== 'active')) {
     assert.equal(provider.chatUrl, null, `${provider.key} must carry no endpoint`)
     assert.equal(provider.discoverable, false, `${provider.key} must not be discoverable`)
     // The decisive assertion: no provider table entry, so no request can be built for it
@@ -1044,7 +1302,10 @@ test('routableImports() is the answer to "what did the import actually add"', ()
     assert.ok(provider.auth?.kind)
   }
   // Hammer's own providers are not part of "imported capability".
-  assert.equal(routable.some(p => p.key === 'nvidia'), false)
+  assert.equal(
+    routable.some((p) => p.key === 'nvidia'),
+    false,
+  )
 })
 
 // ── Lazy discovery: the import must not become a boot-time probe wave ──────────────────
@@ -1055,29 +1316,44 @@ test('imported providers are flagged lazy and absent from eager discovery', () =
   assert.ok(keys.length > 0)
   for (const key of keys) {
     assert.equal(lazy[key].lazyDiscovery, true)
-    assert.equal(lazy[key].discoverable, true, 'lazy providers are still discoverable — just not at boot')
+    assert.equal(
+      lazy[key].discoverable,
+      true,
+      'lazy providers are still discoverable — just not at boot',
+    )
     assert.equal(lazy[key].models.length, 0, 'no invented model rows: discovery supplies them')
   }
 })
 
-test('hammer\'s own hand-configured providers are not lazy', () => {
+test("hammer's own hand-configured providers are not lazy", () => {
   for (const key of ['nvidia', 'groq', 'openrouter']) {
-    assert.equal(sources[key].lazyDiscovery, undefined, `${key} must keep participating in startup discovery`)
+    assert.equal(
+      sources[key].lazyDiscovery,
+      undefined,
+      `${key} must keep participating in startup discovery`,
+    )
   }
 })
 
-test('sources.js keeps hammer\'s entries when an imported key collides', () => {
+test("sources.js keeps hammer's entries when an imported key collides", () => {
   // `nvidia` is on both sides. The hand-configured row must win.
   assert.equal(sources.nvidia.name, 'NIM')
   assert.equal(sources.nvidia.lazyDiscovery, undefined)
-  assert.ok(sources.nvidia.models.length > 0, 'hammer\'s verified model rows must survive the import')
+  assert.ok(
+    sources.nvidia.models.length > 0,
+    "hammer's verified model rows must survive the import",
+  )
 })
 
 test('the import layer performs no network I/O at import time', () => {
   // The guarantee is structural: resolution runs offline in tools/. If someone ever adds a
   // fetch to the module the whole app imports, this fails rather than becoming a silent
   // boot-time probe.
-  for (const file of ['lib/providers/resolutions.js', 'lib/providers/omniroute.js', 'lib/providers/catalog.js']) {
+  for (const file of [
+    'lib/providers/resolutions.js',
+    'lib/providers/omniroute.js',
+    'lib/providers/catalog.js',
+  ]) {
     const source = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     assert.equal(/\bfetch\s*\(/.test(source), false, `${file} must not call fetch`)
   }
@@ -1095,7 +1371,10 @@ test('discovery honors a provider-declared models URL, and a base override wins 
     'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
   )
   // Hammer's own providers declare none, so the sibling of the chat path is used.
-  assert.equal(resolveDiscoveryModelsUrl(sources.nvidia), 'https://integrate.api.nvidia.com/v1/models')
+  assert.equal(
+    resolveDiscoveryModelsUrl(sources.nvidia),
+    'https://integrate.api.nvidia.com/v1/models',
+  )
   // A configured base URL redirects traffic, so it redirects discovery too.
   assert.equal(
     resolveDiscoveryModelsUrl(sources['ollama-cloud'], 'https://proxy.test/v1'),
@@ -1126,7 +1405,11 @@ test("Cloudflare's model list is account-scoped, and discovery can fill the acco
     missing: ['accountId'],
   })
   assert.deepEqual(
-    substituteCredentialFields({ providers: { 'cloudflare-ai': { accountId: 'acct-42' } } }, 'cloudflare-ai', provider.modelsUrl),
+    substituteCredentialFields(
+      { providers: { 'cloudflare-ai': { accountId: 'acct-42' } } },
+      'cloudflare-ai',
+      provider.modelsUrl,
+    ),
     {
       url: 'https://api.cloudflare.com/client/v4/accounts/acct-42/ai/models/search?task=Text%20Generation&per_page=100',
       missing: [],
@@ -1134,10 +1417,13 @@ test("Cloudflare's model list is account-scoped, and discovery can fill the acco
   )
   // A URL with no placeholder in it is returned untouched, so this is not a rewrite of
   // every provider's list URL.
-  assert.deepEqual(substituteCredentialFields({}, 'nvidia', 'https://integrate.api.nvidia.com/v1/models'), {
-    url: 'https://integrate.api.nvidia.com/v1/models',
-    missing: [],
-  })
+  assert.deepEqual(
+    substituteCredentialFields({}, 'nvidia', 'https://integrate.api.nvidia.com/v1/models'),
+    {
+      url: 'https://integrate.api.nvidia.com/v1/models',
+      missing: [],
+    },
+  )
 })
 
 test('a record that declares a non-chat task is not imported as a chat model', () => {
@@ -1158,7 +1444,9 @@ test('a record that declares a non-chat task is not imported as a chat model', (
   const records = extractOpenAICompatibleModelRecords(payload)
   assert.equal(records.length, 3, 'the platform `result` envelope is read as a model list')
   assert.deepEqual(
-    records.filter(record => isChatCompatibleDiscoveredModel(record, record.name)).map(record => record.name),
+    records
+      .filter((record) => isChatCompatibleDiscoveredModel(record, record.name))
+      .map((record) => record.name),
     ['@cf/meta/llama-3.1-8b-instruct'],
   )
 })
@@ -1168,13 +1456,20 @@ test('a discovered row is identified by the name you can actually request', () =
   // `name`. Reading `id` first stored rows whose every request came back `400 No such model`,
   // so a working account looked like a dead provider. The name is what has to be sent.
   const cloudflare = toOpenAICompatibleDiscoveredModelMeta(
-    { id: '02c16efa-29f5-4304-8e6c-3d188889f875', name: '@cf/qwen/qwq-32b', task: { name: 'Text Generation' } },
+    {
+      id: '02c16efa-29f5-4304-8e6c-3d188889f875',
+      name: '@cf/qwen/qwq-32b',
+      task: { name: 'Text Generation' },
+    },
     'cloudflare-ai',
   )
   assert.equal(cloudflare.modelId, '@cf/qwen/qwq-32b')
 
   // An ordinary catalog still identifies by `id`; nothing about them changes.
-  assert.equal(toOpenAICompatibleDiscoveredModelMeta({ id: 'gpt-4o-mini' }, 'openai').modelId, 'gpt-4o-mini')
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta({ id: 'gpt-4o-mini' }, 'openai').modelId,
+    'gpt-4o-mini',
+  )
   assert.equal(
     toOpenAICompatibleDiscoveredModelMeta({ id: 'llama-3.1-8b-instruct' }, 'nvidia').modelId,
     'llama-3.1-8b-instruct',
@@ -1204,7 +1499,8 @@ test('only unresolved, answerable imports are probed on demand', () => {
   assert.equal(candidates.includes('mistral'), false)
   // An excluded row has no source entry at all, so no candidate can come from it. Asserted from
   // the exclusion set rather than by name, so it holds for every row removed that way.
-  for (const key of EXCLUDED_PROVIDER_KEYS) assert.equal(candidates.includes(key), false, `${key} is excluded`)
+  for (const key of EXCLUDED_PROVIDER_KEYS)
+    assert.equal(candidates.includes(key), false, `${key} is excluded`)
   // Hammer's own providers are never probed here; they get the boot wave.
   assert.equal(candidates.includes('nvidia'), false)
   // A provider that already has rows is not probed again.
@@ -1221,7 +1517,13 @@ test('only unresolved, answerable imports are probed on demand', () => {
 // shaped correctly. No server is booted and no network is touched: the discovery step is
 // injected, and the routing consequence is checked with the real ranker.
 
-const row = (modelId, providerKey) => ({ modelId, providerKey, status: 'down', pings: [], rateLimit: null })
+const row = (modelId, providerKey) => ({
+  modelId,
+  providerKey,
+  status: 'down',
+  pings: [],
+  rateLimit: null,
+})
 
 test('a cold request for an import-only model discovers it, then it is a routable candidate', async () => {
   // The table starts with Hammer's own model only; the import has no rows yet.
@@ -1262,7 +1564,9 @@ test('a hit in the table never triggers discovery', async () => {
     requestModel: 'hammer-model',
     canonicalize: canonicalizeModelId,
     isSmartestRequest: false,
-    discover: async () => { sweeps += 1 },
+    discover: async () => {
+      sweeps += 1
+    },
   })
   assert.equal(sweeps, 0)
   assert.equal(found[0].providerKey, 'nvidia')
@@ -1276,7 +1580,9 @@ test('an auto/best request never triggers import discovery', async () => {
     requestModel: 'best',
     canonicalize: canonicalizeModelId,
     isSmartestRequest: true,
-    discover: async () => { sweeps += 1 },
+    discover: async () => {
+      sweeps += 1
+    },
   })
   assert.equal(sweeps, 0, 'best/auto already has a full catalog and must not sweep imports')
   assert.equal(models.length, 1)
@@ -1293,7 +1599,10 @@ test('a miss invents nothing: no discovered rows means the request still 404s', 
     // The production trigger probes only keyless/keyed imports (see the candidate test,
     // which proves an unconfigured credential-requiring import like `mistral` is never among
     // them). With no keyless import to answer, it returns nothing and the table is unchanged.
-    discover: async () => { consulted += 1; return 0 },
+    discover: async () => {
+      consulted += 1
+      return 0
+    },
   })
   assert.equal(consulted, 1, 'the trigger is consulted on a miss')
   assert.deepEqual(models, [], 'no rows are fabricated, so the caller still sees a 404')
@@ -1305,8 +1614,16 @@ test('the chat handler actually resolves through the request-path function it is
   // the failure mode a function-only test cannot catch. Source-level, like the no-network
   // import check, because the handler is closed over by runServer and cannot be imported.
   const source = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
-  assert.match(source, /const requestedModels = await resolveRequestModels\(/, 'the handler must use resolveRequestModels')
-  assert.match(source, /discover: discoverLazyImportsForRequest/, 'it must pass the lazy-discovery trigger')
+  assert.match(
+    source,
+    /const requestedModels = await resolveRequestModels\(/,
+    'the handler must use resolveRequestModels',
+  )
+  assert.match(
+    source,
+    /discover: discoverLazyImportsForRequest/,
+    'it must pass the lazy-discovery trigger',
+  )
 })
 
 // ── Summary ────────────────────────────────────────────────────────────────────────────
@@ -1315,38 +1632,48 @@ test('the summary counts activations and accounts for every provider', () => {
   const summary = providerSummary()
   assert.equal(summary.total, summary.hammer + summary.imported)
   assert.equal(summary.routable, summary.activation.active)
-  assert.equal(summary.activation.active + summary.activation.staged + summary.activation.refused, summary.total)
+  assert.equal(
+    summary.activation.active + summary.activation.staged + summary.activation.refused,
+    summary.total,
+  )
   assert.equal(summary.blocked.length, summary.activation.staged + summary.activation.refused)
   assert.equal(summary.routableImported, activationOf('active').length)
 })
 
 test('terms flags partition the registry with no provider uncounted', () => {
   const summary = providerSummary()
-  const total = summary.tos.ok + summary.tos.caution + summary.tos.ambiguous + summary.tos.avoid + summary.tos.unknown
+  const total =
+    summary.tos.ok +
+    summary.tos.caution +
+    summary.tos.ambiguous +
+    summary.tos.avoid +
+    summary.tos.unknown
   assert.equal(total, summary.total)
 })
 
 test('importSummary counts the roster, while the registry counts only what was registered', () => {
   const summary = importSummary()
-  const rosterKeys = loadOmniRouteCatalog().providers.map(p => p.key)
+  const rosterKeys = loadOmniRouteCatalog().providers.map((p) => p.key)
   const resolutions = loadResolutions().providers
 
   // The summary describes the *import file*, so it counts every roster row — including the
   // keys hammer already ships, which the loader skips rather than overwrites.
   assert.equal(summary.roster, rosterKeys.length)
-  const rosterByActivation = activation =>
-    rosterKeys.filter(key => resolutions[key]?.activation === activation).length
+  const rosterByActivation = (activation) =>
+    rosterKeys.filter((key) => resolutions[key]?.activation === activation).length
   assert.equal(summary.active, rosterByActivation('active'))
   assert.equal(summary.refused, rosterByActivation('refused'))
   assert.equal(summary.staged, rosterByActivation('staged'))
 
   // The registered imports are the roster minus the hammer-owned overlaps, exactly.
-  const skippedAsHammerOwned = rosterKeys.filter(key => getProvider(key).origin === 'hammer')
+  const skippedAsHammerOwned = rosterKeys.filter((key) => getProvider(key).origin === 'hammer')
   assert.equal(rosterKeys.length - imported().length, skippedAsHammerOwned.length)
   // Which is why the summary's active count exceeds the registered active imports by
   // precisely the hammer-owned rows that also happen to be resolvable upstream.
-  assert.equal(summary.active - activationOf('active').length,
-    skippedAsHammerOwned.filter(key => resolutions[key]?.activation === 'active').length)
+  assert.equal(
+    summary.active - activationOf('active').length,
+    skippedAsHammerOwned.filter((key) => resolutions[key]?.activation === 'active').length,
+  )
 
   assert.ok(summary.resolvedAt, 'the resolution must record when it was generated')
 })
@@ -1357,29 +1684,40 @@ test('importSummary counts the roster, while the registry counts only what was r
 // words, that the model would serve again shortly. They are recorded here as the exact bodies
 // they arrived as.
 
-const GOOGLE_QUOTA_REFUSAL = 'You exceeded your current quota, please check your plan and billing '
-  + 'details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. '
-  + 'To monitor your current usage, head to: https://ai.dev/rate-limit. \n'
-  + '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, '
-  + 'limit: 0, model: gemini-omni-flash\n'
-  + '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, '
-  + 'model: gemini-omni-flash\nPlease retry in 58.649134332s.'
+const GOOGLE_QUOTA_REFUSAL =
+  'You exceeded your current quota, please check your plan and billing ' +
+  'details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. ' +
+  'To monitor your current usage, head to: https://ai.dev/rate-limit. \n' +
+  '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, ' +
+  'limit: 0, model: gemini-omni-flash\n' +
+  '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, ' +
+  'model: gemini-omni-flash\nPlease retry in 58.649134332s.'
 
-const GOOGLE_OVERLOAD_REFUSAL = 'This model is currently experiencing high demand. Spikes in demand '
-  + 'are usually temporary. Please try again later.'
+const GOOGLE_OVERLOAD_REFUSAL =
+  'This model is currently experiencing high demand. Spikes in demand ' +
+  'are usually temporary. Please try again later.'
 
 test('an exhausted quota is a rate limit even when it arrives as limit: 0 on a free tier', () => {
   // A quota of zero is not a paywall and not a failure: the model is on the free tier, the
   // window is spent, and the provider names when to come back.
   assert.equal(isQuotaExhaustionError(GOOGLE_QUOTA_REFUSAL, 429), true)
-  assert.equal(isRateLimitedErrorText(GOOGLE_QUOTA_REFUSAL), false,
-    'the text itself is neither of the phrases this predicate looks for — the status is what says it')
+  assert.equal(
+    isRateLimitedErrorText(GOOGLE_QUOTA_REFUSAL),
+    false,
+    'the text itself is neither of the phrases this predicate looks for — the status is what says it',
+  )
 })
 
 test('a busy provider is a wait, not a failure', () => {
   assert.equal(isProviderOverloadedError(GOOGLE_OVERLOAD_REFUSAL, 503), true)
-  assert.equal(isProviderOverloadedError('ResourceExhausted: Worker local total request limit reached (25/16)', 503), true,
-    'a 5xx saying nothing at all is still Service Unavailable, which is temporary by definition')
+  assert.equal(
+    isProviderOverloadedError(
+      'ResourceExhausted: Worker local total request limit reached (25/16)',
+      503,
+    ),
+    true,
+    'a 5xx saying nothing at all is still Service Unavailable, which is temporary by definition',
+  )
   assert.equal(isProviderOverloadedError('Service temporarily overloaded', 500), true)
   assert.equal(isProviderOverloadedError('The server is at capacity, try again later.', 500), true)
 })
@@ -1390,8 +1728,11 @@ test('a plain server error stays a failure rather than becoming a clock', () => 
   assert.equal(isProviderOverloadedError('Internal error', 500), false)
   assert.equal(isProviderOverloadedError('', 500), false)
   assert.equal(isProviderOverloadedError('Not Found', 404), false)
-  assert.equal(isProviderOverloadedError(GOOGLE_QUOTA_REFUSAL, 429), false,
-    'an exhausted quota has its own clock and its own reset window')
+  assert.equal(
+    isProviderOverloadedError(GOOGLE_QUOTA_REFUSAL, 429),
+    false,
+    'an exhausted quota has its own clock and its own reset window',
+  )
 })
 
 test('a spent credit balance is a refusal even when the provider renders it as an answer', () => {
@@ -1402,34 +1743,55 @@ test('a spent credit balance is a refusal even when the provider renders it as a
   // client as the model's answer, and a manual Test recorded it as a *successful* response that
   // promoted the row to Up, which is why the same key looked healthy on a Test click and
   // broken in real use.
-  assert.equal(isAccountBudgetRefusalText(
-    "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."),
-    true)
+  assert.equal(
+    isAccountBudgetRefusalText(
+      "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again.",
+    ),
+    true,
+  )
   // The phrasings that were already recognized keep working.
-  assert.equal(isAccountBudgetRefusalText(
-    'The API key used for this request has reached its budget. Please raise the key budget, then try again.'), true)
+  assert.equal(
+    isAccountBudgetRefusalText(
+      'The API key used for this request has reached its budget. Please raise the key budget, then try again.',
+    ),
+    true,
+  )
   assert.equal(isAccountBudgetRefusalText('insufficient credit balance'), true)
   assert.equal(isAccountBudgetRefusalText('you are out of credits'), true)
   // The negation has to be explicit: "enough" alone is the opposite statement, and a model
   // writing about billing or an account must not be silenced as a refusal.
-  assert.equal(isAccountBudgetRefusalText('You have enough credits in your account to continue.'), false)
-  assert.equal(isAccountBudgetRefusalText('Your account has enough credits for this request.'), false)
-  assert.equal(isAccountBudgetRefusalText('The account of the expedition is long, and the budget was discussed at length.'), false)
+  assert.equal(
+    isAccountBudgetRefusalText('You have enough credits in your account to continue.'),
+    false,
+  )
+  assert.equal(
+    isAccountBudgetRefusalText('Your account has enough credits for this request.'),
+    false,
+  )
+  assert.equal(
+    isAccountBudgetRefusalText(
+      'The account of the expedition is long, and the budget was discussed at length.',
+    ),
+    false,
+  )
 })
 
 /** An SSE response over the given frames, one frame per chunk as a real relay sends them. */
-const sseResponse = (frames) => new Response(
-  new ReadableStream({
-    start(controller) {
-      for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame))
-      controller.close()
-    },
-  }),
-  { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
-)
-const sseFrame = (payload) => `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`
+const sseResponse = (frames) =>
+  new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(new TextEncoder().encode(frame))
+        controller.close()
+      },
+    }),
+    { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+  )
+const sseFrame = (payload) =>
+  `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`
 
-const SPENT_KEY_NOTICE = "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
+const SPENT_KEY_NOTICE =
+  "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
 
 test('an account refusal streamed as the answer is refused instead of delivered', async () => {
   // The failure this pins: a provider can answer HTTP 200 and then stream an account refusal as
@@ -1437,13 +1799,34 @@ test('an account refusal streamed as the answer is refused instead of delivered'
   // so the stream reads as a real answer — it reached the caller as the model's reply and the
   // request never failed over. The notice is split across two deltas here on purpose: a guard that
   // only inspected the first content frame would still let it through.
-  const refused = await transformStreamingUpstreamErrorResponse(sseResponse([
-    sseFrame({ id: 'x', choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }),
-    sseFrame({ id: 'x', choices: [{ index: 0, delta: { content: "The account behind this API key doesn't have " } }] }),
-    sseFrame({ id: 'x', choices: [{ index: 0, delta: { content: 'enough credits. Please top up or complete a quest, then try again.' } }] }),
-    sseFrame('[DONE]'),
-  ]))
-  assert.equal(refused.status, 429, 'the notice is the 429 it means, so the loop benches the key and fails over')
+  const refused = await transformStreamingUpstreamErrorResponse(
+    sseResponse([
+      sseFrame({ id: 'x', choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] }),
+      sseFrame({
+        id: 'x',
+        choices: [
+          { index: 0, delta: { content: "The account behind this API key doesn't have " } },
+        ],
+      }),
+      sseFrame({
+        id: 'x',
+        choices: [
+          {
+            index: 0,
+            delta: {
+              content: 'enough credits. Please top up or complete a quest, then try again.',
+            },
+          },
+        ],
+      }),
+      sseFrame('[DONE]'),
+    ]),
+  )
+  assert.equal(
+    refused.status,
+    429,
+    'the notice is the 429 it means, so the loop benches the key and fails over',
+  )
   assert.equal((await refused.json()).error.message, SPENT_KEY_NOTICE)
 
   // A real answer is handed on untouched, byte for byte — the guard must not cost a caller its
@@ -1456,13 +1839,27 @@ test('an account refusal streamed as the answer is refused instead of delivered'
   ]
   const passed = await transformStreamingUpstreamErrorResponse(sseResponse(answerFrames))
   assert.equal(passed.status, 200)
-  assert.equal(await passed.text(), answerFrames.join(''), 'the stream arrives exactly as the provider sent it')
+  assert.equal(
+    await passed.text(),
+    answerFrames.join(''),
+    'the stream arrives exactly as the provider sent it',
+  )
 
   // A model of its own accord writing about credits is not a provider notice.
-  const prose = await transformStreamingUpstreamErrorResponse(sseResponse([
-    sseFrame({ id: 'z', choices: [{ index: 0, delta: { content: 'The account behind your plan has enough credits for this request.' } }] }),
-    sseFrame('[DONE]'),
-  ]))
+  const prose = await transformStreamingUpstreamErrorResponse(
+    sseResponse([
+      sseFrame({
+        id: 'z',
+        choices: [
+          {
+            index: 0,
+            delta: { content: 'The account behind your plan has enough credits for this request.' },
+          },
+        ],
+      }),
+      sseFrame('[DONE]'),
+    ]),
+  )
   assert.equal(prose.status, 200)
   assert.match(await prose.text(), /has enough credits/)
 })
@@ -1473,18 +1870,30 @@ test('the refusal peek hands a real answer on while the provider is still stream
   // open forever, so a peek that kept reading would never resolve — the assertion is that the
   // transform returns anyway, with the sentence intact.
   let holdOpen
-  const stalled = new Promise(resolve => { holdOpen = resolve })
+  const stalled = new Promise((resolve) => {
+    holdOpen = resolve
+  })
   const stream = new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode(sseFrame({ choices: [{ delta: { content: 'Hallo Welt. Wie geht es dir heute?' } }] })))
+      controller.enqueue(
+        new TextEncoder().encode(
+          sseFrame({ choices: [{ delta: { content: 'Hallo Welt. Wie geht es dir heute?' } }] }),
+        ),
+      )
     },
-    async pull() { await stalled },
+    async pull() {
+      await stalled
+    },
   })
   const firstFrame = await Promise.race([
     transformStreamingUpstreamErrorResponse(new Response(stream, { status: 200 })),
-    new Promise(resolve => setTimeout(() => resolve('still-peeking'), 2000)),
+    new Promise((resolve) => setTimeout(() => resolve('still-peeking'), 2000)),
   ])
-  assert.notEqual(firstFrame, 'still-peeking', 'prose is released while the provider is still generating')
+  assert.notEqual(
+    firstFrame,
+    'still-peeking',
+    'prose is released while the provider is still generating',
+  )
   assert.equal(firstFrame.status, 200)
   holdOpen()
 })
@@ -1495,22 +1904,40 @@ test('the same refusal in a JSON body is named before the caller sees it', async
   const body = JSON.stringify({
     id: 'resp_1',
     model: 'community/vendouple/gemini-3.8-flash',
-    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: SPENT_KEY_NOTICE } }],
+    choices: [
+      {
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: SPENT_KEY_NOTICE },
+      },
+    ],
   })
   assert.equal(accountRefusalIn(body), SPENT_KEY_NOTICE)
   // Prose, an ordinary answer, and a body larger than a notice may be: all left alone.
-  assert.equal(accountRefusalIn(JSON.stringify({ choices: [{ message: { content: 'Hallo Welt' } }] })), '')
-  assert.equal(accountRefusalIn(JSON.stringify({ choices: [{ message: { content: 'You have enough credits in your account to continue.' } }] })), '')
-  const huge = JSON.stringify({ choices: [{ message: { content: `${'x'.repeat(70 * 1024)} ${SPENT_KEY_NOTICE}` } }] })
+  assert.equal(
+    accountRefusalIn(JSON.stringify({ choices: [{ message: { content: 'Hallo Welt' } }] })),
+    '',
+  )
+  assert.equal(
+    accountRefusalIn(
+      JSON.stringify({
+        choices: [{ message: { content: 'You have enough credits in your account to continue.' } }],
+      }),
+    ),
+    '',
+  )
+  const huge = JSON.stringify({
+    choices: [{ message: { content: `${'x'.repeat(70 * 1024)} ${SPENT_KEY_NOTICE}` } }],
+  })
   assert.equal(accountRefusalIn(huge), '', 'a body past the scan bound is never read a second time')
 })
 
 test('a folded-in upstream error envelope still reports itself as unavailable', async () => {
   // The guard's older job, unchanged by the refusal peek added beside it: a relay that opens a
   // "success" stream with an error frame is a broken upstream, not a spent account.
-  const folded = await transformStreamingUpstreamErrorResponse(sseResponse([
-    sseFrame({ error: { message: 'Service temporarily overloaded' } }),
-  ]))
+  const folded = await transformStreamingUpstreamErrorResponse(
+    sseResponse([sseFrame({ error: { message: 'Service temporarily overloaded' } })]),
+  )
   assert.equal(folded.status, 503)
   assert.equal((await folded.json()).error.message, 'Service temporarily overloaded')
 })
@@ -1526,26 +1953,49 @@ test('a probe refusal about the account is believed at once, not forgiven by rec
   // 200 body carrying the notice as 429) is already authoritative — while a probe reporting the
   // same notice under any other status would have had it absorbed by the grace window, leaving a
   // spent key looking healthy on the strength of a recent success.
-  const spentKeyNotice = "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
+  const spentKeyNotice =
+    "The account behind this API key doesn't have enough credits. Please top up or complete a quest, then try again."
   assert.equal(isAuthoritativeProbeFailure({ code: '429', errorMessage: spentKeyNotice }), true)
-  assert.equal(isAuthoritativeProbeFailure({ code: '200', errorMessage: spentKeyNotice }), true,
-    'the refusal is believed on its own words, whatever status arrived with it')
+  assert.equal(
+    isAuthoritativeProbeFailure({ code: '200', errorMessage: spentKeyNotice }),
+    true,
+    'the refusal is believed on its own words, whatever status arrived with it',
+  )
   // The near-misses stay non-authoritative: a timeout, an unreachable endpoint and a busy minute
   // are what a cold start produces, and the grace window is meant to absorb them.
-  assert.equal(isAuthoritativeProbeFailure({ code: '000', errorMessage: 'Request timed out while pinging provider.' }), false)
+  assert.equal(
+    isAuthoritativeProbeFailure({
+      code: '000',
+      errorMessage: 'Request timed out while pinging provider.',
+    }),
+    false,
+  )
   assert.equal(isAuthoritativeProbeFailure({ code: 'ERR', errorMessage: 'fetch failed' }), false)
-  assert.equal(isAuthoritativeProbeFailure({ code: '503', errorMessage: 'Service Unavailable' }), false)
-  assert.equal(isAuthoritativeProbeFailure({ code: '429', errorMessage: 'Rate limit exceeded' }), true)
+  assert.equal(
+    isAuthoritativeProbeFailure({ code: '503', errorMessage: 'Service Unavailable' }),
+    false,
+  )
+  assert.equal(
+    isAuthoritativeProbeFailure({ code: '429', errorMessage: 'Rate limit exceeded' }),
+    true,
+  )
   assert.equal(isAuthoritativeProbeFailure({ code: '401', errorMessage: '' }), true)
-  assert.equal(isAuthoritativeProbeFailure({ code: '200', errorMessage: '', deadVerdict: true }), true,
-    'a dead verdict is a statement about the catalog, so a recent success must not outlive it')
+  assert.equal(
+    isAuthoritativeProbeFailure({ code: '200', errorMessage: '', deadVerdict: true }),
+    true,
+    'a dead verdict is a statement about the catalog, so a recent success must not outlive it',
+  )
   assert.equal(isAuthoritativeProbeFailure(), false)
   // The account predicate is two-sided, and this rule inherits that: a model writing prose about
   // accounts and budgets is not a statement about the credential.
-  assert.equal(isAuthoritativeProbeFailure({
-    code: '200',
-    errorMessage: 'The account of the expedition is long, and the budget was discussed at length.',
-  }), false)
+  assert.equal(
+    isAuthoritativeProbeFailure({
+      code: '200',
+      errorMessage:
+        'The account of the expedition is long, and the budget was discussed at length.',
+    }),
+    false,
+  )
 })
 
 test('a cached provider answer is recognized as a replay, not as this request being served', () => {
@@ -1554,10 +2004,18 @@ test('a cached provider answer is recognized as a replay, not as this request be
   // already on file" — and a manual Test that reads the latter as the former can pass on a
   // key that cannot serve real traffic.
   assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT' })), true)
-  assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'HIT, HIT' })), true, 'Fastly lists one hit per hop')
+  assert.equal(
+    isCachedReplayResponse(new Headers({ 'x-cache': 'HIT, HIT' })),
+    true,
+    'Fastly lists one hit per hop',
+  )
   assert.equal(isCachedReplayResponse(new Headers({ 'cf-cache-status': 'HIT' })), true)
   assert.equal(isCachedReplayResponse(new Headers({ 'x-vercel-cache': 'HIT' })), true)
-  assert.equal(isCachedReplayResponse(new Headers({ 'x-cache': 'hit' })), true, 'status values are case-insensitive')
+  assert.equal(
+    isCachedReplayResponse(new Headers({ 'x-cache': 'hit' })),
+    true,
+    'status values are case-insensitive',
+  )
   // A miss, a bypass and an expired entry are all live requests to the origin: reading them as
   // cached would stop a provider's latency and throughput from ever being recorded.
   for (const value of ['MISS', 'BYPASS', 'EXPIRED', 'DYNAMIC', 'REVALIDATED']) {
@@ -1574,7 +2032,7 @@ test('a cached provider answer is recognized as a replay, not as this request be
   assert.equal(isCachedReplayResponse({ 'X-Cache': 'MISS' }), false)
 })
 
-test('OpenCode Zen\'s client gate is Incompatible, not a failure to keep re-probing', () => {
+test("OpenCode Zen's client gate is Incompatible, not a failure to keep re-probing", () => {
   // Zen ships no provider here any more (both roster rows are refused as not free), so this
   // pins the predicate rather than a provider: a user who points an `openai-compatible`
   // instance at Zen still gets this envelope, and it must not read as an auth error or an
@@ -1586,7 +2044,8 @@ test('OpenCode Zen\'s client gate is Incompatible, not a failure to keep re-prob
     type: 'error',
     error: {
       type: 'FreeTierError',
-      message: "Error from provider (Console): OpenCode's free tier can only be used from within OpenCode",
+      message:
+        "Error from provider (Console): OpenCode's free tier can only be used from within OpenCode",
     },
   })
   assert.ok(isIncompatibleModelError(envelope, 403))
@@ -1611,20 +2070,29 @@ test('a templated endpoint receives only the credential fields it declares', () 
   assert.deepEqual(requiredCredentialFields('cloudflare-ai'), ['accountId'])
   assert.deepEqual(requiredCredentialFields('cohere'), [])
 
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '  abc123  ' }), { accountId: 'abc123' })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '  abc123  ' }), {
+    accountId: 'abc123',
+  })
   // A field the descriptor does not declare is dropped rather than stored.
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'abc', evil: 'x' }), { accountId: 'abc' })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'abc', evil: 'x' }), {
+    accountId: 'abc',
+  })
   // Clearing removes it; echoing an environment-supplied value back does the same, so an env var
   // is never frozen into the config file by a form the user did not change.
   assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: '' }), { accountId: null })
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'from-environment' }), { accountId: null })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: 'from-environment' }), {
+    accountId: null,
+  })
 })
 
 test('a second Cloudflare account gets its own account id', () => {
   // A second Workers AI key belongs to a second account, and the account id is part of the
   // path, so one id cannot serve two accounts: the second key's requests would be sent
   // against the first account's URL and refused. The list is what pairs them.
-  const twoAccounts = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: ['acct-a', 'acct-b'] } } }
+  const twoAccounts = {
+    apiKeys: {},
+    providers: { 'cloudflare-ai': { accountId: ['acct-a', 'acct-b'] } },
+  }
 
   // Each credential index resolves to its own account, so key[1] is sent to acct-b.
   assert.equal(credentialFieldValues(twoAccounts, 'cloudflare-ai', 0).accountId, 'acct-a')
@@ -1638,7 +2106,10 @@ test('a second Cloudflare account gets its own account id', () => {
 
   // One id and several keys is legitimate — every key belongs to that one account — so the
   // last entry stands in rather than the field reading as missing.
-  const oneAccountManyKeys = { apiKeys: {}, providers: { 'cloudflare-ai': { accountId: 'acct-a' } } }
+  const oneAccountManyKeys = {
+    apiKeys: {},
+    providers: { 'cloudflare-ai': { accountId: 'acct-a' } },
+  }
   assert.equal(credentialFieldValues(oneAccountManyKeys, 'cloudflare-ai', 5).accountId, 'acct-a')
   assert.deepEqual(missingCredentialFields(oneAccountManyKeys, 'cloudflare-ai'), [])
 
@@ -1657,11 +2128,18 @@ test('a list of account ids round-trips through the save rule', () => {
   )
   // One surviving entry is stored as a plain string, so a config never grows an array for
   // the single-account case.
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['acct-a', ''] }), { accountId: 'acct-a' })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['acct-a', ''] }), {
+    accountId: 'acct-a',
+  })
   // Every entry blank clears the field rather than storing an empty array.
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['', '  '] }), { accountId: null })
+  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['', '  '] }), {
+    accountId: null,
+  })
   // An env-supplied value echoed back in a list is still the environment deciding.
-  assert.deepEqual(credentialFieldWrites('cloudflare-ai', { accountId: ['from-environment', 'acct-b'] }), { accountId: 'acct-b' })
+  assert.deepEqual(
+    credentialFieldWrites('cloudflare-ai', { accountId: ['from-environment', 'acct-b'] }),
+    { accountId: 'acct-b' },
+  )
 })
 
 test('a missing credential field is what unreadable model lists have in common', () => {
@@ -1678,7 +2156,7 @@ test('a missing credential field is what unreadable model lists have in common',
 })
 
 test('keyless providers are identified across both origins', () => {
-  const keyless = keylessProviders().map(d => d.key)
+  const keyless = keylessProviders().map((d) => d.key)
   assert.ok(keyless.includes('gptfree'))
 })
 
@@ -1702,7 +2180,7 @@ test('parseProviderRoster maps free types onto the access vocabulary', () => {
     '| `agy` | keyless | — | — | avoid | 16 |',
     '| `not a provider` | nonsense | — | — | ok | 1 |',
   ].join('\n')
-  const byKey = Object.fromEntries(parseProviderRoster(fixture).map(entry => [entry.key, entry]))
+  const byKey = Object.fromEntries(parseProviderRoster(fixture).map((entry) => [entry.key, entry]))
   assert.equal(byKey.mistral.access, 'recurring')
   assert.equal(byKey.mistral.steadyTokensPerMonth, 1_000_000_000)
   assert.equal(byKey.signupvault.access, 'signup-credit')
@@ -1713,12 +2191,16 @@ test('parseProviderRoster maps free types onto the access vocabulary', () => {
 })
 
 test('parseFrontmatter reads the document version', () => {
-  const frontmatter = parseFrontmatter('---\ntitle: "Free Tiers"\nversion: 3.8.40\nlastUpdated: 2026-07-31\n---\n# body')
+  const frontmatter = parseFrontmatter(
+    '---\ntitle: "Free Tiers"\nversion: 3.8.40\nlastUpdated: 2026-07-31\n---\n# body',
+  )
   assert.equal(frontmatter.version, '3.8.40')
 })
 
 test('parseRegistryIndex finds every assembled provider slug', () => {
-  const slugs = parseRegistryIndex('import { aProvider } from "./registry/mistral/index.ts";\nimport { bProvider } from "./registry/glm/cn/index.ts";')
+  const slugs = parseRegistryIndex(
+    'import { aProvider } from "./registry/mistral/index.ts";\nimport { bProvider } from "./registry/glm/cn/index.ts";',
+  )
   assert.deepEqual(slugs.sort(), ['glm/cn', 'mistral'])
 })
 
@@ -1743,7 +2225,10 @@ export const mistralProvider: RegistryEntry = {
   assert.equal(entry.baseUrl, 'https://api.mistral.ai/v1/chat/completions')
   assert.equal(entry.authType, 'apikey')
   assert.equal(entry.authHeader, 'bearer')
-  assert.deepEqual(entry.models.map(m => m.id), ['mistral-large-latest', 'devstral-latest'])
+  assert.deepEqual(
+    entry.models.map((m) => m.id),
+    ['mistral-large-latest', 'devstral-latest'],
+  )
 })
 
 test('parseRegistryEntry sees the OpenAI-compatible helper as an explicit format', () => {
@@ -1764,9 +2249,12 @@ test('an OpenAI-compatible endpoint override bypasses a bespoke executor', () =>
     access: 'recurring',
     tos: 'caution',
     entry: {
-      format: 'gemini', executor: 'default',
+      format: 'gemini',
+      executor: 'default',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/models',
-      authType: 'apikey', authHeader: 'bearer', models: [],
+      authType: 'apikey',
+      authHeader: 'bearer',
+      models: [],
     },
   })
   assert.equal(decision.activation, 'active')
@@ -1776,11 +2264,16 @@ test('an OpenAI-compatible endpoint override bypasses a bespoke executor', () =>
 
 test('a bare-credential provider activates with the scheme recorded as null', () => {
   const decision = decideResolution({
-    key: 'bare-credential-example', access: 'recurring', tos: 'ok',
+    key: 'bare-credential-example',
+    access: 'recurring',
+    tos: 'ok',
     entry: {
-      format: 'openai', executor: 'default',
+      format: 'openai',
+      executor: 'default',
       baseUrl: 'https://api.example.test/openai/v1/chat/completions',
-      authType: 'apikey', authHeader: 'Authorization', models: [],
+      authType: 'apikey',
+      authHeader: 'Authorization',
+      models: [],
     },
   })
   assert.equal(decision.activation, 'active')
@@ -1789,14 +2282,29 @@ test('a bare-credential provider activates with the scheme recorded as null', ()
 })
 
 test('the activation rule holds back what has no declarative equivalent, and only that', () => {
-  const base = { authType: 'apikey', authHeader: 'bearer', models: [], baseUrl: 'https://x.test/v1/chat/completions' }
+  const base = {
+    authType: 'apikey',
+    authHeader: 'bearer',
+    models: [],
+    baseUrl: 'https://x.test/v1/chat/completions',
+  }
   // An executor with no profile and no declared OpenAI alternate is still held back.
   assert.equal(
-    decideResolution({ key: 'p', access: 'keyless', tos: 'ok', entry: { ...base, format: 'openai', executor: 'some-bespoke-thing' } }).activation,
+    decideResolution({
+      key: 'p',
+      access: 'keyless',
+      tos: 'ok',
+      entry: { ...base, format: 'openai', executor: 'some-bespoke-thing' },
+    }).activation,
     'staged',
   )
   assert.equal(
-    decideResolution({ key: 'p', access: 'keyless', tos: 'ok', entry: { ...base, format: 'gemini', executor: 'default' } }).activation,
+    decideResolution({
+      key: 'p',
+      access: 'keyless',
+      tos: 'ok',
+      entry: { ...base, format: 'gemini', executor: 'default' },
+    }).activation,
     'staged',
   )
   // A declared-openai entry whose URL is not a chat endpoint is still not callable, even when
@@ -1804,13 +2312,27 @@ test('the activation rule holds back what has no declarative equivalent, and onl
   // wire format, so it is checked directly rather than inferred from the declaration.
   assert.equal(
     decideResolution({
-      key: 'some-account-root', access: 'recurring', tos: 'caution',
-      entry: { format: 'openai', executor: 'default', baseUrl: 'https://api.example.com/client/v4/accounts', authType: 'apikey', authHeader: 'bearer', models: [] },
+      key: 'some-account-root',
+      access: 'recurring',
+      tos: 'caution',
+      entry: {
+        format: 'openai',
+        executor: 'default',
+        baseUrl: 'https://api.example.com/client/v4/accounts',
+        authType: 'apikey',
+        authHeader: 'bearer',
+        models: [],
+      },
     }).activation,
     'staged',
   )
   // And the happy path activates without needing anything hammer-specific.
-  const active = decideResolution({ key: 'p', access: 'recurring', tos: 'caution', entry: { ...base, format: 'openai', executor: 'default' } })
+  const active = decideResolution({
+    key: 'p',
+    access: 'recurring',
+    tos: 'caution',
+    entry: { ...base, format: 'openai', executor: 'default' },
+  })
   assert.equal(active.activation, 'active')
   assert.equal(active.resolution.chatUrl, 'https://x.test/v1/chat/completions')
   assert.equal(active.resolution.auth.kind, 'bearer')
@@ -1823,9 +2345,18 @@ test('a declined protocol records the decision verbatim rather than reading as p
   // written and must not be composed into "...so it needs a wire adapter" — which would
   // invite the next pass to port a browser-impersonation solver as ordinary adapter work.
   const declined = decideResolution({
-    key: 'duckduckgo-web', access: 'keyless', tos: 'avoid',
+    key: 'duckduckgo-web',
+    access: 'keyless',
+    tos: 'avoid',
     note: 'Duck.ai terms prohibit automated querying and building AI services on it.',
-    entry: { format: 'openai', executor: 'duckduckgo-web', baseUrl: 'https://duckduckgo.com/duckchat/v1/chat', authType: 'none', authHeader: 'none', models: [] },
+    entry: {
+      format: 'openai',
+      executor: 'duckduckgo-web',
+      baseUrl: 'https://duckduckgo.com/duckchat/v1/chat',
+      authType: 'none',
+      authHeader: 'none',
+      models: [],
+    },
   })
   assert.equal(declined.activation, 'staged')
   assert.equal(declined.resolution, null)
@@ -1835,8 +2366,17 @@ test('a declined protocol records the decision verbatim rather than reading as p
 
   // Every other bespoke executor keeps the framing that names the protocol it needs.
   const cookieOnly = decideResolution({
-    key: 't3-web', access: 'keyless', tos: 'avoid',
-    entry: { format: 'openai', executor: 't3-web', baseUrl: 'https://t3.chat/api/chat', authType: 'apikey', authHeader: 'cookie', models: [] },
+    key: 't3-web',
+    access: 'keyless',
+    tos: 'avoid',
+    entry: {
+      format: 'openai',
+      executor: 't3-web',
+      baseUrl: 'https://t3.chat/api/chat',
+      authType: 'apikey',
+      authHeader: 'cookie',
+      models: [],
+    },
   })
   assert.equal(cookieOnly.activation, 'staged')
   assert.match(cookieOnly.reason, /session cookie/)
@@ -1846,16 +2386,23 @@ test('a declined protocol records the decision verbatim rather than reading as p
 test('a profiled executor becomes data, and its shaping travels on the resolution', () => {
   // Cloudflare: the account id goes in the URL and Workers AI refuses content-part arrays.
   const cloudflare = decideResolution({
-    key: 'cloudflare-ai', access: 'recurring', tos: 'caution',
+    key: 'cloudflare-ai',
+    access: 'recurring',
+    tos: 'caution',
     entry: {
-      format: 'openai', executor: 'cloudflare-ai',
+      format: 'openai',
+      executor: 'cloudflare-ai',
       baseUrl: 'https://api.cloudflare.com/client/v4/accounts',
-      authType: 'apikey', authHeader: 'bearer', models: [],
+      authType: 'apikey',
+      authHeader: 'bearer',
+      models: [],
     },
   })
   assert.equal(cloudflare.activation, 'active')
-  assert.equal(cloudflare.resolution.chatUrl,
-    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions')
+  assert.equal(
+    cloudflare.resolution.chatUrl,
+    'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/v1/chat/completions',
+  )
   assert.equal(cloudflare.resolution.shaping.urlTemplate, true)
   assert.deepEqual(cloudflare.resolution.shaping.credentialFields, ['accountId'])
   assert.equal(cloudflare.resolution.shaping.flattenTextContent, true)
@@ -1868,11 +2415,16 @@ test('a profiled executor becomes data, and its shaping travels on the resolutio
 
   // A frozen request default is data too, and the 50-minute budget comes with it.
   const glm = decideResolution({
-    key: 'glm-cn', access: 'recurring', tos: 'caution',
+    key: 'glm-cn',
+    access: 'recurring',
+    tos: 'caution',
     entry: {
-      format: 'openai', executor: 'glm',
+      format: 'openai',
+      executor: 'glm',
       baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4/chat/completions',
-      authType: 'apikey', authHeader: 'bearer', models: [],
+      authType: 'apikey',
+      authHeader: 'bearer',
+      models: [],
     },
   })
   assert.deepEqual(glm.resolution.shaping.requestDefaults, { max_tokens: 16384 })
@@ -1884,11 +2436,19 @@ test("a provider's declared OpenAI alternate resolves without a translator", () 
   // generateContent) but declare an OpenAI alternative, and that declaration carries its own auth
   // header — the provider telling us how to reach it rather than us guessing at a second hostname.
   const decision = decideResolution({
-    key: 'some-anthropic-shaped-thing', access: 'recurring', tos: 'caution',
+    key: 'some-anthropic-shaped-thing',
+    access: 'recurring',
+    tos: 'caution',
     entry: {
-      format: 'claude', executor: 'default', baseUrl: 'https://x.test/v1/messages',
-      authType: 'apikey', authHeader: 'x-api-key', models: [],
-      alternateFormats: [{ format: 'openai', baseUrl: 'https://x.test/v1/chat/completions', authHeader: 'bearer' }],
+      format: 'claude',
+      executor: 'default',
+      baseUrl: 'https://x.test/v1/messages',
+      authType: 'apikey',
+      authHeader: 'x-api-key',
+      models: [],
+      alternateFormats: [
+        { format: 'openai', baseUrl: 'https://x.test/v1/chat/completions', authHeader: 'bearer' },
+      ],
     },
   })
   assert.equal(decision.activation, 'active')
@@ -1899,10 +2459,16 @@ test("a provider's declared OpenAI alternate resolves without a translator", () 
 
 test('a provider with no credential concept activates keyless', () => {
   const decision = decideResolution({
-    key: 'some-keyless-thing', access: 'keyless', tos: 'ok',
+    key: 'some-keyless-thing',
+    access: 'keyless',
+    tos: 'ok',
     entry: {
-      format: 'openai', executor: 'default', baseUrl: 'https://x.test/v1/chat/completions',
-      authType: 'none', authHeader: 'none', models: [],
+      format: 'openai',
+      executor: 'default',
+      baseUrl: 'https://x.test/v1/chat/completions',
+      authType: 'none',
+      authHeader: 'none',
+      models: [],
     },
   })
   assert.equal(decision.activation, 'active')
@@ -1911,12 +2477,21 @@ test('a provider with no credential concept activates keyless', () => {
   assert.equal(decision.resolution.auth.headerName, null)
 })
 
-test('an optional-auth provider activates keyless, matching hammer\'s optional-bearer semantics', () => {
+test("an optional-auth provider activates keyless, matching hammer's optional-bearer semantics", () => {
   // `uncloseai` is the live example of the rule: an import that declares `authType: "optional"`
   // and has answered a real completion with no credential.
   const decision = decideResolution({
-    key: 'uncloseai', access: 'keyless', tos: 'caution',
-    entry: { format: 'openai', executor: 'default', baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions', authType: 'optional', authHeader: 'bearer', models: [] },
+    key: 'uncloseai',
+    access: 'keyless',
+    tos: 'caution',
+    entry: {
+      format: 'openai',
+      executor: 'default',
+      baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions',
+      authType: 'optional',
+      authHeader: 'bearer',
+      models: [],
+    },
   })
   assert.equal(decision.activation, 'active')
   assert.equal(decision.resolution.auth.optional, true)
@@ -1924,7 +2499,7 @@ test('an optional-auth provider activates keyless, matching hammer\'s optional-b
 
 test('lazyProviderSourceEntries only exposes active providers', () => {
   const lazy = Object.keys(lazyEntriesDirect())
-  for (const provider of imported().filter(d => d.activation !== 'active')) {
+  for (const provider of imported().filter((d) => d.activation !== 'active')) {
     assert.equal(
       lazy.includes(provider.key),
       false,
@@ -1948,9 +2523,13 @@ test('a declared request default fills a blank without overruling the caller', (
 })
 
 test('a provider that refuses content-part arrays gets a plain string', () => {
-  const shaped = buildProviderRequestBody('cloudflare-ai', {
-    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi there' }] }],
-  }, '@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+  const shaped = buildProviderRequestBody(
+    'cloudflare-ai',
+    {
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi there' }] }],
+    },
+    '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+  )
   assert.equal(shaped.messages[0].content, 'hi there')
 })
 
@@ -1968,24 +2547,43 @@ test('a template endpoint resolves from the credential, and says what is missing
   assert.equal(missing.url, null)
   assert.deepEqual(missing.missing, ['accountId'])
 
-  const resolved = resolveShapedChatUrl({ providers: { 'cloudflare-ai': { accountId: 'acct-42' } } }, 'cloudflare-ai', null)
-  assert.equal(resolved.url, 'https://api.cloudflare.com/client/v4/accounts/acct-42/ai/v1/chat/completions')
+  const resolved = resolveShapedChatUrl(
+    { providers: { 'cloudflare-ai': { accountId: 'acct-42' } } },
+    'cloudflare-ai',
+    null,
+  )
+  assert.equal(
+    resolved.url,
+    'https://api.cloudflare.com/client/v4/accounts/acct-42/ai/v1/chat/completions',
+  )
 
   // A provider with no template is returned untouched, credential or not.
-  assert.equal(resolveShapedChatUrl({}, 'mistral', 'https://api.mistral.ai/v1/chat/completions').url,
-    'https://api.mistral.ai/v1/chat/completions')
+  assert.equal(
+    resolveShapedChatUrl({}, 'mistral', 'https://api.mistral.ai/v1/chat/completions').url,
+    'https://api.mistral.ai/v1/chat/completions',
+  )
 })
 
 test('an image cannot be flattened into a string, so it is reported instead of dropped', () => {
   const result = flattenTextContent([
-    { role: 'user', content: [{ type: 'text', text: 'look' }, { type: 'image_url', image_url: { url: 'x' } }] },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'look' },
+        { type: 'image_url', image_url: { url: 'x' } },
+      ],
+    },
   ])
   assert.equal(result.messages[0].content, 'look')
   assert.deepEqual(result.droppedParts, ['image_url'])
 })
 
 test('every provider without a shaping block is returned byte-for-byte unchanged', () => {
-  const body = { model: 'x', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], max_tokens: 7 }
+  const body = {
+    model: 'x',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    max_tokens: 7,
+  }
   assert.deepEqual(buildProviderRequestBody('mistral', body, 'x'), body)
   assert.equal(applyRequestShaping('mistral', body).body.max_tokens, 7)
 })
@@ -2003,9 +2601,21 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // descriptor that carries no quota is simply absent, which is the shape the old
   // hand-maintained object had for a provider it did not describe.
   for (const key of [
-    'nvidia', 'groq', 'googleai', 'openrouter', 'codestral',
-    'kiro', 'kilocode', 'empero', 'github-copilot',
-    'openai-codex', 'g4f', 'gptfree', 'devin', 'ollama', 'openai-compatible',
+    'nvidia',
+    'groq',
+    'googleai',
+    'openrouter',
+    'codestral',
+    'kiro',
+    'kilocode',
+    'empero',
+    'github-copilot',
+    'openai-codex',
+    'g4f',
+    'gptfree',
+    'devin',
+    'ollama',
+    'openai-compatible',
   ]) {
     assert.ok(table[key], `${key} must keep its published quota`)
   }
@@ -2030,10 +2640,11 @@ test('transient catalog failures retry with bounded backoff', async () => {
   const payload = await fetchJsonWithRetry('https://catalog.test/models', {
     fetchImpl: async () => {
       calls += 1
-      if (calls === 1) throw Object.assign(new Error('fetch failed'), { cause: { code: 'ETIMEDOUT' } })
+      if (calls === 1)
+        throw Object.assign(new Error('fetch failed'), { cause: { code: 'ETIMEDOUT' } })
       return { ok: true, json: async () => ({ data: [{ id: 'good-model' }] }) }
     },
-    sleep: async delay => sleeps.push(delay),
+    sleep: async (delay) => sleeps.push(delay),
     random: () => 0,
   })
 
@@ -2075,5 +2686,9 @@ test('discovery shares the router probe window and never reaches back into the s
   )
   // The fetches live inside functions; a top-level one would turn importing the providers
   // module into a network probe, which is the property the boot-safety guard protects.
-  assert.equal(/^fetch\s*\(/m.test(source), false, 'discovery.js must not call fetch at import time')
+  assert.equal(
+    /^fetch\s*\(/m.test(source),
+    false,
+    'discovery.js must not call fetch at import time',
+  )
 })

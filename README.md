@@ -16,7 +16,7 @@
 
 ### 🔥 100% Free • Auto-Routing • 80+ Models • 12+ Providers • OpenAI-Compatible
 
-**hammer** is an OpenAI-compatible local router that benchmarks free coding models across top providers and automatically forwards your requests to the best available model. 
+**hammer** is an OpenAI-compatible local router that benchmarks free coding models across top providers and automatically forwards your requests to the best available model.
 
 ### ✨ Why use hammer?
 
@@ -95,9 +95,7 @@ If you want manual setup, merge this into `~/.openclaw/openclaw.json`:
         "baseUrl": "http://127.0.0.1:7352/v1",
         "api": "openai-completions",
         "apiKey": "no-key",
-        "models": [
-          { "id": "best", "name": "Best" }
-        ]
+        "models": [{ "id": "best", "name": "Best" }]
       }
     }
   },
@@ -213,9 +211,9 @@ Example:
   "object": "list",
   "data": [
     { "id": "best", "object": "model", "owned_by": "router" },
-    { "id": "minimax-m2.5", "object": "model", "owned_by":"Hammer" },
-    { "id": "kimi-k2.5", "object": "model", "owned_by":"Hammer" },
-    { "id": "glm4.7", "object": "model", "owned_by":"Hammer" }
+    { "id": "minimax-m2.5", "object": "model", "owned_by": "Hammer" },
+    { "id": "kimi-k2.5", "object": "model", "owned_by": "Hammer" },
+    { "id": "glm4.7", "object": "model", "owned_by": "Hammer" }
   ]
 }
 ```
@@ -233,7 +231,7 @@ Hammer uses context data reported by the selected provider when it is available.
 
 ### Learned context bounds
 
-Besides the two sources above, hammer learns bounds from real requests: a successful request raises a lower bound, and a rejection that is genuinely about context lowers an upper bound. Only a provider-stated ceiling may become an *exact* bound, and only an exact bound may override the catalog or mark a row `Micro` in the dashboard. Throughput quotas ("…on output tokens per minute (OTPM): Limit 1000, Requested 1413") and output-token caps ("`max_tokens` must be less than or equal to `8192`") are refused: they describe this request's budget, not the model's window. A bound inferred from the size of a failed prompt is shown as a range (`>22, <1649`) and never benches a row.
+Besides the two sources above, hammer learns bounds from real requests: a successful request raises a lower bound, and a rejection that is genuinely about context lowers an upper bound. Only a provider-stated ceiling may become an _exact_ bound, and only an exact bound may override the catalog or mark a row `Micro` in the dashboard. Throughput quotas ("…on output tokens per minute (OTPM): Limit 1000, Requested 1413") and output-token caps ("`max_tokens` must be less than or equal to `8192`") are refused: they describe this request's budget, not the model's window. A bound inferred from the size of a failed prompt is shown as a range (`>22, <1649`) and never benches a row.
 
 Every bound keeps the error body it was read from, and is re-checked against the current rules on startup, so a parser fix withdraws the numbers an older build wrote. To withdraw one by hand, use `hammer context reset [--provider <key>] [--model <id>]` or `POST /api/context-bounds/reset` with `{providerKey, modelId}`.
 
@@ -272,6 +270,7 @@ Grouped-ID routing retains its normal QoS behavior. For those routes, the QoS sc
   - (gptfree needs no key or env var — see [gptfree](#gptfree-gptfreecom) below)
 
 Kiro OAuth notes:
+
 - Base endpoint is preconfigured to `https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse`
 - Current Kiro model IDs include `claude-sonnet-4.5` and `claude-haiku-4.5`
 - Authentication uses OAuth access tokens refreshed from:
@@ -302,7 +301,7 @@ Until a key is set, the provider appears under **Require setup** in the dashboar
 
 Read this part before relying on it:
 
-- **It is one auto route, not a model.** The endpoint takes `{message, images, history}` and chooses the backend itself — it ignores any model you ask for. So the provider shows exactly one row, `Auto (GPTFree)`, with no context window stated — it is unknown, and a made-up number would rank it in `min_ctx` on no evidence. The consequence is that any request carrying `+min_ctx:` never selects it (rows without a known window are excluded), and it cannot be picked *by name* the way a real model can: it is one extra candidate for `best`, not a model in the routing decisions.
+- **It is one auto route, not a model.** The endpoint takes `{message, images, history}` and chooses the backend itself — it ignores any model you ask for. So the provider shows exactly one row, `Auto (GPTFree)`, with no context window stated — it is unknown, and a made-up number would rank it in `min_ctx` on no evidence. The consequence is that any request carrying `+min_ctx:` never selects it (rows without a known window are excluded), and it cannot be picked _by name_ the way a real model can: it is one extra candidate for `best`, not a model in the routing decisions.
 - **The credential is short-lived and minted for you.** Hammer signs in an anonymous Firebase account on first use, caches the ID token, and refreshes it from its refresh token; the Firebase web API key involved is public (it identifies the project, it does not authorize anything).
 - **It is an internal endpoint, not a contract.** Hammer uses the same Cloud Function the website calls. gptfree can add App Check, disable anonymous sign-in, rotate keys, or change the response format at any time, and the provider will stop working until hammer is updated.
 - **It is an ad-supported site.** This integration is automated traffic against a service that invites interactive use, which is a fair-use question hammer cannot answer for you. The G4F row offers a free relay with a documented API if that matters to you.
@@ -329,7 +328,7 @@ Details that matter:
 
 ### OpenAI Codex
 
-OpenAI Codex lets a ChatGPT plan back the router instead of an API key. It is the one provider that is *not* OpenAI-compatible: calls go to the Responses API on the ChatGPT backend, authenticated with a short-lived ChatGPT access token plus the workspace id header, and always stream SSE. Hammer translates both directions, so clients keep speaking `/v1/chat/completions`.
+OpenAI Codex lets a ChatGPT plan back the router instead of an API key. It is the one provider that is _not_ OpenAI-compatible: calls go to the Responses API on the ChatGPT backend, authenticated with a short-lived ChatGPT access token plus the workspace id header, and always stream SSE. Hammer translates both directions, so clients keep speaking `/v1/chat/completions`.
 
 1. Open the Web UI, go to **Settings → OpenAI Codex**, and click **Sign in with ChatGPT**.
 2. Approve the code on `auth.openai.com/codex/device`.
@@ -355,12 +354,22 @@ hammer supports configuring multiple OpenAI-compatible upstream endpoints (vLLM,
   {
     "apiKeys": {
       "openai-compatible:my-vllm": "sk-…",
-      "openai-compatible:groq-clone": "sk-…"
+      "openai-compatible:groq-clone": "sk-…",
     },
     "providers": {
-      "openai-compatible:my-vllm":    { "enabled": true, "name": "Local vLLM", "baseUrl": "http://localhost:8000/v1", "modelId": "qwen-coder" },
-      "openai-compatible:groq-clone": { "enabled": true, "name": "Groq Clone", "baseUrl": "https://example/v1",        "modelId": "llama-3.3-70b" }
-    }
+      "openai-compatible:my-vllm": {
+        "enabled": true,
+        "name": "Local vLLM",
+        "baseUrl": "http://localhost:8000/v1",
+        "modelId": "qwen-coder",
+      },
+      "openai-compatible:groq-clone": {
+        "enabled": true,
+        "name": "Groq Clone",
+        "baseUrl": "https://example/v1",
+        "modelId": "llama-3.3-70b",
+      },
+    },
   }
   ```
 - Legacy single-endpoint configs (a bare `openai-compatible` entry without an instance suffix) are migrated automatically to `openai-compatible:default` on first run.

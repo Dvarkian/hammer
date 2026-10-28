@@ -9,12 +9,7 @@ import globals from 'globals'
  */
 export default [
   {
-    ignores: [
-      'node_modules/**',
-      'public/vendor/**',
-      'docs/assets/**',
-      'package-lock.json',
-    ],
+    ignores: ['node_modules/**', 'public/vendor/**', 'docs/assets/**', 'package-lock.json'],
   },
   js.configs.recommended,
   {
@@ -28,7 +23,10 @@ export default [
       // A caught-but-unused binding is often deliberate documentation of intent
       // (`catch {` vs `catch (e)`), and unused args are common in Express
       // middleware where the arity is the contract.
-      'no-unused-vars': ['error', { args: 'after-used', argsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-unused-vars': [
+        'error',
+        { args: 'after-used', argsIgnorePattern: '^_', caughtErrors: 'none' },
+      ],
       'no-empty': ['error', { allowEmptyCatch: true }],
       eqeqeq: ['error', 'smart'],
       'no-var': 'error',

@@ -1,0 +1,10 @@
+package-lock.json
+docs/assets/
+node_modules/
+# The dashboard is formatted when it becomes ES modules: today its tests assert
+# against the source text of dashboard.js and index.html, so a cosmetic reflow
+# fails them for no behavioural reason. See the dashboard phase of the refactor.
+public/
+# loading-ux/pinning tests assert on the exact source text of this file (semicolons
+# included), so it joins the formatter when those become behavioural tests.
+lib/server.js

@@ -8,13 +8,17 @@ import {
 } from '../lib/provider-usage.js'
 
 test('quota reports preserve the original total, remaining amount, and period', () => {
-  const [requests] = normalizeProviderUsageReport('example', {
-    metric: 'requests',
-    limit: 5000,
-    used: 1200,
-    window: 'day',
-    reset: '2030-01-01T00:00:00.000Z',
-  }, { accountIndex: 0, accountLabel: 'Account A' })
+  const [requests] = normalizeProviderUsageReport(
+    'example',
+    {
+      metric: 'requests',
+      limit: 5000,
+      used: 1200,
+      window: 'day',
+      reset: '2030-01-01T00:00:00.000Z',
+    },
+    { accountIndex: 0, accountLabel: 'Account A' },
+  )
 
   assert.equal(requests.metric, 'requests')
   assert.equal(requests.limit, 5000)
@@ -44,31 +48,40 @@ test('percentage quotas are a first-class quota kind', () => {
 })
 
 test('a provider may report independent quota windows for the same account', () => {
-  const reports = normalizeProviderUsageReport('example', [
-    { metric: 'requests', limit: 100, remaining: 25, window: 'day' },
-    { metric: 'requests', limit: 50, remaining: 40, window: 'week' },
-  ], { accountIndex: 0, accountLabel: 'Account A' })
+  const reports = normalizeProviderUsageReport(
+    'example',
+    [
+      { metric: 'requests', limit: 100, remaining: 25, window: 'day' },
+      { metric: 'requests', limit: 50, remaining: 40, window: 'week' },
+    ],
+    { accountIndex: 0, accountLabel: 'Account A' },
+  )
 
   assert.equal(reports.length, 2)
-  assert.deepEqual(reports.map(report => report.window), ['day', 'week'])
+  assert.deepEqual(
+    reports.map((report) => report.window),
+    ['day', 'week'],
+  )
   assert.equal(reports[0].remaining, 25)
   assert.equal(reports[1].remaining, 40)
 })
 
 test('serialized quota reports include account identity without exposing credentials', () => {
-  const [serialized] = serializeProviderUsage([{
-    providerKey: 'example',
-    metric: 'credits',
-    used: 2,
-    limit: 10,
-    remaining: 8,
-    unit: 'credits',
-    accountIndex: 2,
-    accountLabel: 'Account C',
-    window: 'month',
-    resetAt: 1893456000000,
-    freshness: 'fresh',
-  }])
+  const [serialized] = serializeProviderUsage([
+    {
+      providerKey: 'example',
+      metric: 'credits',
+      used: 2,
+      limit: 10,
+      remaining: 8,
+      unit: 'credits',
+      accountIndex: 2,
+      accountLabel: 'Account C',
+      window: 'month',
+      resetAt: 1893456000000,
+      freshness: 'fresh',
+    },
+  ])
 
   assert.equal(serialized.accountIndex, 2)
   assert.equal(serialized.accountLabel, 'Account C')
@@ -127,7 +140,7 @@ test('an envelope is unwrapped even when it also carries a direct quota field', 
 
   // Two real items, and no third report invented from the envelope's own reset duration.
   assert.equal(reports.length, 2)
-  assert.deepEqual(reports.map(report => report.metric).sort(), ['percent', 'requests'])
+  assert.deepEqual(reports.map((report) => report.metric).sort(), ['percent', 'requests'])
 })
 
 test('non-object entries in a provider payload are ignored, not fatal', () => {

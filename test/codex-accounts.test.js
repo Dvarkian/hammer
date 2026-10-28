@@ -49,8 +49,16 @@ function poolState(providerKey, entries) {
 
 test('a second sign-in is appended, and the same account is refreshed in place', () => {
   const config = configWithAccounts([])
-  addOrUpdateProviderAccount(config, CODEX, { secret: 'refresh-a', email: 'a@example.com', planType: 'plus' })
-  addOrUpdateProviderAccount(config, CODEX, { secret: 'refresh-b', email: 'b@example.com', planType: 'pro' })
+  addOrUpdateProviderAccount(config, CODEX, {
+    secret: 'refresh-a',
+    email: 'a@example.com',
+    planType: 'plus',
+  })
+  addOrUpdateProviderAccount(config, CODEX, {
+    secret: 'refresh-b',
+    email: 'b@example.com',
+    planType: 'pro',
+  })
   assert.equal(getProviderAccounts(config, CODEX).length, 2)
 
   // The same email signing in again rotates its secret: one account, not a third entry.
@@ -90,7 +98,7 @@ test('signing one account out leaves the other accounts signed in', () => {
   const result = applyProviderSignOut(config, CODEX, 'b@example.com')
   assert.deepEqual(result, { removed: 1, remaining: 2 })
   assert.deepEqual(
-    getProviderAccounts(config, CODEX).map(account => account.email),
+    getProviderAccounts(config, CODEX).map((account) => account.email),
     ['a@example.com', 'c@example.com'],
   )
   // The single-value display field followed the pool instead of still naming the account
@@ -104,7 +112,10 @@ test('an identifier that matches nothing signs nobody out', () => {
     { secret: 'refresh-a', email: 'a@example.com' },
     { secret: 'refresh-b', email: 'b@example.com' },
   ])
-  assert.deepEqual(applyProviderSignOut(config, CODEX, 'nobody@example.com'), { removed: 0, remaining: 2 })
+  assert.deepEqual(applyProviderSignOut(config, CODEX, 'nobody@example.com'), {
+    removed: 0,
+    remaining: 2,
+  })
   assert.equal(getProviderAccounts(config, CODEX).length, 2)
 })
 
@@ -128,10 +139,11 @@ test('adding a credential to a populated pool appends instead of replacing it', 
     { secret: 'refresh-b', email: 'b@example.com' },
   ])
   addOrUpdateProviderAccount(config, CODEX, { secret: 'refresh-pasted' })
-  assert.deepEqual(
-    getProviderAccountSecrets(config, CODEX),
-    ['refresh-a', 'refresh-b', 'refresh-pasted'],
-  )
+  assert.deepEqual(getProviderAccountSecrets(config, CODEX), [
+    'refresh-a',
+    'refresh-b',
+    'refresh-pasted',
+  ])
 })
 
 test('signing every account out is what clears the legacy credential and sign-in fields', () => {
@@ -139,7 +151,10 @@ test('signing every account out is what clears the legacy credential and sign-in
     { secret: 'refresh-a', email: 'a@example.com' },
     { secret: 'refresh-b', email: 'b@example.com' },
   ])
-  Object.assign(config.providers[CODEX], { refreshToken: 'legacy-refresh', authEmail: 'a@example.com' })
+  Object.assign(config.providers[CODEX], {
+    refreshToken: 'legacy-refresh',
+    authEmail: 'a@example.com',
+  })
 
   const partial = applyProviderSignOut(config, CODEX, 'a@example.com')
   assert.equal(partial.remaining, 1)
@@ -156,7 +171,9 @@ test('signing every account out is what clears the legacy credential and sign-in
 
 test('a legacy single-token config still signs out through the pool-less path', () => {
   // The pre-pool shape has no accounts array; Disconnect-all has to keep working on it.
-  const config = { providers: { [CODEX]: { refreshToken: 'legacy-refresh', authMode: 'manual-token' } } }
+  const config = {
+    providers: { [CODEX]: { refreshToken: 'legacy-refresh', authMode: 'manual-token' } },
+  }
   assert.deepEqual(applyProviderSignOut(config, CODEX), { removed: 0, remaining: 0 })
   assert.equal(config.providers[CODEX].refreshToken, undefined)
   assert.equal(config.providers[CODEX].authMode, undefined)
@@ -178,7 +195,9 @@ test('the first account serves until it is spent, and only then does the next ta
   assert.deepEqual(picks, ['refresh-a', 'refresh-a', 'refresh-a', 'refresh-a'])
 
   // Alice hits her plan limit: everything moves to Bob, and stays there.
-  state.get(CODEX).accounts.set(0, { requests: 4, rateLimitedAt: now, exhaustedUntil: now + 60_000 })
+  state
+    .get(CODEX)
+    .accounts.set(0, { requests: 4, rateLimitedAt: now, exhaustedUntil: now + 60_000 })
   assert.deepEqual(
     [0, 1, 2].map(() => selectCodexRefreshToken(config, now, state)),
     ['refresh-b', 'refresh-b', 'refresh-b'],
@@ -191,7 +210,9 @@ test('an account whose window has passed takes the traffic back', () => {
     { secret: 'refresh-b', email: 'b@example.com' },
   ])
   const now = Date.now()
-  const state = poolState(CODEX, [[0, { requests: 0, rateLimitedAt: now, exhaustedUntil: now + 60_000 }]])
+  const state = poolState(CODEX, [
+    [0, { requests: 0, rateLimitedAt: now, exhaustedUntil: now + 60_000 }],
+  ])
   assert.equal(selectCodexRefreshToken(config, now, state), 'refresh-b')
   // Once it recovers it is first in the pool again, so it is the one that serves.
   assert.equal(selectCodexRefreshToken(config, now + 61_000, state), 'refresh-a')
@@ -206,7 +227,9 @@ test('a provider that states when its limit lifts is believed over the local def
   ])
   const now = Date.now()
   const dayMs = 20 * 60 * 60 * 1000
-  const state = poolState(CODEX, [[0, { requests: 0, rateLimitedAt: now, exhaustedUntil: now + dayMs }]])
+  const state = poolState(CODEX, [
+    [0, { requests: 0, rateLimitedAt: now, exhaustedUntil: now + dayMs }],
+  ])
   assert.equal(selectCodexRefreshToken(config, now + 61_000, state), 'refresh-b')
   assert.equal(selectCodexRefreshToken(config, now + dayMs - 1, state), 'refresh-b')
   assert.equal(selectCodexRefreshToken(config, now + dayMs + 1, state), 'refresh-a')

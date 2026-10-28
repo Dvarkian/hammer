@@ -46,8 +46,10 @@ test('every placeholder readout is one the loader knows how to clear', () => {
   // shimmer bar forever, which is a worse lie than the `0` it replaced.
   const listMatch = dashboard.match(/const LOADING_VALUES = \[([\s\S]*?)\];/)
   assert.ok(listMatch, 'LOADING_VALUES must exist')
-  const listed = [...listMatch[1].matchAll(/'([a-z-]+)'/g)].map(m => m[1])
-  const inMarkup = [...html.matchAll(/class="[^"]*\bis-loading\b[^"]*"\s+id="([^"]+)"/g)].map(m => m[1])
+  const listed = [...listMatch[1].matchAll(/'([a-z-]+)'/g)].map((m) => m[1])
+  const inMarkup = [...html.matchAll(/class="[^"]*\bis-loading\b[^"]*"\s+id="([^"]+)"/g)].map(
+    (m) => m[1],
+  )
   assert.ok(inMarkup.length > 0, 'the loading markup must be present')
   assert.deepEqual([...inMarkup].sort(), [...listed].sort())
 
@@ -79,11 +81,20 @@ test('placeholder rows and cards keep the layout and are removed before real dat
   // paths empty the element before painting into it.
   assert.match(dashboard, /function setTopologyPlaceholder\(visible\)/)
   assert.match(dashboard, /svg\.dataset\.placeholder = '1';/)
-  assert.match(dashboard, /if \(svg\.dataset\.placeholder !== '1'\) return; \/\/ never clear a real plot/)
+  assert.match(
+    dashboard,
+    /if \(svg\.dataset\.placeholder !== '1'\) return; \/\/ never clear a real plot/,
+  )
   // And the first real draw drops the flag along with the markup it replaces.
-  assert.match(dashboard, /svg\.innerHTML = '';\s*\/\/[\s\S]{0,300}delete svg\.dataset\.placeholder;/)
+  assert.match(
+    dashboard,
+    /svg\.innerHTML = '';\s*\/\/[\s\S]{0,300}delete svg\.dataset\.placeholder;/,
+  )
   assert.match(dashboard, /setTopologyPlaceholder\(true\);/)
-  assert.match(dashboard, /function failLoadingState\(err\) \{[\s\S]{0,600}setTopologyPlaceholder\(false\);/)
+  assert.match(
+    dashboard,
+    /function failLoadingState\(err\) \{[\s\S]{0,600}setTopologyPlaceholder\(false\);/,
+  )
 })
 
 test('a failed first snapshot is reported with a way back, and only the first one owns it', () => {
@@ -117,43 +128,76 @@ test('the boot paints the table, then the numbers, then decorates on idle', () =
   assert.ok(boot >= 0 && load > boot, 'the shell must be up before the snapshot is requested')
   // The provider grid is no longer built straight from the boot tail: that plus the snapshot's
   // own call made every page load render ~125 cards twice.
-  assert.doesNotMatch(dashboard, /\n {4}loadSettings\(\)\.catch\(e => console\.error\('Initial loadSettings failed/)
+  assert.doesNotMatch(
+    dashboard,
+    /\n {4}loadSettings\(\)\.catch\(e => console\.error\('Initial loadSettings failed/,
+  )
 
-  assert.match(dashboard, /const displayGroups = searchTerm \? null : splitDisplayGroups\(sortedGroups\(groupModels\(allModels\)\)\);/)
-  assert.match(dashboard, /updateKpiNumbers\(allModels, currentBestModelId, currentBestProviderKey, displayGroups\);/)
+  assert.match(
+    dashboard,
+    /const displayGroups = searchTerm \? null : splitDisplayGroups\(sortedGroups\(groupModels\(allModels\)\)\);/,
+  )
+  assert.match(
+    dashboard,
+    /updateKpiNumbers\(allModels, currentBestModelId, currentBestProviderKey, displayGroups\);/,
+  )
   assert.match(dashboard, /whenIdle\(async \(\) => \{/)
   // The grid: refreshed from this snapshot's roster once it exists, and built through its own
   // idle slot the first time (painting ~125 cards is itself a long task). Two snapshots can
   // arrive while that first build is still queued, so the state distinguishes "already built"
   // from "being built" — otherwise each of them decides to build it and every card renders twice.
-  assert.match(dashboard, /if \(providerPanelState === 'ready'\) \{\s*await loadSettings\(lastProviderRoster\);/)
+  assert.match(
+    dashboard,
+    /if \(providerPanelState === 'ready'\) \{\s*await loadSettings\(lastProviderRoster\);/,
+  )
   assert.match(dashboard, /if \(providerPanelState === 'building'\) \{/)
-  assert.match(dashboard, /providerPanelState = 'building';\s*whenIdle\(\(\) => \{\s*loadSettings\(lastProviderRoster\)\.catch\(e => console\.error\('Initial loadSettings failed:', e\)\);/)
+  assert.match(
+    dashboard,
+    /providerPanelState = 'building';\s*whenIdle\(\(\) => \{\s*loadSettings\(lastProviderRoster\)\.catch\(e => console\.error\('Initial loadSettings failed:', e\)\);/,
+  )
   assert.match(dashboard, /providerPanelState = 'ready';/)
 })
 
 test('one grouping per snapshot serves both the table and the readouts', () => {
   assert.match(dashboard, /function render\(isUserAction = false, precomputedGroups = null\)/)
   assert.match(dashboard, /\(precomputedGroups && !searchTerm\)/)
-  assert.match(dashboard, /function updateKpiNumbers\(models, bestModelId, bestProviderKey = null, displayGroups = null\)/)
-  assert.match(dashboard, /const \{ mainGroups \} = displayGroups \|\| splitDisplayGroups\(sortedGroups\(groupModels\(models\)\)\);/)
+  assert.match(
+    dashboard,
+    /function updateKpiNumbers\(models, bestModelId, bestProviderKey = null, displayGroups = null\)/,
+  )
+  assert.match(
+    dashboard,
+    /const \{ mainGroups \} = displayGroups \|\| splitDisplayGroups\(sortedGroups\(groupModels\(models\)\)\);/,
+  )
 })
 
 test('a live event still paints numbers and both plots on its own frame', () => {
   // The staging above applies to the boot only. A fallback names a model on the SSE frame, and
   // every surface that names it — pictures included — has to move on that same frame.
-  assert.match(dashboard, /function updateKPIs\(models, bestModelId, bestProviderKey = null\) \{\s*updateKpiNumbers\(models, bestModelId, bestProviderKey\);\s*drawPlots\(models, bestModelId, bestProviderKey\);\s*\}/)
-  assert.match(dashboard, /render\(\);\s*updateKPIs\(allModels, currentBestModelId, currentBestProviderKey\);/)
+  assert.match(
+    dashboard,
+    /function updateKPIs\(models, bestModelId, bestProviderKey = null\) \{\s*updateKpiNumbers\(models, bestModelId, bestProviderKey\);\s*drawPlots\(models, bestModelId, bestProviderKey\);\s*\}/,
+  )
+  assert.match(
+    dashboard,
+    /render\(\);\s*updateKPIs\(allModels, currentBestModelId, currentBestProviderKey\);/,
+  )
   assert.match(dashboard, /function drawPlots\(models, bestModelId, bestProviderKey = null\)/)
 })
 
 test('brand marks are decoration and arrive after the first paint', () => {
   assert.match(dashboard, /let decorationsReady = false;/)
-  assert.match(dashboard, /function faviconHrefs\(domains\) \{\s*if \(!decorationsReady\) return \[\];/)
+  assert.match(
+    dashboard,
+    /function faviconHrefs\(domains\) \{\s*if \(!decorationsReady\) return \[\];/,
+  )
   // In the rebuild key, or a plot drawn during the wait would keep its monograms until its
   // membership happened to change.
   assert.match(dashboard, /\$\{W\}:\$\{H\}:dec=\$\{decorationsReady \? 1 : 0\}/)
-  assert.match(dashboard, /decorationsReady = true;\s*drawPlots\(allModels, currentBestModelId, currentBestProviderKey\);/)
+  assert.match(
+    dashboard,
+    /decorationsReady = true;\s*drawPlots\(allModels, currentBestModelId, currentBestProviderKey\);/,
+  )
 })
 
 test('the ping history is no longer shipped on every row', () => {
@@ -197,7 +241,10 @@ test('the payload says whether its usage reports are current', () => {
   // it rather than starting a second wave of provider calls.
   assert.match(server, /return refreshProviderUsageReports\(\)/)
   assert.match(server, /providerUsageRevision \+= 1;/)
-  assert.match(server, /broadcastRouterEvent\(\{ type: 'provider-usage', revision: providerUsageRevision \}\)/)
+  assert.match(
+    server,
+    /broadcastRouterEvent\(\{ type: 'provider-usage', revision: providerUsageRevision \}\)/,
+  )
 
   const payload = server.indexOf('models: formatted,')
   assert.ok(payload > 0, 'the /api/models payload must exist')
@@ -218,20 +265,35 @@ test('the page re-reads when the refresh lands, from either side of the race', (
   // and re-reading ~341 rows to change none of them is a second of server work for nothing.
   assert.match(dashboard, /function scheduleUsageFollowUp\(\)/)
   assert.match(dashboard, /if \(data\.usagePending === true\) scheduleUsageFollowUp\(\);/)
-  assert.match(dashboard, /function refreshProviderUsageUi\(\) \{\s*if \(!providerPanelReady\(\)\) return;\s*loadSettings\(\)\.catch\(\(\) => \{ \}\);/)
-  assert.match(dashboard, /payload\.type === 'provider-usage'\) \{[\s\S]{0,240}refreshProviderUsageUi\(\);/)
+  assert.match(
+    dashboard,
+    /function refreshProviderUsageUi\(\) \{\s*if \(!providerPanelReady\(\)\) return;\s*loadSettings\(\)\.catch\(\(\) => \{ \}\);/,
+  )
+  assert.match(
+    dashboard,
+    /payload\.type === 'provider-usage'\) \{[\s\S]{0,240}refreshProviderUsageUi\(\);/,
+  )
   // Handled before the revision bump: it moves no row and no selection, and it arrives while the
   // first snapshot is usually still on the wire — counting it would discard that snapshot and
   // leave the page on its skeleton.
-  assert.match(dashboard, /if \(payload\.type === 'provider-usage'\) \{[\s\S]{0,400}return;\s*\}\s*routerEventRevision\+\+;/)
+  assert.match(
+    dashboard,
+    /if \(payload\.type === 'provider-usage'\) \{[\s\S]{0,400}return;\s*\}\s*routerEventRevision\+\+;/,
+  )
   assert.doesNotMatch(dashboard, /\|\| payload\.type === 'provider-usage'\) \{\s*scheduleRefresh/)
 })
 
 test('one unreachable usage endpoint cannot hold the refresh for the full ping timeout', () => {
-  assert.match(server, /const PROVIDER_USAGE_BUDGET_MS = Number\(process\.env\.HAMMER_USAGE_REFRESH_BUDGET_MS\) \|\| 5_000;/)
+  assert.match(
+    server,
+    /const PROVIDER_USAGE_BUDGET_MS = Number\(process\.env\.HAMMER_USAGE_REFRESH_BUDGET_MS\) \|\| 5_000;/,
+  )
   assert.match(server, /async function fetchProviderUsageReportWithinBudget\(config, providerKey\)/)
   assert.match(server, /Promise\.race\(\[\s*fetchProviderUsageReport\(config, providerKey\),/)
-  assert.match(server, /const result = await fetchProviderUsageReportWithinBudget\(currentConfig, providerKey\);/)
+  assert.match(
+    server,
+    /const result = await fetchProviderUsageReportWithinBudget\(currentConfig, providerKey\);/,
+  )
 })
 
 test('a cold favicon is fetched once per domain, not once per node', () => {
@@ -244,15 +306,24 @@ test('a cold favicon is fetched once per domain, not once per node', () => {
   assert.match(server, /\.finally\(\(\) => faviconInFlight\.delete\(domain\)\)/)
   // The shared promise resolves to a miss rather than rejecting, so a failed icon is a monogram
   // and not an unhandled rejection.
-  assert.match(server, /\.catch\(\(\) => \(\{ body: Buffer\.alloc\(0\), contentType: 'text\/plain', ok: false, at: Date\.now\(\) \}\)\)/)
+  assert.match(
+    server,
+    /\.catch\(\(\) => \(\{ body: Buffer\.alloc\(0\), contentType: 'text\/plain', ok: false, at: Date\.now\(\) \}\)\)/,
+  )
 })
 
 // ── The instrument ───────────────────────────────────────────────────────────────────────
 
 test('boot timing is available on request and never changes what is drawn', () => {
-  assert.match(dashboard, /const PERF_ENABLED = \/\(\^\|\[\?&\]\)perf\(\[=&\]\|\$\)\/\.test\(window\.location\.search\);/)
+  assert.match(
+    dashboard,
+    /const PERF_ENABLED = \/\(\^\|\[\?&\]\)perf\(\[=&\]\|\$\)\/\.test\(window\.location\.search\);/,
+  )
   assert.match(dashboard, /function perfMark\(name\) \{[\s\S]{0,120}if \(!PERF_ENABLED\) return;/)
-  assert.match(dashboard, /function perfReport\(\) \{[\s\S]{0,160}if \(!PERF_ENABLED \|\| perfReported \|\| perfMarks\.length === 0\) return;/)
+  assert.match(
+    dashboard,
+    /function perfReport\(\) \{[\s\S]{0,160}if \(!PERF_ENABLED \|\| perfReported \|\| perfMarks\.length === 0\) return;/,
+  )
   assert.match(dashboard, /perfMark\('table'\);/)
   assert.match(dashboard, /perfMark\('providers'\);/)
   // A stage that never completes still leaves the marks that did.

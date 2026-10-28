@@ -35,7 +35,10 @@ test('onboarding sorts healthy first, then by name', () => {
     { modelId: 'mid', label: 'Mid', verdict: 'Slow' },
   ]
   const sorted = sortOnboardResults(rows)
-  assert.deepEqual(sorted.map(r => r.modelId), ['alpha', 'beta', 'mid', 'zeta'])
+  assert.deepEqual(
+    sorted.map((r) => r.modelId),
+    ['alpha', 'beta', 'mid', 'zeta'],
+  )
   // The input is never mutated.
   assert.equal(rows[0].modelId, 'zeta')
 })
@@ -87,7 +90,10 @@ test('the dashboard popup drives, polls, and hands off to the plots', () => {
   // emphasis lives in state so the idle repaint the completion schedules cannot clobber it.
   assert.match(dashboard, /async function finishProviderOnboarding\(/)
   assert.match(dashboard, /function emphasizeProviderPlots\(/)
-  assert.match(dashboard, /onboardHighlight = \{ modelId: best\.modelId, providerKey: job\.providerKey \}/)
+  assert.match(
+    dashboard,
+    /onboardHighlight = \{ modelId: best\.modelId, providerKey: job\.providerKey \}/,
+  )
   assert.match(dashboard, /const highlight = onboardHighlight/)
   // Closing the popup must not let an in-flight poll or start reopen it.
   assert.match(dashboard, /onboardSession \+= 1/)
