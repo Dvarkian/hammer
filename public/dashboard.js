@@ -4286,7 +4286,10 @@
       return `<button class="test-btn" onclick="event.stopPropagation(); ${action}(this, ${btnArgs})" title="Send 'Please respond with a creative, funny, inspiring 30 words about hammers.' to this model">Test</button>`;
     }
 
-    // Builds the Response cell: the Test button plus the latest response text.
+    // Builds the Response cell: the Test button, and the text of a *failed* response. A clean
+    // answer is not printed here — it is the status icon's tooltip instead (see
+    // statusCellHTML), so a successful row stays one line instead of growing a box of prose
+    // under every Test button.
     // opts: { rowKey, providerKey?, modelId?, members?, owner? } — `owner` is the row a
     // shared response came from (a group heading), so the cell can judge that response
     // against the row that produced it instead of against the heading.
@@ -4387,11 +4390,15 @@
       // all: the status column beside this cell already states the group's verdict, so a
       // synthesized "Ready" there only repeated it, and printing the member's real words
       // would attribute one provider's answer to the whole model.
+      // Only a failure keeps its box open. The text of a success is not printed anywhere in this
+      // cell; `statusCellHTML` puts it on the verdict indicator's tooltip, where it costs no row
+      // height. Failures stay in the open because their text is the reason the row is not
+      // serving, and a tooltip nobody thinks to hover would hide it.
       const body = lastResponse._groupReady
         ? ''
-        : (text
-          ? `<div class="test-response ${errText ? 'err' : 'ok'}"${expAttr} title="${escapeAttr(text)}">${escapeHtml(text)}</div>`
-          : (errText ? `<div class="test-response err"${expAttr}>HTTP ${lastResponse.status}</div>` : ''));
+        : (errText
+          ? `<div class="test-response err"${expAttr} title="${escapeAttr(text)}">${text ? escapeHtml(text) : `HTTP ${lastResponse.status}`}</div>`
+          : '');
       return `<div class="test-cell">${btn}${body}${meta}</div>`;
     }
 
@@ -4416,6 +4423,17 @@
       if (!lastResponse.text || String(lastResponse.text).trim() === '') return false;
       if (lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt)) return false;
       return true;
+    }
+
+    // The words a successful test produced, for the status icon's tooltip.
+    //
+    // Empty unless that answer is still the row's verdict: a response the row has outgrown, or
+    // one whose window passed, must not be quoted as the answer the row is giving now. Same
+    // test the verdict itself uses, so the tooltip cannot contradict the dot it hangs on.
+    function readyAnswerText(m) {
+      const lr = m && m.lastResponse;
+      if (!isLastResponseReady(lr)) return '';
+      return stripThoughtTags(String(lr.text || '')).trim();
     }
 
     // ---- The one row verdict -------------------------------------------------
@@ -5406,9 +5424,13 @@
       const kind = rowVerdict(m);
       const special = specialStatusHTML(m, kind);
       const label = plainStatusLabel(kind);
+      // A green dot hides the answer that earned it. The Response cell stopped printing
+      // successful text (see responseCellHTML), so the tooltip is where the words live now —
+      // shown only while the answer is still this row's verdict.
+      const answer = kind === 'up' ? readyAnswerText(m) : '';
       const inner = special != null
         ? special
-        : `${verdictIndicatorHTML(kind, plainStatusTitle(kind))}${label ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(label)}</span>` : ''}`;
+        : `${verdictIndicatorHTML(kind, answer ? `Up — ${answer}` : plainStatusTitle(kind))}${label ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(label)}</span>` : ''}`;
       const outageTitle = providerOutageTitle(m);
       return `
             <div style="display: flex; align-items: center; gap: 6px;"${outageTitle ? ` title="${escapeAttr(outageTitle)}"` : ''}>
