@@ -5344,9 +5344,9 @@
     // Down and needs no word beside its red dot.
     function plainStatusLabel(kind) {
       if (kind === 'up' || kind === 'down') return '';
-      // The word used to be dropped beside the clock, which said "waiting on the provider" on
-      // its own. A timeout no longer borrows that clock — its Z says "asleep" and nothing more —
-      // so the word is what tells the reader which kind of waiting this is.
+      // The Z stands alone: it is not a clock (no window is being waited on), and the tooltip
+      // names the state. Spelling "Timeout" beside it only crowded the column.
+      if (kind === 'timeout') return '';
       return kind === 'noauth' ? 'No Auth' : verdictLabel(kind);
     }
 
