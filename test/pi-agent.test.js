@@ -16,6 +16,13 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
 import { PiBridge } from '../lib/pi/bridge.js'
+import {
+  HAMMER_MODEL,
+  HAMMER_PROVIDER,
+  defaultAgentDirFor,
+  hammerModelsConfig,
+  prepareHammerAgentDir,
+} from '../lib/pi/agent-dir.js'
 import { registerPiRoutes } from '../lib/http/routes/pi.js'
 
 const FAKE_PI = fileURLToPath(new URL('./support/fake-pi.mjs', import.meta.url))
@@ -271,6 +278,43 @@ test('the replay log is bounded in length and in characters', () => {
   }
 })
 
+test('the console configures Pi with the router as its only provider', () => {
+  const config = hammerModelsConfig('http://127.0.0.1:7352/v1')
+  const provider = config.providers[HAMMER_PROVIDER]
+  assert.equal(provider.baseUrl, 'http://127.0.0.1:7352/v1')
+  assert.equal(provider.api, 'openai-completions')
+  // The model is Hammer's alias, not a named model: a named one would pin the agent to it and
+  // take it off the router's selection the moment that selection changed.
+  assert.deepEqual(
+    provider.models.map((model) => model.id),
+    [HAMMER_MODEL],
+  )
+  assert.ok(provider.models[0].contextWindow > 0, 'Pi plans compaction against a window')
+  assert.ok(provider.models[0].maxTokens > 0, 'and asks for an output budget')
+})
+
+test('preparing the agent directory writes the configuration and keeps instances apart', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-dir-'))
+  const agentDir = join(root, 'agent')
+  const prepared = prepareHammerAgentDir({ baseUrl: 'http://127.0.0.1:7352/v1', agentDir })
+
+  assert.deepEqual(prepared.args, ['--provider', HAMMER_PROVIDER, '--model', HAMMER_MODEL])
+  assert.deepEqual(prepared.env, { PI_CODING_AGENT_DIR: agentDir })
+  const written = JSON.parse(readFileSync(prepared.modelsPath, 'utf8'))
+  assert.equal(written.providers.hammer.baseUrl, 'http://127.0.0.1:7352/v1')
+
+  // A restart rewrites nothing when the endpoint has not moved.
+  const again = prepareHammerAgentDir({ baseUrl: 'http://127.0.0.1:7352/v1', agentDir })
+  assert.equal(readFileSync(again.modelsPath, 'utf8'), readFileSync(prepared.modelsPath, 'utf8'))
+
+  // Two routers must not share one file, or the second start repoints the first instance's Pi.
+  assert.notEqual(
+    defaultAgentDirFor('http://127.0.0.1:7352/v1'),
+    defaultAgentDirFor('http://127.0.0.1:7353/v1'),
+  )
+  assert.match(defaultAgentDirFor('http://127.0.0.1:7352/v1'), /7352$/)
+})
+
 // ── The routes ───────────────────────────────────────────────────────────────────────────
 
 /** A bridge stand-in: the routes only need these methods, and a real EventEmitter. */
@@ -319,24 +363,26 @@ class StubBridge extends EventEmitter {
   dispose() {}
 }
 
-async function withPiApp(bridge, run) {
+/** Mounts the routes with the given seed and hands the test the base URL. */
+async function withPiApp(ctx, run) {
   const app = express()
   app.use(express.json())
-  registerPiRoutes(app, { piBridge: bridge })
+  const bridge = registerPiRoutes(app, ctx)
   const server = app.listen(0, '127.0.0.1')
   await new Promise((resolve) => server.once('listening', resolve))
   const address = /** @type {import('node:net').AddressInfo} */ (server.address())
   try {
-    return await run(`http://127.0.0.1:${address.port}`)
+    return await run(`http://127.0.0.1:${address.port}`, bridge)
   } finally {
     server.closeAllConnections?.()
     await new Promise((resolve) => server.close(resolve))
+    bridge.dispose()
   }
 }
 
 test('the status route describes the agent, including why it is unavailable', async () => {
   const bridge = new StubBridge()
-  await withPiApp(bridge, async (base) => {
+  await withPiApp({ piBridge: bridge }, async (base) => {
     const ok = await (await fetch(`${base}/api/pi/status`)).json()
     assert.equal(ok.available, true)
     assert.equal(ok.model.id, 'stub-model')
@@ -352,7 +398,7 @@ test('the status route describes the agent, including why it is unavailable', as
 
 test('a prompt is validated and then handed to the agent trimmed', async () => {
   const bridge = new StubBridge()
-  await withPiApp(bridge, async (base) => {
+  await withPiApp({ piBridge: bridge }, async (base) => {
     const empty = await fetch(`${base}/api/pi/prompt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -381,7 +427,7 @@ test('a prompt is validated and then handed to the agent trimmed', async () => {
 
 test('stop and new-session reach the agent and report a cancellation', async () => {
   const bridge = new StubBridge()
-  await withPiApp(bridge, async (base) => {
+  await withPiApp({ piBridge: bridge }, async (base) => {
     assert.deepEqual(await (await fetch(`${base}/api/pi/abort`, { method: 'POST' })).json(), {
       success: true,
     })
@@ -397,7 +443,7 @@ test('stop and new-session reach the agent and report a cancellation', async () 
 
 test('the event stream opens with the transcript the agent already produced', async () => {
   const bridge = new StubBridge()
-  await withPiApp(bridge, async (base) => {
+  await withPiApp({ piBridge: bridge }, async (base) => {
     const controller = new AbortController()
     const res = await fetch(`${base}/api/pi/events`, { signal: controller.signal })
     assert.equal(res.status, 200)
@@ -444,4 +490,55 @@ test('the event stream opens with the transcript the agent already produced', as
 
     controller.abort()
   })
+})
+
+test("a configuration that cannot be written refuses the agent rather than using Pi's own model", async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-bad-'))
+  const occupied = join(root, 'not-a-directory')
+  writeFileSync(occupied, 'x')
+  await withPiApp(
+    {
+      piCommand: process.execPath,
+      piArgs: [FAKE_PI],
+      piCwd: tmpdir(),
+      piBaseUrl: 'http://127.0.0.1:7352/v1',
+      piAgentDir: join(occupied, 'agent'),
+    },
+    async (base) => {
+      const status = await (await fetch(`${base}/api/pi/status`)).json()
+      assert.match(status.error, /Could not write the Pi configuration/)
+      assert.equal(status.routed, false)
+
+      const res = await fetch(`${base}/api/pi/prompt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'hello' }),
+      })
+      assert.equal(res.status, 503)
+      assert.match((await res.json()).error, /Could not write the Pi configuration/)
+    },
+  )
+})
+
+test('the console runs Pi on the router-directed configuration when it is given the base', async () => {
+  const agentDir = join(mkdtempSync(join(tmpdir(), 'hammer-pi-agent-')), 'agent')
+  await withPiApp(
+    {
+      piCommand: process.execPath,
+      piArgs: [FAKE_PI],
+      piCwd: tmpdir(),
+      piBaseUrl: 'http://127.0.0.1:7352/v1',
+      piAgentDir: agentDir,
+    },
+    async (base) => {
+      const body = await (await fetch(`${base}/api/pi/status`)).json()
+      assert.equal(
+        body.session.agentDir,
+        agentDir,
+        'the child inherited the Hammer-owned config directory',
+      )
+      const written = JSON.parse(readFileSync(join(agentDir, 'models.json'), 'utf8'))
+      assert.equal(written.providers.hammer.baseUrl, 'http://127.0.0.1:7352/v1')
+    },
+  )
 })

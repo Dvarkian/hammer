@@ -112,6 +112,17 @@ Three decisions follow from that, and each one is a defect if undone:
 3. **Nothing starts the agent until the tab is opened.** A status request is
    the only thing that spawns it, and the dashboard makes none until the Pi tab
    is selected — a router nobody is watching the console on pays for no child.
+4. **The agent's model is the router's.** The child runs on a Pi agent
+   directory Hammer owns (`~/.hammer/pi-agent/<port>`, written by
+   `lib/pi/agent-dir.js`) whose only provider is this router's `/v1` and whose
+   only model is `best`. Every LLM call the agent makes is therefore routed by
+   Hammer at the moment it is made: a pin, a slope change or a fallback moves
+   the agent's model with it. Naming a concrete model there would snapshot the
+   selection and, one dashboard change later, be the old model.
+
+   That directory is also why the console ignores the user's own Pi providers
+   and extensions: this instance is Hammer's, `~/.pi/agent` is never read or
+   written, and deleting the directory resets the console to a plain Pi.
 
 The bridge is driven in tests by `test/support/fake-pi.mjs`, which speaks the
 same protocol and can be told to crash on a command or refuse a new session.

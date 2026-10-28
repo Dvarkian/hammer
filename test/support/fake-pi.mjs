@@ -53,6 +53,8 @@ function handle(command) {
         thinkingLevel: 'off',
         isStreaming: streaming,
         sessionId: 'session-1',
+        // Echoed so a test can prove which configuration directory the child inherited.
+        agentDir: process.env.PI_CODING_AGENT_DIR || null,
       })
       return
 
