@@ -3336,6 +3336,12 @@
       if (resetBtn) resetBtn.style.display = sortState ? 'inline-block' : 'none';
     }
 
+    // Ignore leading bracketed tags such as "[次]" when ordering model names. The tag remains
+    // visible; it is metadata, not the model name users expect alphabetical sorting to use.
+    function sortableModelName(value) {
+      return String(value || '').replace(/^(?:\[[^\]]*\]\s*)+/u, '').toLocaleLowerCase();
+    }
+
     // Returns a comparable value for each column (lower = sorts first in asc)
     function colValue(m, col) {
       switch (col) {
@@ -3344,7 +3350,7 @@
         case 'intell': return getBenchmarkSortValue(m.intell);
         case 'rate': return isRateLimitedRow(m) ? 1 : 0;
         case 'health': return m.qos || 0; // fallback just in case
-        case 'model': return (m.label || '').toLowerCase();
+        case 'model': return sortableModelName(m.label || m.modelId);
         case 'ctx': return m.contextTokens || 0;
         default: return 0;
       }
@@ -3796,7 +3802,7 @@
         .sort((a, b) => {
           const cmp = compareModels(a.members[0], b.members[0]);
           if (cmp !== 0) return cmp;
-          return (a.label || '').localeCompare(b.label || '');
+          return sortableModelName(a.label).localeCompare(sortableModelName(b.label));
         });
     }
 
