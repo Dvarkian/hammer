@@ -11,24 +11,20 @@
  * text they always did rather than being rewritten: the guarantee is unchanged,
  * only its address moved.
  *
- * When a module is added under lib/http/routes/, add it here — a test that
- * silently stopped finding a handler would otherwise pass by looking at
- * nothing.
+ * The module list is discovered rather than hand-maintained. A hard-coded list
+ * would let a future extraction leave a handler outside this view, and every
+ * guard aimed at it would then pass by looking at nothing.
  */
 
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 
-const MODULES = [
-  '../../lib/server.js',
-  '../../lib/http/routes/models.js',
-  '../../lib/http/routes/providers.js',
-  '../../lib/http/routes/proxy.js',
-  '../../lib/http/routes/oauth-copilot.js',
-  '../../lib/http/routes/oauth-codex.js',
-  '../../lib/http/routes/oauth-kiro.js',
-  '../../lib/http/routes/oauth-devin.js',
-]
+const ROUTES = new URL('../../lib/http/routes/', import.meta.url)
+const COMPOSER = new URL('../../lib/server.js', import.meta.url)
 
-export const serverSource = MODULES.map((path) =>
-  readFileSync(new URL(path, import.meta.url), 'utf8'),
-).join('\n')
+// Sorted so `indexOf` comparisons between two locations stay deterministic.
+const routeModules = readdirSync(ROUTES)
+  .filter((name) => name.endsWith('.js'))
+  .sort()
+  .map((name) => readFileSync(new URL(name, ROUTES), 'utf8'))
+
+export const serverSource = [readFileSync(COMPOSER, 'utf8'), ...routeModules].join('\n')
