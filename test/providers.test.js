@@ -98,7 +98,6 @@ import {
   toOpenAICompatibleDiscoveredModelMeta,
   isChatCompatibleDiscoveredModel,
   isProviderAuthOptional,
-  isProviderBearerAuthEnabled,
   lazyDiscoveryCandidates,
   providerDiscoveryNeedsCredential,
   resolveDiscoveryModelsUrl,
@@ -332,7 +331,7 @@ test('a Test asks its question in prose, and asks a different one on every click
     // `(test id: ab12cd34)` was refused even at 30 characters, while the same question with the
     // marker dropped, and the same marker with its parentheses dropped, both answered.
     const marker = prompt.slice(QUESTION.length)
-    assert.doesNotMatch(marker, /[()\[\]:]|\d/, `${marker} carries a parenthesised or metadata shape`)
+    assert.doesNotMatch(marker, /[()[\]:]|\d/, `${marker} carries a parenthesised or metadata shape`)
     assert.doesNotMatch(marker, /\b(test|session|id|key|token|apikey)\b/i, `${marker} reads as metadata`)
   }
   // The two pairs are never the same pair: it is an invariant, not a retry, so it holds even for

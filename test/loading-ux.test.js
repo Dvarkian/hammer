@@ -117,7 +117,7 @@ test('the boot paints the table, then the numbers, then decorates on idle', () =
   assert.ok(boot >= 0 && load > boot, 'the shell must be up before the snapshot is requested')
   // The provider grid is no longer built straight from the boot tail: that plus the snapshot's
   // own call made every page load render ~125 cards twice.
-  assert.doesNotMatch(dashboard, /\n    loadSettings\(\)\.catch\(e => console\.error\('Initial loadSettings failed/)
+  assert.doesNotMatch(dashboard, /\n {4}loadSettings\(\)\.catch\(e => console\.error\('Initial loadSettings failed/)
 
   assert.match(dashboard, /const displayGroups = searchTerm \? null : splitDisplayGroups\(sortedGroups\(groupModels\(allModels\)\)\);/)
   assert.match(dashboard, /updateKpiNumbers\(allModels, currentBestModelId, currentBestProviderKey, displayGroups\);/)

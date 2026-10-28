@@ -319,22 +319,6 @@ export function parseRegistryEntry(source) {
     const match = text.match(new RegExp(`^\\s*${name}:\\s*(\\d[\\d_]*)`, 'm'))
     return match ? Number(match[1].replace(/_/g, '')) : null
   }
-  /**
-   * `headers: { "Name": "value" }` / `extraHeaders: {...}` — a flat literal of string
-   * pairs. Only literal values are read: a call expression ("getSomethingHeaders()") is
-   * deliberately skipped rather than guessed at, and the caller sees no header instead of
-   * a fabricated one.
-   */
-  const headerObject = name => {
-    const block = text.match(new RegExp(`${name}:\\s*\\{([\\s\\S]*?)\\n\\s*\\},`))
-    if (!block) return null
-    const out = {}
-    for (const pair of block[1].matchAll(/["']?([A-Za-z0-9-]+)["']?:\s*"([^"]*)"/g)) {
-      out[pair[1]] = pair[2]
-    }
-    return Object.keys(out).length > 0 ? out : null
-  }
-
   // `baseUrls` is the multi-region form: an object rather than a string.
   let baseUrl = stringField('baseUrl')
   if (!baseUrl) {
@@ -417,7 +401,7 @@ export function parseRegistryIndex(source) {
  *
  * @returns {{ activation: 'active'|'refused'|'staged', reason: string|null, resolution: object|null }}
  */
-export function decideResolution({ key, access, tos, note, entry }) {
+export function decideResolution({ key, access: _access, tos: _tos, note: _note, entry }) {
   // Terms are recorded but no longer gate activation. OmniRoute treats its own ToS flag as
   // advisory — by their design it "is not a routing gate" and flagged providers stay in
   // routing — and the operator of this instance has confirmed they accept that posture for

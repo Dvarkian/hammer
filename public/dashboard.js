@@ -336,15 +336,15 @@
     let pendingGraveyardGroups = [];
     // Row keys with a 'Test' request currently in flight (guards the Response cell
     // against being clobbered by live polling re-renders while the test runs).
-    let inflightTests = new Set();
+    const inflightTests = new Set();
     // Contradictory status/result pairs that have already received an automatic
     // re-test. The signature changes when the server reports a new result/state.
-    let automaticRetestSignatures = new Map();
+    const automaticRetestSignatures = new Map();
     // Automatic re-tests are trivial to schedule and expensive to run, so a row is held
     // to this cooldown however its signature changes: a model that keeps answering a
     // test with the same class of failure must not be re-tested every poll.
     const AUTOMATIC_RETEST_COOLDOWN_MS = 10 * 60_000;
-    let automaticRetestAt = new Map();
+    const automaticRetestAt = new Map();
     // How long the dashboard waits for one Test before abandoning the request. The router spends
     // up to three 60s attempts on a row — a provider-stated max_tokens cap and a reasoning-only
     // answer each earn a re-ask (MAX_TEST_ATTEMPTS/TEST_TIMEOUT_MS in lib/server.js) — so this is
@@ -396,11 +396,11 @@
     let scatterScales = null;     // plot extents, refreshed by every draw
     let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
     let selectorGuaranteeSlope = 0;   // fastest-row guarantee slope, applied only at 100%
-    let isTableHovered = false;
+    const isTableHovered = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
     const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;
-    let providerRefreshInFlight = new Set();
+    const providerRefreshInFlight = new Set();
     // Provider-onboarding cross-call state (see the onboarding block near refreshProviderModels).
     // `onboardHighlight` is held here, not passed by the caller, so the idle repaint a finished run
     // triggers cannot clobber the emphasis back to the router's pick before the user sees it.
@@ -1558,7 +1558,7 @@
     // precedence: manual pin > slope-line pick (only when a slope is set) > the
     // server-reported intelligence best. Rows the router will not use are never picked, so
     // pickSlopeModel/pickFastestRow apply the same eligibility the server does.
-    function getSelection(rows) {
+    function getPlotSelection(rows) {
       const pinned = !!activePinnedModelId;
       // A canonical pin can resolve to a sibling row whose model id differs from the id the
       // user clicked. Compare the server's resolved current row, not the display id, or the
@@ -1814,7 +1814,7 @@
       // 'Current' KPI, and the router all key off the same numbers.
       selectorSlopeMax = computeSelectorSlopeMax(scales);
       selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
-      const selection = getSelection(rows);
+      const selection = getPlotSelection(rows);
       drawScatterGrid(svg, scales);
       drawScatterPoints(svg, rows, scales);
       drawScatterLabels(svg, rows, scales, selection);
@@ -4016,7 +4016,7 @@
       const tbody = document.getElementById('table-body');
 
       // 1. Apply Search
-      let filtered = allModels.filter(m =>
+      const filtered = allModels.filter(m =>
         m.label.toLowerCase().includes(searchTerm) ||
         m.providerKey.toLowerCase().includes(searchTerm) ||
         (m.originLabel || '').toLowerCase().includes(searchTerm) ||
@@ -4028,7 +4028,6 @@
       // No Auth status is visible instead of silently disappearing.
 
       let expanded;
-      let graveyardGroups = [];
 
       // Live sort is always on: re-sort on every render. While hovering we lock
       // the order (values still refresh in place).
@@ -4040,10 +4039,9 @@
       // only the order of the rows that remain — it used to hold struck rows in place too,
       // and because the old branch read `allGroups` from the other side of the `if` it
       // threw before it could even do that, so a clicked row never moved at all.
-      const { mainGroups, graveyardGroups: grave } = (precomputedGroups && !searchTerm)
+      const { mainGroups, graveyardGroups } = (precomputedGroups && !searchTerm)
         ? precomputedGroups
         : splitDisplayGroups(sortedGroups(groupModels(filtered)));
-      graveyardGroups = grave;
 
       if (!hoverLocked) {
         expanded = buildExpanded(mainGroups);
@@ -8512,7 +8510,7 @@
             ? l.retryCount
             : Math.max(0, attempts.length - 1);
           const hadFailover = retryCount > 0;
-          let statusBadge = '';
+          let statusBadge;
           if (l.status === '200') statusBadge = '<span style="background: var(--status-success-bg); color: var(--status-success-text); padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600;">200 OK</span>';
           else if (l.status === 'pending') statusBadge = '<span style="background: var(--status-info-bg); color: var(--status-info-text); padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600;">Pending...</span>';
           else statusBadge = `<span style="background: var(--status-error-bg); color: var(--status-error-text); padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600;">${escapeHtml(l.status)}</span>`;
@@ -8520,7 +8518,7 @@
             ? `<span style="background:var(--status-info-bg); color:var(--status-info-text); padding:2px 8px; border-radius:999px; font-size:0.7rem; font-weight:700;">resolved: ${escapeHtml(l.resolvedModel)}</span>`
             : '';
 
-          let messagesArray = Array.isArray(l.messages) ? l.messages : (typeof l.messages === 'string' ? [{ role: 'raw', content: l.messages }] : []);
+          const messagesArray = Array.isArray(l.messages) ? l.messages : (typeof l.messages === 'string' ? [{ role: 'raw', content: l.messages }] : []);
           const msgHtml = messagesArray.map(m => {
             const isSystem = m.role === 'system';
             const isUser = m.role === 'user';
@@ -8539,7 +8537,7 @@
 
           let responseHtml = '';
           if (l.response) {
-            let formattedResp = l.response.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const formattedResp = l.response.replace(/</g, '&lt;').replace(/>/g, '&gt;');
             responseHtml = `
               <div style="margin-top: 12px; border-left: 3px solid var(--accent); padding-left: 12px;">
                 <div style="font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--accent); margin-bottom: 4px;">ASSISTANT</div>
@@ -9332,7 +9330,7 @@
     // EventSource reconnects on its own, so a router restart only costs the events it missed.
     function connectRouterEvents() {
       if (!window.EventSource) return;
-      let source = null;
+      let source;
       try {
         source = new EventSource('/api/events');
       } catch (e) {

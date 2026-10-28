@@ -259,7 +259,7 @@ export function getLatestModelFamilyKey(modelId) {
   value = value.replace(/\b(?:latest|current|default)\b/g, ' ')
   value = value.replace(/\b\d+(?:\.\d+)+\b/g, ' ')
   value = value.replace(/\b\d+\b/g, ' ')
-  return value.replace(/[-_:\/.]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return value.replace(/[-_:/.]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
 /** Returns numeric version components used to select the newest concrete family member. */
