@@ -603,6 +603,68 @@
       flex-wrap: wrap;
     }
 
+    .pi-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    /* The phase pill is the harness's answer to "is the agent there?": starting, alive,
+       busy with a turn, dead, or refusing to launch. */
+    .pi-phase {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 2px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      background: var(--chat-bg);
+    }
+
+    .pi-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex: none;
+    }
+
+    .pi-phase[data-phase='alive'] .pi-dot {
+      background: var(--success);
+    }
+
+    .pi-phase[data-phase='busy'] .pi-dot {
+      background: var(--accent);
+      animation: piPulse 1.1s ease-in-out infinite;
+    }
+
+    .pi-phase[data-phase='starting'] .pi-dot {
+      background: var(--warning);
+    }
+
+    .pi-phase[data-phase='dead'] .pi-dot,
+    .pi-phase[data-phase='error'] .pi-dot {
+      background: var(--status-error-text);
+    }
+
+    @keyframes piPulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.25; }
+    }
+
+    .pi-usage {
+      font-size: 0.76rem;
+      color: var(--text-muted);
+      font-variant-numeric: tabular-nums;
+      margin-right: 2px;
+    }
+
     .pi-status-line {
       margin-top: 6px;
       font-size: 0.76rem;
@@ -762,6 +824,13 @@
     .pi-notice.error {
       border-left-color: var(--status-error-text);
       color: var(--status-error-text);
+    }
+
+    .pi-notice.log {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.74rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
     }
 
     .pi-composer {

@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -24,8 +24,21 @@ import {
   prepareHammerAgentDir,
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes } from '../lib/http/routes/pi.js'
+import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
+import { planPiLaunch, resolvePiRuntime } from '../lib/pi/runtime.js'
+import { normalizeConfigShape } from '../lib/config.js'
 
 const FAKE_PI = fileURLToPath(new URL('./support/fake-pi.mjs', import.meta.url))
+
+/** Polls a predicate; a supervision delay is real elapsed time, not a promise a test can await. */
+async function waitFor(predicate, { timeoutMs = 4_000, stepMs = 10 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, stepMs))
+  }
+  throw new Error('timed out waiting for the expected state')
+}
 
 /** A bridge wired to the fake, with the command log a test can read back. */
 function makeFake(options = {}) {
@@ -181,7 +194,9 @@ test('stopping clears the queue, cancels a retry, then aborts the run', async ()
   const { bridge, commands } = makeFake()
   try {
     await bridge.abort()
-    assert.deepEqual(commands(), ['clear_queue', 'abort_retry', 'abort'])
+    // The start-up `get_state` may land on either side of this; the stop sequence is the
+    // part that matters, and Pi documents it in this order.
+    assert.deepEqual(commands().slice(-3), ['clear_queue', 'abort_retry', 'abort'])
     assert.equal(bridge.state.isStreaming, false)
   } finally {
     bridge.dispose()
@@ -278,6 +293,61 @@ test('the replay log is bounded in length and in characters', () => {
   }
 })
 
+test('a child that dies on its own is respawned, and its crash budget resets after a turn', async () => {
+  const { bridge } = makeFake({ autoRestart: true, restartBaseMs: 5 })
+  try {
+    await bridge.start()
+    const first = bridge.child
+    assert.ok(first, 'the fake agent is running')
+
+    const exited = new Promise((resolve) => bridge.once('exit', resolve))
+    bridge.restarts = 3
+    first.kill('SIGTERM')
+    await exited
+    assert.equal(bridge.phase, 'dead', 'a crash is visible before the respawn')
+
+    await waitFor(() => Boolean(bridge.child) && bridge.child !== first)
+    await waitFor(() => bridge.phase === 'alive')
+    assert.ok(bridge.restarts >= 1, 'the restart was counted')
+
+    // One completed turn proves the agent works, so a long session does not march toward the
+    // restart limit with a healthy process.
+    const settled = nextEvent(bridge, 'agent_settled')
+    await bridge.prompt('hello')
+    await settled
+    assert.equal(bridge.restarts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a manual restart replaces the child without supervising the old one', async () => {
+  const { bridge } = makeFake({ autoRestart: true, restartBaseMs: 5 })
+  try {
+    await bridge.start()
+    const first = bridge.child
+    const status = await bridge.restart()
+    assert.equal(status.available, true)
+    assert.notEqual(bridge.child, first, 'the replacement is a new process')
+    assert.equal(bridge.restartTimer, null, "the old child's exit did not schedule another")
+
+    const settled = nextEvent(bridge, 'agent_settled')
+    const record = await bridge.prompt('still here?')
+    assert.equal(record.data.disposition, 'started')
+    await settled
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a stopped bridge leaves nothing to restart', async () => {
+  const { bridge } = makeFake({ autoRestart: true, restartBaseMs: 5 })
+  bridge.dispose()
+  assert.equal(bridge.restartTimer, null)
+  assert.equal(bridge.child, null)
+  await assert.rejects(() => bridge.start(), /disposed/)
+})
+
 test('the console configures Pi with the router as its only provider', () => {
   const config = hammerModelsConfig('http://127.0.0.1:7352/v1')
   const provider = config.providers[HAMMER_PROVIDER]
@@ -291,6 +361,113 @@ test('the console configures Pi with the router as its only provider', () => {
   )
   assert.ok(provider.models[0].contextWindow > 0, 'Pi plans compaction against a window')
   assert.ok(provider.models[0].maxTokens > 0, 'and asks for an output budget')
+})
+
+test('the Pi settings block is optional, and the environment wins over the file', () => {
+  const defaults = normalizePiSettings({})
+  assert.equal(defaults.command, 'auto')
+  assert.equal(defaults.node, 'auto')
+  assert.equal(defaults.provider, null)
+  assert.equal(defaults.model, null)
+  assert.deepEqual(defaults.extraArgs, [])
+  assert.ok(defaults.workspace.endsWith('Hammer'), 'the agent works in this install by default')
+  assert.match(defaults.sessions, /session/)
+
+  const configured = normalizePiSettings({
+    command: '/opt/pi/bin/pi',
+    node: '/opt/node22/bin/node',
+    provider: 'google',
+    model: 'gemini',
+    thinking: 'low',
+    extraArgs: ['--no-extensions', 42],
+    workspace: '/tmp/work',
+    sessions: 'sess',
+  })
+  assert.equal(configured.command, '/opt/pi/bin/pi')
+  assert.equal(configured.node, '/opt/node22/bin/node')
+  assert.equal(configured.thinking, 'low')
+  assert.deepEqual(
+    configured.extraArgs,
+    ['--no-extensions'],
+    'a non-string is dropped, not passed to a child',
+  )
+  assert.equal(configured.workspace, '/tmp/work')
+
+  // A test or a container has to be able to point the console somewhere without rewriting
+  // the user's config, so the environment is the outer layer.
+  const env = normalizePiSettings(
+    { command: '/opt/pi/bin/pi', workspace: '/tmp/work' },
+    { HAMMER_PI_COMMAND: '/env/pi', HAMMER_PI_WORKSPACE: '/tmp/env-work' },
+  )
+  assert.equal(env.command, '/env/pi')
+  assert.equal(env.workspace, '/tmp/env-work')
+
+  // The `pi` block has to survive config normalization, or it is silently lost on every save.
+  const normalized = normalizeConfigShape({ pi: { provider: 'google', model: 'gemini' } })
+  assert.deepEqual(normalized.pi, { provider: 'google', model: 'gemini' })
+  assert.equal(readPiSettings({ pi: { model: 'gemini' } }).model, 'gemini')
+})
+
+test('the harness directories are created, and a config alone never makes a workspace', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-dirs-'))
+  const created = ensureHarnessDirs({
+    sessions: join(root, 'sessions'),
+    agentRoot: join(root, 'agent'),
+  })
+  assert.ok(readdirSync(created.sessions))
+  assert.ok(readdirSync(created.agentRoot))
+})
+
+test('the launch plan routes through Hammer unless a model or a brain was named', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-launch-'))
+  const settings = normalizePiSettings({}) // the shipped defaults
+  const agentRoot = join(root, 'agent')
+
+  const routed = planPiLaunch(
+    { ...settings, agentRoot, command: process.execPath, node: process.execPath },
+    { baseUrl: 'http://127.0.0.1:7352/v1' },
+  )
+  assert.equal(routed.routed, true)
+  assert.equal(routed.error, null)
+  assert.deepEqual(routed.args.slice(-4), ['--provider', HAMMER_PROVIDER, '--model', HAMMER_MODEL])
+  assert.match(routed.env.PI_CODING_AGENT_DIR, /7352$/, 'one agent directory per router port')
+
+  // Naming a model is a deliberate step off the router's selection.
+  const named = planPiLaunch(
+    {
+      ...settings,
+      agentRoot,
+      command: process.execPath,
+      node: process.execPath,
+      provider: 'google',
+      model: 'g',
+    },
+    { baseUrl: 'http://127.0.0.1:7352/v1' },
+  )
+  assert.equal(named.routed, false)
+  assert.deepEqual(named.args.slice(-4), ['--provider', 'google', '--model', 'g'])
+  assert.deepEqual(named.env, {})
+
+  // A replacement brain speaks the protocol itself; pi and its flags do not apply to it.
+  const brain = planPiLaunch({
+    ...settings,
+    agentRoot,
+    brain: { command: '/usr/bin/other-agent', args: ['--rpc'] },
+  })
+  assert.equal(brain.command, '/usr/bin/other-agent')
+  assert.deepEqual(brain.args, ['--rpc'])
+  assert.equal(brain.routed, false)
+})
+
+test('a pi that cannot run is reported with the reason, not launched blindly', () => {
+  const settings = normalizePiSettings({ command: '/nonexistent/pi', node: process.execPath })
+  const runtime = resolvePiRuntime(settings)
+  assert.equal(runtime.entrypoint, null)
+  assert.match(runtime.notes.join(' '), /could not be resolved/)
+
+  const plan = planPiLaunch(settings)
+  assert.equal(plan.command, null)
+  assert.match(String(plan.error), /Could not find a runnable pi/)
 })
 
 test('preparing the agent directory writes the configuration and keeps instances apart', () => {
@@ -359,6 +536,16 @@ class StubBridge extends EventEmitter {
   async reset() {
     this.calls.push(['reset'])
     return { data: { cancelled: this.cancelled } }
+  }
+  async restart() {
+    this.calls.push(['restart'])
+    return this.status()
+  }
+  async runCommand(type) {
+    if (!new Set(['get_state', 'set_model']).has(type))
+      throw new Error(`Command not allowed: ${type}`)
+    this.calls.push(['command', type])
+    return { data: { type } }
   }
   dispose() {}
 }
@@ -480,6 +667,22 @@ test('the event stream opens with the transcript the agent already produced', as
     const live = await frame()
     assert.deepEqual(live, { type: 'event', record: { type: 'agent_start' } })
 
+    bridge.emit('status', { phase: 'busy', tokens: 12, cost: 0.5 })
+    assert.deepEqual(await frame(), {
+      type: 'status',
+      status: { phase: 'busy', tokens: 12, cost: 0.5 },
+    })
+
+    bridge.emit('usage', { tokens: 34, cost: 0.75 })
+    assert.deepEqual(await frame(), { type: 'usage', tokens: 34, cost: 0.75 })
+
+    bridge.emit('log', { level: 'stderr', text: 'warning: no network' })
+    assert.deepEqual(await frame(), {
+      type: 'log',
+      level: 'stderr',
+      text: 'warning: no network',
+    })
+
     bridge.emit('exit', { code: 1, signal: null, message: 'Pi exited with code 1.' })
     assert.deepEqual(await frame(), {
       type: 'exit',
@@ -489,6 +692,24 @@ test('the event stream opens with the transcript the agent already produced', as
     })
 
     controller.abort()
+  })
+})
+
+test('restart and the allowlisted command passthrough reach the agent and report failures', async () => {
+  const bridge = new StubBridge()
+  await withPiApp({ piBridge: bridge }, async (base) => {
+    const restarted = await fetch(`${base}/api/pi/restart`, { method: 'POST' })
+    assert.equal(restarted.status, 200)
+    assert.equal((await restarted.json()).status.model.id, 'stub-model')
+
+    const blocked = await fetch(`${base}/api/pi/command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ command: 'rm -rf /' }),
+    })
+    assert.equal(blocked.status, 400, "a command outside the allowlist is the caller's mistake")
+    assert.match((await blocked.json()).error, /not allowed/)
+    assert.deepEqual(bridge.calls, [['restart']])
   })
 })
 

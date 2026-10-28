@@ -19,7 +19,8 @@ lib/server.js          composition root: runServer wires discovery, config,
                        the express app, and the remaining 27 routes
 lib/http/routes/       one module per resource; thin handlers only
 lib/http/context.js    the context contract shared by composer and modules
-lib/pi/                the Pi coding agent: child process, JSONL RPC, replay log
+lib/pi/                the Pi coding agent: settings, runtime resolution, child
+                       process, JSONL RPC, replay log, supervision
 lib/providers/         descriptors, catalog, discovery, resolution
 lib/config.js          config read/write (single writer for the file)
 sources.js, scores.js  model data (to move under lib/data/)
@@ -77,7 +78,7 @@ not enumerate; the real fix is to describe those keys, then delete the casts.
 | `http/routes/proxy.js`         | 4      | `/v1/chat/completions` (streaming and not), `/v1/models`, `/v1/messages`, `/v1/messages/count_tokens` |
 | `http/routes/models.js`        | 1      | `/api/models` — the table, QoS map, selector pick                                                     |
 | `http/routes/providers.js`     | 6      | `/api/config`, endpoint CRUD, refresh/discovery                                                       |
-| `http/routes/pi.js`            | 5      | the Pi console: status, SSE event stream, prompt, stop, new session                                   |
+| `http/routes/pi.js`            | 7      | the Pi console: status, SSE event stream, prompt, stop, new session, restart, allowlisted RPC command |
 
 Every group has tests that mount it on a bare Express app with stub
 dependencies — no listener on 7352, no config file, no network
@@ -89,8 +90,8 @@ serves a non-streamed and a streamed completion plus a 404 for an unknown model.
 ## The Pi console, and why it is shaped differently
 
 `lib/http/routes/pi.js` is the only group that owns an operating-system
-process, so it is also the only one that takes no router state. The direction is
-one way:
+process, so it is also the only one that takes nothing but its own address. The
+direction is one way:
 
 ```
 browser tab ──SSE──▶ /api/pi/events ──▶ PiBridge ──stdin JSONL──▶ pi --mode rpc
@@ -113,7 +114,7 @@ Three decisions follow from that, and each one is a defect if undone:
    the only thing that spawns it, and the dashboard makes none until the Pi tab
    is selected — a router nobody is watching the console on pays for no child.
 4. **The agent's model is the router's.** The child runs on a Pi agent
-   directory Hammer owns (`~/.hammer/pi-agent/<port>`, written by
+   directory Hammer owns (`~/.hammer/pi/agent/<port>`, written by
    `lib/pi/agent-dir.js`) whose only provider is this router's `/v1` and whose
    only model is `best`. Every LLM call the agent makes is therefore routed by
    Hammer at the moment it is made: a pin, a slope change or a fallback moves
@@ -123,6 +124,40 @@ Three decisions follow from that, and each one is a defect if undone:
    That directory is also why the console ignores the user's own Pi providers
    and extensions: this instance is Hammer's, `~/.pi/agent` is never read or
    written, and deleting the directory resets the console to a plain Pi.
+
+### The harness around it
+
+Three modules sit between the routes and the child, each with one job, so the
+route module never contains a launch decision:
+
+| Module           | Owns                                                                                                                                                                                                      |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pi/settings.js` | the optional `pi` block in `~/.hammer.json` (command, node, provider, model, thinking, extraArgs, brain, workspace, sessions), normalised once, with environment overrides for the launch and path fields |
+| `pi/runtime.js`  | finding a Pi that will actually run, and turning settings into one spawn: command, args, cwd, env                                                                                                         |
+| `pi/bridge.js`   | the process, the protocol, the phase, usage accounting, the replay log, restart policy                                                                                                                    |
+
+The runtime resolver exists for one failure: the `pi` on PATH is a shim whose
+shebang resolves to whatever `node` is first, and Pi needs Node ≥ 22. A
+resolver that skips the shim and finds an interpreter beside it turns "the
+agent is broken" into a note on the status card. `pi.node` / `pi.command` pin it
+in `~/.hammer.json`; `HAMMER_PI_COMMAND`, `HAMMER_PI_NODE`,
+`HAMMER_PI_WORKSPACE`, `HAMMER_PI_SESSIONS`, `HAMMER_PI_BRAIN` and
+`HAMMER_PI_AGENT_DIR` do the same from outside, for a container or a test.
+
+Supervision is deliberately conservative, because a restart loop is worse than
+a dead agent: a child that exits on its own is respawned with exponential
+backoff, at most six consecutive times, and the budget resets after a completed
+turn (proof the install works). The old child is detached before a deliberate
+restart or disposal, so its exit is not mistaken for a crash — the replacement
+already owns the phase. Phases are `idle`, `starting`, `alive`, `busy`, `dead`,
+`stopped` and `error`, and the page draws its pill straight from them rather
+than inferring liveness from event traffic.
+
+Usage is counted from `message_end` (not `turn_end`, which repeats the same
+message), and broadcast as its own frame; the page therefore shows tokens and
+cost without polling. A plan that cannot produce a configuration — a provider
+that cannot be written, a Pi with no usable Node — sets `launchError`, and the
+agent is refused (503 on prompt) rather than silently started on Pi's own model.
 
 The bridge is driven in tests by `test/support/fake-pi.mjs`, which speaks the
 same protocol and can be told to crash on a command or refuse a new session.

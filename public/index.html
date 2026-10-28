@@ -276,10 +276,15 @@
       <div class="pi-layout">
         <div class="pi-toolbar">
           <div style="min-width:0;">
-            <h2 style="margin: 0; font-size: 1.25rem;">Pi agent</h2>
+            <div class="pi-title-row">
+              <h2 style="margin: 0; font-size: 1.25rem;">Pi agent</h2>
+              <span id="pi-phase" class="pi-phase" data-phase="idle"><i class="pi-dot"></i><span id="pi-phase-label">idle</span></span>
+            </div>
             <div id="pi-status" class="pi-status-line">Connecting to Pi…</div>
           </div>
           <div class="pi-actions">
+            <span id="pi-usage" class="pi-usage">0 tokens · $0.00</span>
+            <button id="pi-restart-btn" class="btn" onclick="restartPiAgent()">Restart agent</button>
             <button id="pi-stop-btn" class="btn" onclick="stopPiRun()" disabled>Stop</button>
             <button id="pi-reset-btn" class="btn" onclick="resetPiSession()">New session</button>
           </div>

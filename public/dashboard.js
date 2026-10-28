@@ -437,6 +437,10 @@
     let piMounted = 0;
     const piDirty = new Set();
     let piRebuildPending = false;
+    // The harness's view of the agent: a phase the page can show, and the launch notes it
+    // has already printed so a replayed status does not repeat them.
+    let piPhase = 'idle';
+    const piNotesSeen = new Set();
     const MODEL_ID_ALIASES = {
       'mimo-v2-omni-free': 'xiaomi/mimo-v2-omni:free',
       // g4f backends serve these under their own repo spellings; they are the same
@@ -8530,11 +8534,45 @@
       if (stick || reset) transcript.scrollTop = transcript.scrollHeight;
     }
 
+    // The harness's phase, as a pill: starting, alive, busy with a turn, dead, or refusing
+    // to launch. `isStreaming` is the same fact from pi's own perspective; the phase also
+    // covers the process, which is what a harness supervises.
+    function renderPiPhase(phase) {
+      piPhase = phase || 'idle';
+      const el = document.getElementById('pi-phase');
+      const label = document.getElementById('pi-phase-label');
+      if (el) el.dataset.phase = piPhase;
+      if (label) label.textContent = piPhase === 'dead' ? 'down' : piPhase;
+    }
+
+    function renderPiUsage(tokens, cost) {
+      const el = document.getElementById('pi-usage');
+      if (!el) return;
+      const count = Number(tokens) || 0;
+      const dollars = Number(cost) || 0;
+      el.textContent = `${count.toLocaleString()} tokens · $${dollars.toFixed(2)}`;
+    }
+
+    function notePiLaunchNotes(notes) {
+      for (const note of notes || []) {
+        if (piNotesSeen.has(note)) continue;
+        piNotesSeen.add(note);
+        piItems.push({ kind: 'notice', tone: 'log', text: note });
+      }
+    }
+
     function renderPiStatus(data) {
       const el = document.getElementById('pi-status');
       if (!el) return;
-      if (!data || data.available === false) {
-        el.textContent = `Pi unavailable — ${data?.error || 'not installed'}`;
+      if (!data) return;
+      if (data.phase) renderPiPhase(data.phase)
+      renderPiUsage(data.tokens, data.cost)
+      if (Array.isArray(data.notes) && data.notes.length) {
+        notePiLaunchNotes(data.notes)
+        piScheduleRender()
+      }
+      if (data.available === false) {
+        el.textContent = `Pi unavailable — ${data.error || 'not installed'}`;
         el.dataset.tone = 'error';
         return;
       }
@@ -8543,7 +8581,7 @@
         : 'no model selected';
       // `piRunning` is the live answer from the event stream; the status payload is only as
       // fresh as the last time it was asked. Either one saying "running" is right.
-      const running = piRunning || data.isStreaming;
+      const running = piRunning || data.isStreaming || data.phase === 'busy';
       el.textContent = `pi · ${model} · ${data.cwd}${running ? ' · running' : ''}`;
       el.dataset.tone = 'muted';
     }
@@ -8553,7 +8591,7 @@
         const res = await fetch('/api/pi/status');
         const data = await res.json();
         piStatus = data;
-        if (typeof data.isStreaming === 'boolean') piRunning = data.isStreaming;
+        piRunning = data.phase === 'busy' || Boolean(data.isStreaming)
         renderPiStatus(data);
         updatePiComposer();
       } catch (err) {
@@ -8596,10 +8634,11 @@
           piMounted = 0;
           piDirty.clear();
           piRebuildPending = false;
+          piNotesSeen.clear();
           (payload.log || []).forEach(applyPiRecord);
           if (payload.status) {
             piStatus = payload.status;
-            if (typeof payload.status.isStreaming === 'boolean') piRunning = payload.status.isStreaming;
+            piRunning = payload.status.phase === 'busy' || Boolean(payload.status.isStreaming);
             renderPiStatus(payload.status);
           }
           updatePiComposer();
@@ -8609,6 +8648,27 @@
         if (payload.type === 'event') {
           applyPiRecord(payload.record);
           updatePiComposer();
+          piScheduleRender();
+          return;
+        }
+        if (payload.type === 'status' && payload.status) {
+          piStatus = payload.status;
+          piRunning = payload.status.phase === 'busy' || Boolean(payload.status.isStreaming);
+          renderPiStatus(payload.status);
+          updatePiComposer();
+          piScheduleRender();
+          return;
+        }
+        if (payload.type === 'usage') {
+          if (piStatus) {
+            piStatus.tokens = payload.tokens;
+            piStatus.cost = payload.cost;
+          }
+          renderPiUsage(payload.tokens, payload.cost);
+          return;
+        }
+        if (payload.type === 'log' && payload.text) {
+          piItems.push({ kind: 'notice', tone: 'log', text: String(payload.text).slice(0, 500) });
           piScheduleRender();
           return;
         }
@@ -8683,6 +8743,29 @@
         piSetHint('Stopped.');
       } catch (err) {
         piSetHint(err?.message || 'Could not stop Pi.', 'error');
+      }
+    }
+
+    // The harness can replace a dead or wedged agent. The transcript stays: it is the page's
+    // projection of the conversation, and the restart begins a new session rather than
+    // rewriting history.
+    async function restartPiAgent() {
+      const btn = document.getElementById('pi-restart-btn');
+      if (btn) btn.disabled = true;
+      piSetHint('Restarting the agent…');
+      try {
+        const res = await fetch('/api/pi/restart', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || `Could not restart Pi (${res.status}).`);
+        piRunning = false;
+        piItems.push({ kind: 'notice', tone: 'info', text: 'Agent restarted.' });
+        piScheduleRender();
+        await refreshPiStatus();
+        piSetHint('');
+      } catch (err) {
+        piSetHint(err?.message || 'Could not restart the agent.', 'error');
+      } finally {
+        if (btn) btn.disabled = false;
       }
     }
 
