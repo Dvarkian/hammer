@@ -94,6 +94,7 @@ import {
   normalizeFaviconDomain,
   PING_TIMEOUT,
   providerCanServe,
+  providerHasCredential,
   providerFaviconDomain,
   providerFaviconDomains,
   transformStreamingUpstreamErrorResponse,
@@ -345,11 +346,14 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
       true,
     )
 
-    // Keyless by declaration is not gated. Asking rather than assuming is what keeps this from
-    // hardening into "an unconfigured provider is never listed", which would delete providers
-    // that work fine and are the reason the import exists.
+    // Keyless by declaration is still dispatchable: `providerCanServe` answers "would a request
+    // be attempted?", and for these it would. Listing is the stricter question (see
+    // providerHasCredential, and the table test below): a provider that only answers anonymous
+    // traffic is reachable, but it is not "set up", and its rows must not appear beside the ones
+    // a key was configured for.
     for (const key of ['gptfree', 'kilocode', 'empero', 'uncloseai']) {
       assert.equal(providerCanServe(empty, key), true, `${key} is keyless by declaration`)
+      assert.equal(providerHasCredential(empty, key), false, `${key} holds no credential`)
     }
     // Ollama is keyless by where it points instead: a local base URL needs no credential, and
     // the hosted default does.
@@ -369,6 +373,67 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
       } catch {}
     }
     clearKiroTokenCaches()
+  }
+})
+
+test('the model table lists only a provider that holds a credential', () => {
+  // The listing rule, which is stricter than dispatch on purpose. A keyless-by-declaration
+  // provider answers anonymous traffic, so `providerCanServe` admits it — but it is not
+  // configured, and its rows must not sit in a table the user reads as "what I set up".
+  //
+  // The bug this pins: g4f's live catalog (157 rows) was merged by the discoverable-provider
+  // path, which had no credential gate, so a device with one configured provider showed 258
+  // rows and every g4f one of them would have been refused with NO_KEY.
+  const envNames = new Set()
+  for (const value of Object.values(apiKeyEnvVarTable)) {
+    for (const name of Array.isArray(value) ? value : [value]) if (name) envNames.add(name)
+  }
+  for (const key of Object.keys(sources)) {
+    const envVar = getProvider(key)?.auth?.envVar
+    if (envVar) envNames.add(envVar)
+  }
+  envNames.add('DEVIN_SESSION_TOKEN')
+  envNames.add('KIRO_REFRESH_TOKEN')
+  const saved = [...envNames].map((name) => [name, process.env[name]])
+  try {
+    for (const name of envNames) delete process.env[name]
+    clearKiroTokenCaches()
+    const empty = { apiKeys: {}, providers: {} }
+
+    // No credential, no rows: the providers that declare a catalog of their own are the ones
+    // that used to leak.
+    for (const key of ['g4f', 'kilocode', 'empero', 'gptfree', 'nvidia', 'groq']) {
+      assert.equal(
+        providerHasCredential(empty, key),
+        false,
+        `${key} has nothing to authenticate with`,
+      )
+      assert.ok(
+        MODELS.some((row) => row[4] === key) || sources[key]?.discoverable === true,
+        `${key} is a real row source, so the gate is the only thing suppressing it`,
+      )
+    }
+
+    // A key brings it back, from the config or the environment.
+    assert.equal(providerHasCredential({ apiKeys: { nvidia: 'nvapi-x' } }, 'nvidia'), true)
+    process.env.GROQ_API_KEY = 'gsk-x'
+    assert.equal(providerHasCredential({ apiKeys: {}, providers: {} }, 'groq'), true)
+    delete process.env.GROQ_API_KEY
+
+    // So does a sign-in session, which lives outside `apiKeys`.
+    assert.equal(
+      providerHasCredential(
+        { providers: { kiro: { refreshToken: 'rt', clientId: 'c', clientSecret: 's' } } },
+        'kiro',
+      ),
+      true,
+    )
+  } finally {
+    clearKiroTokenCaches()
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
   }
 })
 
