@@ -4713,10 +4713,17 @@
       return 'var(--error)';
     }
 
-    // The one indicator: a clock for the states that mean "waiting on the provider", a
-    // dot for everything else.
+    // The one indicator: a clock for the states that mean "waiting on the provider's own
+    // window", a Z for a model that is merely asleep, a dot for everything else.
+    //
+    // The clock is a promise as much as a state: a quota or an overload names a moment the
+    // provider reopens by itself. A timeout names nothing — the model was too slow just now and
+    // may answer the next request — so it gets its own glyph instead of borrowing that promise.
     function verdictIndicatorHTML(kind, title = '') {
       const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+      if (kind === 'timeout') {
+        return `<span style="color: var(--warning); font-weight: 700;"${titleAttr}>Z</span>`;
+      }
       if (BENCHED_VERDICTS.has(kind)) {
         return `<span style="color: var(--warning);"${titleAttr}>🕑</span>`;
       }
@@ -5319,16 +5326,20 @@
     // Down and needs no word beside its red dot.
     function plainStatusLabel(kind) {
       if (kind === 'up' || kind === 'down') return '';
-      // A timeout is drawn with the same clock as the other waiting states, and the clock
-      // already says "waiting on the provider" by itself — so the word is dropped beside it
-      // for the same reason up/down are, and survives as the icon's tooltip instead
-      // (plainStatusTitle still answers "Timeout" on hover).
-      if (kind === 'timeout') return '';
+      // The word used to be dropped beside the clock, which said "waiting on the provider" on
+      // its own. A timeout no longer borrows that clock — its Z says "asleep" and nothing more —
+      // so the word is what tells the reader which kind of waiting this is.
       return kind === 'noauth' ? 'No Auth' : verdictLabel(kind);
     }
 
     // Title for a bare status dot, so the hidden word is still available on hover.
     function plainStatusTitle(kind) {
+      // A timeout is not a window: the provider never said when (or whether) it comes back.
+      // Saying so on hover is the difference between "slow right now" and "out of quota",
+      // which the clock alone used to blur.
+      if (kind === 'timeout') {
+        return 'Timed out — the model is slow right now, not out of quota; it can answer again on its own';
+      }
       return kind === 'up' ? 'Up' : verdictLabel(kind);
     }
 
