@@ -14,6 +14,8 @@ across the app for state it could be handed.
 ## Layering, as it stands
 
 ```
+desktop/               Electron shell: one window, and the router started in-process
+                       from lib/server.js (see “The desktop shell” below)
 bin/hammer.js          CLI entry (still one file)
 lib/server.js          composition root: runServer wires discovery, config,
                        the express app, and the remaining 27 routes
@@ -26,6 +28,17 @@ lib/config.js          config read/write (single writer for the file)
 sources.js, scores.js  model data (to move under lib/data/)
 public/                dashboard, classic script, no build step
 ```
+
+## The desktop shell
+
+`desktop/` is an outer layer, not a second application. `desktop/main.js` imports the same
+`runServer` the CLI does, starts it on loopback in the Electron main process, and points one
+window at `http://127.0.0.1:<port>/` — so the dashboard in the app and the dashboard in a browser
+are the same files, and `/v1` keeps answering for coding tools while the window is open. The shell
+owns only what a window needs: the splash shown during discovery, the tray, the menu, and a
+size-capped log at `~/.hammer-desktop.log` (a packaged app has no terminal). Decisions that do not
+need Electron — argument parsing, the readiness probe, the port check — live in
+`desktop/runtime.js` and are tested without a display.
 
 `runServer` is **5,283 lines** and registers **27** routes; on `master` it was
 7,080 and 38, and at the start of the refactor 7,485 and 58. `lib/server.js` is

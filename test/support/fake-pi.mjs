@@ -15,6 +15,7 @@
  */
 
 import { appendFileSync } from 'node:fs'
+import { argv } from 'node:process'
 
 const logPath = process.env.FAKE_PI_LOG || ''
 let streaming = false
@@ -29,6 +30,9 @@ const note = (line) => {
     appendFileSync(logPath, `${line}\n`)
   } catch {}
 }
+
+// What the launcher decided to run us with, once: `--session` and friends only exist here.
+note(`argv:${JSON.stringify(argv.slice(2))}`)
 
 function respond(command, data, success = true, error) {
   write({
@@ -52,7 +56,8 @@ function handle(command) {
         model: { id: 'fake-model', name: 'Fake Model', provider: 'fake' },
         thinkingLevel: 'off',
         isStreaming: streaming,
-        sessionId: 'session-1',
+        sessionId: process.env.FAKE_PI_SESSION_ID || 'session-1',
+        sessionFile: process.env.FAKE_PI_SESSION_FILE || null,
         // Echoed so a test can prove which configuration directory the child inherited.
         agentDir: process.env.PI_CODING_AGENT_DIR || null,
       })
@@ -118,6 +123,36 @@ function handle(command) {
       streaming = false
       respond(command, null)
       write({ type: 'agent_settled' })
+      return
+
+    case 'switch_session': {
+      const cancelled = process.env.FAKE_PI_CANCEL_SWITCH === '1'
+      respond(command, { cancelled })
+      if (cancelled) return
+      // What a rebind produces: a fresh session identity and a session event naming it.
+      write({ type: 'session', sessionFile: command.sessionPath, sessionId: 'session-switched' })
+      return
+    }
+
+    case 'get_messages':
+      respond(command, {
+        messages: [
+          { role: 'user', content: [{ type: 'text', text: 'resumed question' }] },
+          {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'resumed answer' }],
+            stopReason: 'stop',
+          },
+        ],
+      })
+      return
+
+    case 'set_session_name':
+      respond(command, null)
+      return
+
+    case 'get_session_stats':
+      respond(command, { tokens: { total: 42 }, cost: 0 })
       return
 
     case 'new_session':

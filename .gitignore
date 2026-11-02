@@ -4,6 +4,7 @@ node_modules/
 # 2. Build output
 dist/
 build/
+release/
 
 # 3. Logs
 logs/
@@ -51,6 +52,11 @@ Thumbs.db
 # 11. Local backups and tooling state
 lib/*.local-bak
 .freebuff/
+
+# 13. Scratch attachments dropped into the repo during a session (screenshots,
+# imported conversations). Design captures at the repo root are never committed either.
+.cloud-attachments/
+/*.png
 
 # 12. Vendor catalog fetch cache (tools/resolve-omniroute-endpoints.mjs)
 # Raw upstream sources kept only to make a rerun cheap. Never committed: the resolved

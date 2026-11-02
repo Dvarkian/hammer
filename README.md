@@ -43,6 +43,41 @@ Router endpoint:
 - API key: any string
 - Model: `best` (router picks actual backend)
 
+## 🧭 The agent harness
+
+The dashboard opens on the **agent**, not on a model table: Hammer is a coding harness whose model happens to be chosen per turn by the router. The workspace shows the conversation, every tool call the agent makes, the session it is writing, and the workspace it is editing. Router telemetry — the model table, the intelligence/speed plot, providers, request logs — is one click away under **Router**, unchanged.
+
+Because the agent is configured against this router's own `/v1` (see [Pi agent](#pi-agent)), the badge above the transcript reads **routed by Hammer**: the agent asks for `best`, and the ranking decides which provider answers. Pin a model or move the slope line and the agent's next turn follows it.
+
+| Shortcut                | Action                                                                       |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `Enter` / `Shift+Enter` | Send / newline                                                               |
+| `Ctrl`/`Cmd`+`K`        | Command palette (new session, stop, restart, open session, go to the router) |
+| `Ctrl`/`Cmd`+`J`        | Return to the agent from anywhere                                            |
+| `/new`, `/stop`         | Start a fresh session, halt the current turn                                 |
+
+Sessions are listed in the right-hand rail, searchable, and resumable in place; the agent writes them as JSONL, so a reload or a restart keeps the conversation. The token figures are the ones the agent reports, not an estimate.
+
+The old **Router → Pi** console is gone: the agent has one surface, and it is this one. Its server side (`/api/pi/*`) is unchanged.
+
+## 🖥️ Desktop app
+
+hammer also runs as a desktop application: the same router and the same dashboard, in a native window instead of a browser tab. Nothing about the router changes — `/v1`, `~/.hammer.json` and `public/` are exactly as described below — the app starts the server in-process and points a window at `http://127.0.0.1:7352/`, so the desktop and browser dashboards cannot drift apart.
+
+```bash
+npm install
+npm run desktop          # launch the app
+npm run desktop:package  # build a runnable app directory in release/
+```
+
+- Startup shows a splash screen while provider models are discovered, then opens the dashboard. Discovery is what makes the wait real, so the splash reports elapsed time rather than pretending to be instant.
+- Closing the window keeps the router — and `/v1` — running from the tray, so tools mid-session are not cut off. **Quit** (menu, tray, or Ctrl/Cmd+Q) stops it. On desktops without tray support, closing the window quits.
+- Launch with `--port <number>` or `HAMMER_PORT` if 7352 is taken. If a hammer is already listening on that port, the app attaches to it instead of starting a second router; if something else owns the port, it says so instead of dying on `EADDRINUSE`.
+- The packaged build needs no Node install. A packaged app has no terminal, so its output is mirrored to `~/.hammer-desktop.log` (rotated at 1 MB); **Hammer → Show Log File** opens it.
+- The window is sandboxed web content: no preload bridge, no Node access, and the router is forced to loopback regardless of `host` in the config.
+
+Not in the desktop build yet: in-app router restart (the dashboard's **Restart** button still shells out to the CLI), auto-update, and autostart parity with `hammer install --autostart`.
+
 ## 🔌 Installing Integrations
 
 Use `hammer onboard` to save provider keys and auto-configure integrations for OpenClaw or OpenCode.

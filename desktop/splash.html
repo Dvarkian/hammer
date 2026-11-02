@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>Hammer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #140c0e;
+        --surface: #1e1417;
+        --border: #33232a;
+        --text: #f1e5e3;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        background: radial-gradient(circle at 50% 0%, #2a1119 0%, var(--bg) 62%);
+        color: #f1e5e3;
+        font:
+          14px/1.5 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          'Segoe UI',
+          sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      main {
+        width: min(440px, calc(100vw - 64px));
+        text-align: center;
+      }
+      .mark {
+        width: 72px;
+        height: 72px;
+        margin: 0 auto 22px;
+        border-radius: 16px;
+        box-shadow: 0 18px 40px rgba(224, 140, 150, 0.18);
+      }
+      h1 {
+        font-size: 1.35rem;
+        letter-spacing: 0.02em;
+        margin: 0 0 6px;
+      }
+      .tagline {
+        margin: 0 0 30px;
+        color: #a08a8b;
+        font-size: 0.82rem;
+      }
+      .bar {
+        height: 3px;
+        border-radius: 999px;
+        background: #2a1d21;
+        overflow: hidden;
+      }
+      .bar span {
+        display: block;
+        height: 100%;
+        width: 38%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #8c2a38, #e08c96);
+        animation: slide 1.4s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(320%);
+        }
+      }
+      #splash-status {
+        margin: 20px 0 4px;
+        font-weight: 600;
+        font-size: 0.9rem;
+      }
+      #splash-detail {
+        margin: 0;
+        min-height: 1.2em;
+        color: #a08a8b;
+        font-size: 0.78rem;
+        font-variant-numeric: tabular-nums;
+      }
+      .note {
+        margin: 34px 0 0;
+        color: #7d6a6d;
+        font-size: 0.72rem;
+        line-height: 1.6;
+      }
+      body.failed .bar span {
+        animation: none;
+        width: 100%;
+        background: #b4544f;
+      }
+      body.failed #splash-status {
+        color: #e7948f;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <!-- Same mark as the app icon and the favicon: tools/make-desktop-icons.mjs. -->
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="7" fill="#7d2231" />
+        <g
+          transform="translate(-0.17 2.22) rotate(-32 16 16) translate(16 16) scale(1.05) translate(-16 -16)"
+        >
+          <path
+            d="M11.75 8.6L15.25 8.6C15.15 13 15 18 15 20.8C15 22.8 15.2 24.6 15.25 25.8C15.3 27.3 14.7 27.9 13.5 27.9C12.3 27.9 11.7 27.3 11.75 25.8C11.8 24.6 12 22.8 12 20.8C12 18 11.85 13 11.75 8.6Z"
+            fill="#d9c3bb"
+          />
+          <path
+            d="M21.6 6.9L22.6 7.5L22.6 10.9L21.8 11.3C18.8 11.9 16.2 11.9 13.8 11.4C12.2 11.1 11 10.3 10.2 9.2C9 10.4 7.4 11.9 6.4 13.1C6 13.6 5.4 13.4 5.4 12.8C5.3 11.2 5.6 9.4 6.5 8C7.5 6.7 9 6.3 10.4 6.1C13.8 5.8 18.2 6.2 21.6 6.9Z"
+            fill="#f6ece5"
+          />
+        </g>
+      </svg>
+      <h1>Hammer</h1>
+      <p class="tagline">Local router for coding models</p>
+      <div class="bar"><span></span></div>
+      <p id="splash-status" role="status" aria-live="polite">Starting router…</p>
+      <p id="splash-detail"></p>
+      <p class="note">
+        Provider models are discovered before the dashboard opens.<br />
+        The router at 127.0.0.1 stays available to your coding tools.
+      </p>
+    </main>
+    <script>
+      // Called from the main process. It only ever writes text, never HTML, so a provider error
+      // quoted into a status line cannot inject markup into this window.
+      window.setSplashStatus = function (status, detail) {
+        document.body.classList.remove('failed')
+        document.getElementById('splash-status').textContent = String(status || '')
+        document.getElementById('splash-detail').textContent = String(detail || '')
+      }
+      window.showSplashError = function (message) {
+        document.body.classList.add('failed')
+        document.getElementById('splash-status').textContent = 'Hammer could not start'
+        document.getElementById('splash-detail').textContent = String(message || '')
+      }
+    </script>
+  </body>
+</html>

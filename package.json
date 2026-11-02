@@ -26,8 +26,12 @@
   "license": "MIT",
   "author": "anonymous",
   "type": "module",
+  "main": "desktop/main.js",
   "scripts": {
     "start": "node bin/hammer.js",
+    "desktop": "electron .",
+    "desktop:package": "electron-packager . Hammer --executable-name=hammer --out=release --overwrite --prune --icon=desktop/assets/icon.png --ignore=\"^/(release|test|tools|docs|\\.git|\\.github|\\.freebuff|\\.cloud-attachments|\\.test-home)\"",
+    "icons": "node tools/make-desktop-icons.mjs",
     "test": "node --test \"test/**/*.test.js\"",
     "lint": "eslint .",
     "format": "prettier --write .",
@@ -48,8 +52,10 @@
     "node": ">=18.0.0"
   },
   "devDependencies": {
+    "@electron/packager": "^20.3.0",
     "@eslint/js": "^10.0.1",
     "@types/node": "^26.6.5",
+    "electron": "^45.1.0",
     "eslint": "^10.13.0",
     "globals": "^17.13.0",
     "prettier": "^3.9.10",

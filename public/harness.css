@@ -1,0 +1,1272 @@
+/*
+ * harness.css — the agent workspace.
+ *
+ * The router's telemetry keeps its own stylesheet. This one owns the shell around it: the
+ * top bar, the view switch, and the agent surface that is now the landing page. It reads the
+ * same CSS variables as dashboard.css, so the theme toggle and dark mode keep working.
+ *
+ * One rule shapes this file: the agent surface is a document, not a dashboard. A transcript
+ * of a long turn is mostly tool calls, and a border around each one turns the log into a pile
+ * of cards you have to read past. So the transcript is typography — one column, hairline
+ * separators, monospace tool lines, output on demand — and the chrome around it is a hairline
+ * or two rather than a frame within a frame.
+ */
+
+/* ── Shell ─────────────────────────────────────────────────────────────────────────── */
+
+:root {
+  /* Maroon is the brand: the head of the mark, and the accent the router already uses. */
+  --hx-brand: #7d2231;
+  /* The reading column. Tools, code and the composer share it; prose is capped in `ch`. */
+  --hx-measure: 820px;
+  --hx-gutter: 28px;
+  --hx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* On a near-black ground a deep maroon disappears, so the mark lightens with the theme. */
+[data-theme='dark'] {
+  --hx-brand: #e08c96;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/*
+ * The app owns the viewport. Panes scroll inside it; the page itself never does. A harness that
+ * scrolls as one long document loses its composer off the bottom of the screen, which is the
+ * one control that has to stay reachable.
+ */
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+.container {
+  max-width: 1500px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* dashboard.css reserves vertical padding for a document that scrolls. The shell does not, and
+     that padding is exactly what pushed the composer past the viewport bottom. */
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* The router keeps its own scrollbar inside the shell: the page still never scrolls. */
+body[data-view='router'] .container {
+  overflow-y: auto;
+}
+
+/* ── App bar ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * One app bar: title left, the router's own controls right, status underneath. The rules are
+ * `!important` because dashboard.css already centres this block for the old marketing-style
+ * header, and a harness needs a toolbar, not a hero.
+ */
+.dashboard-header {
+  padding: 14px 0 6px !important;
+  text-align: left !important;
+}
+
+.dashboard-header-inner {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 2px 12px !important;
+  text-align: left !important;
+}
+
+/* The nav says where you are; the marketing eyebrow only added height. */
+.dashboard-header-inner > .dashboard-eyebrow {
+  display: none !important;
+}
+
+.dashboard-header-inner > .dashboard-heading {
+  margin: 0 auto 0 0 !important;
+  font-size: 1.3rem !important;
+  letter-spacing: -0.01em !important;
+  order: 1;
+}
+
+/* The title glow belongs to the old hero heading, not to a toolbar title. */
+.dashboard-header-inner > .dashboard-heading::after {
+  display: none !important;
+}
+
+.dashboard-header-inner > p:not(.load-status) {
+  order: 2;
+  margin: 0 !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dashboard-header-inner > .load-status {
+  order: 3;
+  flex-basis: 100%;
+  margin: 0 !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+}
+
+.dashboard-heading {
+  font-size: 1.3rem;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+/* The mark, sized to the wordmark: the same drawing as the app icon, minus the ink ground so it
+   sits on either theme. The handle is currentColor; the head keeps its ember. */
+.hx-brand {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  color: var(--text);
+}
+
+.hx-details-btn {
+  display: none;
+}
+
+.dashboard-header .load-status {
+  margin-top: 4px;
+  font-size: 0.72rem;
+}
+
+/* ── View switch ───────────────────────────────────────────────────────────────────── */
+
+.hx-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 2px 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.hx-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.hx-nav-btn:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+/* The current view is a state, not a button with a border: a filled pill read as a control. */
+.hx-nav-btn.active {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.hx-nav-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.hx-nav-spacer {
+  flex: 1;
+}
+
+.hx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 46ch;
+  padding: 4px 9px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.73rem;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.hx-chip b {
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+.hx-chip:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+/* A switch, not a route: the dashboard keeps its own inline display styles, so the shell
+   only dictates which side of the app is on screen. */
+body[data-view='agent'] #kpi-grid,
+body[data-view='agent'] .tabs,
+body[data-view='agent'] #models-view,
+body[data-view='agent'] #logs-view,
+body[data-view='agent'] #settings-view {
+  display: none !important;
+}
+
+body[data-view='router'] #agent-view {
+  display: none !important;
+}
+
+/* Restarting the router is a router action: on the agent screen the only Restart is the
+   agent's. Two buttons with one word was the ambiguity; one lives on each surface now. */
+body[data-view='agent'] #reload-btn {
+  display: none !important;
+}
+
+/* ── Agent layout ──────────────────────────────────────────────────────────────────── */
+
+#agent-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 292px;
+  gap: 32px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+ * The main pane is not a card. It is the page: a toolbar, the log, and the composer dock, all
+ * flush with the window. A frame here plus a frame per tool call was three borders deep.
+ */
+.hx-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* The toolbar and the routing line sit in the same column as the log, so the page has one left
+   edge from the title down to the composer. */
+.hx-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: var(--hx-measure);
+  margin-inline: auto;
+  padding: 0 0 10px;
+}
+
+.hx-head-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.hx-head-title h2 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+
+.hx-session-name {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  font-family: var(--hx-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 44ch;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+}
+
+.hx-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* The phase pill is the process, not the turn: starting / alive / busy / down. It is a dot and
+   a word — a bordered pill next to a bordered badge next to a bordered card was chrome, not
+   information. */
+.hx-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.hx-phase i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-muted);
+}
+
+.hx-phase[data-phase='busy'] {
+  color: var(--accent);
+}
+
+.hx-phase[data-phase='busy'] i {
+  background: var(--accent);
+  animation: hx-pulse 1.1s ease-in-out infinite;
+}
+
+.hx-phase[data-phase='alive'] i,
+.hx-phase[data-phase='idle'] i {
+  background: var(--success);
+}
+
+.hx-phase[data-phase='dead'] {
+  color: var(--error);
+}
+
+.hx-phase[data-phase='dead'] i {
+  background: var(--error);
+}
+
+@keyframes hx-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/* ── Routing strip ─────────────────────────────────────────────────────────────────── */
+
+/*
+ * Which model answered, and that the router chose it, in one quiet line above the log. It used
+ * to be a gradient band with three pills in it; the line is the same information at a fraction
+ * of the weight, and it is the only rule between the toolbar and the transcript.
+ */
+.hx-route-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  width: 100%;
+  max-width: var(--hx-measure);
+  margin-inline: auto;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.hx-route-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hx-route-model .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--success);
+}
+
+.hx-route-badge {
+  color: var(--status-info-text);
+  font-weight: 650;
+  font-size: 0.68rem;
+  letter-spacing: 0.03em;
+}
+
+.hx-route-badge.off {
+  color: var(--status-warning-text);
+}
+
+.hx-route-strip > span + span::before,
+.hx-route-strip > span + button::before {
+  content: '·';
+  margin-right: 10px;
+  color: var(--border);
+}
+
+.hx-route-link {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.hx-route-link:hover {
+  color: var(--accent);
+}
+
+/* ── Transcript ────────────────────────────────────────────────────────────────────── */
+
+.hx-transcript-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+/*
+ * The log sits on the chat ground rather than the page ground. Tools keep a box — their output
+ * collapses, so they are widgets rather than paragraphs — and a box needs something to sit on;
+ * the composer then reads as its own dock.
+ */
+.hx-transcript {
+  height: 100%;
+  /* Without border-box, `height: 100%` is the content height and the vertical padding is added
+     on top of it: the transcript grew 26px taller than its wrapper and its last lines landed
+     on top of the composer. */
+  box-sizing: border-box;
+  overflow-y: auto;
+  background: var(--chat-bg);
+  padding: 18px var(--hx-gutter) 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  scroll-behavior: smooth;
+}
+
+.hx-transcript > * {
+  width: 100%;
+  max-width: var(--hx-measure);
+  margin-inline: auto;
+}
+
+/*
+ * Every entry is a paragraph of one log: a rail in the margin names the speaker, and a small
+ * uppercase label above the content says which one it is. The rail is what makes a long turn
+ * scannable — green for the prompt, maroon for the answer — without boxing either of them.
+ */
+.hx-row {
+  min-width: 0;
+  box-sizing: border-box;
+  border-left: 2px solid transparent;
+  padding: 2px 0 2px 12px;
+  margin-top: 8px;
+}
+
+.hx-row:first-child {
+  margin-top: 0;
+}
+
+.hx-row-user {
+  border-left-color: var(--success);
+  margin-top: 24px;
+}
+
+.hx-row-assistant {
+  border-left-color: var(--accent);
+}
+
+.hx-row-notice {
+  border-left-color: var(--border);
+}
+
+.hx-role {
+  font-family: var(--hx-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+/* Prose is capped in characters, tool lines are not: a paragraph has a measure, a command does
+   not. */
+.hx-turn-text,
+.hx-assistant {
+  max-width: 74ch;
+  font-size: 0.88rem;
+  line-height: 1.6;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.hx-turn-text {
+  white-space: pre-wrap;
+}
+
+.hx-assistant > div + div {
+  margin-top: 8px;
+}
+
+.hx-pending {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Thinking is content, and it sits on its own rail: what the model considered, in the order it
+   considered it. */
+.hx-thinking {
+  margin: 6px 0;
+  border-left: 2px solid var(--border);
+  padding-left: 10px;
+}
+
+.hx-block-label {
+  font-family: var(--hx-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  opacity: 0.8;
+  margin-bottom: 2px;
+}
+
+.hx-thinking-text {
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.hx-code,
+.hx-inline-code {
+  font-family: var(--hx-mono);
+}
+
+.hx-code {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  font-size: 0.79rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.hx-inline-code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--surface-alt);
+  font-size: 0.86em;
+}
+
+/* ── Tool calls ────────────────────────────────────────────────────────────────────── */
+
+/*
+ * A tool is the one thing here that is a widget rather than a paragraph: its output collapses,
+ * so it keeps a box. The header row is the whole disclosure — one row per call, with no
+ * separate "output" line to click underneath it.
+ */
+.hx-tool {
+  margin: 6px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  overflow: hidden;
+  font-family: var(--hx-mono);
+}
+
+.hx-tool.error {
+  border-color: var(--status-error-border);
+}
+
+.hx-tool-head {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 5px 10px;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hx-tool:not([open]) .hx-tool-head {
+  border-bottom: none;
+}
+
+.hx-tool-empty .hx-tool-head {
+  cursor: default;
+}
+
+.hx-tool-head::-webkit-details-marker {
+  display: none;
+}
+
+/* The caret says the row opens; a call with nothing to show has none. */
+.hx-tool-head::after {
+  content: '';
+  flex: none;
+  align-self: center;
+  width: 0;
+  height: 0;
+  border-top: 4px solid currentColor;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  opacity: 0.45;
+}
+
+.hx-tool[open] .hx-tool-head::after {
+  transform: rotate(180deg);
+}
+
+.hx-tool-empty .hx-tool-head::after {
+  display: none;
+}
+
+.hx-tool-dot {
+  flex: none;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  border: 1.5px solid var(--text-muted);
+  background: transparent;
+}
+
+.hx-tool.running .hx-tool-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  animation: hx-pulse 1.1s ease-in-out infinite;
+}
+
+.hx-tool.ok .hx-tool-dot {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.hx-tool.error .hx-tool-dot {
+  background: var(--error);
+  border-color: var(--error);
+}
+
+.hx-tool-name {
+  flex: none;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.hx-tool-cmd {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.755rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hx-tool-state {
+  flex: none;
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.hx-tool.ok .hx-tool-state {
+  color: var(--status-success-text);
+}
+
+.hx-tool.error .hx-tool-state {
+  color: var(--status-error-text);
+}
+
+.hx-tool-out {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 340px;
+  overflow: auto;
+  font-size: 0.735rem;
+  line-height: 1.5;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Notices ───────────────────────────────────────────────────────────────────────── */
+
+/*
+ * Compaction, a retry, a failure: one line in the log. Silence during a 30-second retry reads
+ * as a hung agent, and a coloured box for every event reads as a dashboard.
+ */
+.hx-notice {
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.hx-notice.error {
+  color: var(--status-error-text);
+}
+
+.hx-notice.success {
+  color: var(--status-success-text);
+}
+
+.hx-notice-text {
+  word-break: break-word;
+}
+
+/* ── Empty state ───────────────────────────────────────────────────────────────────── */
+
+.hx-empty {
+  margin: auto;
+  max-width: 560px;
+  text-align: center;
+  padding: 20px;
+}
+
+.hx-empty h3 {
+  margin: 0 0 6px;
+  font-size: 1.02rem;
+}
+
+.hx-empty p {
+  margin: 0 0 18px;
+  color: var(--text-muted);
+  font-size: 0.84rem;
+  line-height: 1.65;
+}
+
+/* The mark again, large and quiet: the page carries the logo rather than only the tab. */
+.hx-empty-mark {
+  width: 64px;
+  height: 64px;
+  display: block;
+  margin: 0 auto 14px;
+  color: var(--text-muted);
+  opacity: 0.45;
+}
+
+.hx-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
+
+.hx-suggestion {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 7px;
+  padding: 6px 11px;
+  font: inherit;
+  font-size: 0.79rem;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.hx-suggestion:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.hx-jump {
+  position: absolute;
+  right: var(--hx-gutter);
+  bottom: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 0.73rem;
+  cursor: pointer;
+  box-shadow: 0 6px 18px var(--shadow-color);
+}
+
+/* ── Composer ──────────────────────────────────────────────────────────────────────── */
+
+/*
+ * The composer is a dock, not a card: a full-width band that shares its inner column with the
+ * transcript, so the line you type on sits under the line you read.
+ */
+.hx-composer {
+  border-top: 1px solid var(--border);
+  background: var(--card);
+  padding: 12px var(--hx-gutter) 14px;
+}
+
+.hx-input {
+  display: block;
+  width: 100%;
+  max-width: var(--hx-measure);
+  margin-inline: auto;
+  box-sizing: border-box;
+  resize: none;
+  min-height: 68px;
+  max-height: 190px;
+  padding: 11px 13px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.hx-input::placeholder {
+  color: var(--text-muted);
+}
+
+.hx-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--title-glow);
+}
+
+.hx-composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  max-width: var(--hx-measure);
+  margin: 8px auto 0;
+  min-height: 28px;
+}
+
+.hx-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-hint[data-tone='error'] {
+  color: var(--error);
+}
+
+.hx-hint[data-tone='success'] {
+  color: var(--success);
+}
+
+.hx-composer-btns {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Controls stay outlined — they are controls — but quietly, at the weight of the text. */
+.hx-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  border-radius: 7px;
+  padding: 5px 11px;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.hx-btn:hover:not(:disabled) {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+
+.hx-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hx-btn.hx-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  padding: 5px 16px;
+}
+
+.hx-btn.hx-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  color: #fff;
+}
+
+/* ── Inspector rail ────────────────────────────────────────────────────────────────── */
+
+/*
+ * Three sections, divided by hairlines and a label, instead of three cards. The rail is a
+ * column of facts about the run; it should read as one column, not as a stack of panels.
+ */
+.hx-side {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 2px 2px 4px 24px;
+  border-left: 1px solid var(--border);
+}
+
+.hx-panel {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.hx-panel:first-child {
+  padding-top: 0;
+}
+
+.hx-panel:last-child {
+  border-bottom: none;
+}
+
+.hx-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.hx-panel-title {
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.hx-panel-head .hx-btn {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 0.69rem;
+  border-color: transparent;
+}
+
+.hx-panel-head .hx-btn:hover {
+  border-color: var(--border);
+}
+
+.hx-kv {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.77rem;
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.hx-kv dt {
+  color: var(--text-muted);
+  flex: none;
+  min-width: 68px;
+  margin: 0;
+}
+
+.hx-kv dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-mono {
+  font-family: var(--hx-mono);
+  font-size: 0.73rem;
+}
+
+.hx-usage-bar {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  overflow: hidden;
+  margin: 8px 0 6px;
+}
+
+.hx-usage-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+.hx-sessions {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  border-bottom: none;
+}
+
+.hx-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  margin-bottom: 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.76rem;
+}
+
+.hx-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.hx-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.hx-session-row {
+  border: none;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  background: none;
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  box-shadow: inset 2px 0 0 transparent;
+}
+
+.hx-session-row:hover {
+  background: var(--surface-alt);
+}
+
+.hx-session-row.current {
+  background: var(--surface-alt);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.hx-session-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-session-row.current .hx-session-label {
+  font-weight: 600;
+}
+
+.hx-session-meta {
+  font-size: 0.69rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-empty-note {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+  padding: 2px 0;
+}
+
+/* ── Command palette ───────────────────────────────────────────────────────────────── */
+
+.hx-palette-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--modal-overlay);
+  display: none;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+  z-index: 2000;
+}
+
+.hx-palette-overlay.open {
+  display: flex;
+}
+
+.hx-palette {
+  width: min(560px, calc(100vw - 40px));
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
+  overflow: hidden;
+}
+
+.hx-palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 13px 16px;
+}
+
+.hx-palette-input:focus {
+  outline: none;
+}
+
+.hx-palette-list {
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.hx-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.83rem;
+  text-align: left;
+  padding: 9px 11px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.hx-palette-item[aria-selected='true'],
+.hx-palette-item:hover {
+  background: var(--surface-hover);
+}
+
+.hx-palette-item kbd {
+  margin-left: auto;
+  font-family: inherit;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.hx-palette-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* ── Responsive ────────────────────────────────────────────────────────────────────── */
+
+/* Below the two-column threshold the inspector becomes a drawer rather than a stacked section:
+   stacking it would push the composer off-screen, which is the scroll the shell exists to
+   prevent. The transcript keeps the full width and the full height. */
+@media (max-width: 960px) {
+  :root {
+    --hx-gutter: 16px;
+  }
+
+  #agent-view {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .hx-details-btn {
+    display: inline-flex;
+  }
+
+  .hx-side {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(320px, 86vw);
+    z-index: 60;
+    padding: 14px 16px;
+    background: var(--bg);
+    border-left: 1px solid var(--border);
+    box-shadow: -18px 0 48px rgba(15, 23, 42, 0.28);
+    transform: translateX(105%);
+    transition: transform 0.18s ease;
+    overflow-y: auto;
+  }
+
+  body.hx-drawer-open .hx-side {
+    transform: translateX(0);
+  }
+
+  body.hx-drawer-open::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: var(--modal-overlay);
+    z-index: 50;
+  }
+
+  .hx-transcript {
+    padding: 16px var(--hx-gutter) 20px;
+  }
+
+  .hx-head-title h2 {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
+  .hx-tool-name {
+    min-width: 0;
+  }
+
+  .hx-tool-state {
+    display: none;
+  }
+}

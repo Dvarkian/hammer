@@ -4,13 +4,14 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Hammer</title>
+  <title>Hammer — Agent Harness</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="apple-touch-icon" href="/favicon.svg">
   <link rel="stylesheet" href="dashboard.css">
+  <link rel="stylesheet" href="harness.css">
 </head>
 
-<body>
+<body data-view="agent">
   <div id="local-file-warning" style="display:none; margin:16px auto 0; width:min(1100px, calc(100vw - 32px)); background:var(--status-warning-bg); border:1px solid var(--status-warning-border); color:var(--status-warning-text); border-radius:12px; padding:12px 14px; font-size:0.84rem; line-height:1.5;">
     This dashboard is being opened as a static <code>file://</code> page. Use <b>http://localhost:7352</b> instead so provider actions and OAuth callbacks can talk to the running Hammer server.
   </div>
@@ -18,13 +19,20 @@
 
   <div class="container">
     <div class="dashboard-header">
-      <div class="dashboard-header-inner">
-        <p class="dashboard-eyebrow">Router Control Center</p>
-        <h1 class="dashboard-heading">Hammer</h1>
+      <div class="dashboard-header-inner">          <p class="dashboard-eyebrow">Agent Harness · local routing</p>
+        <h1 class="dashboard-heading">
+          <svg class="hx-brand" viewBox="0 0 32 32" aria-hidden="true">
+            <g transform="translate(-0.17 2.22) rotate(-32 16 16) translate(16 16) scale(1.05) translate(-16 -16)">
+              <path d="M11.75 8.6L15.25 8.6C15.15 13 15 18 15 20.8C15 22.8 15.2 24.6 15.25 25.8C15.3 27.3 14.7 27.9 13.5 27.9C12.3 27.9 11.7 27.3 11.75 25.8C11.8 24.6 12 22.8 12 20.8C12 18 11.85 13 11.75 8.6Z" fill="currentColor"/>
+              <path d="M21.6 6.9L22.6 7.5L22.6 10.9L21.8 11.3C18.8 11.9 16.2 11.9 13.8 11.4C12.2 11.1 11 10.3 10.2 9.2C9 10.4 7.4 11.9 6.4 13.1C6 13.6 5.4 13.4 5.4 12.8C5.3 11.2 5.6 9.4 6.5 8C7.5 6.7 9 6.3 10.4 6.1C13.8 5.8 18.2 6.2 21.6 6.9Z" fill="var(--hx-brand)"/>
+            </g>
+          </svg>
+          <span>Hammer</span>
+        </h1>
         <p style="margin: 14px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
           <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-            <span id="reload-label">Restart</span>
+            <span id="reload-label">Restart router</span>
           </button>
           <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <span id="theme-icon">🌙</span>
@@ -42,6 +50,90 @@
         </p>
       </div>
     </div>
+
+    <nav class="hx-nav" aria-label="Workspace">
+      <button class="hx-nav-btn active" id="hx-nav-agent" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="2"></rect><path d="M2 14h2M20 14h2M15 13v2M9 13v2"></path></svg>
+        Agent
+      </button>
+      <button class="hx-nav-btn" id="hx-nav-router" type="button">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><circle cx="5" cy="6" r="2"></circle><circle cx="19" cy="6" r="2"></circle><circle cx="5" cy="18" r="2"></circle><circle cx="19" cy="18" r="2"></circle><path d="m9.5 10.4-3-3M14.5 10.4l3-3M9.5 13.6l-3 3M14.5 13.6l3 3"></path></svg>
+        Router
+      </button>
+      <span class="hx-nav-spacer"></span>
+      <button class="hx-chip" id="hx-palette-btn" type="button" title="Command palette (Ctrl/Cmd+K)">
+        Commands <b>⌘K</b>
+      </button>
+    </nav>
+
+    <!-- The agent is the application. Everything below it is the router that feeds it, kept
+         reachable in one click so the ranking, providers and request logs stay inspectable. -->
+    <section id="agent-view" aria-label="Agent workspace">
+      <div class="hx-main">
+        <header class="hx-head">
+          <div class="hx-head-title">
+            <span class="hx-phase" id="hx-phase" data-phase="idle"><i aria-hidden="true"></i><span id="hx-phase-label">idle</span></span>
+            <h2>Agent</h2>
+            <span class="hx-session-name" id="hx-session-name">new session</span>
+          </div>
+          <div class="hx-head-actions">
+            <button class="hx-btn hx-details-btn" id="hx-details" type="button" title="Show run details">Details</button>
+            <button class="hx-btn" id="hx-new" type="button" title="Start a new session">New</button>
+            <button class="hx-btn" id="hx-restart" type="button" title="Replace the agent process, keeping this conversation">Restart agent</button>
+          </div>
+        </header>
+
+        <div class="hx-route-strip" id="hx-route-strip">
+          <span class="hx-route-model"><i class="dot" aria-hidden="true"></i><span id="hx-model-name">waiting for the router…</span></span>
+          <span>via <span id="hx-model-provider">—</span></span>
+          <span class="hx-route-badge" id="hx-routed-badge">routed by Hammer</span>
+          <span>thinking <b id="hx-thinking-level">off</b></span>
+          <button class="hx-route-link" type="button" onclick="harnessShow('router')">Router telemetry →</button>
+        </div>
+
+        <div class="hx-transcript-wrap" data-hx-bg>
+          <div class="hx-transcript" id="hx-transcript" role="log" aria-live="polite" aria-label="Conversation"></div>
+          <button class="hx-jump" id="hx-jump" type="button" style="display:none;">Jump to latest ↓</button>
+        </div>
+
+        <form class="hx-composer" id="hx-composer">
+          <textarea id="hx-input" class="hx-input" rows="2" spellcheck="false"
+            placeholder="Ask Hammer to build, fix or explain something in this workspace…  (/new for a fresh session, /stop to halt a turn)"></textarea>
+          <div class="hx-composer-bar">
+            <span class="hx-hint" id="hx-hint">Enter sends · Shift+Enter for a newline · Ctrl/Cmd+K for commands</span>
+            <div class="hx-composer-btns">
+              <button class="hx-btn" id="hx-stop" type="button" disabled>Stop</button>
+              <button class="hx-btn hx-primary" id="hx-send" type="submit">Send</button>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <aside class="hx-side" aria-label="Run details">
+        <section class="hx-panel">
+          <div class="hx-panel-head"><span class="hx-panel-title">Workspace</span>
+            <button class="hx-btn" id="hx-copy-cwd" type="button" title="Copy the workspace path">Copy</button>
+          </div>
+          <div class="hx-kv"><dt>Directory</dt><dd class="hx-mono" id="hx-cwd">—</dd></div>
+          <div class="hx-kv"><dt>Endpoint</dt><dd class="hx-mono">/v1 · best</dd></div>
+        </section>
+
+        <section class="hx-panel">
+          <div class="hx-panel-head"><span class="hx-panel-title">Usage</span></div>
+          <div class="hx-kv"><dt>Tokens</dt><dd id="hx-usage-text">No tokens reported yet</dd></div>
+          <div class="hx-usage-bar"><span id="hx-usage-fill" style="width:0%"></span></div>
+          <div class="hx-empty-note">Reported per turn by the agent, not estimated by this page.</div>
+        </section>
+
+        <section class="hx-panel hx-sessions">
+          <div class="hx-panel-head"><span class="hx-panel-title">Sessions</span>
+            <button class="hx-btn" id="hx-refresh-sessions" type="button" onclick="harnessReloadSessions()">Refresh</button>
+          </div>
+          <input class="hx-search" id="hx-session-search" type="search" placeholder="Search sessions…" aria-label="Search sessions">
+          <div class="hx-session-list" id="hx-session-list"><div class="hx-empty-note">Loading…</div></div>
+        </section>
+      </aside>
+    </section>
 
     <div class="kpi-grid" id="kpi-grid" aria-busy="true">
       <div id="proxy-error-banner" style="display:none; margin-bottom:12px; padding:10px 14px; border:1px solid var(--status-error-border); border-radius:8px; background:var(--status-error-bg); color:var(--status-error-text); font-size:0.82rem;"></div>
@@ -68,20 +160,6 @@
         <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
         <div class="kpi-content">
           <div style="display:flex; gap:24px; align-items:flex-start;">
-            <div class="kpi-label">
-              Models Online
-              <svg class="signal-icon" viewBox="0 0 24 24">
-                <circle cx="12" cy="12" r="10" />
-              </svg>
-              <span class="kpi-value is-loading" id="kpi-active" style="font-size:1.2rem; margin-left:8px;"></span>
-            </div>
-            <div class="kpi-label">
-              Providers
-              <svg class="signal-icon" viewBox="0 0 24 24">
-                <circle cx="12" cy="12" r="10" />
-              </svg>
-              <span class="kpi-value is-loading" id="kpi-providers" style="font-size:1.2rem; margin-left:8px;"></span>
-            </div>
             <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
               <div style="display:flex; align-items:center; gap:6px;">
                 <svg class="signal-icon" viewBox="0 0 24 24" style="width:10px;height:10px;">
@@ -119,7 +197,6 @@
 
     <div class="tabs">
       <div class="tab active" id="tab-models" onclick="switchTab('models')">Live Telemetry</div>
-      <div class="tab" id="tab-pi" onclick="switchTab('pi')">Pi</div>
       <div class="tab" id="tab-logs" onclick="switchTab('logs')">Request Logs</div>
       <div class="tab" id="tab-settings" onclick="switchTab('settings')">Settings</div>
     </div>
@@ -272,38 +349,6 @@
       </div>
     </div>
 
-    <div id="pi-view" style="display: none;">
-      <div class="pi-layout">
-        <div class="pi-toolbar">
-          <div style="min-width:0;">
-            <div class="pi-title-row">
-              <h2 style="margin: 0; font-size: 1.25rem;">Pi agent</h2>
-              <span id="pi-phase" class="pi-phase" data-phase="idle"><i class="pi-dot"></i><span id="pi-phase-label">idle</span></span>
-            </div>
-            <div id="pi-status" class="pi-status-line">Connecting to Pi…</div>
-          </div>
-          <div class="pi-actions">
-            <button id="pi-restart-btn" class="btn" onclick="restartPiAgent()">Restart agent</button>
-            <button id="pi-stop-btn" class="btn" onclick="stopPiRun()" disabled>Stop</button>
-            <button id="pi-reset-btn" class="btn" onclick="resetPiSession()">New session</button>
-          </div>
-        </div>
-        <div id="pi-transcript" class="pi-transcript">
-          <div class="pi-empty">
-            Ask Pi to work in this project. It streams every step it takes: tool calls, output and its answer.
-          </div>
-        </div>
-        <div class="pi-composer">
-          <textarea id="pi-input" class="pi-input" placeholder="Ask Pi to do something in this repo… (Enter to send, Shift+Enter for a newline)"></textarea>
-          <div class="pi-composer-actions">
-            <div id="pi-hint" class="pi-hint"></div>
-            <button id="pi-send-btn" class="btn pi-send-btn" onclick="sendPiPrompt()">Send</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
-
   </div>
 
   <div id="provider-sync-modal" style="display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); width:min(720px, calc(100vw - 32px)); max-height:min(80vh, 760px); background:var(--card); border:1px solid var(--border); border-radius:18px; box-shadow:0 24px 80px rgba(15, 23, 42, 0.22); z-index:1001; overflow:hidden;">
@@ -353,7 +398,16 @@
       <span class="skeleton skeleton-text" style="width:60%"></span>
     </div></template>
 
+  <!-- The command palette: one keystroke to anything the harness can do. -->
+  <div class="hx-palette-overlay" id="hx-palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="hx-palette" id="hx-palette-card" role="document">
+      <input class="hx-palette-input" id="hx-palette-input" type="text" placeholder="Type a command…" autocomplete="off" aria-label="Command">
+      <div class="hx-palette-list" id="hx-palette-list"></div>
+    </div>
+  </div>
+
   <script src="dashboard.js"></script>
+  <script src="harness.js"></script>
 </body>
 
 </html>

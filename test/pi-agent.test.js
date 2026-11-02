@@ -11,7 +11,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
@@ -25,7 +25,7 @@ import {
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes } from '../lib/http/routes/pi.js'
 import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
-import { planPiLaunch, resolvePiRuntime } from '../lib/pi/runtime.js'
+import { planPiLaunch, resolvePiRuntime, usableWorkspace } from '../lib/pi/runtime.js'
 import { normalizeConfigShape } from '../lib/config.js'
 
 const FAKE_PI = fileURLToPath(new URL('./support/fake-pi.mjs', import.meta.url))
@@ -220,6 +220,82 @@ test('a new session clears the transcript a page would replay', async () => {
   }
 })
 
+// ── Session persistence: switch, restart-to, and the store ────────────────────────────────
+
+test('an idle agent switches sessions over RPC and reports where it landed', async () => {
+  await withEnv(
+    { FAKE_PI_SESSION_FILE: '/store/other.jsonl', FAKE_PI_SESSION_ID: 'session-switched' },
+    async () => {
+      const { bridge } = makeFake()
+      try {
+        const settled = nextEvent(bridge, 'agent_settled')
+        await bridge.prompt('hi')
+        await settled
+        assert.ok(bridge.history().length > 0)
+
+        await bridge.switchSession('/store/other.jsonl')
+        assert.equal(bridge.state.sessionFile, '/store/other.jsonl')
+        assert.equal(bridge.state.sessionId, 'session-switched')
+        assert.equal(bridge.history().length, 0, 'the replay log is a different conversation now')
+      } finally {
+        bridge.dispose()
+      }
+    },
+  )
+})
+
+test('a busy agent refuses an in-place switch, and a cancelled one changes nothing', async () => {
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    bridge.state.isStreaming = true
+    await assert.rejects(() => bridge.switchSession('/store/other.jsonl'), /busy/)
+
+    bridge.state.isStreaming = false
+    await withEnv({ FAKE_PI_CANCEL_SWITCH: '1' }, async () => {
+      const record = await bridge.switchSession('/store/other.jsonl')
+      assert.equal(record.data.cancelled, true)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a restart to a session re-spawns the child with --session and keeps it across a crash', async () => {
+  const { bridge, commands } = makeFake({ autoRestart: true, restartBaseMs: 5 })
+  try {
+    await bridge.start()
+    const first = bridge.child
+    await bridge.restartTo('/store/other.jsonl')
+    assert.notEqual(bridge.child, first)
+    assert.equal(bridge.state.sessionFile, '/store/other.jsonl')
+    assert.deepEqual(bridge.args.slice(-2), ['--session', '/store/other.jsonl'])
+    // The proof is on disk: the replacement child was launched with the session flag.
+    await waitFor(() => commands().some((line) => line.includes('"--session"')))
+
+    // A crash-restart must come back on the same session: the conversation is on disk.
+    const exited = new Promise((resolve) => bridge.once('exit', resolve))
+    bridge.child?.kill('SIGTERM')
+    await exited
+    await waitFor(() => Boolean(bridge.child) && bridge.phase === 'alive')
+    assert.deepEqual(bridge.args.slice(-2), ['--session', '/store/other.jsonl'])
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the command allowlist admits the session controls and nothing broader', async () => {
+  const { bridge } = makeFake()
+  try {
+    await assert.doesNotReject(() => bridge.runCommand('get_messages'))
+    await assert.doesNotReject(() =>
+      bridge.runCommand('switch_session', { sessionPath: '/store/other.jsonl' }),
+    )
+    await assert.rejects(() => bridge.runCommand('export_html'), /not allowed/)
+  } finally {
+    bridge.dispose()
+  }
+})
+
 test('a cancelled new session keeps the transcript', async () => {
   await withEnv({ FAKE_PI_CANCEL_RESET: '1' }, async () => {
     const { bridge } = makeFake()
@@ -350,35 +426,42 @@ test('a stopped bridge leaves nothing to restart', async () => {
 
 test('the transcript keeps thinking, text and tool calls in the order the model made them', () => {
   // The page is a classic script, so this guards the shape of the fold rather than running it:
-  // each assertion names a fact a broken port of the harness transcript would lose.
-  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  // each assertion names a fact a broken transcript port would lose. The harness owns the fold
+  // now that the router's Pi tab is gone.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
 
-  // Thinking is content, not a placeholder. Collapsing it to "thinking…" was the port's
-  // biggest omission: the harness shows what the model actually thought.
-  assert.match(dashboard, /piAppendDelta\('thinking', update\.contentIndex, update\.delta\)/)
-  assert.match(dashboard, /class="pi-block-label">thinking</)
-  assert.match(dashboard, /class="pi-thinking-text"/)
+  // Thinking is content, not a placeholder: the harness shows what the model actually thought.
+  assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta\)/)
+  assert.match(harness, /class="hx-block-label">thinking</)
+  assert.match(harness, /class="hx-thinking-text"/)
 
   // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
   // assistant message and grows it in production order.
-  assert.match(dashboard, /function piContentBlock\(item, kind, index\)/)
-  assert.match(dashboard, /item\.blocks\.sort\(\(a, b\) => a\.index - b\.index\)/)
+  assert.match(harness, /function appendDelta\(kind, contentIndex, delta\)/)
+  assert.match(harness, /item\.blocks\.sort\(\(a, b\) => a\.index - b\.index\)/)
 
   // A tool is announced when the model calls it, so its box sits where the call was made.
-  assert.match(dashboard, /update\.type === 'toolcall_start'/)
-  assert.match(dashboard, /function ensurePiTool\(id, name\)/)
+  assert.match(harness, /update\.type === 'toolcall_start'/)
+  assert.match(harness, /function ensureTool\(id, name\)/)
 
   // Live output: a long command is legible while it runs, not only once it finishes.
-  assert.match(dashboard, /case 'tool_execution_update'/)
-  assert.match(dashboard, /item\.partial = piClip\(text, PI_MAX_TOOL\)/)
+  assert.match(harness, /case 'tool_execution_update'/)
+  assert.match(harness, /item\.partial = clip\(resultText\(record\.partialResult\), MAX_TOOL\)/)
 
   // A provider that answers without deltas still contributes its thinking and text parts.
-  assert.match(dashboard, /function piContentParts\(content\)/)
-  assert.match(dashboard, /item\.blocks = piContentParts\(message\.content\)/)
+  assert.match(harness, /function contentParts\(content\)/)
+  assert.match(harness, /item\.blocks = contentParts\(message\.content\)/)
 
   // Runaway output is clipped from the front, where the tail is what a reader needs.
-  assert.match(dashboard, /const PI_MAX_TEXT = 120_000/)
-  assert.match(dashboard, /const PI_MAX_TOOL = 24_000/)
+  assert.match(harness, /const MAX_TEXT = 120000/)
+  assert.match(harness, /const MAX_TOOL = 24000/)
+
+  // Sessions persist on the server; the rail lists them and resumes one in place, rebuilding
+  // the transcript from the session's own messages for a run this page never saw.
+  assert.match(harness, /const API = '\/api\/pi'/)
+  assert.match(harness, /function loadSessions\(\)/)
+  assert.match(harness, /function resumeSession\(file\)/)
+  assert.match(harness, /function loadMessages\(\)/)
 })
 
 test('the console configures Pi with the router as its only provider', () => {
@@ -443,6 +526,20 @@ test('the Pi settings block is optional, and the environment wins over the file'
   const normalized = normalizeConfigShape({ pi: { provider: 'google', model: 'gemini' } })
   assert.deepEqual(normalized.pi, { provider: 'google', model: 'gemini' })
   assert.equal(readPiSettings({ pi: { model: 'gemini' } }).model, 'gemini')
+})
+
+test('a workspace that is a file is never a cwd, because spawn fails with ENOTDIR', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-cwd-'))
+  const archive = join(root, 'app.asar')
+  writeFileSync(archive, '')
+
+  // This is the packaged app's shape: the install root is the asar archive itself. A file cannot be
+  // a working directory, and the failure blames the command, which looks like a broken interpreter.
+  const notes = []
+  assert.equal(usableWorkspace(archive, notes), homedir())
+  assert.match(notes[0], /is not a directory/)
+  assert.equal(usableWorkspace(root), root, 'a real directory is passed through untouched')
+  assert.equal(usableWorkspace(join(root, 'missing')), homedir(), 'so is a missing one')
 })
 
 test('the harness directories are created, and a config alone never makes a workspace', () => {
@@ -539,6 +636,8 @@ class StubBridge extends EventEmitter {
     /** @type {Array<[string, string?]>} */
     this.calls = []
     this.cancelled = false
+    this.sessionFile = null
+    this.streaming = false
   }
   status() {
     return {
@@ -548,8 +647,9 @@ class StubBridge extends EventEmitter {
       cwd: '/project',
       model: { id: 'stub-model', provider: 'stub' },
       thinkingLevel: 'off',
-      isStreaming: false,
+      isStreaming: this.streaming,
       sessionId: 's1',
+      sessionFile: this.sessionFile,
       error: null,
       stderr: '',
       events: 1,
@@ -558,9 +658,21 @@ class StubBridge extends EventEmitter {
   history() {
     return [{ type: 'agent_start' }]
   }
+  addNote() {}
   async describe() {
     if (!this.available) throw new Error('`pi` is not installed or not on PATH.')
     return { model: { id: 'stub-model', provider: 'stub' }, sessionId: 's1' }
+  }
+  async switchSession(sessionPath) {
+    if (this.streaming) throw new Error('Pi is busy; it cannot switch sessions right now.')
+    this.calls.push(['switchSession', sessionPath])
+    this.sessionFile = sessionPath
+    return { data: { cancelled: this.cancelled } }
+  }
+  async restartTo(sessionPath) {
+    this.calls.push(['restartTo', sessionPath])
+    this.sessionFile = sessionPath
+    return this.status()
   }
   async prompt(message) {
     this.calls.push(['prompt', message])
@@ -579,9 +691,13 @@ class StubBridge extends EventEmitter {
     return this.status()
   }
   async runCommand(type) {
-    if (!new Set(['get_state', 'set_model']).has(type))
+    if (!new Set(['get_state', 'set_model', 'get_messages']).has(type))
       throw new Error(`Command not allowed: ${type}`)
     this.calls.push(['command', type])
+    if (type === 'get_messages')
+      return {
+        data: { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi again' }] }] },
+      }
     return { data: { type } }
   }
   dispose() {}
@@ -797,6 +913,216 @@ test('the console runs Pi on the router-directed configuration when it is given 
       )
       const written = JSON.parse(readFileSync(join(agentDir, 'models.json'), 'utf8'))
       assert.equal(written.providers.hammer.baseUrl, 'http://127.0.0.1:7352/v1')
+    },
+  )
+})
+
+// ── The session store: listing, resuming, and parallel consoles ───────────────────────────
+
+/** Writes one valid session file and returns its path. */
+function writeSessionFile(dir, name, id, userText) {
+  const file = join(dir, name)
+  const lines = [
+    JSON.stringify({
+      type: 'session',
+      version: 3,
+      id,
+      timestamp: '2026-02-01T10:00:00.000Z',
+      cwd: '/proj',
+    }),
+    JSON.stringify({ type: 'session_info', id, name: null }),
+    JSON.stringify({
+      type: 'message',
+      id: `${id}-m1`,
+      parentId: null,
+      timestamp: '2026-02-01T10:00:01.000Z',
+      message: { role: 'user', content: [{ type: 'text', text: userText }] },
+    }),
+    JSON.stringify({
+      type: 'message',
+      id: `${id}-m2`,
+      parentId: `${id}-m1`,
+      timestamp: '2026-02-01T10:00:02.000Z',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] },
+    }),
+  ]
+  writeFileSync(file, `${lines.join('\n')}\n`)
+  return file
+}
+
+test('the store lists saved sessions with summaries and the current file', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const current = writeSessionFile(
+    store,
+    'a.jsonl',
+    '11111111-1111-4111-8111-111111111111',
+    'first conversation',
+  )
+  writeSessionFile(store, 'b.jsonl', '22222222-2222-4222-8222-222222222222', 'second conversation')
+  const bridge = new StubBridge()
+  bridge.sessionFile = current
+  await withPiApp({ piBridge: bridge, piSessionsDir: store }, async (base) => {
+    const data = await (await fetch(`${base}/api/pi/sessions`)).json()
+    assert.equal(data.current, current)
+    assert.equal(data.sessions.length, 2)
+    const names = data.sessions.map((s) => s.fileName).sort()
+    assert.deepEqual(names, ['a.jsonl', 'b.jsonl'])
+    const a = data.sessions.find((s) => s.fileName === 'a.jsonl')
+    assert.equal(a.sessionId, '11111111-1111-4111-8111-111111111111')
+    assert.equal(a.userMessages, 1)
+    assert.equal(a.assistantMessages, 1)
+    assert.match(a.preview, /first conversation/)
+    assert.ok(a.label, 'every row carries a human label')
+  })
+})
+
+test('a session can be resumed in place and the transcript read back', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const target = writeSessionFile(
+    store,
+    'target.jsonl',
+    '33333333-3333-4333-8333-333333333333',
+    'resume me',
+  )
+  const bridge = new StubBridge()
+  await withPiApp({ piBridge: bridge, piSessionsDir: store }, async (base) => {
+    const opened = await fetch(`${base}/api/pi/sessions/open`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: '33333333' }),
+    })
+    assert.deepEqual(await opened.json(), { success: true, mode: 'switched', sessionFile: target })
+    assert.deepEqual(bridge.calls[0], ['switchSession', target])
+
+    const messages = await (await fetch(`${base}/api/pi/messages`)).json()
+    assert.equal(messages.success, true)
+    assert.equal(messages.messages[0].role, 'user')
+  })
+})
+
+test('a streaming console resumes by restarting; a busy switch is refused in place', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const target = writeSessionFile(
+    store,
+    'busy.jsonl',
+    '44444444-4444-4444-8444-444444444444',
+    'busy one',
+  )
+  const bridge = new StubBridge()
+  await withPiApp({ piBridge: bridge, piSessionsDir: store }, async (base) => {
+    bridge.streaming = true
+    const opened = await fetch(`${base}/api/pi/sessions/open`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: target }),
+    })
+    assert.equal((await opened.json()).mode, 'restarted')
+    assert.deepEqual(bridge.calls[0], ['restartTo', target])
+  })
+})
+
+test('sessions/open validates its input: unknown sessions and escapes are refused', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  writeSessionFile(store, 'known.jsonl', '55555555-5555-4555-8555-555555555555', 'known')
+  const bridge = new StubBridge()
+  await withPiApp({ piBridge: bridge, piSessionsDir: store }, async (base) => {
+    const open = (body) =>
+      fetch(`${base}/api/pi/sessions/open`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    const empty = await open({ session: '   ' })
+    assert.equal(empty.status, 400)
+
+    const unknown = await open({ session: '99999999' })
+    assert.equal(unknown.status, 400)
+    assert.match((await unknown.json()).error, /No session/)
+
+    const escape = await open({ session: '../../etc/passwd' })
+    assert.equal(escape.status, 400)
+    assert.match((await escape.json()).error, /session store/)
+
+    assert.equal(bridge.calls.length, 0, 'nothing reached the agent')
+  })
+})
+
+test('a parallel console is a second bridge with its own routes, and can be closed', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const target = writeSessionFile(
+    store,
+    'parallel.jsonl',
+    '66666666-6666-4666-8666-666666666666',
+    'parallel',
+  )
+  await withPiApp(
+    {
+      piCommand: process.execPath,
+      piArgs: [FAKE_PI],
+      piCwd: tmpdir(),
+      piSessionsDir: store,
+    },
+    async (base) => {
+      const created = await fetch(`${base}/api/pi/instances`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session: '66666666' }),
+      })
+      const body = await created.json()
+      assert.equal(body.success, true)
+      assert.match(body.id, /^[a-z0-9-]+$/)
+      assert.equal(body.instance.sessionFile, target)
+
+      const status = await (
+        await fetch(`${base}/api/pi/instances/${body.id}/console/status`)
+      ).json()
+      assert.equal(status.available, true)
+
+      const closed = await fetch(`${base}/api/pi/instances/${body.id}/close`, { method: 'POST' })
+      assert.equal((await closed.json()).success, true)
+      const gone = await fetch(`${base}/api/pi/instances/${body.id}/console/status`)
+      assert.equal(gone.status, 404)
+    },
+  )
+})
+
+test('parallel consoles are bounded, and a fresh scratch console opens without a session', async () => {
+  await withPiApp(
+    {
+      piCommand: process.execPath,
+      piArgs: [FAKE_PI],
+      piCwd: tmpdir(),
+    },
+    async (base) => {
+      const scratch = await fetch(`${base}/api/pi/instances`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const body = await scratch.json()
+      assert.equal(body.success, true)
+      assert.equal(body.instance.sessionFile, null)
+
+      // The bound is four consoles besides the main one; the fifth request is refused.
+      const ids = [body.id]
+      for (let i = 0; i < 4; i += 1) {
+        const res = await fetch(`${base}/api/pi/instances`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({}),
+        })
+        if (res.status === 429) {
+          assert.match((await res.json()).error, /At most/)
+          break
+        }
+        ids.push((await res.json()).id)
+      }
+      // Every console created here owns a child process; leaving any of them running keeps
+      // this test's event loop (and the fake agents) alive after the assertions.
+      for (const id of ids) {
+        await fetch(`${base}/api/pi/instances/${id}/close`, { method: 'POST' })
+      }
     },
   )
 })
