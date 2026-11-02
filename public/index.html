@@ -85,9 +85,11 @@
 
         <div class="hx-route-strip" id="hx-route-strip">
           <span class="hx-route-model"><i class="dot" aria-hidden="true"></i><span id="hx-model-name">waiting for the router…</span></span>
-          <span>via <span id="hx-model-provider">—</span></span>
-          <span class="hx-route-badge" id="hx-routed-badge">routed by Hammer</span>
-          <span>thinking <b id="hx-thinking-level">off</b></span>
+          <span id="hx-model-via">via <span id="hx-model-provider">—</span></span>
+          <span class="hx-route-badge" id="hx-routed-badge" hidden></span>
+          <!-- The level the agent asks for. Hammer translates it into whichever field the model
+               that answers actually understands, and drops it for models that cannot think. -->
+          <button class="hx-route-link hx-thinking" id="hx-thinking" type="button" title="Thinking effort — click to cycle. Sent in the form the chosen model understands.">thinking <b id="hx-thinking-level">off</b></button>
           <button class="hx-route-link" type="button" onclick="harnessShow('router')">Router telemetry →</button>
         </div>
 
@@ -99,9 +101,19 @@
         <form class="hx-composer" id="hx-composer">
           <textarea id="hx-input" class="hx-input" rows="2" spellcheck="false"
             placeholder="Ask Hammer to build, fix or explain something in this workspace…  (/new for a fresh session, /stop to halt a turn)"></textarea>
+          <div class="hx-attachments" id="hx-attachments" hidden></div>
+          <input type="file" id="hx-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+          <div class="hx-queue" id="hx-queue" hidden>
+            <span class="hx-queue-label">Queued</span>
+            <ul class="hx-queue-list" id="hx-queue-list"></ul>
+          </div>
           <div class="hx-composer-bar">
             <span class="hx-hint" id="hx-hint">Enter sends · Shift+Enter for a newline · Ctrl/Cmd+K for commands</span>
             <div class="hx-composer-btns">
+              <button class="hx-btn hx-icon" id="hx-attach" type="button" title="Attach images" aria-label="Attach images">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.5 3.5 5 9a2.1 2.1 0 0 0 3 3l5.6-5.6a3.5 3.5 0 0 0-5-5L2.5 7.5a5 5 0 0 0 7 7l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              </button>
+              <button class="hx-btn hx-queue-mode" id="hx-queue-mode" type="button" data-mode="steer">Queue: steer</button>
               <button class="hx-btn" id="hx-stop" type="button" disabled>Stop</button>
               <button class="hx-btn hx-primary" id="hx-send" type="submit">Send</button>
             </div>
@@ -227,7 +239,7 @@
               onmouseout="this.style.background='none';this.style.color='var(--text-muted)'">&#x2715; Reset
               sort</button>
             <button id="test-all-btn" onclick="testAll()"
-              style="border:none; background:var(--success); color:#1a0a00; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
+              style="border:none; background:var(--success); color:#ffffff; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
               onmouseover="this.style.opacity='0.85'"
               onmouseout="this.style.opacity='1'">↻ Test All</button>
           </div>

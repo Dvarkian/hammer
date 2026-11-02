@@ -383,6 +383,9 @@ if (!app.requestSingleInstanceLock()) {
   app.on('activate', showWindow)
   app.on('before-quit', () => {
     quitting = true
+    // The agent is deliberately not stopped here: quitting to relaunch a new build is exactly
+    // the restart a running turn has to survive. Its keeper stops it when no router has been
+    // attached for its idle window, which is what keeps a closed app from leaving one behind.
     if (routerServer) {
       try {
         routerServer.close()

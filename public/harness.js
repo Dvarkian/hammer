@@ -23,20 +23,270 @@
   const MAX_TOOL = 24000
 
   const state = {
+    /** Every conversation this page holds open, by console id. `main` always exists. */
+    consoles: new Map(),
+    /** Which of them is on screen. `null` until init binds the main console. */
+    activeId: null,
+    /** Conversations reported as working from /api/pi/instances, including other tabs'. */
+    runningSessions: new Set(),
     items: [],
     mounted: 0,
     phase: 'idle',
     running: false,
-    sending: false,
     status: null,
     usage: null,
+    /** Images staged for the next prompt: { name, mimeType, dataUrl, data }. */
+    attachments: [],
     sessions: [],
     sessionQuery: '',
-    source: null,
+    /** The session file the rename dialog is editing, or null while it is closed. */
+    /** Whether the next render should select the rename input's text (edit just opened). */
+    renamingSelect: false,
+    /** Where the caret was, so a re-render does not throw it to the end. */
+    renamingCaret: 0,
+    /** The session file whose rail row is being renamed in place, or null. */
+    renamingFile: null,
+    /** Value typed so far, so a re-render (a status frame) keeps the edit. */
+    renamingValue: '',
     patchQueued: false,
     notesSeen: new Set(),
     tools: new Map(),
     view: 'agent',
+    /** What Send does to a busy conversation: `steer` mid-run, or `followUp` next turn. */
+    queueMode: localStorage.getItem('hammer.hx.queueMode') === 'followUp' ? 'followUp' : 'steer',
+  }
+
+  // ── Conversations ───────────────────────────────────────────────────────────────────
+  //
+  // A conversation is a console on the server: the main one at `/api/pi`, or a parallel one at
+  // `/api/pi/instances/:id/console`. Each keeps its own event stream open for the life of this
+  // page, so a turn that is not on screen keeps running — and keeps its spinner in the sidebar
+  // turning — instead of being torn down when the reader looks at another conversation. `state`
+  // mirrors the console on screen, which is why every renderer below is still written against
+  // one conversation.
+
+  function createConsole({ id, instanceId = null, sessionFile = null }) {
+    const console = {
+      id,
+      instanceId,
+      sessionFile,
+      items: [],
+      tools: new Map(),
+      phase: 'idle',
+      running: false,
+      /** A prompt is in flight for *this* conversation; another one's send is its own. */
+      sending: false,
+      /** The hint line belongs to the conversation too — see setHint. */
+      hint: '',
+      hintTone: null,
+      status: null,
+      usage: null,
+      /** Messages pi is holding for this conversation: steering and follow-up, by source. */
+      queuedSteering: [],
+      queuedFollowUp: [],
+      notesSeen: new Set(),
+      source: null,
+      /** True once the transcript came from the session file rather than the replay log. */
+      historyLoaded: false,
+      /** The model `best` resolved to, as the router reported it (see renderRouting). */
+      routedModel: null,
+      createdAt: Date.now(),
+    }
+    state.consoles.set(id, console)
+    return console
+  }
+
+  function active() {
+    return state.consoles.get(state.activeId) || state.consoles.get('main') || null
+  }
+
+  /** Where one console's routes live; the main console has no instance id. */
+  function consoleApi(console, path = '') {
+    return console && console.instanceId
+      ? `${API}/instances/${console.instanceId}/console${path}`
+      : `${API}${path}`
+  }
+
+  /** Points `state` at one console and repaints what it owns. */
+  function activate(console) {
+    if (!console || console.id === state.activeId) return
+    state.activeId = console.id
+    state.items = console.items
+    state.tools = console.tools
+    state.notesSeen = console.notesSeen
+    state.phase = console.phase
+    state.running = console.running
+    state.status = console.status
+    state.usage = console.usage
+    state.mounted = 0
+    setPhase(console.phase, console)
+    setRunning(console.running, console)
+    renderQueue(console)
+    if (console.status) renderRouting(console.status, console)
+    renderUsage(console)
+    syncTranscript({ reset: true }, console)
+    paintHint(console)
+    updateComposer()
+    renderSessions()
+    saveOpenConversations()
+  }
+
+  /** Where the open conversations are remembered between page loads (and restarts). */
+  const OPEN_KEY = 'hammer.hx.open'
+  /** A page restores this many conversations: the server caps parallel consoles at four. */
+  const MAX_RESTORE = 3
+
+  /**
+   * The conversations this page has open, remembered by session file.
+   *
+   * Kept as a set rather than recomputed from the live consoles: a fresh page, or one whose
+   * consoles are still starting, legitimately has no open instance yet — and writing that
+   * emptiness into storage is exactly how the saved tabs were being lost. Only an explicit
+   * close removes a file.
+   */
+  const openFiles = new Map()
+  try {
+    const stored = JSON.parse(localStorage.getItem(OPEN_KEY) || '[]')
+    if (Array.isArray(stored)) {
+      for (const entry of stored) {
+        // Older pages saved bare paths; a path is simply a tab that was not running.
+        if (typeof entry === 'string' && entry) openFiles.set(entry, false)
+        else if (entry && typeof entry.file === 'string' && entry.file) {
+          openFiles.set(entry.file, entry.running === true)
+        }
+      }
+    }
+  } catch {
+    // A browser without storage simply does not restore anything.
+  }
+
+  /** Writes the remembered conversations, the one on screen last, capped for reopening. */
+  function saveOpenConversations() {
+    try {
+      // A console on this page is the truth about whether its turn is still running; the flag
+      // is what a later page uses to decide which tabs to pick back up.
+      for (const ctx of state.consoles.values()) {
+        if (ctx.instanceId && ctx.sessionFile && openFiles.has(ctx.sessionFile)) {
+          openFiles.set(ctx.sessionFile, Boolean(ctx.running))
+        }
+      }
+      const entries = [...openFiles].map(([file, running]) => ({ file, running }))
+      // The conversation on screen goes last, so restoring in order leaves it on screen again.
+      // It is only reordered, never required: looking at the main console must not forget the
+      // parallel tabs still open beside it.
+      const activeFile = active()?.sessionFile
+      const ordered =
+        activeFile && openFiles.has(activeFile)
+          ? [
+              ...entries.filter((entry) => entry.file !== activeFile),
+              ...entries.filter((entry) => entry.file === activeFile),
+            ]
+          : entries
+      localStorage.setItem(OPEN_KEY, JSON.stringify(ordered.slice(-MAX_RESTORE)))
+    } catch {
+      // A browser without storage simply does not restore anything.
+    }
+  }
+
+  /** Notes that a conversation is open, so the next page (or restart) reopens it. */
+  function rememberOpenFile(file, running = false) {
+    if (!file || typeof file !== 'string') return
+    if (!openFiles.has(file)) {
+      openFiles.set(file, Boolean(running))
+      while (openFiles.size > MAX_RESTORE) openFiles.delete(openFiles.keys().next().value)
+    }
+    saveOpenConversations()
+  }
+
+  /** What a resumed tab is sent: the shortest instruction that means "carry on". */
+  const RESUME_PROMPT = 'Continue'
+
+  /** Sends one message to a console without going through the composer. */
+  async function promptConsole(ctx, text) {
+    const res = await fetch(consoleApi(ctx, '/prompt'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `The agent rejected the prompt (${res.status}).`)
+    return data
+  }
+
+  /**
+   * Picks a conversation back up.
+   *
+   * A tab that was mid-turn when Hammer closed comes back holding an interrupted conversation.
+   * Sending it "Continue" is what makes reopening the app resume the work instead of leaving
+   * every tab stopped until someone types into it. The flag is cleared first, so a conversation
+   * is only ever sent it once per interruption.
+   */
+  async function resumeRunning(ctx) {
+    if (!ctx || !ctx.sessionFile || ctx.running) return
+    openFiles.set(ctx.sessionFile, false)
+    saveOpenConversations()
+    try {
+      await promptConsole(ctx, RESUME_PROMPT)
+    } catch (err) {
+      // That conversation's hint, not the page's: it was resumed in the background.
+      setHint(`Could not resume that conversation: ${err?.message || err}`, 'error', ctx)
+    }
+  }
+
+  /** Reopens the conversations the last page had, each rebuilt from its own session file. */
+  let restoringTabs = false
+
+  async function restoreOpenConversations() {
+    // One restore at a time, and one console per file: the same conversation opened twice would
+    // put two agents on one session file, and they would interleave writes into its transcript.
+    if (restoringTabs) return
+    restoringTabs = true
+    const started = new Set()
+    const mainFile = state.consoles.get('main')?.sessionFile
+    for (const [file, wasRunning] of [...openFiles]) {
+      if (file === mainFile || started.has(file)) continue
+      started.add(file)
+      if ([...state.consoles.values()].some((ctx) => ctx.sessionFile === file)) continue
+      try {
+        const ctx = await openInstance(file)
+        if (wasRunning) await resumeRunning(ctx)
+      } catch (err) {
+        // Gone from the store: forget it rather than retrying on every load. One that merely
+        // failed to start this time keeps its slot for the next page.
+        if (/unknown|not found|no such|missing/i.test(err?.message || '')) {
+          openFiles.delete(file)
+          saveOpenConversations()
+        }
+      }
+    }
+    restoringTabs = false
+    saveOpenConversations()
+  }
+
+  /**
+   * Rebuilds a conversation from its session file, once.
+   *
+   * The event stream only replays the last few hundred records the router happens to hold, and
+   * after a restart that log starts empty — which is why a tab used to come back blank while
+   * its JSONL on disk still held the whole conversation. The file is the authoritative
+   * transcript, so an idle console is rebuilt from it before the stream is even opened.
+   */
+  async function restoreHistory(ctx) {
+    if (!ctx || !ctx.sessionFile || ctx.historyLoaded) return
+    try {
+      await loadMessages(ctx)
+    } catch {
+      // The agent may still be starting; the stream will fill the transcript instead.
+    }
+  }
+
+  /** Whether a conversation is working, on this page or in another tab. */
+  function isSessionRunning(file) {
+    if (!file) return false
+    for (const console of state.consoles.values()) {
+      if (console.running && console.sessionFile === file) return true
+    }
+    return state.runningSessions.has(file)
   }
 
   // ── Small helpers ───────────────────────────────────────────────────────────────────
@@ -59,31 +309,227 @@
   }
 
   /**
-   * The agent answers in Markdown, and a harness is where people read code. Fenced blocks and
-   * inline code get real elements; everything else stays text, so nothing the model writes can
-   * become markup on this page.
+   * Inline Markdown. The text arrives raw and is escaped exactly once, first — so a
+   * `<script>` in model output stays text, and the only tags written after that are the
+   * renderer's own. Only the constructs a model actually answers with: code, strong,
+   * emphasis, and links — and links only when they are http(s), never `javascript:` or
+   * anything else a href could carry.
+   */
+  function renderInline(raw) {
+    const escaped = escapeHtml(raw)
+    return escaped
+      .replace(/`([^`\n]+)`/g, '<code class="hx-inline-code">$1</code>')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^\w*])\*([^*\n]+)\*(?![\w*])/g, '$1<em>$2</em>')
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, (_m, label, href) => {
+        const safe = href.replace(/"/g, '%22')
+        return `<a class="hx-link" href="${safe}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      })
+  }
+
+  /** An alignment cell of a table's divider row: `---`, `:---`, `---:` or `:---:`. */
+  const TABLE_DIVIDER = /^:?-{3,}:?$/
+
+  /**
+   * One block-level chunk of Markdown (a run of lines with no fenced code in it). Line-based,
+   * because the constructs that matter here — headings, tables, lists — are line grammar.
+   * Every block is escaped before its inline pass, so nothing the model writes becomes markup.
+   */
+  function renderBlocks(chunk) {
+    const lines = chunk.split('\n')
+    /** @type {string[]} */
+    const out = []
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]
+      const trimmed = line.trim()
+
+      // A blank line closes whatever paragraph was open; nothing else to emit.
+      if (!trimmed) {
+        i += 1
+        continue
+      }
+
+      // Headings: `#` through `######`.
+      const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed)
+      if (heading) {
+        const level = heading[1].length
+        out.push(`<h${level} class="hx-h${level}">${renderInline(heading[2])}</h${level}>`)
+        i += 1
+        continue
+      }
+
+      // A horizontal rule is three or more of -, * or _ alone on a line.
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        out.push('<hr class="hx-hr">')
+        i += 1
+        continue
+      }
+
+      // Tables: a header row of `|`-separated cells followed by a divider row. The pipes at
+      // the ends are optional, and `\|` inside a cell is a literal pipe, not a boundary.
+      if (trimmed.includes('|')) {
+        const cells = (row) =>
+          row
+            .replace(/^\s*\|/, '')
+            .replace(/\|\s*$/, '')
+            .split(/(?<!\\)\|/)
+            .map((cell) => cell.trim().replace(/\\\|/g, '|'))
+        const divider = cells(lines[i + 1] || '')
+        if (divider.length && divider.every((cell) => TABLE_DIVIDER.test(cell))) {
+          const header = cells(trimmed)
+          const aligns = divider.map((cell) =>
+            cell.startsWith(':') && cell.endsWith(':')
+              ? ' center'
+              : cell.endsWith(':')
+                ? ' right'
+                : cell.startsWith(':')
+                  ? ' left'
+                  : '',
+          )
+          const row = (values, tag, align) =>
+            `<tr>${values
+              .map(
+                (value, index) =>
+                  `<${tag}${align[index] ? ` style="text-align:${align[index].trim()}"` : ''}>${renderInline(value)}</${tag}>`,
+              )
+              .join('')}</tr>`
+          /** @type {string[][]} */
+          const body = []
+          i += 2
+          while (i < lines.length && lines[i].trim().includes('|')) {
+            body.push(cells(lines[i]))
+            i += 1
+          }
+          out.push(
+            `<div class="hx-table-wrap"><table class="hx-table"><thead>${row(header, 'th', aligns)}</thead><tbody>${body
+              .map((values) => row(values, 'td', aligns))
+              .join('')}</tbody></table></div>`,
+          )
+          continue
+        }
+      }
+
+      // Blockquotes: consecutive `>` lines form one, quoted as a group.
+      if (trimmed.startsWith('>')) {
+        /** @type {string[]} */
+        const quoted = []
+        while (i < lines.length && lines[i].trim().startsWith('>')) {
+          quoted.push(lines[i].trim().replace(/^>\s?/, ''))
+          i += 1
+        }
+        out.push(`<blockquote class="hx-quote">${renderBlocks(quoted.join('\n'))}</blockquote>`)
+        continue
+      }
+
+      // Lists: a run of `- `, `* ` or `1. ` lines. Ordered and unordered do not mix, but
+      // consecutive lines of the same kind are one list; continuation lines (indented) and
+      // nested markers are flattened into the item above rather than dropped.
+      const bullet = /^\s*[-*]\s+(.*)$/
+      const ordered = /^\s*\d+[.)]\s+(.*)$/
+      const open = bullet.test(trimmed)
+        ? 'ul'
+        : ordered.test(trimmed)
+          ? 'ol'
+          : null
+      if (open) {
+        const marker = open === 'ul' ? bullet : ordered
+        /** @type {string[]} */
+        const items = []
+        while (i < lines.length) {
+          const current = lines[i]
+          const match = marker.exec(current.trim())
+          if (match) {
+            items.push(match[1])
+            i += 1
+          } else if (items.length && /^\s{2,}\S/.test(current)) {
+            // A continuation line belongs to the item it follows.
+            items[items.length - 1] += ` ${current.trim()}`
+            i += 1
+          } else if (items.length && !current.trim() && i + 1 < lines.length && marker.test((lines[i + 1] || '').trim())) {
+            // One blank line between items keeps the list open.
+            i += 1
+          } else {
+            break
+          }
+        }
+        out.push(
+          `<${open} class="hx-list">${items
+            .map((item) => `<li>${renderInline(item)}</li>`)
+            .join('')}</${open}>`,
+        )
+        continue
+      }
+
+      // Anything else is a paragraph: gather lines until a blank one or a construct that
+      // starts another block, so a wrapped sentence stays one paragraph.
+      /** @type {string[]} */
+      const paragraph = [trimmed]
+      i += 1
+      while (i < lines.length) {
+        const current = lines[i].trim()
+        if (
+          !current ||
+          /^(#{1,6})\s/.test(current) ||
+          /^(-{3,}|\*{3,}|_{3,})$/.test(current) ||
+          current.startsWith('>') ||
+          bullet.test(current) ||
+          ordered.test(current)
+        )
+          break
+        paragraph.push(current)
+        i += 1
+      }
+      out.push(`<p class="hx-p">${renderInline(paragraph.join(' '))}</p>`)
+    }
+    return out.join('')
+  }
+
+  /**
+   * The agent answers in Markdown, and a harness is where people read it. Headings, tables,
+   * lists, quotes and fenced code get real elements. Block grammar is matched on the *raw*
+   * lines (a `>` quote marker or a `|` table pipe is unrecognizable once escaped); the only
+   * place text becomes safe is renderInline, which escapes each leaf exactly once before any
+   * tag is written — so nothing the model writes can become markup on this page. Fenced code
+   * is the one region escaped on its own: it has no inline rules at all.
    */
   function renderText(text) {
-    const escaped = escapeHtml(clip(text, MAX_TEXT))
-    return escaped
+    return clip(text, MAX_TEXT)
       .split(/```/)
       .map((chunk, index) => {
         if (index % 2 === 1) {
-          return `<pre class="hx-code">${chunk.replace(/^\n/, '')}</pre>`
+          // The fence's info string (the language) is not part of the code; the body starts
+          // after the first newline, and one trailing newline closes the fence.
+          const nl = chunk.indexOf('\n')
+          const body = nl >= 0 ? chunk.slice(nl + 1) : ''
+          return `<pre class="hx-code">${escapeHtml(body.replace(/\n$/, ''))}</pre>`
         }
-        return chunk
-          .replace(/`([^`\n]+)`/g, '<code class="hx-inline-code">$1</code>')
-          .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-          .replace(/\n/g, '<br>')
+        return renderBlocks(chunk)
       })
       .join('')
   }
 
-  function setHint(text, tone) {
+  /**
+   * The hint line belongs to a conversation, not to the page.
+   *
+   * Two conversations can be sending at once, and "Sending…" left behind by one must not sit
+   * over another one's working composer — which is exactly what a page-wide hint did when the
+   * request outlived the tab that started it.
+   */
+  function setHint(text, tone, ctx = active()) {
+    if (ctx) {
+      ctx.hint = text || ''
+      ctx.hintTone = tone || null
+    }
+    paintHint(ctx)
+  }
+
+  /** Draws one console's hint, when that console is the one on screen. */
+  function paintHint(ctx = active()) {
     const el = $('hx-hint')
-    if (!el) return
-    el.textContent = text || ''
-    if (tone) el.dataset.tone = tone
+    if (!el || (ctx && ctx !== active())) return
+    el.textContent = (ctx && ctx.hint) || ''
+    if (ctx && ctx.hintTone) el.dataset.tone = ctx.hintTone
     else delete el.dataset.tone
   }
 
@@ -127,8 +573,7 @@
         </g>
       </svg>
       <h3>What should Hammer build?</h3>
-      <p>This agent edits the workspace, runs commands and reads files. Every call it makes is
-         routed by Hammer, so the model behind it changes with the router's ranking.</p>
+      <p>This agent edits the workspace, runs commands and reads files.</p>
       <div class="hx-suggestions">
         <button class="hx-suggestion" data-prompt="Summarise this repository: what it does, how it is laid out, and where the risky parts are.">Summarise this repo</button>
         <button class="hx-suggestion" data-prompt="Run the test suite and fix whatever fails.">Run tests and fix failures</button>
@@ -216,7 +661,13 @@
     return el.scrollHeight - el.scrollTop - el.clientHeight < 80
   }
 
-  function syncTranscript({ reset = false } = {}) {
+  /**
+   * Paints one conversation's transcript. `ctx` defaults to the console on screen; a background
+   * console's events are folded into its own buffers and drawn when it is activated — painting
+   * them here would put two conversations in one log.
+   */
+  function syncTranscript({ reset = false } = {}, ctx = active()) {
+    if (ctx !== active()) return
     const transcript = $('hx-transcript')
     if (!transcript) return
     if (reset) {
@@ -245,7 +696,8 @@
   }
 
   /** A streamed desktop turn is one growing element, not a rebuilt transcript. */
-  function patchStreamingItem() {
+  function patchStreamingItem(ctx = active()) {
+    if (ctx !== active()) return
     if (state.patchQueued) return
     state.patchQueued = true
     requestAnimationFrame(() => {
@@ -262,15 +714,16 @@
     })
   }
 
-  function lastAssistant() {
-    for (let i = state.items.length - 1; i >= 0; i -= 1) {
-      if (state.items[i].kind === 'assistant') return state.items[i]
+  function lastAssistant(ctx = active()) {
+    if (!ctx) return null
+    for (let i = ctx.items.length - 1; i >= 0; i -= 1) {
+      if (ctx.items[i].kind === 'assistant') return ctx.items[i]
     }
     return null
   }
 
-  function appendDelta(kind, contentIndex, delta) {
-    const item = lastAssistant()
+  function appendDelta(kind, contentIndex, delta, ctx = active()) {
+    const item = lastAssistant(ctx)
     if (!item) return
     let block = item.blocks.find(
       (candidate) => candidate.kind === kind && candidate.index === contentIndex,
@@ -283,34 +736,44 @@
       item.blocks.sort((a, b) => a.index - b.index)
     }
     block.text = clip(block.text + (delta || ''), MAX_TEXT)
-    patchStreamingItem()
+    patchStreamingItem(ctx)
   }
 
-  function ensureTool(id, name) {
+  function ensureTool(id, name, ctx = active()) {
     const key = String(id || name || 'tool')
-    let item = state.tools.get(key)
+    let item = ctx.tools.get(key)
     if (item) return item
     item = { kind: 'tool', id: key, name: name || 'tool', args: null, status: 'preparing', result: '', partial: '' }
-    state.tools.set(key, item)
-    state.items.push(item)
-    syncTranscript()
+    ctx.tools.set(key, item)
+    ctx.items.push(item)
+    syncTranscript({}, ctx)
     return item
   }
 
   function contentParts(content) {
+    if (typeof content === 'string') {
+      return content ? [{ kind: 'text', index: 0, text: clip(content, MAX_TEXT) }] : []
+    }
     if (!Array.isArray(content)) return []
     const blocks = []
     content.forEach((part, index) => {
       if (!part || typeof part !== 'object') return
-      const kind =
-        part.type === 'thinking' || part.type === 'reasoning'
-          ? 'thinking'
-          : part.type === 'text'
-            ? 'text'
-            : null
-      if (kind && typeof part.text === 'string' && part.text) {
-        blocks.push({ kind, index, text: clip(part.text, MAX_TEXT) })
-      }
+      // Pi keeps reasoning in `thinking` (with a signature) and prose in `text`. Reading only
+      // `text` dropped every reasoning-only turn, which is most of them, and left a bubble with
+      // nothing in it — the "…" a resumed transcript was full of. A part with neither is a tool
+      // call, which is rendered as its own row from the tool result.
+      const thinking = part.type === 'thinking' || part.type === 'reasoning'
+      const text = thinking
+        ? typeof part.thinking === 'string'
+          ? part.thinking
+          : typeof part.text === 'string'
+            ? part.text
+            : ''
+        : typeof part.text === 'string'
+          ? part.text
+          : ''
+      const kind = thinking ? 'thinking' : text ? 'text' : null
+      if (kind && text) blocks.push({ kind, index, text: clip(text, MAX_TEXT) })
     })
     return blocks
   }
@@ -343,90 +806,93 @@
    * same ones the router's own console applies, because a second interpretation of the same
    * stream would show a different conversation than the one the agent actually had.
    */
-  function applyRecord(record) {
-    if (!record || typeof record !== 'object') return
+  function applyRecord(record, ctx = active()) {
+    if (!record || typeof record !== 'object' || !ctx) return
     switch (record.type) {
       case 'agent_start':
-        setRunning(true)
+        setRunning(true, ctx)
         break
       case 'agent_settled':
-        setRunning(false)
+        setRunning(false, ctx)
+        break
+      case 'queue_update':
+        applyQueue(record.steering, record.followUp, ctx)
         break
       case 'message_start': {
         const message = record.message || {}
         if (message.role === 'user') {
-          state.items.push({ kind: 'user', text: textFromBlocks(message.content) })
-          syncTranscript()
+          ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
+          syncTranscript({}, ctx)
         } else if (message.role === 'assistant') {
-          state.items.push({ kind: 'assistant', blocks: [] })
-          syncTranscript()
+          ctx.items.push({ kind: 'assistant', blocks: [] })
+          syncTranscript({}, ctx)
         }
         break
       }
       case 'message_update': {
         const update = record.assistantMessageEvent || {}
-        if (update.type === 'text_delta') appendDelta('text', update.contentIndex, update.delta)
+        if (update.type === 'text_delta') appendDelta('text', update.contentIndex, update.delta, ctx)
         else if (update.type === 'thinking_delta')
-          appendDelta('thinking', update.contentIndex, update.delta)
-        else if (update.type === 'toolcall_start') ensureTool(update.id, update.toolName)
+          appendDelta('thinking', update.contentIndex, update.delta, ctx)
+        else if (update.type === 'toolcall_start') ensureTool(update.id, update.toolName, ctx)
         else if (update.type === 'toolcall_end') {
           const call = update.toolCall || {}
-          const item = ensureTool(call.id || update.id, call.name || update.toolName)
+          const item = ensureTool(call.id || update.id, call.name || update.toolName, ctx)
           if (call.arguments) item.args = call.arguments
-          syncTranscript({ reset: true })
+          syncTranscript({ reset: true }, ctx)
         }
         break
       }
       case 'message_end': {
         const message = record.message || {}
         if (message.role === 'assistant') {
-          const item = lastAssistant()
+          const item = lastAssistant(ctx)
           if (item) {
             const streamed = item.blocks.some((block) => block.text)
             if (!streamed) item.blocks = contentParts(message.content)
             if (!item.blocks.length && item.node) {
               // A turn that produced nothing leaves no empty bubble; the notice explains it.
-              state.items.splice(state.items.indexOf(item), 1)
-              syncTranscript({ reset: true })
+              ctx.items.splice(ctx.items.indexOf(item), 1)
+              syncTranscript({ reset: true }, ctx)
             } else {
-              syncTranscript({ reset: true })
+              syncTranscript({ reset: true }, ctx)
             }
           }
           const failure =
             message.errorMessage ||
             (message.stopReason === 'error' ? 'The model call failed.' : '')
           if (failure) {
-            state.items.push({
+            ctx.items.push({
               kind: 'notice',
               tone: 'error',
               text: String(failure).replace(/\s+/g, ' ').trim().slice(0, 800),
             })
-            syncTranscript()
+            syncTranscript({}, ctx)
           }
         }
         break
       }
       case 'tool_execution_start': {
-        const item = ensureTool(record.toolCallId, record.toolName)
+        const item = ensureTool(record.toolCallId, record.toolName, ctx)
         if (record.args) item.args = record.args
         item.status = 'running'
-        syncTranscript()
+        syncTranscript({}, ctx)
         break
       }
       case 'tool_execution_update': {
-        const item = ensureTool(record.toolCallId, record.toolName)
+        const item = ensureTool(record.toolCallId, record.toolName, ctx)
         item.partial = clip(resultText(record.partialResult), MAX_TOOL)
         item.status = 'running'
-        syncTranscript()
+        syncTranscript({}, ctx)
         break
       }
       case 'tool_execution_end': {
-        const item = ensureTool(record.toolCallId, record.toolName)
+        const item = ensureTool(record.toolCallId, record.toolName, ctx)
         item.status = record.isError ? 'error' : record.isError === false ? 'ok' : 'ok'
         item.result = clip(resultText(record.result), MAX_TOOL)
         item.partial = ''
         if (record.durationMs != null) item.durationMs = record.durationMs
-        syncTranscript()
+        syncTranscript({}, ctx)
         break
       }
       case 'turn_end':
@@ -439,36 +905,186 @@
 
   // ── Status and routing ──────────────────────────────────────────────────────────────
 
-  function setRunning(running) {
-    state.running = Boolean(running)
-    updateComposer()
+  // ── Thinking effort ─────────────────────────────────────────────────────────────────
+
+  /** The levels the pill cycles, quietest first. `minimal` is left to clients that can spell it. */
+  const THINKING_CYCLE = ['off', 'low', 'medium', 'high']
+
+  /**
+   * Asks the agent for a different thinking level. The agent declares that it can send one, and
+   * the router translates it per provider and per model — a level set here is `high` on a
+   * reasoning model and simply absent on one that cannot think, never an error either way.
+   */
+  async function cycleThinking() {
+    const current = String($('hx-thinking-level')?.textContent || 'off')
+      .trim()
+      .toLowerCase()
+    const index = THINKING_CYCLE.indexOf(current)
+    const level = THINKING_CYCLE[(index + 1) % THINKING_CYCLE.length]
+    const ctx = active()
+    try {
+      const res = await fetch(consoleApi(ctx, '/command'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'set_thinking_level', args: { level } }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || `Could not set the thinking level (${res.status}).`)
+      }
+      const el = $('hx-thinking-level')
+      if (el) el.textContent = level
+      setHint(
+        level === 'off'
+          ? 'Thinking off — the next turn asks for no extra reasoning.'
+          : `Thinking ${level} — the router sends it in the form the chosen model understands.`,
+        'success',
+        ctx,
+      )
+      // The agent's own answer is authoritative: a level it clamps is a level worth showing.
+      await refreshStatus(ctx)
+    } catch (err) {
+      setHint(err?.message || 'Could not change the thinking level.', 'error', ctx)
+    }
   }
 
-  function setPhase(phase) {
-    state.phase = phase || 'idle'
+  /**
+   * One console's turn state. The sidebar is drawn from every console, not only this one, so a
+   * background conversation turns its own spinner whether or not it is on screen.
+   */
+  function setRunning(running, ctx = active()) {
+    const changed = ctx.running !== Boolean(running)
+    ctx.running = Boolean(running)
+    if (ctx === active()) {
+      state.running = ctx.running
+      updateComposer()
+    }
+    if (changed) {
+      renderSessions()
+      // A turn is when a session file is written: pi creates it with the first message and
+      // appends through the run. Checking the store on both edges is what puts a conversation
+      // that was just started into the rail without anyone pressing Refresh.
+      refreshSessionsSoon()
+      // A turn that was followed live left the transcript holding only that turn; once it
+      // settles the session file is complete, so the conversation is rebuilt from it in full.
+      if (!ctx.running && !ctx.historyLoaded) void restoreHistory(ctx)
+      // Remembered per tab: a conversation still working when the app closes is the one a
+      // later page resumes, and settling clears the flag again.
+      if (ctx.instanceId && ctx.sessionFile) {
+        openFiles.set(ctx.sessionFile, ctx.running)
+        saveOpenConversations()
+      }
+    }
+  }
+
+  function setPhase(phase, ctx = active()) {
+    ctx.phase = phase || 'idle'
+    if (ctx !== active()) return
+    state.phase = ctx.phase
     const pill = $('hx-phase')
     const label = $('hx-phase-label')
     if (pill) pill.dataset.phase = state.phase
     if (label) label.textContent = state.phase === 'dead' ? 'down' : state.phase
   }
 
-  function renderRouting(data) {
-    if (!data) return
+  /**
+   * Adopts a queue snapshot for one conversation. Pi's `queue_update` event (and the counts
+   * `get_state` carries) are the only authoritative source — a message the agent already
+   * consumed leaves the queue by an event, not by anything this page could infer.
+   */
+  function applyQueue(steering, followUp, ctx = active()) {
+    if (!ctx) return
+    ctx.queuedSteering = Array.isArray(steering) ? steering.map(String) : []
+    ctx.queuedFollowUp = Array.isArray(followUp) ? followUp.map(String) : []
+    renderQueue(ctx)
+  }
+
+  /** Draws the queue strip between transcript and composer, and the button's queued count. */
+  function renderQueue(ctx = active()) {
+    if (!ctx || ctx !== active()) return
+    const wrap = $('hx-queue')
+    const list = $('hx-queue-list')
+    const items = [
+      ...ctx.queuedSteering.map((text) => ({ text, mode: 'steer' })),
+      ...ctx.queuedFollowUp.map((text) => ({ text, mode: 'followUp' })),
+    ]
+    if (wrap) wrap.hidden = items.length === 0
+    if (list) {
+      list.innerHTML = items
+        .map(
+          (item) =>
+            `<li data-queue-mode="${item.mode}"><span>${escapeHtml(clip(item.text, 200))}</span><b>${item.mode === 'followUp' ? 'next turn' : 'this turn'}</b></li>`,
+        )
+        .join('')
+    }
+    const send = $('hx-send')
+    if (send) {
+      const count = items.length
+      send.dataset.queued = count > 0 ? String(count) : ''
+    }
+  }
+
+  /** What the queue button says, and what it will do when clicked. */
+  function renderQueueMode() {
+    const btn = $('hx-queue-mode')
+    if (btn) {
+      const followUp = state.queueMode === 'followUp'
+      btn.dataset.mode = state.queueMode
+      btn.title = followUp
+        ? 'Messages send while the agent works are held until the current turn finishes (click to deliver mid-turn instead)'
+        : 'Messages send while the agent works are delivered mid-turn, after its current tool call (click to hold them for the next turn instead)'
+      btn.textContent = followUp ? 'After turn' : 'Queue: steer'
+    }
+  }
+
+  function setQueueMode(mode) {
+    state.queueMode = mode === 'followUp' ? 'followUp' : 'steer'
+    try {
+      localStorage.setItem('hammer.hx.queueMode', state.queueMode)
+    } catch {
+      // A browser without storage just does not remember the choice.
+    }
+    renderQueueMode()
+    setHint(
+      state.queueMode === 'followUp'
+        ? 'Messages sent while the agent works will be held until the current turn completes.'
+        : 'Messages sent while the agent works will be delivered mid-turn, after its current tool call.',
+      'success',
+    )
+  }
+
+  function renderRouting(data, ctx = active()) {
+    if (!data || ctx !== active()) return
     const model = data.model
     const nameEl = $('hx-model-name')
     const providerEl = $('hx-model-provider')
+    const viaEl = $('hx-model-via')
     const badgeEl = $('hx-routed-badge')
     const thinkingEl = $('hx-thinking-level')
-    if (nameEl) nameEl.textContent = model ? model.name || model.id || 'unknown' : 'no model yet'
+    // Pi calls its alias "Hammer's selected model", which names the mechanism rather than the
+    // model doing the answering. The router's pick — model and the provider offering it — is what
+    // the strip shows; the alias stands in only when nothing is routed at all.
+    if (data.routedModel) ctx.routedModel = data.routedModel
+    const routed = ctx.routedModel
+    if (nameEl) {
+      nameEl.textContent = routed
+        ? [routed.label || routed.modelId, routed.providerName].filter(Boolean).join(' · ')
+        : model
+          ? model.name || model.id || 'unknown'
+          : 'no model yet'
+    }
+    // "GLM 5.3 Flash · NVIDIA" already names the provider, so the separate "via" line goes.
+    if (viaEl) viaEl.hidden = Boolean(routed)
     if (providerEl) providerEl.textContent = model ? model.provider || 'provider' : '—'
     if (badgeEl) {
       // `routed` is the server's answer to "does the agent take its model from this router",
       // which is the whole reason a routing harness has an agent at all.
       const routed = data.routed !== false
-      badgeEl.textContent = routed ? 'routed by Hammer' : 'fixed model'
+      badgeEl.textContent = routed ? '' : 'fixed model'
       badgeEl.classList.toggle('off', !routed)
+      badgeEl.hidden = routed
       badgeEl.title = routed
-        ? 'The agent asks Hammer for `best`; the router picks the model per turn.'
+        ? ''
         : 'A model is named in ~/.hammer.json, so routing is bypassed for the agent.'
     }
     if (thinkingEl) {
@@ -501,11 +1117,12 @@
     if (data.available === false) {
       const strip = $('hx-route-strip')
       if (strip) strip.dataset.unavailable = '1'
-      setHint(`Agent unavailable — ${data.error || 'the pi runtime was not found'}`, 'error')
+      setHint(`Agent unavailable — ${data.error || 'the pi runtime was not found'}`, 'error', console)
     }
   }
 
-  function renderUsage() {
+  function renderUsage(ctx = active()) {
+    if (ctx !== active()) return
     const usage = state.usage
     const el = $('hx-usage-text')
     const bar = $('hx-usage-fill')
@@ -515,10 +1132,34 @@
       if (bar) bar.style.width = '0%'
       return
     }
-    const input = Number(usage.inputTokens ?? usage.input ?? usage.totalInputTokens ?? 0)
-    const output = Number(usage.outputTokens ?? usage.output ?? usage.totalOutputTokens ?? 0)
-    const total = Number(usage.totalTokens ?? usage.total ?? 0) || input + output
-    el.textContent = `${input.toLocaleString()} in · ${output.toLocaleString()} out`
+    // The bridge reports pi's per-message usage split into its real components (input,
+    // output, and the cached halves of the prompt). Older builds sent a single cumulative
+    // `tokens` count with no split; those still render, as one undivided total.
+    const input = Number(usage.inputTokens ?? usage.input ?? 0)
+    const output = Number(usage.outputTokens ?? usage.output ?? 0)
+    const cacheRead = Number(usage.cacheReadTokens ?? usage.cacheRead ?? 0)
+    const cacheWrite = Number(usage.cacheWriteTokens ?? usage.cacheWrite ?? 0)
+    const total =
+      Number(usage.totalTokens ?? usage.tokens) || input + output + cacheRead + cacheWrite
+    if (total <= 0 && !(Number(usage.cost) > 0)) {
+      // A session that has not billed anything yet is a fresh one; say so instead of a
+      // row of zeros that reads like the reporting is broken.
+      el.textContent = 'No tokens reported yet'
+      if (bar) bar.style.width = '0%'
+      return
+    }
+    const parts = []
+    if (total > 0 && input + output + cacheRead + cacheWrite === 0) {
+      // No split available: show the one number we were given.
+      parts.push(`${total.toLocaleString()} tokens`)
+    } else {
+      parts.push(`${input.toLocaleString()} in · ${output.toLocaleString()} out`)
+      const cached = cacheRead + cacheWrite
+      if (cached > 0) parts.push(`${cached.toLocaleString()} cached`)
+    }
+    const cost = Number(usage.cost) || 0
+    if (cost > 0) parts.push(`$${cost.toFixed(cost >= 1 ? 2 : 4)}`)
+    el.textContent = parts.join(' · ')
     if (bar) {
       // A context meter without a declared window is still useful as a magnitude bar; it is
       // labelled as a share of the turn, not of a limit we were not told.
@@ -528,23 +1169,32 @@
     }
   }
 
-  async function refreshStatus() {
+  async function refreshStatus(console = active()) {
+    if (!console) return
     try {
-      const res = await fetch(`${API}/status`)
+      const res = await fetch(consoleApi(console, '/status'))
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `status ${res.status}`)
-      state.status = data
-      setPhase(data.phase)
-      setRunning(data.phase === 'busy' || Boolean(data.isStreaming))
-      renderRouting(data)
-      if (data.usage) {
-        state.usage = data.usage
-        renderUsage()
+      console.status = data
+      if (data.sessionFile) rememberSessionFile(console, data.sessionFile)
+      setPhase(data.phase, console)
+      setRunning(data.phase === 'busy' || Boolean(data.isStreaming), console)
+      renderRouting(data, console)
+      if (Array.isArray(data.queuedSteering) || Array.isArray(data.queuedFollowUp)) {
+        applyQueue(data.queuedSteering, data.queuedFollowUp, console)
       }
-      updateComposer()
+      if (data.usage) {
+        console.usage = data.usage
+        if (console === active()) {
+          state.usage = data.usage
+          renderUsage(console)
+        }
+      }
+      if (console === active()) updateComposer()
+      renderSessions()
     } catch (err) {
-      setHint(`Could not reach the agent: ${err?.message || err}`, 'error')
-      setPhase('dead')
+      setHint(`Could not reach the agent: ${err?.message || err}`, 'error', console)
+      setPhase('dead', console)
     }
   }
 
@@ -553,22 +1203,24 @@
     const stop = $('hx-stop')
     const unavailable = Boolean(state.status && state.status.available === false)
     if (send) {
-      send.disabled = state.sending || unavailable
-      send.textContent = state.running ? 'Steer' : 'Send'
+      send.disabled = Boolean(active()?.sending) || unavailable
+      send.textContent = state.running ? (state.queueMode === 'followUp' ? 'Queue' : 'Steer') : 'Send'
     }
     if (stop) stop.disabled = !state.running
+    renderQueueMode()
   }
 
   // ── The event stream ────────────────────────────────────────────────────────────────
 
-  function connectEvents() {
-    if (state.source) return
+  /** Opens one console's event stream. Every console keeps its own, on screen or not. */
+  function connectEvents(ctx) {
+    if (!ctx || ctx.source) return
     if (!window.EventSource) {
-      setHint('This browser cannot stream the agent transcript.', 'error')
+      setHint('This browser cannot stream the agent transcript.', 'error', ctx)
       return
     }
-    const source = new EventSource(`${API}/events`)
-    state.source = source
+    const source = new EventSource(consoleApi(ctx, '/events'))
+    ctx.source = source
     source.onmessage = (event) => {
       let payload
       try {
@@ -577,73 +1229,251 @@
         return
       }
       if (payload.type === 'hello') {
-        // The server's replay log is the transcript; a page opened mid-run catches up instead
-        // of starting from whatever this tab happened to witness.
-        state.items = []
-        state.tools.clear()
-        state.mounted = 0
-        state.notesSeen.clear()
-        ;(payload.log || []).forEach(applyRecord)
-        if (payload.status) {
-          state.status = payload.status
-          setPhase(payload.status.phase)
-          setRunning(payload.status.phase === 'busy' || Boolean(payload.status.isStreaming))
-          renderRouting(payload.status)
+        // The replay log describes the conversation only when the transcript was not rebuilt
+        // from the session file. Resetting here unconditionally is what emptied a tab that had
+        // just been restored: the file's history was cleared and the log was then skipped.
+        if (!ctx.historyLoaded) {
+          ctx.items = []
+          ctx.tools.clear()
+          ctx.notesSeen.clear()
+          if (ctx === active()) {
+            state.items = ctx.items
+            state.tools = ctx.tools
+            state.notesSeen = ctx.notesSeen
+            state.mounted = 0
+          }
+          // A page opened mid-run catches up from the log instead of starting from whatever
+          // this tab happened to witness.
+          ;(payload.log || []).forEach((record) => applyRecord(record, ctx))
         }
-        updateComposer()
-        syncTranscript({ reset: true })
+        if (payload.status) {
+          ctx.status = payload.status
+          if (payload.status.sessionFile) rememberSessionFile(ctx, payload.status.sessionFile)
+          setPhase(payload.status.phase, ctx)
+          setRunning(
+            payload.status.phase === 'busy' || Boolean(payload.status.isStreaming),
+            ctx,
+          )
+          renderRouting(payload.status, ctx)
+          // The status carries pi's own queue accounting, so a page opened mid-run sees what
+          // is already waiting without waiting for a fresh `queue_update`.
+          if (
+            Array.isArray(payload.status.queuedSteering) ||
+            Array.isArray(payload.status.queuedFollowUp)
+          ) {
+            applyQueue(payload.status.queuedSteering, payload.status.queuedFollowUp, ctx)
+          }
+          // The status frame carries the session's rehydrated totals, so a page opened after
+          // the tokens were spent still shows them without waiting for a fresh turn.
+          if (payload.status.usage) {
+            ctx.usage = payload.status.usage
+            if (ctx === active()) {
+              state.usage = ctx.usage
+              renderUsage(ctx)
+            }
+          }
+        }
+        if (ctx === active()) updateComposer()
+        syncTranscript({ reset: true }, ctx)
+        renderSessions()
         return
       }
       if (payload.type === 'event') {
-        applyRecord(payload.record)
+        applyRecord(payload.record, ctx)
         return
       }
       if (payload.type === 'status' && payload.status) {
-        state.status = payload.status
-        setPhase(payload.status.phase)
-        setRunning(payload.status.phase === 'busy' || Boolean(payload.status.isStreaming))
-        renderRouting(payload.status)
-        updateComposer()
+        ctx.status = payload.status
+        if (payload.status.sessionFile) rememberSessionFile(ctx, payload.status.sessionFile)
+        setPhase(payload.status.phase, ctx)
+        setRunning(payload.status.phase === 'busy' || Boolean(payload.status.isStreaming), ctx)
+        renderRouting(payload.status, ctx)
+        if (
+          Array.isArray(payload.status.queuedSteering) ||
+          Array.isArray(payload.status.queuedFollowUp)
+        ) {
+          applyQueue(payload.status.queuedSteering, payload.status.queuedFollowUp, ctx)
+        }
+        if (payload.status.usage) {
+          ctx.usage = payload.status.usage
+          if (ctx === active()) {
+            state.usage = ctx.usage
+            renderUsage(ctx)
+          }
+        }
+        if (ctx === active()) updateComposer()
         return
       }
       if (payload.type === 'usage') {
-        state.usage = payload.usage || payload
-        renderUsage()
+        ctx.usage = payload.usage || payload
+        if (ctx === active()) {
+          state.usage = ctx.usage
+          renderUsage(ctx)
+        }
         return
       }
       if (payload.type === 'log' && payload.text) {
-        state.items.push({ kind: 'notice', tone: 'info', text: String(payload.text).slice(0, 500) })
-        syncTranscript()
+        ctx.items.push({
+          kind: 'notice',
+          tone: 'info',
+          text: String(payload.text).slice(0, 500),
+        })
+        syncTranscript({}, ctx)
         return
       }
       if (payload.type === 'exit') {
-        setRunning(false)
-        state.items.push({
+        setRunning(false, ctx)
+        ctx.items.push({
           kind: 'notice',
           tone: 'error',
           text: payload.message || 'The agent exited.',
         })
-        syncTranscript()
-        refreshStatus()
+        syncTranscript({}, ctx)
+        refreshStatus(ctx)
         return
       }
       if (payload.type === 'notice' && payload.text) {
-        state.items.push({ kind: 'notice', tone: 'info', text: String(payload.text) })
-        syncTranscript()
+        ctx.items.push({ kind: 'notice', tone: 'info', text: String(payload.text) })
+        syncTranscript({}, ctx)
       }
     }
-    source.onerror = () => setHint('Lost the event stream — reconnecting…', 'error')
-    source.onopen = () => setHint('')
+    source.onerror = () => {
+      if (ctx === active()) setHint('Lost the event stream — reconnecting…', 'error')
+    }
+    source.onopen = () => {
+      if (ctx === active()) setHint('')
+    }
   }
 
   // ── Controls ────────────────────────────────────────────────────────────────────────
 
+  /**
+   * How long a send waits for an answer before the composer is handed back.
+   *
+   * The bridge answers every command within 20s, so this only fires when the request never
+   * reached an agent at all — a page left open across a restart, a socket the OS holds open, a
+   * route that died mid-flight. Without it the button stayed disabled and the hint stayed on
+   * "Sending…" until the page was reloaded.
+   */
+  const PROMPT_TIMEOUT_MS = 35_000
+
+  // ── Attachments ─────────────────────────────────────────────────────────────────────
+
+  /** How many images may ride on one prompt; the bridge refuses more. */
+  const MAX_ATTACHMENTS = 4
+  /** Longest edge of the thumbnail shown on a staged chip. */
+  const THUMB_SIZE = 64
+
+  /**
+   * Reads chosen files into staged attachments. Images only: Pi's prompt command takes an
+   * `images` array, and a PDF is a job for a tool call, not a paste. Oversized files are
+   * skipped with a hint rather than failing the whole batch.
+   * @param {FileList | File[]} files
+   */
+  async function addAttachments(files) {
+    const list = Array.from(files || [])
+    if (!list.length) return
+    for (const file of list) {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) {
+        setHint(`Skipped ${file.name || 'file'} — only PNG, JPEG, GIF or WebP images attach.`, 'error')
+        continue
+      }
+      if (state.attachments.length >= MAX_ATTACHMENTS) {
+        setHint(`At most ${MAX_ATTACHMENTS} images per message.`, 'error')
+        break
+      }
+      if (file.size > 6 * 1024 * 1024) {
+        setHint(`Skipped ${file.name || 'image'} — larger than 6 MB.`, 'error')
+        continue
+      }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result))
+          reader.onerror = () => reject(new Error('Could not read the file.'))
+          reader.readAsDataURL(file)
+        })
+        const marker = 'base64,'
+        const at = dataUrl.indexOf(marker)
+        if (at < 0) throw new Error('Could not read the file.')
+        state.attachments.push({
+          name: file.name || 'image',
+          mimeType: file.type,
+          dataUrl,
+          data: dataUrl.slice(at + marker.length),
+        })
+      } catch {
+        setHint(`Could not read ${file.name || 'that file'}.`, 'error')
+      }
+    }
+    renderAttachments()
+  }
+
+  /** Draws the staged chips (thumbnail, name, remove button) above the composer bar. */
+  function renderAttachments() {
+    const strip = $('hx-attachments')
+    if (!strip) return
+    strip.replaceChildren()
+    strip.hidden = state.attachments.length === 0
+    for (const [index, att] of state.attachments.entries()) {
+      const chip = document.createElement('span')
+      chip.className = 'hx-attachment'
+      chip.title = att.name
+      const img = document.createElement('img')
+      img.src = att.dataUrl
+      img.alt = att.name
+      img.width = THUMB_SIZE
+      img.height = THUMB_SIZE
+      chip.appendChild(img)
+      const name = document.createElement('span')
+      name.className = 'hx-attachment-name'
+      name.textContent = att.name
+      chip.appendChild(name)
+      const remove = document.createElement('button')
+      remove.type = 'button'
+      remove.className = 'hx-attachment-remove'
+      remove.setAttribute('aria-label', `Remove ${att.name}`)
+      remove.textContent = '×'
+      remove.addEventListener('click', () => {
+        state.attachments.splice(index, 1)
+        renderAttachments()
+      })
+      chip.appendChild(remove)
+      strip.appendChild(chip)
+    }
+  }
+
+  /**
+   * Drag-and-drop onto the composer: the whole form is the target, because a drop on the
+   * textarea alone misses the chrome around it. The dragover preventDefault is what makes
+   * the browser treat this page as a drop site at all.
+   * @param {DragEvent} event
+   */
+  function wireComposerDrop() {
+    const form = $('hx-composer')
+    if (!form) return
+    const hasFiles = (event) => Array.from(event.dataTransfer?.types || []).includes('Files')
+    form.addEventListener('dragover', (event) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      form.classList.add('hx-dropping')
+    })
+    form.addEventListener('dragleave', () => form.classList.remove('hx-dropping'))
+    form.addEventListener('drop', (event) => {
+      if (!hasFiles(event)) return
+      event.preventDefault()
+      form.classList.remove('hx-dropping')
+      addAttachments(event.dataTransfer?.files || [])
+    })
+  }
+
   async function sendPrompt() {
     const input = $('hx-input')
-    if (!input || state.sending) return
+    const console = active()
+    if (!input || !console || console.sending) return
     const text = input.value.replace(/\r\n/g, '\n').trim()
-    if (!text) {
-      setHint('Type a message before sending.', 'error')
+    if (!text && state.attachments.length === 0) {
+      setHint('Type a message before sending.', 'error', console)
       return
     }
 
@@ -660,60 +1490,99 @@
       return
     }
 
-    state.sending = true
+    console.sending = true
     updateComposer()
-    setHint(state.running ? 'Steering the agent…' : 'Sending…')
+    setHint(console.running ? 'Steering the agent…' : 'Sending…', null, console)
+    const control = new AbortController()
+    const timer = setTimeout(() => control.abort(), PROMPT_TIMEOUT_MS)
+    // The staged images go with the text; clearing them before the send means a failed send
+    // does not silently re-attach on the retry the user retypes.
+    const images = state.attachments.map((att) => ({ data: att.data, mimeType: att.mimeType }))
+    state.attachments = []
+    renderAttachments()
     try {
-      const res = await fetch(`${API}/prompt`, {
+      const res = await fetch(consoleApi(console, '/prompt'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, images: images.length ? images : undefined }),
+        signal: control.signal,
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `The agent rejected the prompt (${res.status}).`)
       input.value = ''
       autoGrow()
-      if (data.disposition === 'queued') setHint('Queued — the agent picks it up after this turn.')
-      else if (data.disposition === 'handled') setHint('The agent handled that command.')
-      else setHint('')
+      if (data.disposition === 'queued')
+        setHint('Queued — the agent picks it up after this turn.', null, console)
+      else if (data.disposition === 'handled') setHint('The agent handled that command.', null, console)
+      else setHint('', null, console)
       refreshSessionsSoon()
     } catch (err) {
-      setHint(err?.message || 'Could not reach the agent.', 'error')
+      // The staged images are restored on failure: the user picked them once, and a network
+      // hiccup should not make them pick again.
+      state.attachments = images.concat(
+        state.attachments.map((att) => ({ name: att.name, mimeType: att.mimeType, dataUrl: att.dataUrl, data: att.data })),
+      )
+      renderAttachments()
+      const lost = err?.name === 'AbortError'
+      setHint(
+        lost
+          ? 'No answer from the agent — it may still be starting. Try again.'
+          : err?.message || 'Could not reach the agent.',
+        'error',
+        console,
+      )
     } finally {
-      state.sending = false
-      updateComposer()
+      clearTimeout(timer)
+      console.sending = false
+      if (console === active()) updateComposer()
       input.focus()
     }
   }
 
   async function stopRun() {
-    setHint('Stopping…')
+    const console = active()
+    setHint('Stopping…', null, console)
     try {
-      const res = await fetch(`${API}/abort`, { method: 'POST' })
+      const res = await fetch(consoleApi(console, '/abort'), { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `Could not stop the agent (${res.status}).`)
-      setRunning(false)
-      setHint('Stopped.')
+      setRunning(false, console)
+      setHint('Stopped.', null, console)
     } catch (err) {
-      setHint(err?.message || 'Could not stop the agent.', 'error')
+      setHint(err?.message || 'Could not stop the agent.', 'error', console)
     }
   }
 
   async function newSession() {
+    const console = active()
+    // A fresh conversation must not end the one on screen: while it is working, start beside it
+    // and leave it streaming, which is the whole point of more than one conversation.
+    if (console?.running) {
+      try {
+        await openInstance(null)
+      } catch (err) {
+        setHint(err?.message || 'Could not start a new session.', 'error')
+      }
+      return
+    }
     try {
-      const res = await fetch(`${API}/reset`, { method: 'POST' })
+      const res = await fetch(consoleApi(console, '/reset'), { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `Could not start a session (${res.status}).`)
       if (data.cancelled) {
         setHint('The agent declined to start a new session.', 'error')
         return
       }
-      state.items = []
-      state.tools.clear()
-      state.mounted = 0
-      syncTranscript({ reset: true })
+      console.items = []
+      console.tools.clear()
+      if (console === active()) {
+        state.items = console.items
+        state.tools = console.tools
+        state.mounted = 0
+        syncTranscript({ reset: true }, console)
+      }
       setHint('New session.', 'success')
-      refreshStatus()
+      refreshStatus(console)
       refreshSessionsSoon()
     } catch (err) {
       setHint(err?.message || 'Could not start a new session.', 'error')
@@ -725,13 +1594,14 @@
     if (btn) btn.disabled = true
     setHint('Restarting the agent…')
     try {
-      const res = await fetch(`${API}/restart`, { method: 'POST' })
+      const console = active()
+      const res = await fetch(consoleApi(console, '/restart'), { method: 'POST' })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `Could not restart the agent (${res.status}).`)
-      setRunning(false)
-      state.items.push({ kind: 'notice', tone: 'info', text: 'Agent restarted.' })
-      syncTranscript()
-      await refreshStatus()
+      setRunning(false, console)
+      console.items.push({ kind: 'notice', tone: 'info', text: 'Agent restarted.' })
+      syncTranscript({}, console)
+      await refreshStatus(console)
       setHint('')
     } catch (err) {
       setHint(err?.message || 'Could not restart the agent.', 'error')
@@ -752,11 +1622,61 @@
       : when.toLocaleDateString([], { month: 'short', day: 'numeric' })
   }
 
+  /**
+   * Records the file a console is writing, and checks the store as soon as it is known.
+   *
+   * The file and the row it deserves can arrive in either order: pi writes the JSONL during the
+   * first turn, while a status frame can name it before the store's next read sees it.
+   */
+  function rememberSessionFile(ctx, file) {
+    if (!file || ctx.sessionFile === file) return
+    ctx.sessionFile = file
+    // A parallel conversation is one the next page should reopen, whatever brought its file in.
+    if (ctx.instanceId) rememberOpenFile(file)
+    renderSessions()
+    refreshSessionsSoon()
+  }
+
+  /**
+   * The rail's rows: the store's sessions, plus every open conversation that the store does not
+   * list yet.
+   *
+   * A conversation is open before it is saved — a fresh one has no file, and a just-prompted
+   * one has a file the last read of the store predates — so the list is built from both. That
+   * is why a session that was started and given a first prompt could be missing from the rail
+   * entirely while its own transcript streamed on screen.
+   */
+  function sessionRows() {
+    const rows = state.sessions.map((session) => ({ ...session, open: false }))
+    const listed = new Set(rows.map((row) => row.file))
+    const open = []
+    for (const ctx of state.consoles.values()) {
+      if (!ctx.sessionFile || listed.has(ctx.sessionFile)) continue
+      listed.add(ctx.sessionFile)
+      open.push({
+        file: ctx.sessionFile,
+        fileName: ctx.sessionFile.split('/').pop() || ctx.sessionFile,
+        label: ctx.status?.sessionName || 'New conversation',
+        preview: null,
+        modifiedMs: ctx.createdAt || Date.now(),
+        userMessages: 0,
+        toolCalls: 0,
+        open: true,
+      })
+    }
+    return [...open, ...rows]
+  }
+
+  /** The label a rail row shows: the session's name, or what it can be recognized by. */
+  function rowLabel(session) {
+    return session.label || session.name || session.preview || session.fileName
+  }
+
   function renderSessions() {
     const list = $('hx-session-list')
     if (!list) return
     const query = state.sessionQuery.trim().toLowerCase()
-    const rows = state.sessions.filter((session) => {
+    const rows = sessionRows().filter((session) => {
       if (!query) return true
       return (
         String(session.label || '').toLowerCase().includes(query) ||
@@ -772,7 +1692,7 @@
       }</div>`
       return
     }
-    const current = state.status?.sessionFile
+    const current = active()?.sessionFile
     list.innerHTML = rows
       .slice(0, 60)
       .map((session) => {
@@ -780,12 +1700,49 @@
         if (session.userMessages) stats.push(`${session.userMessages} msg`)
         if (session.toolCalls) stats.push(`${session.toolCalls} tools`)
         const meta = [sessionWhen(session.modifiedMs), ...stats].join(' · ')
-        return `<button class="hx-session-row${session.file === current ? ' current' : ''}" data-session="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}">
-            <div class="hx-session-label">${escapeHtml(session.label || session.fileName)}</div>
+        // The spinner is the conversation's own state, so it turns for a turn running in the
+        // background — the one thing a list of session files cannot otherwise tell you.
+        const running = isSessionRunning(session.file)
+        // A row being renamed swaps its label for an input. The row itself stops being a
+        // button while it edits, so a stray click or Enter cannot also open the conversation.
+        if (session.file === state.renamingFile) {
+          return `<div class="hx-session-row current renaming" data-renaming="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}">
+            <div class="hx-session-top">
+              <input class="hx-session-rename-input" data-rename-input="${escapeHtml(session.file)}" type="text" maxlength="120" value="${escapeHtml(state.renamingValue)}" placeholder="Session name…" aria-label="Session name">
+            </div>
+            <div class="hx-session-meta">Enter to save · Esc to cancel</div>
+          </div>`
+        }
+        return `<button class="hx-session-row${session.file === current ? ' current' : ''}${
+          running ? ' running' : ''
+        }" data-session="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}${
+          running ? ' · running' : ''
+        }">
+            <div class="hx-session-top">
+              ${running ? '<span class="hx-session-spin" aria-hidden="true"></span>' : ''}
+              <span class="hx-session-label">${escapeHtml(rowLabel(session))}</span>
+              <span class="hx-session-rename" data-rename="${escapeHtml(session.file)}" role="button" title="Rename this session" aria-label="Rename session">✎</span>
+            </div>
             <div class="hx-session-meta">${escapeHtml(meta || session.fileName)}</div>
           </button>`
       })
       .join('')
+    // A re-render replaced the input the edit lived in: put the caret back, with the
+    // selection only when the edit was just opened (the flag is cleared after use).
+    if (state.renamingFile) {
+      const input = list.querySelector('[data-rename-input]')
+      if (input instanceof HTMLInputElement) {
+        input.focus()
+        if (state.renamingSelect) {
+          input.select()
+          state.renamingSelect = false
+        } else {
+          // The caret goes where the user left it; a fresh element defaults to the end.
+          const caret = state.renamingCaret
+          input.setSelectionRange(caret, caret)
+        }
+      }
+    }
   }
 
   async function loadSessions() {
@@ -794,7 +1751,11 @@
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `sessions ${res.status}`)
       state.sessions = Array.isArray(data.sessions) ? data.sessions : []
+      const main = state.consoles.get('main')
+      if (main && data.current) main.sessionFile = data.current
       renderSessions()
+      // A conversation another page started is running too, and the spinner has to say so.
+      void refreshInstances()
     } catch (err) {
       const list = $('hx-session-list')
       if (list) list.innerHTML = `<div class="hx-empty-note">Could not list sessions: ${escapeHtml(err?.message || err)}</div>`
@@ -807,58 +1768,284 @@
     sessionsTimer = setTimeout(loadSessions, 1500)
   }
 
-  /** Rebuilds the visible conversation from the session file the agent is attached to. */
-  async function loadMessages() {
-    const res = await fetch(`${API}/messages`)
+  // ── Renaming a session ──────────────────────────────────────────────────────────────
+  //
+  // A conversation is identified in the rail by whatever pi wrote into it — usually the
+  // first thing the user said, which reads like a command, not a title. Naming a session
+  // writes the same `session_info` entry pi's own `/name` writes, so the label sticks
+  // everywhere the store is read, and the running agent (if any) is told through its bridge.
+  // The edit happens in place on the row: the label becomes an input, Enter saves, Escape
+  // or a click elsewhere cancels.
+
+  /**
+   * Starts editing one session's name on its own rail row. A row the store does not list
+   * yet (a conversation opened but not saved) cannot be renamed — there is no file to
+   * append the name to.
+   * @param {string} file
+   */
+  function openRename(file) {
+    if (!file) return
+    const session = state.sessions.find((row) => row.file === file)
+    if (!session) return
+    state.renamingFile = file
+    state.renamingValue = session.name || rowLabel(session)
+    state.renamingSelect = true
+    state.renamingCaret = 0
+    renderSessions()
+  }
+
+  /** Stops editing without saving. */
+  function closeRename() {
+    if (!state.renamingFile) return
+    state.renamingFile = null
+    state.renamingValue = ''
+    renderSessions()
+  }
+
+  /** The input of the row currently being renamed, if any. */
+  function renameInput() {
+    return /** @type {HTMLInputElement | null} */ ($('hx-session-list')?.querySelector('[data-rename-input]')) || null
+  }
+
+  /** Reads the in-place input and writes the name to the store. */
+  async function saveRename() {
+    const file = state.renamingFile
+    const input = renameInput()
+    const name = input ? input.value.trim() : ''
+    if (!file) return
+    if (!name) {
+      closeRename()
+      return
+    }
+    try {
+      const res = await fetch(`${API}/sessions/rename`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: file, name }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || `rename ${res.status}`)
+      state.renamingFile = null
+      state.renamingValue = ''
+      setHint(`Session renamed: ${data.label || name}`, 'success')
+      await loadSessions()
+    } catch (err) {
+      // The edit stays open so the user can fix or escape it; the message says what failed.
+      setHint(err?.message || 'Could not rename that session.', 'error')
+    }
+  }
+
+  /** Rebuilds one conversation from the session file its agent is attached to. */
+  async function loadMessages(ctx = active()) {
+    const res = await fetch(consoleApi(ctx, '/messages'))
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Could not read the conversation.')
     }
-    state.items = []
-    state.tools.clear()
-    state.mounted = 0
+    ctx.items = []
+    ctx.tools.clear()
+    if (ctx === active()) {
+      state.items = ctx.items
+      state.tools = ctx.tools
+      state.mounted = 0
+    }
+    // A tool's command line is part of the assistant message that called it (`toolCall` parts
+    // carry `arguments`), while the row is rebuilt from the `toolResult` that follows — which
+    // holds only the output. Collecting the calls first is what puts the command back on a row
+    // after a restart; without it every resumed bash call read as a bare "bash done".
+    const calls = new Map()
     for (const message of data.messages || []) {
       if (message.role === 'user') {
-        state.items.push({ kind: 'user', text: textFromBlocks(message.content) })
+        ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
       } else if (message.role === 'assistant') {
-        state.items.push({ kind: 'assistant', blocks: contentParts(message.content) })
+        const blocks = contentParts(message.content)
+        // A turn that only called tools wrote no prose. Its tool rows carry that story, and an
+        // empty bubble would sit in the transcript as "…" forever after a resume.
+        if (blocks.length) ctx.items.push({ kind: 'assistant', blocks })
+        for (const part of Array.isArray(message.content) ? message.content : []) {
+          if (!part || part.type !== 'toolCall') continue
+          calls.set(String(part.id || part.name || 'tool'), {
+            name: part.name || 'tool',
+            args: part.arguments && typeof part.arguments === 'object' ? part.arguments : null,
+          })
+        }
       } else if (message.role === 'toolResult') {
-        state.items.push({
+        const key = String(message.toolCallId || message.toolName || 'tool')
+        const call = calls.get(key)
+        calls.delete(key)
+        const item = {
           kind: 'tool',
-          id: message.toolCallId || '',
-          name: message.toolName || 'tool',
-          args: null,
+          id: key,
+          name: message.toolName || call?.name || 'tool',
+          args: call?.args || null,
           status: message.isError ? 'error' : 'ok',
           result: clip(resultText(message), MAX_TOOL),
           partial: '',
-        })
+        }
+        ctx.tools.set(key, item)
+        ctx.items.push(item)
       }
     }
-    syncTranscript({ reset: true })
+    // A call that never returned — the turn was interrupted, or the app was closed while the
+    // command ran — still happened, so it keeps its row instead of disappearing on a reopen.
+    for (const [key, call] of calls) {
+      const item = {
+        kind: 'tool',
+        id: key,
+        name: call.name,
+        args: call.args,
+        status: 'running',
+        result: '',
+        partial: '',
+      }
+      ctx.tools.set(key, item)
+      ctx.items.push(item)
+    }
+    syncTranscript({ reset: true }, ctx)
+    // This console's transcript now comes from its session file, which is authoritative and
+    // survives a restart; the replay log is no longer needed to describe it.
+    ctx.historyLoaded = true
   }
 
-  async function resumeSession(file) {
+  /**
+   * Bring a conversation on screen without disturbing any other.
+   *
+   * Clicking a session used to resume it into the one console, which restarted the agent and
+   * ended whatever was running. Every conversation is its own console now: one already open
+   * here is simply shown, one another page opened is attached to, and one nobody has open gets
+   * a parallel console of its own beside the ones that are working.
+   */
+  async function openConversation(file) {
     if (!file) return
-    setHint('Resuming session…')
+    const open = [...state.consoles.values()].find((candidate) => candidate.sessionFile === file)
+    if (open) {
+      activate(open)
+      return
+    }
+    setHint('Opening that conversation…')
     try {
-      const res = await fetch(`${API}/sessions/open`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session: file }),
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || `Could not resume that session (${res.status}).`)
-      if (data.mode === 'cancelled') {
-        setHint('The agent declined to switch sessions.', 'error')
+      const remote = await findInstanceFor(file)
+      if (remote) {
+        await attachConsole(remote)
         return
       }
-      await refreshStatus()
-      await loadMessages()
-      setHint('Session resumed.', 'success')
-      loadSessions()
+      await openInstance(file)
     } catch (err) {
-      setHint(err?.message || 'Could not resume that session.', 'error')
+      setHint(err?.message || 'Could not open that conversation.', 'error')
     }
+  }
+
+  /** A parallel console the server is already running on that session, if any. */
+  async function findInstanceFor(file) {
+    try {
+      const res = await fetch(`${API}/instances`)
+      if (!res.ok) return null
+      const data = await res.json().catch(() => ({}))
+      return (data.instances || []).find((entry) => entry.sessionFile === file) || null
+    } catch {
+      return null
+    }
+  }
+
+  /** Adopts a console another page opened: its event stream is the conversation. */
+  async function attachConsole(entry) {
+    const ctx = createConsole({
+      id: entry.id,
+      instanceId: entry.id,
+      sessionFile: entry.sessionFile || null,
+    })
+    ctx.phase = entry.phase || 'idle'
+    connectEvents(ctx)
+    activate(ctx)
+    rememberOpenFile(ctx.sessionFile)
+    saveOpenConversations()
+    try {
+      await loadMessages(ctx)
+      await refreshStatus(ctx)
+      setHint('')
+    } catch (err) {
+      setHint(err?.message || 'Could not read that conversation.', 'error')
+    }
+  }
+
+  /** Starts a conversation beside the others. No session starts a fresh one. */
+  async function openInstance(sessionFile) {
+    // A conversation has one console: opening it again focuses the one already running rather
+    // than starting a second agent on the same session file.
+    if (sessionFile) {
+      const open = [...state.consoles.values()].find((ctx) => ctx.sessionFile === sessionFile)
+      if (open) {
+        activate(open)
+        return open
+      }
+    }
+    const body = sessionFile ? { session: sessionFile } : {}
+    const start = () =>
+      fetch(`${API}/instances`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    let res = await start()
+    if (res.status === 429) {
+      // The server caps parallel consoles. An idle conversation nobody is looking at is not
+      // doing anything, so its slot is the one to reuse rather than refusing the new one.
+      if (await closeIdleConsole()) res = await start()
+    }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `Could not start a conversation (${res.status}).`)
+    const ctx = createConsole({
+      id: data.id,
+      instanceId: data.id,
+      sessionFile: data.instance?.sessionFile || sessionFile,
+    })
+    connectEvents(ctx)
+    activate(ctx)
+    // Every open tab is one the next page reopens, whether it was just started or restored.
+    rememberOpenFile(ctx.sessionFile)
+    if (sessionFile) await restoreHistory(ctx)
+    saveOpenConversations()
+    setHint(sessionFile ? '' : 'New conversation.', 'success')
+    renderSessions()
+    return ctx
+  }
+
+  /** Closes an idle console that is not on screen, freeing a parallel slot. */
+  async function closeIdleConsole() {
+    const spare = [...state.consoles.values()].find(
+      (candidate) => candidate.instanceId && !candidate.running && candidate.id !== state.activeId,
+    )
+    if (!spare) return false
+    await fetch(`${API}/instances/${spare.id}/close`, { method: 'POST' }).catch(() => {})
+    spare.source?.close()
+    state.consoles.delete(spare.id)
+    // Closing a conversation is the one thing that forgets it: it is not idle by accident.
+    if (spare.sessionFile) openFiles.delete(spare.sessionFile)
+    saveOpenConversations()
+    return true
+  }
+
+  /** Which conversations are working right now, including ones another page started. */
+  async function refreshInstances() {
+    let instances
+    try {
+      const res = await fetch(`${API}/instances`)
+      if (!res.ok) return
+      instances = (await res.json().catch(() => ({}))).instances || []
+    } catch {
+      return
+    }
+    const running = new Set()
+    for (const entry of instances) {
+      if (entry.sessionFile && (entry.phase === 'busy' || entry.isStreaming)) {
+        running.add(entry.sessionFile)
+      }
+    }
+    const changed =
+      running.size !== state.runningSessions.size ||
+      [...running].some((file) => !state.runningSessions.has(file))
+    state.runningSessions = running
+    if (changed) renderSessions()
   }
 
   // ── Command palette ─────────────────────────────────────────────────────────────────
@@ -868,6 +2055,17 @@
     { label: 'New session', hint: '/new', run: newSession },
     { label: 'Stop the agent', hint: '/stop', run: stopRun },
     { label: 'Restart the agent', run: restartAgent },
+    {
+      label: 'Rename the current session…',
+      run: () => {
+        const file = active()?.sessionFile
+        if (!file) {
+          setHint('This conversation has not been saved yet.', 'error')
+          return
+        }
+        openRename(file)
+      },
+    },
     {
       label: 'Open a session…',
       run: () => {
@@ -963,6 +2161,17 @@
     })
 
     $('hx-stop')?.addEventListener('click', stopRun)
+    $('hx-attach')?.addEventListener('click', () => $('hx-file')?.click())
+    $('hx-file')?.addEventListener('change', (event) => {
+      addAttachments(event.target?.files || [])
+      // Clearing the value lets the same file be chosen again after a remove.
+      event.target.value = ''
+    })
+    wireComposerDrop()
+    $('hx-queue-mode')?.addEventListener('click', () =>
+      setQueueMode(state.queueMode === 'followUp' ? 'steer' : 'followUp'),
+    )
+    $('hx-thinking')?.addEventListener('click', cycleThinking)
 
     // The inspector is a drawer below 960px. A toggle, Escape, or a click outside closes it.
     $('hx-details')?.addEventListener('click', (event) => {
@@ -982,11 +2191,46 @@
       renderSessions()
     })
 
+    // In-place rename on a rail row: keystrokes keep the value and caret so a re-render
+    // (a status frame) cannot throw the edit away, Enter saves, Escape cancels.
+    $('hx-session-list')?.addEventListener('input', (event) => {
+      const input = event.target
+      if (!(input instanceof HTMLInputElement) || !input.matches('[data-rename-input]')) return
+      state.renamingValue = input.value
+      state.renamingCaret = input.selectionStart ?? input.value.length
+    })
+    $('hx-session-list')?.addEventListener('keydown', (event) => {
+      if (!state.renamingFile) return
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        void saveRename()
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        closeRename()
+      }
+    })
+    // A click anywhere else cancels the edit — but a click inside the list (the pencil of
+    // another row, or the input itself) is handled by its own listener below, so it passes.
+    document.addEventListener('pointerdown', (event) => {
+      if (!state.renamingFile) return
+      if (event.target instanceof Node && $('hx-session-list')?.contains(event.target)) return
+      closeRename()
+    })
+
     $('hx-session-list')?.addEventListener('click', (event) => {
+      // The pencil is inside the row button; it renames instead of opening, so it has to be
+      // caught first and the click kept from reaching the row's own handler.
+      const pencil = event.target.closest('[data-rename]')
+      if (pencil) {
+        event.preventDefault()
+        event.stopPropagation()
+        openRename(pencil.dataset.rename)
+        return
+      }
       const row = event.target.closest('[data-session]')
       if (!row) return
       document.body.classList.remove('hx-drawer-open')
-      resumeSession(row.dataset.session)
+      openConversation(row.dataset.session)
     })
 
     $('hx-transcript')?.addEventListener('click', (event) => {
@@ -1073,6 +2317,10 @@
         return
       }
       if (event.key === 'Escape') {
+        if (state.renamingFile) {
+          closeRename()
+          return
+        }
         if ($('hx-palette')?.classList.contains('open')) closePalette()
         else document.body.classList.remove('hx-drawer-open')
         return
@@ -1095,12 +2343,21 @@
     }
     bind()
     showView(stored === 'router' ? 'router' : 'agent')
-    syncTranscript({ reset: true })
+    // The main console is the conversation this page has always opened on; every other one is
+    // added beside it as it is opened, and neither disturbs the other's turn.
+    const main = createConsole({ id: 'main' })
+    state.activeId = null
+    activate(main)
     renderSessions()
-    connectEvents()
-    await refreshStatus()
+    // Status first: it is what names the conversation. An idle console is then rebuilt from its
+    // session file before the stream opens, so the first paint after a restart shows the whole
+    // conversation rather than whatever the router still had in memory (often nothing).
+    await refreshStatus(main)
+    if (main.sessionFile && !main.running) await restoreHistory(main)
+    connectEvents(main)
     await loadSessions()
     autoGrow()
+    void restoreOpenConversations()
   }
 
   // The page is a classic script and its markup already uses inline handlers (the router's

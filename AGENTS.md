@@ -94,6 +94,21 @@ release/Hammer-linux-x64 ~/.local/opt/hammer` can leave an app that refuses to s
    verified, and that the served files now match. If the swap or relaunch could not be done, say so
    instead of implying the user is looking at the new build.
 
+## Restarting without ending an agent's turn
+
+An agent the console started is not a child of the router. `lib/pi/supervisor.js` runs a detached
+keeper that owns the child's pipes, so the router — and therefore the desktop app — can be
+restarted, repackaged and relaunched while a turn is running. The replacement router attaches to
+the keeper's socket and adopts the same process (`GET /api/pi/status` is what triggers it), and the
+page reconnects to its event stream and replays the tail.
+
+Two things to keep straight when touching `lib/pi`:
+
+- `bridge.release()` hands the agent over; `bridge.dispose()` stops it. The process-exit hook
+  releases on purpose, which is why a restart no longer kills a run.
+- A keeper stops a child that no router has been attached to for ten minutes
+  (`HAMMER_PI_SUPERVISOR_IDLE_MS`), so a Hammer that never comes back leaves nothing behind.
+
 ## Rolling back
 
 Every install leaves `resources/app.asar.bak-<stamp>` beside the live payload. Restore one and

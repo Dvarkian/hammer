@@ -7,16 +7,16 @@
       --text-muted: #8a6f6d;
       --text-dim: #6b5557;
       --accent: #7d2231;
-      --success: #10b981;
+      --success: #0284c7;
       --warning: #f59e0b;
       --error: #ef4444;
       --surface-alt: #f4eae8;
       --surface-hover: #f7e3e0;
       --input-bg: #ffffff;
       --input-bg-alt: #f4eae8;
-      --status-success-bg: #ecfdf5;
-      --status-success-text: #065f46;
-      --status-success-border: #a7f3d0;
+      --status-success-bg: #eff6ff;
+      --status-success-text: #1d4ed8;
+      --status-success-border: #bfdbfe;
       --status-warning-bg: #fffbeb;
       --status-warning-text: #92400e;
       --status-warning-border: #fef3c7;
@@ -35,15 +35,15 @@
       --panel-gradient-start: #ffffff;
       --panel-gradient-end: #fdf6f5;
       --panel-decor: rgba(125, 34, 49, 0.12);
-      --tier-splus-bg: #ecfdf5;
-      --tier-splus-text: #065f46;
-      --tier-splus-border: #a7f3d0;
-      --tier-s-bg: #f0fdf4;
-      --tier-s-text: #166534;
-      --tier-s-border: #bbf7d0;
-      --tier-aplus-bg: #eff6ff;
-      --tier-aplus-text: #1e40af;
-      --tier-aplus-border: #bfdbfe;
+      --tier-splus-bg: #dbeafe;
+      --tier-splus-text: #1e3a8a;
+      --tier-splus-border: #93c5fd;
+      --tier-s-bg: #eff6ff;
+      --tier-s-text: #1d4ed8;
+      --tier-s-border: #bfdbfe;
+      --tier-aplus-bg: #e0f2fe;
+      --tier-aplus-text: #0369a1;
+      --tier-aplus-border: #7dd3fc;
       --tier-a-bg: #f0f9ff;
       --tier-a-text: #075985;
       --tier-a-border: #bae6fd;
@@ -65,16 +65,16 @@
       --text-muted: #a08a8b;
       --text-dim: #8c7678;
       --accent: #e08c96;
-      --success: #34d399;
+      --success: #60a5fa;
       --warning: #fbbf24;
       --error: #f87171;
       --surface-alt: #251a1d;
       --surface-hover: #2e2024;
       --input-bg: #1a1214;
       --input-bg-alt: #251a1d;
-      --status-success-bg: #052e16;
-      --status-success-text: #34d399;
-      --status-success-border: #166534;
+      --status-success-bg: #172554;
+      --status-success-text: #93c5fd;
+      --status-success-border: #1e40af;
       --status-warning-bg: #451a03;
       --status-warning-text: #fbbf24;
       --status-warning-border: #92400e;
@@ -94,12 +94,12 @@
       --panel-gradient-end: #14161e;
       --panel-decor: rgba(100, 116, 139, 0.12);
       --title-glow: rgba(96, 165, 250, 0.3);
-      --tier-splus-bg: #052e16;
-      --tier-splus-text: #34d399;
-      --tier-splus-border: #166534;
-      --tier-s-bg: #052e16;
-      --tier-s-text: #4ade80;
-      --tier-s-border: #166534;
+      --tier-splus-bg: #172554;
+      --tier-splus-text: #93c5fd;
+      --tier-splus-border: #1e40af;
+      --tier-s-bg: #172554;
+      --tier-s-text: #60a5fa;
+      --tier-s-border: #1e40af;
       --tier-aplus-bg: #172554;
       --tier-aplus-text: #60a5fa;
       --tier-aplus-border: #1e40af;
@@ -224,7 +224,8 @@
       height: 3px;
       border-radius: 999px;
       margin: 16px auto 0;
-      background: linear-gradient(90deg, var(--accent), var(--success));
+      /* Maroon fading through blue, with a spark of gold at the end. */
+      background: linear-gradient(90deg, var(--accent) 0%, var(--success) 62%, #facc15 100%);
     }
 
     .dashboard-subtitle {
@@ -442,8 +443,8 @@
        'selected' below marks. */
     .topo-link { fill: none; stroke: var(--text-muted); stroke-width: 0.8; opacity: 0.12; transition: all 1.5s ease-in-out; }
     .topo-link.active { stroke: var(--success); stroke-width: 1.4; opacity: 0.45; }
-    /* The serving link — the active model to the provider serving it, out of the whole green
-       mesh the one path in blue, with a flowing dash animation so it reads at a glance, pulsing
+    /* The serving link — the active model to the provider serving it, out of the whole blue
+       mesh the one path in maroon, with a flowing dash animation so it reads at a glance, pulsing
        *into* the model from the provider that serves it. The path is drawn model -> provider (see the edge
        construction in drawBipartiteTopology) and a positive stroke-dashoffset shifts the dash
        pattern back toward the path's start, so the offset animates 0 -> +14 to send the pulses

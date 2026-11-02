@@ -5697,8 +5697,8 @@
     function getQosColor(qos) {
       const n = Number(qos);
       if (!Number.isFinite(n)) return 'var(--error)';
-      if (n >= 45) return '#16a34a';
-      if (n >= 40) return '#4ade80';
+      if (n >= 45) return '#2563eb';
+      if (n >= 40) return '#60a5fa';
       if (n >= 20) return 'var(--warning)';
       return 'var(--error)';
     }
@@ -6717,6 +6717,7 @@
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${kiroStatusBg}; color:${kiroStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${kiroStatusOk ? '✅' : '⚠️'} ${escapeHtml(kiroStatusText)}</span>
                   ${providerTitleHtml(p, 'Set up Kiro')}
+                  ${providerEnabledToggleHtml(p)}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -6800,6 +6801,7 @@
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${copilotStatusBg}; color:${copilotStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${copilotConnected ? '✅' : '⚠️'} ${escapeHtml(copilotStatusText)}</span>
                   ${providerTitleHtml(p, 'Manage GitHub Copilot')}
+                  ${providerEnabledToggleHtml(p)}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -6921,6 +6923,7 @@
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${codexStatusBg}; color:${codexStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${codexConnected ? '✅' : '⚠️'} ${escapeHtml(codexStatusText)}</span>
                   ${providerTitleHtml(p, 'Manage the ChatGPT plan behind Codex')}
+                  ${providerEnabledToggleHtml(p)}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -6989,6 +6992,7 @@
                 <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
                   <span style="background:${devinStatusBg}; color:${devinStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${devinConnected ? '✅' : '⚠️'} ${escapeHtml(devinStatusText)}</span>
                   ${providerTitleHtml(p, 'Get Devin')}
+                  ${providerEnabledToggleHtml(p)}
                   <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7020,6 +7024,7 @@
               <div style="display:flex; align-items:center; gap:10px;">
                 <span style="background:${statusBg}; color:${statusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${statusIcon} ${statusText}</span>
                 ${providerTitleHtml(p)}
+                ${providerEnabledToggleHtml(p)}
                 <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                     <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
@@ -7100,6 +7105,26 @@
       setTimeout(() => {
         if (!document.hidden) fetchData().catch(() => { });
       }, 1800);
+    }
+
+    // The card is re-rendered from the server's answer instead of from the checkbox, so a write
+    // that did not land shows the state the router is actually in rather than the one the click
+    // asked for.
+    async function setProviderEnabled(key, enabled) {
+      try {
+        const res = await fetch('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerKey: key, enabled })
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        console.error('Failed to change provider state:', err);
+        alert(`Could not ${enabled ? 'enable' : 'disable'} this provider: ${err.message || err}`);
+        await loadSettings().catch(() => {});
+      }
     }
 
     async function updateProviderKey(key) {
@@ -8476,6 +8501,20 @@
     // rather than of a missing feature. An imported provider with no
     // URL is a gap in `key-pages.json` waiting for someone to confirm the page, which is why
     // the curator refuses to guess one.
+    // Every provider card carries the same switch, whatever its shape: a key field, an account
+    // pool, or a device sign-in. Turning one off is a routing decision and nothing else — the key
+    // and the accounts stay put, so the card explains that rather than looking like a teardown.
+    function providerEnabledToggleHtml(provider) {
+      const on = provider.enabled !== false;
+      const title = on
+        ? 'Stop routing to this provider. Its key, accounts and settings are kept.'
+        : 'Route to this provider again.';
+      return `<label style="display:flex; align-items:center; gap:6px; font-size:0.78rem; color:var(--text-muted); cursor:pointer; user-select:none;" title="${escapeAttr(title)}">
+                  <input type="checkbox" ${on ? 'checked' : ''} onchange="setProviderEnabled(${jsStringAttr(provider.key)}, this.checked)">
+                  <span>${on ? 'Enabled' : 'Disabled'}</span>
+                </label>`;
+    }
+
     function providerTitleHtml(provider, tooltip = 'Get API key') {
       const name = escapeHtml(provider.name);
       if (!provider.signupUrl) return `<h3 style="margin:0; font-size:1rem;">${name}</h3>`;

@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -190,13 +190,82 @@ test('a refusal that is not about streaming keeps its own error', async () => {
   }
 })
 
+test('a queued follow-up runs as its own turn once the current one settles', async () => {
+  const { bridge } = makeFake()
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '800' }, async () => {
+      const firstSettled = nextEvent(bridge, 'agent_settled')
+      await bridge.prompt('first turn')
+
+      // Both queues take a message while the first turn runs.
+      const steered = await bridge.prompt('steer mid-run')
+      const held = await bridge.prompt('follow up', { queueMode: 'followUp' })
+      assert.equal(steered.data.disposition, 'queued')
+      assert.equal(held.data.disposition, 'queued')
+
+      // Pi's own accounting reaches the status the page renders.
+      await waitFor(() => bridge.status().queuedSteering.includes('steer mid-run'))
+      await waitFor(() => bridge.status().queuedFollowUp.includes('follow up'))
+      assert.equal(bridge.status().pendingMessages, 2)
+
+      // The first turn settles; the held message starts as a turn of its own and then settles.
+      await firstSettled
+      await waitFor(() => !bridge.status().isStreaming, { timeoutMs: 4_000 })
+      await waitFor(() => bridge.status().pendingMessages === 0)
+      assert.equal(bridge.status().queuedFollowUp.length, 0)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('stopping reports the queued messages it dropped', async () => {
+  const { bridge } = makeFake()
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '800' }, async () => {
+      await bridge.prompt('long turn')
+      await bridge.prompt('steer mid-run')
+      await bridge.prompt('held for later', { queueMode: 'followUp' })
+      await waitFor(() => bridge.status().pendingMessages === 2)
+
+      const record = await bridge.abort()
+      assert.deepEqual(record.clearedQueue, {
+        steering: ['steer mid-run'],
+        followUp: ['held for later'],
+      })
+      assert.equal(bridge.status().pendingMessages, 0)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a queue_update empties when pi consumes what it was holding', async () => {
+  // The authority runs one way: whatever pi says the queue holds is what the bridge holds,
+  // including the empty list after the agent has taken the messages back out.
+  const { bridge } = makeFake({})
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '200' }, async () => {
+      await bridge.prompt('turn one')
+      await bridge.prompt('held', { queueMode: 'followUp' })
+      await waitFor(() => bridge.status().pendingMessages === 1)
+      await waitFor(() => bridge.status().pendingMessages === 0, { timeoutMs: 6_000 })
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
 test('stopping clears the queue, cancels a retry, then aborts the run', async () => {
   const { bridge, commands } = makeFake()
   try {
     await bridge.abort()
-    // The start-up `get_state` may land on either side of this; the stop sequence is the
-    // part that matters, and Pi documents it in this order.
-    assert.deepEqual(commands().slice(-3), ['clear_queue', 'abort_retry', 'abort'])
+    // The stop sequence is the part that matters, and Pi documents it in this order; the
+    // `agent_settled` the fake emits on abort triggers a stats sync that may follow.
+    const log = commands()
+    const i = log.indexOf('clear_queue')
+    assert.notEqual(i, -1, 'the queue is cleared first')
+    assert.deepEqual(log.slice(i, i + 3), ['clear_queue', 'abort_retry', 'abort'])
     assert.equal(bridge.state.isStreaming, false)
   } finally {
     bridge.dispose()
@@ -431,18 +500,19 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
 
   // Thinking is content, not a placeholder: the harness shows what the model actually thought.
-  assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta\)/)
+  // The trailing console is the conversation the record belongs to — a page can hold several.
+  assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta, ctx\)/)
   assert.match(harness, /class="hx-block-label">thinking</)
   assert.match(harness, /class="hx-thinking-text"/)
 
   // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
   // assistant message and grows it in production order.
-  assert.match(harness, /function appendDelta\(kind, contentIndex, delta\)/)
+  assert.match(harness, /function appendDelta\(kind, contentIndex, delta, ctx = active\(\)\)/)
   assert.match(harness, /item\.blocks\.sort\(\(a, b\) => a\.index - b\.index\)/)
 
   // A tool is announced when the model calls it, so its box sits where the call was made.
   assert.match(harness, /update\.type === 'toolcall_start'/)
-  assert.match(harness, /function ensureTool\(id, name\)/)
+  assert.match(harness, /function ensureTool\(id, name, ctx = active\(\)\)/)
 
   // Live output: a long command is legible while it runs, not only once it finishes.
   assert.match(harness, /case 'tool_execution_update'/)
@@ -456,12 +526,44 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   assert.match(harness, /const MAX_TEXT = 120000/)
   assert.match(harness, /const MAX_TOOL = 24000/)
 
-  // Sessions persist on the server; the rail lists them and resumes one in place, rebuilding
-  // the transcript from the session's own messages for a run this page never saw.
+  // Sessions persist on the server; the rail lists them and opens one in a console of its own,
+  // rebuilding the transcript from the session's own messages for a run this page never saw.
   assert.match(harness, /const API = '\/api\/pi'/)
   assert.match(harness, /function loadSessions\(\)/)
-  assert.match(harness, /function resumeSession\(file\)/)
-  assert.match(harness, /function loadMessages\(\)/)
+  assert.match(harness, /function openConversation\(file\)/)
+  assert.match(harness, /function loadMessages\(ctx = active\(\)\)/)
+
+  // A resumed tool row needs the command from the assistant message that called it; the result
+  // message only carries output, so restoring rows from results alone lost every command line.
+  assert.match(harness, /part\.type !== 'toolCall'/)
+  assert.match(harness, /const call = calls\.get\(key\)/)
+  assert.match(harness, /args: call\?\.args \|\| null/)
+
+  // A call that never returned — closed mid-command — keeps its row instead of vanishing.
+  assert.match(harness, /for \(const \[key, call\] of calls\)/)
+  assert.match(harness, /status: 'running',\n {8}result: ''/)
+})
+
+test('the transcript renders Markdown: headings, tables, lists and code', () => {
+  // The same fold-guard style: the renderer is line grammar the port must keep. Every rule
+  // here names a construct a model answers with and a plain <br> wall would flatten.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+
+  // Escaping happens in renderInline, on each leaf, before any tag is written.
+  assert.match(harness, /function renderInline\(raw\)/)
+  assert.match(harness, /<code class="hx-inline-code">\$1<\/code>/)
+  assert.ok(harness.includes('(https?:\\/\\/[^)\\s]+)'), 'links only match http(s) URLs')
+
+  // Fenced code keeps its language tag out of the body: the fence's info string is the
+  // first line, and the code starts after the newline that ends it.
+  assert.match(harness, /const nl = chunk\.indexOf\('\\n'\)/)
+  assert.match(harness, /const body = nl >= 0 \? chunk\.slice\(nl \+ 1\) : ''/)
+
+  // The stylesheet owns how the rendered constructs look.
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  for (const rule of ['.hx-h1', '.hx-table', '.hx-list', '.hx-quote', '.hx-hr', '.hx-link']) {
+    assert.match(css, new RegExp(rule.replace('.', '\\.')))
+  }
 })
 
 test('the console configures Pi with the router as its only provider', () => {
@@ -821,9 +923,13 @@ test('the event stream opens with the transcript the agent already produced', as
     assert.deepEqual(live, { type: 'event', record: { type: 'agent_start' } })
 
     bridge.emit('status', { phase: 'busy', tokens: 12, cost: 0.5 })
-    assert.deepEqual(await frame(), {
-      type: 'status',
-      status: { phase: 'busy', tokens: 12, cost: 0.5 },
+    const statusFrame = await frame()
+    assert.equal(statusFrame.type, 'status')
+    assert.deepEqual(statusFrame.status, {
+      phase: 'busy',
+      tokens: 12,
+      cost: 0.5,
+      routedModel: null,
     })
 
     bridge.emit('usage', { tokens: 34, cost: 0.75 })
@@ -1125,4 +1231,217 @@ test('parallel consoles are bounded, and a fresh scratch console opens without a
       }
     },
   )
+})
+
+test('a queued follow-up runs as its own turn once the current one settles', async () => {
+  const { bridge } = makeFake()
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '800' }, async () => {
+      const firstSettled = nextEvent(bridge, 'agent_settled')
+      await bridge.prompt('first turn')
+
+      // Both queues take a message while the first turn runs.
+      const steered = await bridge.prompt('steer mid-run')
+      const held = await bridge.prompt('follow up', { queueMode: 'followUp' })
+      assert.equal(steered.data.disposition, 'queued')
+      assert.equal(held.data.disposition, 'queued')
+
+      // Pi's own accounting reaches the status the page renders.
+      await waitFor(() => bridge.status().queuedSteering.includes('steer mid-run'))
+      await waitFor(() => bridge.status().queuedFollowUp.includes('follow up'))
+      assert.equal(bridge.status().pendingMessages, 2)
+
+      // The first turn settles; the held message starts as a turn of its own and then settles.
+      await firstSettled
+      await waitFor(() => !bridge.status().isStreaming, { timeoutMs: 4_000 })
+      await waitFor(() => bridge.status().pendingMessages === 0)
+      assert.equal(bridge.status().queuedFollowUp.length, 0)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('stopping reports the queued messages it dropped', async () => {
+  const { bridge } = makeFake()
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '800' }, async () => {
+      await bridge.prompt('long turn')
+      await bridge.prompt('steer mid-run')
+      await bridge.prompt('held for later', { queueMode: 'followUp' })
+      await waitFor(() => bridge.status().pendingMessages === 2)
+
+      const record = await bridge.abort()
+      assert.deepEqual(record.clearedQueue, {
+        steering: ['steer mid-run'],
+        followUp: ['held for later'],
+      })
+      assert.equal(bridge.status().pendingMessages, 0)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a queue_update empties when pi consumes what it was holding', async () => {
+  // The authority runs one way: whatever pi says the queue holds is what the bridge holds,
+  // including the empty list after the agent has taken the messages back out.
+  const { bridge } = makeFake({})
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '200' }, async () => {
+      await bridge.prompt('turn one')
+      await bridge.prompt('held', { queueMode: 'followUp' })
+      await waitFor(() => bridge.status().pendingMessages === 1)
+      await waitFor(() => bridge.status().pendingMessages === 0, { timeoutMs: 6_000 })
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a send can never leave the composer stuck on Sending…', () => {
+  // Two ways this used to wedge: the prompt had no deadline, so a socket the OS held open kept
+  // `sending` true for the life of the page; and the flag and the hint were page-wide, so one
+  // conversation's slow send disabled every other composer and left its hint over them.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+
+  assert.match(harness, /const PROMPT_TIMEOUT_MS = 35_000/)
+  assert.match(harness, /setTimeout\(\(\) => control\.abort\(\), PROMPT_TIMEOUT_MS\)/)
+  assert.match(harness, /signal: control\.signal/)
+  assert.match(harness, /clearTimeout\(timer\)/)
+
+  // The flag is per conversation; the hint names the one it belongs to.
+  assert.match(harness, /console\.sending = true/)
+  assert.match(harness, /console\.sending = false/)
+  assert.match(harness, /setHint\([^)]*, console\)/)
+})
+
+test('the transcript renders Markdown: headings, tables, lists and code', () => {
+  // The same fold-guard style: the renderer is line grammar the port must keep. Every rule
+  // here names a construct a model answers with and a plain <br> wall would flatten.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+
+  // Escaping happens in renderInline, on each leaf, before any tag is written.
+  assert.match(harness, /function renderInline\(raw\)/)
+  assert.match(harness, /<code class="hx-inline-code">\$1<\/code>/)
+  assert.ok(harness.includes('(https?:\\/\\/[^)\\s]+)'), 'links only match http(s) URLs')
+
+  // Fenced code keeps its language tag out of the body: the fence's info string is the
+  // first line, and the code starts after the newline that ends it.
+  assert.match(harness, /const nl = chunk\.indexOf\('\\n'\)/)
+  assert.match(harness, /const body = nl >= 0 \? chunk\.slice\(nl \+ 1\) : ''/)
+
+  // The stylesheet owns how the rendered constructs look.
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  for (const rule of ['.hx-h1', '.hx-table', '.hx-list', '.hx-quote', '.hx-hr', '.hx-link']) {
+    assert.match(css, new RegExp(rule.replace('.', '\\.')))
+  }
+})
+
+test('images attach to a prompt via the paperclip or a drop on the composer', () => {
+  // Two ways in, one staged strip: the paperclip opens the file input, and a file dragged
+  // anywhere on the composer lands in the same place. The send path is the only thing that
+  // clears the strip, and it puts the images back if the send fails.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+
+  assert.match(html, /id="hx-attach"/)
+  assert.match(html, /id="hx-file"[^>]*accept="image\/png,image\/jpeg,image\/gif,image\/webp"/)
+  assert.match(html, /id="hx-attachments"/)
+  assert.match(harness, /function addAttachments\(files\)/)
+  assert.match(harness, /function renderAttachments\(\)/)
+  assert.match(harness, /function wireComposerDrop\(\)/)
+  assert.match(harness, /\$\('hx-attach'\)\?\.addEventListener\('click'/)
+  assert.match(harness, /images: images\.length \? images : undefined/)
+  assert.match(css, /\.hx-attachment/)
+  assert.match(css, /\.hx-composer\.hx-dropping/)
+})
+
+test('a session renamed before can be renamed again, chaining to the newest leaf', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-sessions-'))
+  const target = join(store, 'bbbbbbbb.jsonl')
+  writeFileSync(
+    target,
+    `${JSON.stringify({ type: 'session', id: 'bbbbbbbb', cwd: store, timestamp: '2026-02-01T10:00:00.000Z' })}\n`,
+  )
+  appendFileSync(
+    target,
+    `${JSON.stringify({ type: 'message', id: 'm1', timestamp: '2026-02-01T10:01:00.000Z' })}\n`,
+  )
+  appendFileSync(
+    target,
+    `${JSON.stringify({ type: 'message', id: 'm2', timestamp: '2026-02-01T10:02:00.000Z' })}\n`,
+  )
+  appendFileSync(
+    target,
+    `${JSON.stringify({ type: 'session_info', id: 'pre-name', parentId: null, timestamp: '2026-02-01T10:05:00.000Z', name: 'First name' })}\n`,
+  )
+  await withPiApp({ piSessionsDir: store }, async (base) => {
+    const renamed = await fetch(`${base}/api/pi/sessions/rename`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session: 'bbbbbbbb', name: 'Second name' }),
+    })
+    const data = await renamed.json()
+    assert.equal(data.success, true)
+    assert.equal(data.label, 'Second name')
+    const last = readFileSync(target, 'utf8').trimEnd().split('\n').pop()
+    assert.equal(JSON.parse(last).name, 'Second name')
+    assert.equal(JSON.parse(last).parentId, 'pre-name', 'the entry chains to the renamed leaf')
+  })
+})
+
+test('images are attached to a prompt and sent to Pi', async () => {
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    const sent = []
+    bridge.send = async (command) => {
+      sent.push(command)
+      return { data: { disposition: 'queued' } }
+    }
+    bridge.state.isStreaming = true
+
+    const imgData =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AApEBGZxU5iQAAAABJRU5ErkJggg=='
+    const images = [
+      { type: 'image', data: imgData, mimeType: 'image/png' },
+      { type: 'image', data: imgData, mimeType: 'image/png' },
+    ]
+
+    const record = await bridge.prompt('Look at this', { images })
+    assert.deepEqual(sent, [
+      {
+        type: 'prompt',
+        message: 'Look at this',
+        streamingBehavior: 'steer',
+        images: [
+          { type: 'image', data: imgData, mimeType: 'image/png' },
+          { type: 'image', data: imgData, mimeType: 'image/png' },
+        ],
+      },
+    ])
+    assert.equal(record.data.disposition, 'queued')
+    assert.equal(bridge.state.isStreaming, true)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('an image attach that is not valid base64 is refused, not sent', async () => {
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    let called = 0
+    bridge.send = async () => {
+      called += 1
+      return { data: { disposition: 'started' } }
+    }
+    await assert.rejects(
+      () => bridge.prompt('look', { images: [{ data: 'not base64!!!', mimeType: 'image/png' }] }),
+      /base64/,
+    )
+    assert.equal(called, 0, 'nothing reaches Pi when an attachment is malformed')
+  } finally {
+    bridge.dispose()
+  }
 })

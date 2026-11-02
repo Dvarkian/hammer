@@ -17,8 +17,6 @@
 :root {
   /* Maroon is the brand: the head of the mark, and the accent the router already uses. */
   --hx-brand: #7d2231;
-  /* The reading column. Tools, code and the composer share it; prose is capped in `ch`. */
-  --hx-measure: 820px;
   --hx-gutter: 28px;
   --hx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -270,10 +268,11 @@ body[data-view='agent'] #reload-btn {
   display: flex;
   align-items: center;
   gap: 12px;
+  box-sizing: border-box;
   width: 100%;
-  max-width: var(--hx-measure);
-  margin-inline: auto;
-  padding: 0 0 10px;
+  /* The log's own gutter: without it the title starts 28px left of the text it heads, now that
+     neither is held in by a shared measure. */
+  padding: 0 var(--hx-gutter) 10px;
 }
 
 .hx-head-title {
@@ -369,15 +368,30 @@ body[data-view='agent'] #reload-btn {
  * to be a gradient band with three pills in it; the line is the same information at a fraction
  * of the weight, and it is the only rule between the toolbar and the transcript.
  */
+/* The thinking pill is a control, not a readout: it cycles the level the agent asks for. It
+   keeps the strip link's look so the row still reads as one line of routing facts. */
+.hx-thinking {
+  font: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+.hx-thinking b {
+  color: var(--text);
+}
+
 .hx-route-strip {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
+  box-sizing: border-box;
   width: 100%;
-  max-width: var(--hx-measure);
-  margin-inline: auto;
-  padding: 0 0 12px;
+  /* 1px of the padding is the border below, so the strip's text lands on the log's left edge and
+     its rule still spans the pane. */
+  padding: 0 calc(var(--hx-gutter) - 1px) 12px;
   border-bottom: 1px solid var(--border);
   font-size: 0.74rem;
   color: var(--text-muted);
@@ -456,19 +470,27 @@ body[data-view='agent'] #reload-btn {
   display: flex;
   flex-direction: column;
   gap: 0;
-  scroll-behavior: smooth;
+  /*
+   * Deliberately not a smooth scroll. Streaming appends set `scrollTop` many times a second; each
+   * write retargeted an animation that had not finished, so the log crept behind the turn and
+   * "follow the bottom" kept deciding it was no longer at the bottom.
+   */
 }
 
 .hx-transcript > * {
+  /* The log is the page: entries run the width of the pane rather than a measure, so the
+     assistant's prose and a command's line share one edge. */
   width: 100%;
-  max-width: var(--hx-measure);
-  margin-inline: auto;
+  /* A column flex container shrinks its items when they overflow the main axis. Without this, a
+     long transcript compressed the rows near the viewport — tool boxes flattened to a few
+     pixels — instead of scrolling to them. */
+  flex: 0 0 auto;
 }
 
 /*
  * Every entry is a paragraph of one log: a rail in the margin names the speaker, and a small
  * uppercase label above the content says which one it is. The rail is what makes a long turn
- * scannable — green for the prompt, maroon for the answer — without boxing either of them.
+ * scannable — light blue for the prompt, maroon for the answer — without boxing either of them.
  */
 .hx-row {
   min-width: 0;
@@ -505,11 +527,10 @@ body[data-view='agent'] #reload-btn {
   margin-bottom: 3px;
 }
 
-/* Prose is capped in characters, tool lines are not: a paragraph has a measure, a command does
-   not. */
+/* Prose and commands share one column here: with a measure they did not, and the reader's eye
+   paid for the difference at every paragraph. */
 .hx-turn-text,
 .hx-assistant {
-  max-width: 74ch;
   font-size: 0.88rem;
   line-height: 1.6;
   color: var(--text);
@@ -549,8 +570,8 @@ body[data-view='agent'] #reload-btn {
 }
 
 .hx-thinking-text {
-  max-height: 300px;
-  overflow-y: auto;
+  /* No inner scroll box: thinking is read in the flow of the turn, and a scroller here also
+     swallowed the wheel, so pointing at a thought stopped the transcript from scrolling. */
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.8rem;
@@ -581,6 +602,116 @@ body[data-view='agent'] #reload-btn {
   border-radius: 4px;
   background: var(--surface-alt);
   font-size: 0.86em;
+}
+
+/* ── Markdown blocks ───────────────────────────────────────────────────────────────── */
+/*
+ * The transcript renders the agent's answers as Markdown: headings, tables, lists, quotes
+ * and rules, all built from escaped text so nothing the model writes becomes markup. These
+ * sit inside speech bubbles, so they are sized to the flow rather than the page.
+ */
+.hx-p {
+  margin: 6px 0;
+  line-height: 1.55;
+}
+
+.hx-p:first-child {
+  margin-top: 0;
+}
+
+.hx-p:last-child {
+  margin-bottom: 0;
+}
+
+.hx-h1, .hx-h2, .hx-h3, .hx-h4, .hx-h5, .hx-h6 {
+  margin: 12px 0 6px;
+  line-height: 1.3;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.hx-h1:first-child,
+.hx-h2:first-child,
+.hx-h3:first-child {
+  margin-top: 0;
+}
+
+.hx-h1 { font-size: 1.15rem; }
+.hx-h2 { font-size: 1.05rem; }
+.hx-h3 { font-size: 0.95rem; }
+.hx-h4, .hx-h5, .hx-h6 { font-size: 0.88rem; color: var(--text-dim); }
+
+.hx-hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 10px 0;
+}
+
+.hx-list {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+.hx-list li {
+  margin: 3px 0;
+  line-height: 1.5;
+}
+
+.hx-quote {
+  margin: 8px 0;
+  padding: 4px 12px;
+  border-left: 2px solid var(--accent);
+  color: var(--text-dim);
+}
+
+.hx-quote .hx-p {
+  color: inherit;
+}
+
+.hx-link {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.hx-link:hover {
+  text-decoration: underline;
+}
+
+/* Tables scroll sideways inside the bubble instead of stretching the transcript. */
+.hx-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+
+.hx-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.hx-table th,
+.hx-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.hx-table th {
+  font-weight: 700;
+  background: var(--surface-alt);
+  white-space: nowrap;
+}
+
+.hx-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.hx-table td .hx-inline-code,
+.hx-table th .hx-inline-code {
+  white-space: nowrap;
 }
 
 /* ── Tool calls ────────────────────────────────────────────────────────────────────── */
@@ -831,11 +962,126 @@ body[data-view='agent'] #reload-btn {
   padding: 12px var(--hx-gutter) 14px;
 }
 
+/* While a file drag hovers over the composer, the border says drop here. */
+.hx-composer.hx-dropping {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* Staged attachments: a row of chips between the textarea and the queue strip. */
+.hx-attachments {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.hx-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-alt);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  max-width: 220px;
+}
+
+.hx-attachment img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 5px;
+  display: block;
+}
+
+.hx-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-attachment-remove {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+
+.hx-attachment-remove:hover {
+  color: var(--text);
+}
+
+.hx-btn.hx-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 8px;
+}
+
+/* The queue strip: what pi is holding for this conversation, between transcript and input.
+   Hidden entirely when nothing is waiting, so an idle console looks exactly as before. */
+.hx-queue {
+  margin-top: 8px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.hx-queue-label {
+  flex: none;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.66rem;
+}
+
+.hx-queue-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hx-queue-list li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.hx-queue-list li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.hx-queue-list li b {
+  flex: none;
+  font-weight: 600;
+  font-size: 0.66rem;
+  color: var(--text-muted);
+}
+
+/* A follow-up waits for the whole turn; a steer lands mid-run. The tag says which. */
+.hx-queue-list li[data-queue-mode='followUp'] b {
+  color: var(--accent);
+}
+
 .hx-input {
   display: block;
   width: 100%;
-  max-width: var(--hx-measure);
-  margin-inline: auto;
   box-sizing: border-box;
   resize: none;
   min-height: 68px;
@@ -865,8 +1111,7 @@ body[data-view='agent'] #reload-btn {
   align-items: center;
   gap: 10px;
   width: 100%;
-  max-width: var(--hx-measure);
-  margin: 8px auto 0;
+  margin: 8px 0 0;
   min-height: 28px;
 }
 
@@ -1103,6 +1348,37 @@ body[data-view='agent'] #reload-btn {
   font-weight: 600;
 }
 
+/* The session list is the conversation switcher now, so it has to say which conversations are
+   working. The ring is the header pill's pulse at list size: a turn in another conversation is
+   otherwise indistinguishable from one that finished before the page opened. */
+.hx-session-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.hx-session-top .hx-session-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.hx-session-spin {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  border: 1.5px solid var(--border);
+  border-top-color: var(--accent);
+  animation: hx-spin 0.9s linear infinite;
+}
+
+@keyframes hx-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hx-session-meta {
   font-size: 0.69rem;
   color: var(--text-muted);
@@ -1110,6 +1386,59 @@ body[data-view='agent'] #reload-btn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The rename affordance. It lives inside the row button, so it is a span that stops the
+   click from reaching the row's own open action; it stays invisible until the row is
+   hovered or current, which keeps a rail of a dozen sessions quiet. */
+.hx-session-rename {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.hx-session-row:hover .hx-session-rename,
+.hx-session-row.current .hx-session-rename,
+.hx-session-rename:focus-visible {
+  opacity: 1;
+}
+
+.hx-session-rename:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* In-place rename: the row being edited swaps its label for an input. It is drawn as a
+   div (not a button) while editing, so Enter cannot also open the conversation. */
+.hx-session-row.renaming {
+  background: var(--surface-alt);
+  box-shadow: inset 2px 0 0 var(--accent);
+  cursor: text;
+}
+
+.hx-session-rename-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--card, var(--surface-alt));
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 3px 7px;
+}
+
+.hx-session-rename-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .hx-empty-note {
