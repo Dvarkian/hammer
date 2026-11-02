@@ -1329,7 +1329,7 @@
         title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}${r.m.personaModelId ? ` (catalog: ${r.m.personaModelId})` : ''}\n` +
           `intelligence ${fmtScatterIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · ` +
           `speed ${fmtScatterSpeed(r.speed)} tok/s at a ${SPEED_REFERENCE_TOKENS}-token answer` +
-          (r.tokens != null ? ` (this row's own mean answer: ${r.tokens} tokens)` : '') +
+          (r.tokens != null ? ` (this row's own mean answer: ${fmtCompactTokens(r.tokens)} tokens)` : '') +
           (offAxis ? `\nfaster than this axis shows — drawn at the edge ${'➤'}` : '');
         c.appendChild(title);
         svg.appendChild(c);
@@ -4176,11 +4176,32 @@
     }
 
     // Formats a raw token count like the catalog's context strings: "128k", "1.5M", "32000".
+    // One decimal only when a single digit leads the lumped figure — "8.1k" but "433k", "1.2M"
+    // but "15M" — so the column width stays predictable (see formatTokenCount in lib/utils.js,
+    // whose output this mirrors for the same strings).
     function formatTokenCount(n) {
       const value = Number(n);
       if (!Number.isFinite(value) || value <= 0) return null;
-      if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
-      if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
+      const lump = (scale, suffix) => {
+        const units = value / scale;
+        const shown = units >= 10 ? Math.round(units) : Math.round(units * 10) / 10;
+        return `${shown}${suffix}`;
+      };
+      if (value >= 1e9) return lump(1e9, 'B');
+      if (value >= 1e6) return lump(1e6, 'M');
+      if (value >= 1e3) return lump(1e3, 'k');
+      return String(Math.round(value));
+    }
+
+    // The same compact shape for counts that are always rendered (a zero is "0", never null):
+    // the log card's in/out split and any other raw token figure on the page.
+    function fmtCompactTokens(n) {
+      const value = Number(n);
+      if (!Number.isFinite(value) || value < 0) return String(n);
+      if (value === 0) return '0';
+      if (value >= 1e9) { const u = value / 1e9; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}B`; }
+      if (value >= 1e6) { const u = value / 1e6; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}M`; }
+      if (value >= 1e3) { const u = value / 1e3; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}k`; }
       return String(Math.round(value));
     }
 
@@ -4325,7 +4346,7 @@
       const metaBits = [];
       const reportedTokens = Number(lastResponse.tokens);
       if (!expired && Number.isFinite(reportedTokens) && reportedTokens > 0) {
-        metaBits.push(`${reportedTokens} token${reportedTokens === 1 ? '' : 's'}`);
+        metaBits.push(`${fmtCompactTokens(reportedTokens)} token${reportedTokens === 1 ? '' : 's'}`);
       }
       // An answer that arrived in one piece measures no first token and no generation rate
       // (the server refuses to charge a whole response's duration to generation — see
@@ -5868,10 +5889,13 @@
       const tokens = number * (match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1);
       if (!Number.isFinite(tokens) || tokens <= 0) return 'N/A';
       if (tokens >= 1_000_000) {
-        const millions = Math.round(tokens / 100_000) / 10;
-        return `${millions}M`;
+        const millions = tokens / 1_000_000;
+        return `${millions >= 10 ? Math.round(millions) : Math.round(millions * 10) / 10}M`;
       }
-      if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+      if (tokens >= 1_000) {
+        const thousands = tokens / 1_000;
+        return `${thousands >= 10 ? Math.round(thousands) : Math.round(thousands * 10) / 10}K`;
+      }
       return String(Math.round(tokens));
     }
 
@@ -6578,7 +6602,15 @@
           const providerQuotaHtml = quotaBarsHtml(p, rl);
           let rateLimitHtml = '';
           if (rl) {
-            const fmtNum = n => n >= 1000 ? (n / 1000).toFixed(0) + 'k' : String(n);
+            // Compact numbers, one decimal only when a single digit leads — "8.1k" but "433k".
+            const fmtNum = n => {
+              const v = Number(n);
+              if (!Number.isFinite(v)) return String(n);
+              if (v >= 1e9) { const u = v / 1e9; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}B`; }
+              if (v >= 1e6) { const u = v / 1e6; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}M`; }
+              if (v >= 1e3) { const u = v / 1e3; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}k`; }
+              return String(Math.round(v));
+            };
             const fmtTime = ts => {
               if (!ts) return null;
               const d = new Date(ts);
@@ -8430,7 +8462,7 @@
                       ${hadFailover ? `<span>•</span><span style="color: var(--warning); font-weight: 600;">🔁 ${retryCount} failover${retryCount > 1 ? 's' : ''}</span>` : ''}
                       ${l.duration ? `<span>•</span><span>${l.duration}ms total</span>` : ''}
                       ${l.ttft != null && l.ttft !== l.duration ? `<span>•</span><span style="color: var(--accent);">⚡ ${formatSecondsFromMs(l.ttft)} TTFT</span>` : ''}
-                      ${l.prompt_tokens != null || l.completion_tokens != null ? `<span>•</span><span style="color: var(--text-muted);"><span style="font-weight: 600; color: var(--text);">${l.prompt_tokens || 0}</span> in / <span style="font-weight: 600; color: var(--text);">${l.completion_tokens || 0}</span> out</span>` : ''}
+                      ${l.prompt_tokens != null || l.completion_tokens != null ? `<span>•</span><span style="color: var(--text-muted);"><span style="font-weight: 600; color: var(--text);">${fmtCompactTokens(l.prompt_tokens || 0)}</span> in / <span style="font-weight: 600; color: var(--text);">${fmtCompactTokens(l.completion_tokens || 0)}</span> out</span>` : ''}
                     </div>
                   </div>
                 </div>

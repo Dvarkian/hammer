@@ -1149,13 +1149,23 @@
       return
     }
     const parts = []
+    // Compact token figures — "433k", "1.2M", "8.1k" — one decimal only when a single digit
+    // leads the lumped number, so the strip never widens to a full comma-grouped count.
+    const compact = n => {
+      const v = Number(n)
+      if (!Number.isFinite(v) || v < 0) return String(n)
+      if (v >= 1e9) { const u = v / 1e9; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}B` }
+      if (v >= 1e6) { const u = v / 1e6; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}M` }
+      if (v >= 1e3) { const u = v / 1e3; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}k` }
+      return String(Math.round(v))
+    }
     if (total > 0 && input + output + cacheRead + cacheWrite === 0) {
       // No split available: show the one number we were given.
-      parts.push(`${total.toLocaleString()} tokens`)
+      parts.push(`${compact(total)} tokens`)
     } else {
-      parts.push(`${input.toLocaleString()} in · ${output.toLocaleString()} out`)
+      parts.push(`${compact(input)} in · ${compact(output)} out`)
       const cached = cacheRead + cacheWrite
-      if (cached > 0) parts.push(`${cached.toLocaleString()} cached`)
+      if (cached > 0) parts.push(`${compact(cached)} cached`)
     }
     const cost = Number(usage.cost) || 0
     if (cost > 0) parts.push(`$${cost.toFixed(cost >= 1 ? 2 : 4)}`)
