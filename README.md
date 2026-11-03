@@ -70,6 +70,17 @@ npm run desktop          # launch the app
 npm run desktop:package  # build a runnable app directory in release/
 ```
 
+To put Hammer in the application menu and on the taskbar/dock, install the launcher after
+packaging and installing the app under `~/.local/opt/hammer`:
+
+```bash
+npm run desktop:launcher -- --pin
+npm run desktop:launcher -- --uninstall   # remove the entry, icon and pin
+```
+
+The launcher starts the packaged app (`~/.local/opt/hammer/hammer`), not the checkout. Use
+`--app <path>` to point at a build in `release/` that you have not installed yet.
+
 - Startup shows a splash screen while provider models are discovered, then opens the dashboard. Discovery is what makes the wait real, so the splash reports elapsed time rather than pretending to be instant.
 - Closing the window keeps the router — and `/v1` — running from the tray, so tools mid-session are not cut off. **Quit** (menu, tray, or Ctrl/Cmd+Q) stops it. On desktops without tray support, closing the window quits.
 - Launch with `--port <number>` or `HAMMER_PORT` if 7352 is taken. If a hammer is already listening on that port, the app attaches to it instead of starting a second router; if something else owns the port, it says so instead of dying on `EADDRINUSE`.

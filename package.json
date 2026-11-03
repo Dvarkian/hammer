@@ -31,6 +31,7 @@
     "start": "node bin/hammer.js",
     "desktop": "electron .",
     "desktop:package": "electron-packager . Hammer --executable-name=hammer --out=release --overwrite --prune --icon=desktop/assets/icon.png --ignore=\"^/(release|test|tools|docs|\\.git|\\.github|\\.freebuff|\\.cloud-attachments|\\.test-home)\"",
+    "desktop:launcher": "node tools/install-desktop-launcher.mjs",
     "icons": "node tools/make-desktop-icons.mjs",
     "test": "node --test \"test/**/*.test.js\"",
     "lint": "eslint .",

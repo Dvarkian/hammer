@@ -379,6 +379,9 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.setName(APP_TITLE)
+  // Wayland `app_id` / X11 `WM_CLASS` must equal the installed launcher's base id (`hammer`) so
+  // the dock/taskbar shows Hammer's icon instead of a generic one. Must run before `ready`.
+  if (typeof app.setDesktopName === 'function') app.setDesktopName('hammer.desktop')
   app.on('second-instance', showWindow)
   app.on('activate', showWindow)
   app.on('before-quit', () => {
