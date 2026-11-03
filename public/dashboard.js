@@ -327,8 +327,8 @@
     // says so on the card rather than going quiet.
     let faviconProxyAvailable = false;
     let searchTerm = '';
-    // null = default multi-sort; otherwise { col: string, dir: 'asc'|'desc' }
-    let sortState = null;
+    // There is no per-column sort state: the models table has exactly one order, intelligence
+    // descending (DEFAULT_SORT_CHAIN), and no control offers another. See updateSortHeaders.
     let currentRenderedOrder = [];
     let graveyardCurrentOrder = [];
     // Unavailable rows are only built while the graveyard panel is open; this holds the
@@ -3276,48 +3276,15 @@
       render(true);
     }
 
-    function setSort(col) {
-      if (sortState && sortState.col === col) {
-        if (sortState.dir === 'asc') {
-          sortState = { col, dir: 'desc' };
-        } else {
-          // third click resets to default
-          sortState = null;
-        }
-      } else {
-        sortState = { col, dir: 'asc' };
-      }
-      updateSortHeaders();
-      render(true);
-    }
-
-    function resetSort() {
-      sortState = null;
-      updateSortHeaders();
-      render(true);
-    }
-
+    // The models table is ordered by intelligence, strongest first, and offers no other
+    // order. There used to be clickable headers (with arrows cycling asc → desc → default)
+    // and a "reset sort" button; both are gone, so the only thing left to reflect in the
+    // header is that one fixed fact: the Intelligence column is what the rows are ordered by.
     function updateSortHeaders() {
-      const cols = ['model', 'ctx', 'intell', 'status'];
-      const resetBtn = document.getElementById('sort-reset-btn');
-      cols.forEach(col => {
-        const th = document.getElementById(`th-${col}`);
-        const arrow = document.getElementById(`arrow-${col}`);
-        th.classList.remove('sort-active');
-        if (sortState && sortState.col === col) {
-          th.classList.add('sort-active');
-          arrow.textContent = sortState.dir === 'asc' ? '↑' : '↓';
-        } else if (!sortState && col === DEFAULT_SORT_COL) {
-          // No explicit sort: the table falls back to the default chain, whose
-          // primary key is intelligence — surface that in the header instead of
-          // showing the column as unsorted.
-          th.classList.add('sort-active');
-          arrow.textContent = DEFAULT_SORT_DIR === 'asc' ? '↑' : '↓';
-        } else {
-          arrow.textContent = '↕';
-        }
-      });
-      if (resetBtn) resetBtn.style.display = sortState ? 'inline-block' : 'none';
+      const th = document.getElementById('th-intell');
+      if (th) th.classList.add('sort-active');
+      const arrow = document.getElementById('arrow-intell');
+      if (arrow) arrow.textContent = '↓';
     }
 
     // Ignore leading bracketed tags such as "[次]" when ordering model names. The tag remains
@@ -3372,23 +3339,10 @@
       return 0;
     }
 
-    // Compares two models using the current sortState (or the default chain when unset)
+    // Compares two models by the one order this table has: intelligence descending, then
+    // status, QoS and name as tiebreakers (see DEFAULT_SORT_CHAIN).
     function compareModels(a, b) {
-      if (!sortState) {
-        return compareByChain(a, b, DEFAULT_SORT_CHAIN);
-      }
-
-      const { col, dir } = sortState;
-      const sign = dir === 'asc' ? 1 : -1;
-
-      // Build chain: primary column first, then the remaining default columns as tiebreakers
-      const tiebreakers = DEFAULT_SORT_CHAIN.filter(c => c.col !== col);
-
-      const av = colValue(a, col);
-      const bv = colValue(b, col);
-      const cmp = typeof av === 'string' ? av.localeCompare(bv) : (av - bv);
-      if (cmp !== 0) return sign * cmp;
-      return compareByChain(a, b, tiebreakers);
+      return compareByChain(a, b, DEFAULT_SORT_CHAIN);
     }
 
     function sortedModels(models) {
@@ -5736,18 +5690,18 @@
         case 'lmarena-coding': return { short: 'Code*', label: 'LMArena coding Elo, AA-interpolated' };
         case 'artificial-analysis': return { short: 'AA', label: 'Artificial Analysis Intelligence Index' };
         case 'design-arena': return { short: 'Arena*', label: 'Design Arena Elo, AA-interpolated' };
-        case 'metadata': return { short: 'Meta*', label: 'Metadata estimate' };
-        case 'local-fallback': return { short: 'Offline*', label: 'Offline fallback' };
-        case 'family-estimate': return { short: 'Family*', label: 'Same-family estimate' };
-        case 'default-fallback': return { short: 'Floor*', label: 'Conservative AA floor' };
+        case 'coding-index': return { short: 'Code*', label: "AA coding index, projected onto the intelligence scale" };
+        case 'agentic-index': return { short: 'Agent*', label: "AA agentic index, projected onto the intelligence scale" };
+        case 'combined-estimate': return { short: 'Est*', label: 'Combined estimate from several fetched measurements' };
+        case 'unscored': return { short: '', label: 'No fetched intelligence evidence for this model' };
         default: return { short: 'Estimate*', label: 'Estimated intelligence score' };
       }
     }
 
     // Every row displays one number: the Artificial Analysis Intelligence Index.
-    // AA's own rating is shown plain; a value interpolated from an Elo (or calibrated
-    // from a metadata/offline/family score) is an estimate and gets an asterisk. Even
-    // the unresolved fallback is an explicit AA-scale value (0.1), never a blank.
+    // AA's own rating is shown plain; a value projected from another fetched measurement
+    // (coding/agentic index, Design Arena or LMArena Elo) is an estimate and gets an
+    // asterisk. A model the fetched evidence does not cover shows a dash, never a guess.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);

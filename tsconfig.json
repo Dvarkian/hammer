@@ -12,6 +12,6 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["lib/**/*.js", "bin/**/*.js", "sources.js", "scores.js"],
+  "include": ["lib/**/*.js", "bin/**/*.js", "sources.js"],
   "exclude": ["node_modules", "public", "test", "tools"]
 }

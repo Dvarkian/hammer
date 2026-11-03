@@ -18,7 +18,7 @@ does not help either: it re-launches the same frozen bundle.
 **After any change, rebuild and reinstall the desktop app before reporting the work as done.**
 
 That includes changes to `public/` (dashboard, harness, CSS, HTML), `lib/`, `bin/`, `desktop/`,
-`sources.js`, `scores.js`, `package.json`, and anything else that ends up inside the asar. A
+`sources.js`, `package.json`, and anything else that ends up inside the asar. A
 behavioural change that only exists in the working tree is not shipped; the user is looking at the
 packaged copy.
 

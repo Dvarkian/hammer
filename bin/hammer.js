@@ -254,7 +254,7 @@ async function main() {
           .join(', '),
     )
     console.log(
-      `Coverage: measured=${audit.coverage.measured} estimated=${audit.coverage.estimated} family-matched=${audit.coverage.familyMatched} floored=${audit.coverage.floored} total=${audit.coverage.total}`,
+      `Coverage: measured=${audit.coverage.measured} estimated=${audit.coverage.estimated} combined=${audit.coverage.combined} unscored=${audit.coverage.unscored} total=${audit.coverage.total}`,
     )
     if (audit.regression) {
       console.log(

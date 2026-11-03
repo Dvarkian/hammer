@@ -25,7 +25,7 @@ lib/pi/                the Pi coding agent: settings, runtime resolution, child
                        process, JSONL RPC, replay log, supervision
 lib/providers/         descriptors, catalog, discovery, resolution
 lib/config.js          config read/write (single writer for the file)
-sources.js, scores.js  model data (to move under lib/data/)
+sources.js  model data (to move under lib/data/)
 public/                dashboard, classic script, no build step
 ```
 

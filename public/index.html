@@ -233,11 +233,6 @@
                 title="Values keep updating; row order is locked while you hover.">
                 ⏸ Layout locked</div>
             </div>
-            <button id="sort-reset-btn" onclick="resetSort()"
-              style="display:none; border:none; background:none; cursor:pointer; font-size:0.8rem; color:var(--text-muted); padding:4px 8px; border-radius:6px; white-space:nowrap; transition:all 0.15s;"
-              onmouseover="this.style.background='var(--surface-alt)';this.style.color='var(--text)'"
-              onmouseout="this.style.background='none';this.style.color='var(--text-muted)'">&#x2715; Reset
-              sort</button>
             <button id="test-all-btn" onclick="testAll()"
               style="border:none; background:var(--success); color:#ffffff; cursor:pointer; font-size:0.8rem; font-weight:600; padding:4px 12px; border-radius:6px; white-space:nowrap; transition:all 0.15s; display:none;"
               onmouseover="this.style.opacity='0.85'"
@@ -250,17 +245,14 @@
           onmouseleave="isTableHovered=false; document.getElementById('hover-pause-badge').style.display='none';">
           <thead>
             <tr>
-              <th class="sortable" onclick="setSort('model')" id="th-model">Model <i class="sort-arrow"
-                  id="arrow-model">↕</i></th>
-              <th class="sortable" onclick="setSort('intell')" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, interpolated values, same-family estimates, or the explicit 0.1 AA-scale floor when no source exists (marked *). Hover a value for its source.">Intelligence <i class="sort-arrow"
-                  id="arrow-intell">↕</i></th>
+              <th>Model</th>
+              <th class="sort-active" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, or an estimate from fetched benchmark evidence. Hover a value for its source. The table is always ordered by this column, strongest first.">Intelligence <i class="sort-arrow"
+                  id="arrow-intell">↓</i></th>
               <th class="text-right" title="Average time to first token across real requests (seconds)">TTFT</th>
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
-              <th class="sortable" onclick="setSort('ctx')" id="th-ctx"
-                title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context <i class="sort-arrow"
-                  id="arrow-ctx">↕</i></th>
-              <th class="sortable" onclick="setSort('status')" id="th-status" title="Model health from pings and tests">Status <i class="sort-arrow"
-                  id="arrow-status">↕</i></th>
+              <th id="th-ctx"
+                title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
+              <th id="th-status" title="Model health from pings and tests">Status</th>
               <th title="Click Test to ask the model for a short answer; the full response (or error) is shown here">Response</th>
             </tr>
           </thead>

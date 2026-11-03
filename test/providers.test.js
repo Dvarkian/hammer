@@ -113,7 +113,7 @@ import {
   resolveRequestModels,
 } from '../lib/providers/discovery.js'
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
-import { sources, canonicalizeModelId, getScore, MODELS } from '../sources.js'
+import { sources, canonicalizeModelId, MODELS } from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import {
   isAccountBudgetRefusalText,
@@ -150,20 +150,6 @@ const imported = () => listProviders().filter((d) => d.origin === 'omniroute')
 const activationOf = (activation) => imported().filter((d) => d.activation === activation)
 
 // ── Behavior parity with the tables the registry replaced ──────────────────────────────
-
-test("Cohere's live Command models all have offline intelligence fallbacks", () => {
-  const expected = {
-    'command-a-reasoning-08-2025': 0.49,
-    'command-a-vision-07-2025': 0.44,
-    'command-a-03-2025': 0.4341,
-    'command-r7b-12-2024': 0.286,
-    'command-r-plus-08-2024': 0.404,
-    'command-r-08-2024': 0.3297,
-  }
-  for (const [modelId, score] of Object.entries(expected)) {
-    assert.equal(getScore(modelId), score, `${modelId} should keep its researched fallback`)
-  }
-})
 
 test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', () => {
   sortsDeepEqual(apiKeyEnvVarTable(), {

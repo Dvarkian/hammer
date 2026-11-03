@@ -3,7 +3,6 @@
  * @description Model sources for AI availability checker.
  */
 
-import { scores } from './scores.js'
 import { lazyProviderSourceEntries } from './lib/providers/resolutions.js'
 import { NLPCLOUD_DEFAULT_CHAT_URL } from './lib/providers/nlpcloud.js'
 
@@ -398,13 +397,6 @@ export function getPreferredModelContext(modelId, fallback = null) {
   return MODEL_CONTEXT_OVERRIDES[modelId] || MODEL_CONTEXT_OVERRIDES[resolved] || fallback
 }
 
-export function getScore(modelId) {
-  const { base, unprefixed, unscoped } = canonicalizeModelId(modelId)
-  // Try exact match first (e.g. google/gemma-3-4b-it), then the namespace-stripped spelling
-  // (`@cf/qwen/qwq-32b` -> `qwen/qwq-32b`), then the bare leaf (e.g. gemma-3-4b-it).
-  return scores[base] ?? scores[unscoped] ?? scores[unprefixed] ?? null
-}
-
 export const sources = {
   // ── Imported providers (OmniRoute free tier) ────────────────────────────────
   // Rows whose endpoint, wire format and credential shape were all resolved to plain
@@ -695,11 +687,12 @@ function buildModels() {
   for (const [providerKey, provider] of Object.entries(sources)) {
     for (const m of provider.models) {
       const [modelId, label, ctx] = m
-      const intell = getScore(modelId)
       result.push([
         modelId,
         label,
-        intell,
+        // Intelligence is never bundled with the catalog: it is fetched at runtime by
+        // lib/model-quality.js, so this column stays empty until that data arrives.
+        null,
         ctx,
         providerKey,
         ctx ? 'curated' : null,
