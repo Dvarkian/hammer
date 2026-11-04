@@ -19,8 +19,45 @@
 
   const API = '/api/pi'
   const VIEW_KEY = 'hammer.hx.view'
+  const SIDEBARS_KEY = 'hammer.hx.sidebars'
+
+  /**
+   * Which sidebars are open, persisted across pages. Both default to open: a first visit
+   * should show everything and let the reader put it away, not hand over an empty shell.
+   */
+  function loadSidebarState() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(SIDEBARS_KEY) || '{}')
+      return { sessions: raw.sessions !== false, details: raw.details !== false }
+    } catch {
+      return { sessions: true, details: true }
+    }
+  }
+
+  function saveSidebarState(next) {
+    try {
+      localStorage.setItem(SIDEBARS_KEY, JSON.stringify(next))
+    } catch {
+      // A private-mode browser without storage simply forgets the choice for the session.
+    }
+  }
+
+  function applySidebarState(state) {
+    document.body.classList.toggle('hx-sessions-collapsed', !state.sessions)
+    document.body.classList.toggle('hx-details-collapsed', !state.details)
+    const sessionsBtn = $('hx-toggle-sessions')
+    const detailsBtn = $('hx-toggle-details')
+    if (sessionsBtn) sessionsBtn.setAttribute('aria-pressed', String(state.sessions))
+    if (detailsBtn) detailsBtn.setAttribute('aria-pressed', String(state.details))
+  }
+
+  function toggleSidebar(which) {
+    const next = loadSidebarState()
+    next[which] = !next[which]
+    saveSidebarState(next)
+    applySidebarState(next)
+  }
   const MAX_TEXT = 120000
-  const MAX_TOOL = 24000
 
   const state = {
     /** Every conversation this page holds open, by console id. `main` always exists. */
@@ -31,6 +68,7 @@
     runningSessions: new Set(),
     items: [],
     mounted: 0,
+    lastRole: null,
     phase: 'idle',
     running: false,
     status: null,
@@ -120,6 +158,8 @@
     state.mounted = 0
     setPhase(console.phase, console)
     setRunning(console.running, console)
+    // Unsent text belongs to the conversation, so switching tabs swaps the draft with it.
+    restoreDraft(console)
     renderQueue(console)
     if (console.status) renderRouting(console.status, console)
     renderUsage(console)
@@ -132,6 +172,51 @@
 
   /** Where the open conversations are remembered between page loads (and restarts). */
   const OPEN_KEY = 'hammer.hx.open'
+  /** Where unsent composer text is remembered, one entry per conversation. */
+  const DRAFT_PREFIX = 'hammer.hx.draft:'
+
+  /**
+   * The storage key for one conversation's unsent text.
+   *
+   * Keyed by session file, which is the identity that survives a restart: a tab restored after
+   * reopening Hammer has a different instance id but the same session file. A conversation that
+   * has not sent anything yet has no file, so it falls back to its console id — stable for the
+   * main console ('main'), and close enough for a parallel tab that only exists while the page
+   * does.
+   */
+  function draftKey(console) {
+    if (!console) return null
+    return DRAFT_PREFIX + (console.sessionFile || `console:${console.id}`)
+  }
+
+  /** Remembers what is in the composer for this conversation, before it has been sent. */
+  function saveDraft(console, text) {
+    const key = draftKey(console)
+    if (!key) return
+    try {
+      if (text) localStorage.setItem(key, text)
+      else localStorage.removeItem(key)
+    } catch {
+      // A browser without storage simply does not remember anything.
+    }
+  }
+
+  /** Puts a conversation's remembered text back into the composer. */
+  function restoreDraft(console) {
+    const input = $('hx-input')
+    if (!input) return
+    const key = draftKey(console)
+    let text = ''
+    if (key) {
+      try {
+        text = localStorage.getItem(key) || ''
+      } catch {
+        text = ''
+      }
+    }
+    input.value = text
+    autoGrow()
+  }
 
   /**
    * The conversations this page has open, remembered by session file.
@@ -557,6 +642,11 @@
       requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
     } else {
       $('hx-input')?.focus()
+      // The session usage plot (agent rail) was sized while this view was hidden, so its
+      // width measurement was the fallback. Now that the rail has a real box, redraw it.
+      if (typeof window.drawUsagePlots === 'function') {
+        requestAnimationFrame(() => window.drawUsagePlots())
+      }
     }
   }
 
@@ -580,6 +670,13 @@
       </div>
     </div>`
 
+  /**
+   * The command a tool call ran, as it was written.
+   *
+   * Newlines are kept and nothing is trimmed: a command written over several lines is a
+   * different command from the same words joined with spaces, and a summary that flattened it
+   * hid exactly the part that matters. The head of the row wraps instead of clipping.
+   */
   function toolSummary(item) {
     const args = item.args
     if (!args || typeof args !== 'object') return ''
@@ -592,19 +689,19 @@
       args.url ||
       args.description ||
       ''
-    return clip(String(raw).replace(/\s+/g, ' '), 160)
+    return String(raw)
   }
 
-  function assistantMarkup(item) {
+  function assistantMarkup(item, showRole = true) {
     const blocks = item.blocks || []
-    const role = '<div class="hx-role">Hammer</div>'
+    const role = showRole ? '<div class="hx-role">Hammer</div>' : ''
     if (!blocks.length) {
       return `${role}<div class="hx-assistant hx-pending">…</div>`
     }
     const body = blocks
       .map((block) => {
         if (block.kind === 'thinking') {
-          return `<div class="hx-thinking"><div class="hx-block-label">thinking</div><div class="hx-thinking-text">${renderText(block.text || '')}</div></div>`
+          return `<div class="hx-thinking"><div class="hx-thinking-text">${renderText(block.text || '')}</div></div>`
         }
         return `<div>${renderText(block.text || '')}</div>`
       })
@@ -621,9 +718,30 @@
 
   /**
    * A tool call is one line of the log; its output is what you open when you need it. The whole
-   * line is the disclosure, so a turn with forty calls is forty lines rather than forty boxes —
-   * and a failed call still reads as failed without expanding anything.
+  /**
+   * An icon per tool, drawn in a 24x24 box and stroked in currentColor so the badge colour —
+   * maroon while the call runs, muted once it is done, red when it failed — is the only tint
+   * it needs. Kept to a handful of paths: they render at 12px.
    */
+  function toolIcon(name) {
+    const key = String(name || '').toLowerCase()
+  const icons = {
+    bash: '<path d="M5 5l5.5 5.5L5 16"/><path d="M13 8h7"/><path d="M13 17h6"/>',
+    read: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h6M10 15.5h6"/>',
+    edit: '<path d="M4 20l1.4-4.2L16.6 4.6a2.1 2.1 0 0 1 3 3L8.2 18.6z"/><path d="M14.6 6.6l3 3"/>',
+    write: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M12 11v7M8.5 14.5h7"/>',
+    grep: '<circle cx="11" cy="11" r="6.5"/><path d="M15.8 15.8 21 21"/>',
+    find: '<circle cx="11" cy="11" r="6.5"/><path d="M15.8 15.8 21 21"/>',
+    glob: '<path d="M3 6.5h6l2 2h10v11H3z"/>',
+    ls: '<path d="M3 5h18v14H3z"/><path d="M3 9.5h18"/><path d="M9 9.5V19M14.5 9.5V15"/>',
+    task: '<path d="M4 12.5l5.5 5.5L20 6"/>',
+    todo: '<path d="M4 12.5l5.5 5.5L20 6"/>',
+    webfetch: '<path d="M4 11a8 8 0 0 1 16 0"/><path d="M12 11v7M8.5 14.5 12 18l3.5-3.5"/>',
+  }
+  const body = icons[key] || '<circle cx="12" cy="12" r="7.5"/><path d="M12 7.5V12l3.5 2"/>'
+  return `<span class="hx-tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${body}</svg></span>`
+  }
+
   function toolMarkup(item) {
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
@@ -636,7 +754,7 @@
       : ''
     return `<details class="hx-tool ${item.status}${output ? '' : ' hx-tool-empty'}"${open}>
           <summary class="hx-tool-head">
-            <span class="hx-tool-dot" aria-hidden="true"></span>
+            ${toolIcon(item.name || 'tool')}
             <span class="hx-tool-name">${escapeHtml(item.name || 'tool')}</span>
             <span class="hx-tool-cmd">${escapeHtml(toolSummary(item))}</span>
             <span class="hx-tool-state">${escapeHtml(meta)}</span>
@@ -645,11 +763,18 @@
         </details>`
   }
 
+  /** The role label is shown only when the speaker changes from the row above it. */
+  function roleChanged(item) {
+    const changed = state.lastRole !== item.kind
+    state.lastRole = item.kind
+    return changed
+  }
+
   function itemMarkup(item) {
     if (item.kind === 'user') {
       return `<div class="hx-role">You</div><div class="hx-turn-text">${escapeHtml(item.text)}</div>`
     }
-    if (item.kind === 'assistant') return assistantMarkup(item)
+    if (item.kind === 'assistant') return assistantMarkup(item, item.showRole !== false)
     if (item.kind === 'tool') return toolMarkup(item)
     const tone = item.tone === 'error' ? ' error' : item.tone === 'success' ? ' success' : ''
     return `<div class="hx-notice${tone}"><span class="hx-notice-text">${escapeHtml(item.text)}</span></div>`
@@ -671,6 +796,7 @@
     if (reset) {
       transcript.innerHTML = ''
       state.mounted = 0
+      state.lastRole = null
     }
     if (!state.items.length) {
       transcript.innerHTML = EMPTY_MARKUP
@@ -683,6 +809,7 @@
       const item = state.items[i]
       const row = document.createElement('div')
       row.className = `hx-row hx-row-${item.kind}`
+      item.showRole = roleChanged(item)
       row.innerHTML = itemMarkup(item)
       item.node = row
       transcript.appendChild(row)
@@ -691,6 +818,362 @@
     if (stick) transcript.scrollTop = transcript.scrollHeight
     const jump = $('hx-jump')
     if (jump) jump.style.display = atBottom(transcript) ? 'none' : ''
+    scheduleMinimap()
+  }
+
+  // ── Outline rail ────────────────────────────────────────────────────────────────────
+  //
+  // The rail on the transcript's right edge mirrors the rows on screen: one tick per row,
+  // at the height that row actually occupies, in the colour the row's edge already carries.
+  // It is a mirror only — it reads `state.items` and the rows the transcript built, owns no
+  // state of its own beyond one paint frame — so switching conversations repaints it from
+  // scratch for free, and it can never disagree with the log for longer than one frame.
+
+  /** A tick's height plus the gap under it; keeps proportional ticks from fusing together. */
+  const MINIMAP_TICK = 5
+
+  /** Between sampled ticks, a hairline stands for the rows that were dropped. */
+  const MINIMAP_GAP = 3
+
+  /** Kinds whose ticks survive sampling — they are the landmarks a reader navigates by. */
+  const MINIMAP_KEEP = new Set(['user', 'assistant', 'notice'])
+
+  /** One paint frame requested, not yet run. */
+  let minimapFrame = 0
+
+  /** True while a drag moves the viewport window, so the hover tooltip stands down. */
+  let minimapDragging = false
+
+  /** The row a click jumped to, kept just long enough to flash it. */
+  let minimapFlashTimer = 0
+
+  /** Coalesces paint requests: streaming appends many rows a second, the rail needs one frame. */
+  function scheduleMinimap() {
+    if (minimapFrame) return
+    minimapFrame = requestAnimationFrame(() => {
+      minimapFrame = 0
+      renderMinimap()
+    })
+  }
+
+  /** The excerpt a tooltip (and nothing else) shows for one row. */
+  function minimapLabel(item) {
+    if (item.kind === 'user') return item.text || ''
+    if (item.kind === 'assistant') {
+      const text = (item.blocks || [])
+        .filter((block) => block.kind === 'text' && block.text)
+        .map((block) => block.text)
+        .join(' ')
+      // A turn that only ran tools is still a turn; its label names that instead.
+      if (text.trim()) return text
+      const call = (item.blocks || []).find((block) => block.kind === 'toolcall')
+      if (call) return `Called ${call.name || 'a tool'}`
+      return 'Working…'
+    }
+    if (item.kind === 'tool') return `${item.name || 'tool'} — ${toolSummary(item)}`
+    return item.text || ''
+  }
+
+  /**
+   * Rebuilds the rail for the conversation on screen.
+   *
+   * Positions are measured, not assumed: a tool row is one line while an assistant turn can
+   * be a page of prose, so a tick placed at `index / count` would lie about where things sit.
+   * When every tick will not fit, user, assistant and notice ticks are kept and the tool
+   * rows between them collapse into hairlines — the landmarks stay put, the filler condenses.
+   */
+  function renderMinimap() {
+    const rail = $('hx-minimap')
+    const transcript = $('hx-transcript')
+    // Below 960px the rail is display:none, so it has no height to measure and nothing to
+    // draw: measuring a 0px track maps every row onto the same tick.
+    if (!rail || !transcript || !rail.clientHeight) return
+    if (minimapFrame) {
+      cancelAnimationFrame(minimapFrame)
+      minimapFrame = 0
+    }
+
+    const items = state.items
+    const total = items.length
+    // Nothing to mirror while the empty state is up: a rail with one dot reads as a progress
+    // bar stuck at zero.
+    if (!total || transcript.querySelector('.hx-empty')) {
+      rail.innerHTML = ''
+      rail.hidden = true
+      return
+    }
+    rail.hidden = false
+
+    // Measured geometry first, all reads before any writes so the whole pass is one layout.
+    const transcriptHeight = Math.max(transcript.scrollHeight, 1)
+    const measured = items.map((item, index) => {
+      const node = item.node
+      // A row with no node cannot be positioned — but it also cannot be jumped to, so it
+      // drops out of the rail rather than sitting at a fake coordinate.
+      if (!node || !node.isConnected) return null
+      return {
+        index,
+        item,
+        top: node.offsetTop,
+        height: Math.max(node.offsetHeight, 1),
+        kind: item.kind,
+      }
+    })
+    const rows = measured.filter(Boolean)
+    if (!rows.length) {
+      rail.innerHTML = ''
+      rail.hidden = true
+      return
+    }
+
+    // The scale that maps row offsets onto the rail's height. The transcript's bottom edge
+    // (its scrollHeight) gets the rail's last pixel: a turn that scrolls further than its
+    // last row — the composer's worth of tail — still maps to somewhere on the rail.
+    const track = rail.clientHeight || MINIMAP_TICK
+    const scale = Math.max((track - MINIMAP_TICK) / Math.max(transcriptHeight - MINIMAP_TICK, 1), 0)
+
+    // Overflow: when ticks would fuse, sample. Kept kinds stay, tool rows between them
+    // collapse into gap markers; if even that is not enough, gaps themselves are sampled.
+    const capacity = Math.max(Math.floor(track / MINIMAP_TICK), 1)
+    let drawn = rows
+    let gaps = []
+    if (rows.length > capacity) {
+      const kept = rows.filter((row) => MINIMAP_KEEP.has(row.kind))
+      if (kept.length && kept.length <= capacity) {
+        // Tool rows whose neighbours are both kept become gaps: a gap between two landmarks
+        // stands for the tool work between them.
+        const keptSet = new Set(kept)
+        drawn = rows.filter((row, position) => {
+          if (keptSet.has(row)) return true
+          const previous = rows[position - 1]
+          const next = rows[position + 1]
+          return !previous || !next || !keptSet.has(previous) || !keptSet.has(next)
+        })
+      } else {
+        // Landmarks alone overflow: sample everything on a stride. The stride starts at the
+        // count that fits and grows until the drawn set does — an even spread beats a
+        // clipped tail, which would put the latest turn (the one being read) off the rail.
+        let stride = Math.max(Math.ceil(rows.length / capacity), 1)
+        for (;;) {
+          drawn = rows.filter((_, position) => position % stride === 0)
+          if (drawn.length <= capacity || stride >= rows.length) break
+          stride += 1
+        }
+      }
+      // A gap marker goes where at least MINIMAP_GAP consecutive rows were dropped.
+      gaps = []
+      let run = 0
+      for (let position = 0; position <= rows.length; position += 1) {
+        const row = rows[position]
+        if (!row || !drawn.includes(row)) {
+          run += 1
+          continue
+        }
+        if (run >= MINIMAP_GAP) {
+          const before = rows[position - run]
+          const after = row
+          const top = Math.round(before.top * scale)
+          const bottom = Math.min(Math.round(after.top * scale), track)
+          if (bottom - top >= MINIMAP_TICK) gaps.push({ top, height: bottom - top })
+        }
+        run = 0
+      }
+    }
+
+    // One rebuild, once: the rail is tens of nodes, and a diff here would outlive its worth.
+    const fragment = document.createDocumentFragment()
+    for (const row of drawn) {
+      const tick = document.createElement('button')
+      tick.type = 'button'
+      tick.className = `hx-minimap-tick is-${row.kind}`
+      tick.dataset.index = String(row.index)
+      tick.style.top = `${Math.round(row.top * scale)}px`
+      // A tool row is one line, a turn can be a page: the tick keeps the row's own height
+      // where that is visible, and never less than the tick's minimum.
+      tick.style.height = `${Math.max(Math.round(row.height * scale), MINIMAP_TICK)}px`
+      tick.setAttribute('aria-label', minimapAriaLabel(row.item))
+      fragment.appendChild(tick)
+    }
+    for (const gap of gaps) {
+      const line = document.createElement('span')
+      line.className = 'hx-minimap-gap'
+      line.style.top = `${gap.top}px`
+      line.style.height = `${gap.height}px`
+      fragment.appendChild(line)
+    }
+    rail.replaceChildren(fragment)
+
+    updateMinimapWindow()
+  }
+
+  /** The rail tick's accessible name: role first, then the same excerpt the tooltip shows. */
+  function minimapAriaLabel(item) {
+    const who =
+      item.kind === 'user'
+        ? 'You'
+        : item.kind === 'assistant'
+          ? 'Hammer'
+          : item.kind === 'tool'
+            ? 'Tool'
+            : 'Notice'
+    const excerpt = minimapLabel(item).replace(/\s+/g, ' ').trim().slice(0, 120)
+    return excerpt ? `${who}: ${excerpt}` : who
+  }
+
+  /**
+   * Moves the translucent window over the part of the log on screen, so the rail also tells
+   * you where in the conversation you are, not only what is in it.
+   */
+  function updateMinimapWindow() {
+    const rail = $('hx-minimap')
+    const transcript = $('hx-transcript')
+    if (!rail || !transcript || rail.hidden) return
+    let windowEl = rail.querySelector('.hx-minimap-window')
+    if (!windowEl) {
+      windowEl = document.createElement('div')
+      windowEl.className = 'hx-minimap-window'
+      rail.appendChild(windowEl)
+    }
+    const track = rail.clientHeight || MINIMAP_TICK
+    const scrollable = transcript.scrollHeight - transcript.clientHeight
+    if (scrollable <= 0) {
+      // The whole conversation fits on screen: the window is the whole rail.
+      windowEl.style.top = '0px'
+      windowEl.style.height = `${track}px`
+      return
+    }
+    const scale = (track - MINIMAP_TICK) / scrollable
+    const top = transcript.scrollTop * scale
+    const height = Math.max(transcript.clientHeight * scale, MINIMAP_TICK)
+    windowEl.style.top = `${Math.round(Math.min(top, track - height))}px`
+    windowEl.style.height = `${Math.round(height)}px`
+  }
+
+  /**
+   * Jumps to the row one tick stands for. The tick map is fresh from the last paint, but the
+   * row is re-resolved from state.items: a stream can have replaced it between paint and click.
+   */
+  function minimapJump(index) {
+    const item = state.items[index]
+    if (!item || !item.node || !item.node.isConnected) return
+    const transcript = $('hx-transcript')
+    if (!transcript) return
+    // Instant, not smooth: streaming retargets scrollTop many times a second, and an animation
+    // in the way turns "follow the bottom" into a fight — the transcript's own scroll is
+    // instant for the same reason (see .hx-transcript in harness.css).
+    transcript.scrollTop = Math.max(
+      0,
+      Math.min(
+        item.node.offsetTop - transcript.clientHeight / 2 + item.node.offsetHeight / 2,
+        transcript.scrollHeight - transcript.clientHeight,
+      ),
+    )
+    if (minimapFlashTimer) clearTimeout(minimapFlashTimer)
+    for (const previous of transcript.querySelectorAll('.hx-row-flash')) {
+      previous.classList.remove('hx-row-flash')
+    }
+    item.node.classList.add('hx-row-flash')
+    minimapFlashTimer = setTimeout(() => {
+      item.node?.classList.remove('hx-row-flash')
+      minimapFlashTimer = 0
+    }, 900)
+  }
+
+  /** Shows the tooltip for the tick under the pointer. */
+  function minimapHover(event) {
+    const rail = $('hx-minimap')
+    if (!rail || minimapDragging) return
+    const tick = event.target.closest('.hx-minimap-tick')
+    if (!tick) {
+      minimapUnhover()
+      return
+    }
+    const item = state.items[Number(tick.dataset.index)]
+    if (!item) return
+    let tip = rail.querySelector('.hx-minimap-tip')
+    if (!tip) {
+      tip = document.createElement('div')
+      tip.className = 'hx-minimap-tip'
+      rail.appendChild(tip)
+    }
+    const who =
+      item.kind === 'user'
+        ? 'You'
+        : item.kind === 'assistant'
+          ? 'Hammer'
+          : item.kind === 'tool'
+            ? 'Tool'
+            : 'Notice'
+    tip.innerHTML = `<b>${escapeHtml(who)}</b>${escapeHtml(minimapLabel(item))}`
+    tip.style.top = `${tick.offsetTop + tick.offsetHeight / 2}px`
+    tip.hidden = false
+    rail.classList.add('is-hovering')
+  }
+
+  function minimapUnhover() {
+    const rail = $('hx-minimap')
+    if (!rail) return
+    const tip = rail.querySelector('.hx-minimap-tip')
+    if (tip) tip.hidden = true
+    rail.classList.remove('is-hovering')
+  }
+
+  /**
+   * Wires the rail: one delegated listener each for clicks and hovers, plus the drag that
+   * pans the log by moving the viewport window. Bound once from bind(), not per render.
+   */
+  function bindMinimap() {
+    const rail = $('hx-minimap')
+    if (!rail) return
+    rail.addEventListener('click', (event) => {
+      const tick = event.target.closest('.hx-minimap-tick')
+      if (!tick) return
+      minimapJump(Number(tick.dataset.index))
+    })
+    rail.addEventListener('pointerover', minimapHover)
+    rail.addEventListener('pointerout', (event) => {
+      if (!event.relatedTarget || !rail.contains(event.relatedTarget)) minimapUnhover()
+      else if (!event.relatedTarget.closest('.hx-minimap-tick')) minimapUnhover()
+    })
+    // Dragging the window pans the log. The move is tracked on the rail — pointer capture
+    // keeps a fast drag from outrunning it — and the release anywhere ends it.
+    rail.addEventListener('pointerdown', (event) => {
+      const windowEl = event.target.closest('.hx-minimap-window')
+      if (!windowEl) return
+      event.preventDefault()
+      minimapDragging = true
+      rail.setPointerCapture?.(event.pointerId)
+      const track = rail.clientHeight || MINIMAP_TICK
+      const startY = event.clientY
+      const startTop = windowEl.offsetTop
+      const transcript = $('hx-transcript')
+      if (!transcript) return
+      const onMove = (moveEvent) => {
+        if (!minimapDragging) return
+        const scrollable = transcript.scrollHeight - transcript.clientHeight
+        const scale = scrollable / Math.max(track - MINIMAP_TICK, 1)
+        const next = startTop + (moveEvent.clientY - startY)
+        windowEl.style.top = `${Math.max(0, Math.min(next, track - MINIMAP_TICK))}px`
+        transcript.scrollTop = windowEl.offsetTop * scale
+      }
+      const onUp = () => {
+        minimapDragging = false
+        rail.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+      }
+      rail.addEventListener('pointermove', onMove)
+      window.addEventListener('pointerup', onUp)
+    })
+    // A resize changes both the scale and the track, so the whole rail is redrawn.
+    window.addEventListener('resize', scheduleMinimap)
+    // Scrolling moves the window without repainting ticks: the geometry did not change.
+    $('hx-transcript')?.addEventListener('scroll', () => {
+      if (minimapFrame) return
+      minimapFrame = requestAnimationFrame(() => {
+        minimapFrame = 0
+        updateMinimapWindow()
+      })
+    })
   }
 
   /** A streamed desktop turn is one growing element, not a rebuilt transcript. */
@@ -707,8 +1190,10 @@
       }
       const transcript = $('hx-transcript')
       const stick = transcript && atBottom(transcript)
-      if (item.node) item.node.innerHTML = assistantMarkup(item)
+      if (item.node) item.node.innerHTML = assistantMarkup(item, item.showRole !== false)
       if (stick && transcript) transcript.scrollTop = transcript.scrollHeight
+      // The row grew, so every tick after it moved: the rail is repainted rather than nudged.
+      scheduleMinimap()
     })
   }
 
@@ -879,7 +1364,8 @@
       }
       case 'tool_execution_update': {
         const item = ensureTool(record.toolCallId, record.toolName, ctx)
-        item.partial = clip(resultText(record.partialResult), MAX_TOOL)
+        // Tool output is kept whole: a trimmed result is a result that lies about what ran.
+        item.partial = resultText(record.partialResult)
         item.status = 'running'
         syncTranscript({}, ctx)
         break
@@ -887,7 +1373,7 @@
       case 'tool_execution_end': {
         const item = ensureTool(record.toolCallId, record.toolName, ctx)
         item.status = record.isError ? 'error' : record.isError === false ? 'ok' : 'ok'
-        item.result = clip(resultText(record.result), MAX_TOOL)
+        item.result = resultText(record.result)
         item.partial = ''
         if (record.durationMs != null) item.durationMs = record.durationMs
         syncTranscript({}, ctx)
@@ -905,20 +1391,17 @@
 
   // ── Thinking effort ─────────────────────────────────────────────────────────────────
 
-  /** The levels the pill cycles, quietest first. `minimal` is left to clients that can spell it. */
+  /** The levels the slider maps to, quietest first. `minimal` is left to clients that can spell it. */
   const THINKING_CYCLE = ['off', 'low', 'medium', 'high']
 
   /**
-   * Asks the agent for a different thinking level. The agent declares that it can send one, and
-   * the router translates it per provider and per model — a level set here is `high` on a
-   * reasoning model and simply absent on one that cannot think, never an error either way.
+   * Maps a slider notch (0..3) to a thinking level and tells the agent. The agent declares
+   * that it can send one, and the router translates it per provider and per model — a level
+   * set here is `high` on a reasoning model and simply absent on one that cannot think, never
+   * an error either way. Moving the slider while a turn runs applies to the next turn, not
+   * the one in flight.
    */
-  async function cycleThinking() {
-    const current = String($('hx-thinking-level')?.textContent || 'off')
-      .trim()
-      .toLowerCase()
-    const index = THINKING_CYCLE.indexOf(current)
-    const level = THINKING_CYCLE[(index + 1) % THINKING_CYCLE.length]
+  async function setThinkingLevel(level) {
     const ctx = active()
     try {
       const res = await fetch(consoleApi(ctx, '/command'), {
@@ -930,20 +1413,20 @@
       if (!res.ok || data.success === false) {
         throw new Error(data.error || `Could not set the thinking level (${res.status}).`)
       }
-      const el = $('hx-thinking-level')
-      if (el) el.textContent = level
-      setHint(
-        level === 'off'
-          ? 'Thinking off — the next turn asks for no extra reasoning.'
-          : `Thinking ${level} — the router sends it in the form the chosen model understands.`,
-        'success',
-        ctx,
-      )
+      const label = $('hx-thinking-level')
+      if (label) label.textContent = level
       // The agent's own answer is authoritative: a level it clamps is a level worth showing.
       await refreshStatus(ctx)
     } catch (err) {
       setHint(err?.message || 'Could not change the thinking level.', 'error', ctx)
     }
+  }
+
+  /** Reads the slider's notch and applies it. */
+  function thinkingFromSlider() {
+    const slider = $('hx-thinking-slider')
+    if (!slider) return
+    setThinkingLevel(THINKING_CYCLE[Number(slider.value)] || 'off')
   }
 
   /**
@@ -982,7 +1465,10 @@
     const pill = $('hx-phase')
     const label = $('hx-phase-label')
     if (pill) pill.dataset.phase = state.phase
-    if (label) label.textContent = state.phase === 'dead' ? 'down' : state.phase
+    // Display names for phases whose internal value reads oddly in a pill: the runtime is
+    // 'alive' to the bridge, 'Ready' to a person waiting on it.
+    const labelFor = { alive: 'Ready', dead: 'down' }
+    if (label) label.textContent = labelFor[state.phase] ?? state.phase
   }
 
   /**
@@ -1089,6 +1575,12 @@
     if (thinkingEl) {
       thinkingEl.textContent =
         data.thinkingLevel && data.thinkingLevel !== 'off' ? data.thinkingLevel : 'off'
+    }
+    const slider = $('hx-thinking-slider')
+    if (slider) {
+      slider.value = String(THINKING_CYCLE.indexOf(data.thinkingLevel || 'off') >= 0
+        ? THINKING_CYCLE.indexOf(data.thinkingLevel)
+        : 0)
     }
     if (data.cwd) {
       const cwdEl = $('hx-cwd')
@@ -1215,7 +1707,7 @@
       send.disabled = Boolean(active()?.sending) || unavailable
       send.textContent = state.running ? (state.queueMode === 'followUp' ? 'Queue' : 'Steer') : 'Send'
     }
-    if (stop) stop.disabled = !state.running
+    if (stop) stop.hidden = !state.running
     renderQueueMode()
   }
 
@@ -1500,11 +1992,13 @@
     // model: start over, and stop.
     if (text === '/new') {
       input.value = ''
+      saveDraft(console, '')
       await newSession()
       return
     }
     if (text === '/stop') {
       input.value = ''
+      saveDraft(console, '')
       await stopRun()
       return
     }
@@ -1529,6 +2023,9 @@
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `The agent rejected the prompt (${res.status}).`)
       input.value = ''
+      // The text was sent, so the draft's job is done. Clearing by the pre-send identity matters
+      // for a first message: the reply names a new session file, and the draft key moves with it.
+      saveDraft(console, '')
       autoGrow()
       if (data.disposition === 'queued')
         setHint('Queued — the agent picks it up after this turn.', null, console)
@@ -1594,6 +2091,10 @@
       }
       console.items = []
       console.tools.clear()
+      // The old conversation's draft is gone with it: a fresh session should not inherit text
+      // that belonged to the one just left behind.
+      saveDraft(console, '')
+      restoreDraft(console)
       if (console === active()) {
         state.items = console.items
         state.tools = console.tools
@@ -1649,9 +2150,28 @@
    */
   function rememberSessionFile(ctx, file) {
     if (!file || ctx.sessionFile === file) return
+    const previousKey = draftKey(ctx)
+    const wasActive = ctx === active()
     ctx.sessionFile = file
+    // The draft moves with the conversation: a conversation that has not sent anything yet is
+    // keyed by its console id, and the file it starts writing is what survives a restart.
+    if (previousKey) {
+      try {
+        const pending = localStorage.getItem(previousKey)
+        if (pending) {
+          localStorage.setItem(draftKey(ctx), pending)
+          localStorage.removeItem(previousKey)
+        }
+      } catch {
+        // A browser without storage simply does not remember anything.
+      }
+    }
     // A parallel conversation is one the next page should reopen, whatever brought its file in.
     if (ctx.instanceId) rememberOpenFile(file)
+    // The main console starts unnamed and learns its file from the first status frame, after
+    // the page has already painted. That status is when the draft saved under the fallback key
+    // becomes readable under the session-file key the next restart will look for.
+    if (wasActive) restoreDraft(ctx)
     renderSessions()
     refreshSessionsSoon()
   }
@@ -1898,7 +2418,7 @@
           name: message.toolName || call?.name || 'tool',
           args: call?.args || null,
           status: message.isError ? 'error' : 'ok',
-          result: clip(resultText(message), MAX_TOOL),
+          result: resultText(message),
           partial: '',
         }
         ctx.tools.set(key, item)
@@ -2069,12 +2589,33 @@
     if (changed) renderSessions()
   }
 
+  /**
+   * Walks the conversation's prompts — the user turns — by `direction`. They are the
+   * landmarks of a long session, so they are what the outline rail exists to reach fast.
+   */
+  function jumpPrompt(direction) {
+    const prompts = state.items.filter((item) => item.kind === 'user')
+    if (!prompts.length) return
+    // Which prompt the reader is standing on: the last one at or above the top of the view.
+    const transcript = $('hx-transcript')
+    const edge = transcript ? transcript.scrollTop + 1 : 0
+    let current = -1
+    prompts.forEach((item, index) => {
+      if (item.node && item.node.offsetTop <= edge) current = index
+    })
+    const next = Math.min(Math.max(current + direction, 0), prompts.length - 1)
+    const item = prompts[next]
+    if (item && item.node) minimapJump(state.items.indexOf(item))
+  }
+
   // ── Command palette ─────────────────────────────────────────────────────────────────
 
   const COMMANDS = [
     { label: 'Focus the prompt', hint: 'Enter', run: () => $('hx-input')?.focus() },
     { label: 'New session', hint: '/new', run: newSession },
     { label: 'Stop the agent', hint: '/stop', run: stopRun },
+    { label: 'Previous prompt', hint: 'Alt+↑', run: () => jumpPrompt(-1) },
+    { label: 'Next prompt', hint: 'Alt+↓', run: () => jumpPrompt(1) },
     { label: 'Restart the agent', run: restartAgent },
     {
       label: 'Rename the current session…',
@@ -2091,7 +2632,7 @@
       label: 'Open a session…',
       run: () => {
         // The rail is a drawer under 960px; opening the command has to open what it points at.
-        document.body.classList.add('hx-drawer-open')
+        document.body.classList.add('hx-sessions-drawer-open')
         $('hx-session-search')?.focus()
       },
     },
@@ -2171,7 +2712,11 @@
     })
 
     const input = $('hx-input')
-    input?.addEventListener('input', autoGrow)
+    input?.addEventListener('input', () => {
+      autoGrow()
+      // Every keystroke is one worth keeping: the draft survives a tab switch and a restart.
+      saveDraft(active(), input.value)
+    })
     input?.addEventListener('keydown', (event) => {
       // Enter sends, Shift+Enter is a newline: a harness is a chat with a keyboard shortcut,
       // and Cmd/Ctrl+Enter still works for people who expect it.
@@ -2189,10 +2734,19 @@
       event.target.value = ''
     })
     wireComposerDrop()
+
+    // Sidebar toggles: each header button folds its own column, and the choice persists.
+    applySidebarState(loadSidebarState())
+    $('hx-toggle-sessions')?.addEventListener('click', () => toggleSidebar('sessions'))
+    $('hx-toggle-details')?.addEventListener('click', () => toggleSidebar('details'))
+
     $('hx-queue-mode')?.addEventListener('click', () =>
       setQueueMode(state.queueMode === 'followUp' ? 'steer' : 'followUp'),
     )
-    $('hx-thinking')?.addEventListener('click', cycleThinking)
+    $('hx-thinking-slider')?.addEventListener('input', thinkingFromSlider)
+
+    // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
+    bindMinimap()
 
     // The inspector is a drawer below 960px. A toggle, Escape, or a click outside closes it.
     $('hx-details')?.addEventListener('click', (event) => {
@@ -2200,9 +2754,13 @@
       document.body.classList.toggle('hx-drawer-open')
     })
     document.addEventListener('click', (event) => {
-      if (!document.body.classList.contains('hx-drawer-open')) return
-      if (event.target.closest('.hx-side') || event.target.closest('#hx-details')) return
-      document.body.classList.remove('hx-drawer-open')
+      for (const cls of ['hx-drawer-open', 'hx-sessions-drawer-open']) {
+        if (!document.body.classList.contains(cls)) continue
+        if (event.target.closest('.hx-side')) return
+        if (cls === 'hx-drawer-open' && event.target.closest('#hx-details')) return
+        if (cls === 'hx-sessions-drawer-open' && event.target.closest('#hx-toggle-sessions')) return
+        document.body.classList.remove(cls)
+      }
     })
     $('hx-new')?.addEventListener('click', newSession)
     $('hx-restart')?.addEventListener('click', restartAgent)
@@ -2251,6 +2809,7 @@
       const row = event.target.closest('[data-session]')
       if (!row) return
       document.body.classList.remove('hx-drawer-open')
+      document.body.classList.remove('hx-sessions-drawer-open')
       openConversation(row.dataset.session)
     })
 
@@ -2260,6 +2819,7 @@
       const box = $('hx-input')
       if (!box) return
       box.value = suggestion.dataset.prompt || ''
+      saveDraft(active(), box.value)
       autoGrow()
       box.focus()
     })
@@ -2273,6 +2833,23 @@
         if (!node.classList?.contains('hx-tool')) return
         const item = state.items.find((entry) => entry.node?.contains(node))
         if (item) item.open = node.open
+      },
+      true,
+    )
+
+    // The tool head doubles as a disclosure trigger and as selectable text. A drag that ends on
+    // it would otherwise toggle the row closed/open as a side effect of copying, so swallow the
+    // summary's default activation whenever the click is actually the end of a selection.
+    $('hx-transcript')?.addEventListener(
+      'click',
+      (event) => {
+        const summary = event.target.closest?.('summary.hx-tool-head')
+        if (!summary) return
+        const selection = window.getSelection()
+        if (selection && selection.type === 'Range' && selection.containsNode(summary, true)) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
       },
       true,
     )
@@ -2343,13 +2920,24 @@
           return
         }
         if ($('hx-palette')?.classList.contains('open')) closePalette()
-        else document.body.classList.remove('hx-drawer-open')
+        else {
+          document.body.classList.remove('hx-drawer-open')
+          document.body.classList.remove('hx-sessions-drawer-open')
+        }
         return
       }
       // Cmd/Ctrl+J returns to the agent from anywhere in the router views.
       if (meta && event.key.toLowerCase() === 'j') {
         event.preventDefault()
         showView('agent')
+        return
+      }
+      // Alt+↑/↓ walk the conversation's prompts — the outline rail's landmarks, reachable
+      // from the keyboard too. The composer is exempt: an arrow there moves the caret.
+      if (event.altKey && !meta && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
+        event.preventDefault()
+        jumpPrompt(event.key === 'ArrowUp' ? -1 : 1)
       }
     })
   }

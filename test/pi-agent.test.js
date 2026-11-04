@@ -502,7 +502,6 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // Thinking is content, not a placeholder: the harness shows what the model actually thought.
   // The trailing console is the conversation the record belongs to — a page can hold several.
   assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta, ctx\)/)
-  assert.match(harness, /class="hx-block-label">thinking</)
   assert.match(harness, /class="hx-thinking-text"/)
 
   // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
@@ -514,17 +513,28 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   assert.match(harness, /update\.type === 'toolcall_start'/)
   assert.match(harness, /function ensureTool\(id, name, ctx = active\(\)\)/)
 
-  // Live output: a long command is legible while it runs, not only once it finishes.
+  // Live output: a long command is legible while it runs, not only once it finishes. Nothing
+  // is trimmed from it — a clipped result is a result that lies about what ran.
   assert.match(harness, /case 'tool_execution_update'/)
-  assert.match(harness, /item\.partial = clip\(resultText\(record\.partialResult\), MAX_TOOL\)/)
+  assert.match(harness, /item\.partial = resultText\(record\.partialResult\)/)
 
   // A provider that answers without deltas still contributes its thinking and text parts.
   assert.match(harness, /function contentParts\(content\)/)
   assert.match(harness, /item\.blocks = contentParts\(message\.content\)/)
 
-  // Runaway output is clipped from the front, where the tail is what a reader needs.
+  // Runaway prose is clipped from the front, where the tail is what a reader needs. Tool
+  // calls are not: a command, an argument blob or a result that was cut changed what it says.
   assert.match(harness, /const MAX_TEXT = 120000/)
-  assert.match(harness, /const MAX_TOOL = 24000/)
+  assert.doesNotMatch(harness, /MAX_TOOL/)
+  // A multi-line command must survive: toolSummary is what the head of the row shows, and it
+  // must not flatten the whitespace or cap the length of what the model actually wrote. The
+  // rail's accessible label still folds to one line, but that is the label's own choice.
+  const summary = harness.slice(
+    harness.indexOf('function toolSummary'),
+    harness.indexOf('return String(raw)'),
+  )
+  assert.ok(!summary.includes('replace(/\\s+/g'), 'tool summaries keep newlines')
+  assert.ok(!summary.includes('clip('), 'tool summaries are never trimmed')
 
   // Sessions persist on the server; the rail lists them and opens one in a console of its own,
   // rebuilding the transcript from the session's own messages for a run this page never saw.
