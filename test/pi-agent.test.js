@@ -954,6 +954,52 @@ test('the event stream opens with the transcript the agent already produced', as
   })
 })
 
+test('one page stream carries every console and names the one each frame belongs to', async () => {
+  const bridge = new StubBridge()
+  await withPiApp({ piBridge: bridge }, async (base) => {
+    const controller = new AbortController()
+    const res = await fetch(`${base}/api/pi/consoles/events`, { signal: controller.signal })
+    assert.equal(res.status, 200)
+    assert.equal(res.headers.get('content-type'), 'text/event-stream')
+    const reader = /** @type {ReadableStreamDefaultReader<Uint8Array>} */ (res.body.getReader())
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    /** Reads until one complete SSE frame is available. */
+    const frame = async () => {
+      for (;;) {
+        const split = buffer.indexOf('\n\n')
+        if (split >= 0) {
+          const raw = buffer.slice(0, split)
+          buffer = buffer.slice(split + 2)
+          return JSON.parse(raw.replace(/^data: /, ''))
+        }
+        const { value, done } = await reader.read()
+        if (done) throw new Error('the stream ended before a frame arrived')
+        buffer += decoder.decode(value, { stream: true })
+      }
+    }
+
+    const hello = await frame()
+    assert.equal(hello.type, 'hello')
+    assert.deepEqual(
+      hello.consoles.map((entry) => entry.id),
+      ['main'],
+      'the main console opens on the same stream as the parallel ones',
+    )
+    assert.equal(hello.consoles[0].status.model.id, 'stub-model')
+
+    bridge.emit('event', { type: 'agent_start' })
+    assert.deepEqual(await frame(), {
+      consoleId: 'main',
+      type: 'event',
+      record: { type: 'agent_start' },
+    })
+
+    controller.abort()
+  })
+})
+
 test('restart and the allowlisted command passthrough reach the agent and report failures', async () => {
   const bridge = new StubBridge()
   await withPiApp({ piBridge: bridge }, async (base) => {
@@ -1193,7 +1239,7 @@ test('a parallel console is a second bridge with its own routes, and can be clos
   )
 })
 
-test('parallel consoles are bounded, and a fresh scratch console opens without a session', async () => {
+test('parallel consoles are not artificially capped, and a fresh scratch console opens without a session', async () => {
   await withPiApp(
     {
       piCommand: process.execPath,
@@ -1210,18 +1256,17 @@ test('parallel consoles are bounded, and a fresh scratch console opens without a
       assert.equal(body.success, true)
       assert.equal(body.instance.sessionFile, null)
 
-      // The bound is four consoles besides the main one; the fifth request is refused.
+      // Opening conversations must not hit a ceiling. The page cannot free a console it does
+      // not know about, so a bounded pool used to refuse the next tab with 429 and leave the
+      // button looking dead. Every request here has to succeed.
       const ids = [body.id]
-      for (let i = 0; i < 4; i += 1) {
+      for (let i = 0; i < 5; i += 1) {
         const res = await fetch(`${base}/api/pi/instances`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({}),
         })
-        if (res.status === 429) {
-          assert.match((await res.json()).error, /At most/)
-          break
-        }
+        assert.equal(res.status, 200)
         ids.push((await res.json()).id)
       }
       // Every console created here owns a child process; leaving any of them running keeps
@@ -1441,6 +1486,161 @@ test('an image attach that is not valid base64 is refused, not sent', async () =
       /base64/,
     )
     assert.equal(called, 0, 'nothing reaches Pi when an attachment is malformed')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+/** Drives one failed turn through the bridge's event tracker, the way Pi reports it. */
+function endFailedTurn(bridge, errorMessage) {
+  bridge.track({
+    type: 'agent_end',
+    willRetry: false,
+    // The real child reports the whole run; the failing assistant message is the last one.
+    messages: [
+      { role: 'user', content: [] },
+      { role: 'assistant', stopReason: 'error', errorMessage },
+    ],
+  })
+  bridge.track({ type: 'agent_settled' })
+}
+
+test('a dropped turn is continued once Pi has settled', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1, autoContinueLimit: 3 })
+  try {
+    /** @type {Array<{ message: string, options: any }>} */
+    const prompts = []
+    bridge.prompt = async (message, options) => {
+      prompts.push({ message, options })
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endFailedTurn(bridge, 'socket hang up')
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0].message, /Repeat your last action/)
+    assert.equal(prompts[0].options.queueMode, 'followUp')
+    assert.match(bridge.status().notes.join('\n'), /Retrying after a transport failure/)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the continuation budget spans failed turns and stops at the limit', async () => {
+  // Settling is not completion: resetting here would make the advertised budget of three
+  // spendable forever, which is the endless retry the limit exists to prevent.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1, autoContinueLimit: 3 })
+  try {
+    const prompts = []
+    bridge.prompt = async (...args) => {
+      prompts.push(args)
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    for (let failure = 1; failure <= 4; failure += 1) {
+      endFailedTurn(bridge, 'connection reset')
+      if (failure <= 3) {
+        await waitFor(() => prompts.length === failure)
+      } else {
+        await waitFor(() =>
+          bridge.status().notes.some((note) => note.startsWith('Stopped retrying after 3')),
+        )
+      }
+    }
+
+    assert.equal(prompts.length, 3)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a completed turn restores the continuation budget', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1, autoContinueLimit: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endFailedTurn(bridge, 'connection reset')
+    await waitFor(() => prompts === 1)
+
+    // A healthy turn in between is what hands the budget back; a run shortened by an
+    // earlier failure would stop after the second one.
+    bridge.track({
+      type: 'agent_end',
+      willRetry: false,
+      messages: [{ role: 'assistant', stopReason: 'stop' }],
+    })
+    bridge.track({ type: 'agent_settled' })
+    endFailedTurn(bridge, 'connection reset')
+
+    await waitFor(() => prompts === 2)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a turn Pi will retry, or a verdict, is not continued', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.track({
+      type: 'agent_end',
+      willRetry: true,
+      messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up' }],
+    })
+    bridge.track({ type: 'agent_settled' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    bridge.track({
+      type: 'agent_end',
+      willRetry: false,
+      messages: [
+        {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage: 'insufficient_quota: You exceeded your current quota.',
+        },
+      ],
+    })
+    bridge.track({ type: 'agent_settled' })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('stopping during the backoff cancels the continuation', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 50 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.send = async () => ({ data: {} })
+    bridge.syncUsageFromSession = async () => {}
+
+    endFailedTurn(bridge, 'connection reset')
+    assert.notEqual(bridge.continueTimer, null, 'the continuation is waiting out its backoff')
+
+    await bridge.abort()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+
+    assert.equal(prompts, 0, 'a deliberate Stop is not followed by the queued continuation')
   } finally {
     bridge.dispose()
   }

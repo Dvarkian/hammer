@@ -66,56 +66,35 @@ body[data-view='router'] .container {
 /* ── App bar ───────────────────────────────────────────────────────────────────────── */
 
 /*
- * One app bar: title left, the router's own controls right, status underneath. The rules are
- * `!important` because dashboard.css already centres this block for the old marketing-style
- * header, and a harness needs a toolbar, not a hero.
+ * One app bar, one row: the wordmark, the view switch, the load status, and the router's own
+ * controls (restart, commands, theme) all sit on the same line. A toolbar, not a hero — and the
+ * `!important`s are because dashboard.css still centres this block for the old marketing header.
  */
 .dashboard-header {
-  padding: 14px 0 6px !important;
+  padding: 10px 0 !important;
+  margin-bottom: 12px !important;
   text-align: left !important;
 }
 
 .dashboard-header-inner {
   display: flex !important;
   flex-direction: row !important;
-  flex-wrap: wrap !important;
+  flex-wrap: nowrap !important;
   align-items: center !important;
   justify-content: flex-start !important;
-  gap: 2px 12px !important;
+  gap: 10px !important;
   text-align: left !important;
 }
 
-/* The nav says where you are; the marketing eyebrow only added height. */
-.dashboard-header-inner > .dashboard-eyebrow {
-  display: none !important;
-}
-
 .dashboard-header-inner > .dashboard-heading {
-  margin: 0 auto 0 0 !important;
+  margin: 0 !important;
   font-size: 1.3rem !important;
   letter-spacing: -0.01em !important;
-  order: 1;
 }
 
 /* The title glow belongs to the old hero heading, not to a toolbar title. */
 .dashboard-header-inner > .dashboard-heading::after {
   display: none !important;
-}
-
-.dashboard-header-inner > p:not(.load-status) {
-  order: 2;
-  margin: 0 !important;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.dashboard-header-inner > .load-status {
-  order: 3;
-  flex-basis: 100%;
-  margin: 0 !important;
-  text-align: left !important;
-  justify-content: flex-start !important;
 }
 
 .dashboard-heading {
@@ -124,6 +103,30 @@ body[data-view='router'] .container {
   display: inline-flex;
   align-items: center;
   gap: 9px;
+}
+
+/* The title, the view switch and the controls keep their width; the spacer between the status
+   and the controls is what absorbs a wide window, so the controls stay pinned to the right. */
+.dashboard-header-inner > .dashboard-heading,
+.dashboard-header-inner > .hx-nav,
+.dashboard-header-inner > .dashboard-header-controls {
+  flex: none;
+}
+
+.dashboard-header-inner > .load-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin: 0 !important;
+  text-align: left !important;
+  justify-content: flex-start !important;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+/* The message ellipsises rather than wrapping; the dot and the Retry button keep their width. */
+.dashboard-header-inner > .load-status #load-status-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The mark, sized to the wordmark: the same drawing as the app icon, minus the ink ground so it
@@ -139,20 +142,17 @@ body[data-view='router'] .container {
   display: none;
 }
 
-.dashboard-header .load-status {
-  margin-top: 4px;
-  font-size: 0.72rem;
-}
-
 /* ── View switch ───────────────────────────────────────────────────────────────────── */
 
+/* The switch rides in the app bar, so it is a row of pills with no rule of its own: the bar's
+   own bottom edge is the separator. */
 .hx-nav {
   display: flex;
   align-items: center;
   gap: 4px;
-  margin: 2px 0 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid var(--border);
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .hx-nav-btn {
@@ -189,8 +189,17 @@ body[data-view='router'] .container {
   height: 14px;
 }
 
+/* Absorbs the slack between the status line and the controls, so the buttons sit at the right. */
 .hx-nav-spacer {
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Restart, commands and the theme switch: one tight cluster at the end of the bar. */
+.dashboard-header-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .hx-chip {
@@ -968,12 +977,17 @@ body[data-view='agent'] #reload-btn {
   outline-offset: -4px;
 }
 
-/* Staged attachments: a row of chips between the textarea and the queue strip. */
+/* Staged attachments: a row of chips between the textarea and the composer controls. */
 .hx-attachments {
   margin-top: 8px;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+/* Same display-beats-[hidden] rule as the queue: no empty strip holding open a gap. */
+.hx-attachments[hidden] {
+  display: none;
 }
 
 .hx-attachment {
@@ -1024,23 +1038,79 @@ body[data-view='agent'] #reload-btn {
   padding: 6px 8px;
 }
 
-/* The queue strip: what pi is holding for this conversation, between transcript and input.
-   Hidden entirely when nothing is waiting, so an idle console looks exactly as before. */
+/*
+ * The queue: what Pi is holding for this conversation, stacked *above* the textarea it will join.
+ * It pops in where the eye already is, so a message you sent mid-turn is visibly waiting its turn
+ * rather than sitting below the box you just typed in, past the controls.
+ *
+ * It reads as one inset panel — a maroon rail, a hairline frame on the chat ground — because it is
+ * a list of pending work, not another row of chrome. Long queues scroll instead of growing the dock
+ * without bound, and the count in the header says how many are really there.
+ */
 .hx-queue {
-  margin-top: 8px;
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 0.74rem;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+  padding: 9px 11px 10px;
+  max-height: 34vh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: 9px;
+  background: var(--chat-bg);
   color: var(--text-muted);
+  font-size: 0.74rem;
+  animation: hx-queue-in 0.16s ease-out;
+}
+
+/* The pop: the stack rises the handful of pixels it occupies, so the appearance is legible
+   rather than a jump. Reduced-motion users get the panel without the travel (see the media
+   query at the foot of this file). */
+@keyframes hx-queue-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* A display rule beats the UA `[hidden]` default, so say it explicitly: an empty queue owns no
+   border, margin or height. */
+.hx-queue[hidden] {
+  display: none;
+}
+
+.hx-queue-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .hx-queue-label {
-  flex: none;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.66rem;
+}
+
+.hx-queue-count {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+  box-sizing: border-box;
 }
 
 .hx-queue-list {
@@ -1049,7 +1119,7 @@ body[data-view='agent'] #reload-btn {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -1058,6 +1128,8 @@ body[data-view='agent'] #reload-btn {
   gap: 8px;
   align-items: baseline;
   min-width: 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-subtle);
 }
 
 .hx-queue-list li span {
@@ -1067,8 +1139,11 @@ body[data-view='agent'] #reload-btn {
   color: var(--text-dim);
 }
 
+/* The tag is what fills next, pinned right so a ragged list still scans down one column. */
 .hx-queue-list li b {
   flex: none;
+  margin-left: auto;
+  padding-left: 8px;
   font-weight: 600;
   font-size: 0.66rem;
   color: var(--text-muted);
@@ -1597,5 +1672,12 @@ body[data-view='agent'] #reload-btn {
 
   .hx-tool-state {
     display: none;
+  }
+}
+
+/* The queue's pop is decoration; the panel still appears, it just does not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .hx-queue {
+    animation: none;
   }
 }

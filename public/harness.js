@@ -59,11 +59,11 @@
   // ── Conversations ───────────────────────────────────────────────────────────────────
   //
   // A conversation is a console on the server: the main one at `/api/pi`, or a parallel one at
-  // `/api/pi/instances/:id/console`. Each keeps its own event stream open for the life of this
-  // page, so a turn that is not on screen keeps running — and keeps its spinner in the sidebar
-  // turning — instead of being torn down when the reader looks at another conversation. `state`
-  // mirrors the console on screen, which is why every renderer below is still written against
-  // one conversation.
+  // `/api/pi/instances/:id/console`. One page-wide stream carries every console, so a turn that
+  // is not on screen keeps running — and keeps its spinner in the sidebar turning — without each
+  // conversation spending one of the browser's six connections per host. `state` mirrors the
+  // console on screen, which is why every renderer below is still written against one
+  // conversation.
 
   function createConsole({ id, instanceId = null, sessionFile = null }) {
     const console = {
@@ -85,7 +85,6 @@
       queuedSteering: [],
       queuedFollowUp: [],
       notesSeen: new Set(),
-      source: null,
       /** True once the transcript came from the session file rather than the replay log. */
       historyLoaded: false,
       /** The model `best` resolved to, as the router reported it (see renderRouting). */
@@ -133,8 +132,6 @@
 
   /** Where the open conversations are remembered between page loads (and restarts). */
   const OPEN_KEY = 'hammer.hx.open'
-  /** A page restores this many conversations: the server caps parallel consoles at four. */
-  const MAX_RESTORE = 3
 
   /**
    * The conversations this page has open, remembered by session file.
@@ -182,7 +179,9 @@
               ...entries.filter((entry) => entry.file === activeFile),
             ]
           : entries
-      localStorage.setItem(OPEN_KEY, JSON.stringify(ordered.slice(-MAX_RESTORE)))
+      // Every open conversation is remembered, not just the last few: a tab the page forgets
+      // would keep its console running as an orphan the page can never close.
+      localStorage.setItem(OPEN_KEY, JSON.stringify(ordered))
     } catch {
       // A browser without storage simply does not restore anything.
     }
@@ -193,7 +192,6 @@
     if (!file || typeof file !== 'string') return
     if (!openFiles.has(file)) {
       openFiles.set(file, Boolean(running))
-      while (openFiles.size > MAX_RESTORE) openFiles.delete(openFiles.keys().next().value)
     }
     saveOpenConversations()
   }
@@ -1009,6 +1007,8 @@
       ...ctx.queuedFollowUp.map((text) => ({ text, mode: 'followUp' })),
     ]
     if (wrap) wrap.hidden = items.length === 0
+    const count = $('hx-queue-count')
+    if (count) count.textContent = String(items.length)
     if (list) {
       list.innerHTML = items
         .map(
@@ -1019,8 +1019,7 @@
     }
     const send = $('hx-send')
     if (send) {
-      const count = items.length
-      send.dataset.queued = count > 0 ? String(count) : ''
+      send.dataset.queued = items.length > 0 ? String(items.length) : ''
     }
   }
 
@@ -1222,15 +1221,24 @@
 
   // ── The event stream ────────────────────────────────────────────────────────────────
 
-  /** Opens one console's event stream. Every console keeps its own, on screen or not. */
+  /**
+   * Opens the console event stream.
+   *
+   * Every console used to keep its own EventSource, and Chromium allows only six HTTP/1.1
+   * connections per host. The main console, four parallel consoles and the router's telemetry
+   * stream filled that budget, so the next request — a prompt — queued for a socket that never
+   * came and the composer sat on "Sending…". One stream carries every console now, and each
+   * frame names the one it belongs to.
+   */
+  let consoleStream = null
   function connectEvents(ctx) {
-    if (!ctx || ctx.source) return
     if (!window.EventSource) {
-      setHint('This browser cannot stream the agent transcript.', 'error', ctx)
+      if (ctx) setHint('This browser cannot stream the agent transcript.', 'error', ctx)
       return
     }
-    const source = new EventSource(consoleApi(ctx, '/events'))
-    ctx.source = source
+    if (consoleStream) return
+    const source = new EventSource(`${API}/consoles/events`)
+    consoleStream = source
     source.onmessage = (event) => {
       let payload
       try {
@@ -1239,99 +1247,103 @@
         return
       }
       if (payload.type === 'hello') {
-        // The replay log describes the conversation only when the transcript was not rebuilt
-        // from the session file. Resetting here unconditionally is what emptied a tab that had
-        // just been restored: the file's history was cleared and the log was then skipped.
-        if (!ctx.historyLoaded) {
-          ctx.items = []
-          ctx.tools.clear()
-          ctx.notesSeen.clear()
-          if (ctx === active()) {
-            state.items = ctx.items
-            state.tools = ctx.tools
-            state.notesSeen = ctx.notesSeen
-            state.mounted = 0
-          }
-          // A page opened mid-run catches up from the log instead of starting from whatever
-          // this tab happened to witness.
-          ;(payload.log || []).forEach((record) => applyRecord(record, ctx))
+        for (const entry of payload.consoles || []) {
+          const target = state.consoles.get(entry.id)
+          if (target) applyHello(target, entry)
         }
-        if (payload.status) {
-          ctx.status = payload.status
-          if (payload.status.sessionFile) rememberSessionFile(ctx, payload.status.sessionFile)
-          setPhase(payload.status.phase, ctx)
-          setRunning(
-            payload.status.phase === 'busy' || Boolean(payload.status.isStreaming),
-            ctx,
-          )
-          renderRouting(payload.status, ctx)
-          // The status carries pi's own queue accounting, so a page opened mid-run sees what
-          // is already waiting without waiting for a fresh `queue_update`.
-          if (
-            Array.isArray(payload.status.queuedSteering) ||
-            Array.isArray(payload.status.queuedFollowUp)
-          ) {
-            applyQueue(payload.status.queuedSteering, payload.status.queuedFollowUp, ctx)
-          }
-          // The status frame carries the session's rehydrated totals, so a page opened after
-          // the tokens were spent still shows them without waiting for a fresh turn.
-          if (payload.status.usage) {
-            ctx.usage = payload.status.usage
-            if (ctx === active()) {
-              state.usage = ctx.usage
-              renderUsage(ctx)
-            }
-          }
-        }
-        if (ctx === active()) updateComposer()
-        syncTranscript({ reset: true }, ctx)
-        renderSessions()
         return
       }
-      if (payload.type === 'event') {
+      const target = state.consoles.get(payload.consoleId)
+      if (target) applyConsolePayload(target, payload)
+    }
+    source.onerror = () => {
+      if (active()) setHint('Lost the event stream — reconnecting…', 'error')
+    }
+    source.onopen = () => {
+      if (active()) setHint('')
+    }
+  }
+
+  /**
+   * Rebuilds one console from the stream's opening frame.
+   *
+   * The replay log describes the conversation only when the transcript was not rebuilt from
+   * the session file. Resetting here unconditionally is what emptied a tab that had just been
+   * restored: the file's history was cleared and the log was then skipped.
+   */
+  function applyHello(ctx, entry) {
+    if (!ctx.historyLoaded) {
+      ctx.items = []
+      ctx.tools.clear()
+      ctx.notesSeen.clear()
+      if (ctx === active()) {
+        state.items = ctx.items
+        state.tools = ctx.tools
+        state.notesSeen = ctx.notesSeen
+        state.mounted = 0
+      }
+      // A page opened mid-run catches up from the log instead of starting from whatever this
+      // tab happened to witness.
+      ;(entry.log || []).forEach((record) => applyRecord(record, ctx))
+    }
+    applyStatusFrame(ctx, entry.status)
+    if (ctx === active()) updateComposer()
+    syncTranscript({ reset: true }, ctx)
+    renderSessions()
+  }
+
+  /** Applies the state a console reports, from a hello or a live status frame. */
+  function applyStatusFrame(ctx, status) {
+    if (!status) return
+    ctx.status = status
+    if (status.sessionFile) rememberSessionFile(ctx, status.sessionFile)
+    setPhase(status.phase, ctx)
+    setRunning(status.phase === 'busy' || Boolean(status.isStreaming), ctx)
+    renderRouting(status, ctx)
+    // The status carries pi's own queue accounting, so a page opened mid-run sees what is
+    // already waiting without waiting for a fresh `queue_update`.
+    if (Array.isArray(status.queuedSteering) || Array.isArray(status.queuedFollowUp)) {
+      applyQueue(status.queuedSteering, status.queuedFollowUp, ctx)
+    }
+    // The status frame carries the session's rehydrated totals, so a page opened after the
+    // tokens were spent still shows them without waiting for a fresh turn.
+    if (status.usage) {
+      ctx.usage = status.usage
+      if (ctx === active()) {
+        state.usage = ctx.usage
+        renderUsage(ctx)
+      }
+    }
+  }
+
+  /** Applies one live frame to the console it names. */
+  function applyConsolePayload(ctx, payload) {
+    switch (payload.type) {
+      case 'event':
         applyRecord(payload.record, ctx)
         return
-      }
-      if (payload.type === 'status' && payload.status) {
-        ctx.status = payload.status
-        if (payload.status.sessionFile) rememberSessionFile(ctx, payload.status.sessionFile)
-        setPhase(payload.status.phase, ctx)
-        setRunning(payload.status.phase === 'busy' || Boolean(payload.status.isStreaming), ctx)
-        renderRouting(payload.status, ctx)
-        if (
-          Array.isArray(payload.status.queuedSteering) ||
-          Array.isArray(payload.status.queuedFollowUp)
-        ) {
-          applyQueue(payload.status.queuedSteering, payload.status.queuedFollowUp, ctx)
-        }
-        if (payload.status.usage) {
-          ctx.usage = payload.status.usage
-          if (ctx === active()) {
-            state.usage = ctx.usage
-            renderUsage(ctx)
-          }
-        }
+      case 'status':
+        applyStatusFrame(ctx, payload.status)
         if (ctx === active()) updateComposer()
         return
-      }
-      if (payload.type === 'usage') {
+      case 'usage':
         ctx.usage = payload.usage || payload
         if (ctx === active()) {
           state.usage = ctx.usage
           renderUsage(ctx)
         }
         return
-      }
-      if (payload.type === 'log' && payload.text) {
-        ctx.items.push({
-          kind: 'notice',
-          tone: 'info',
-          text: String(payload.text).slice(0, 500),
-        })
-        syncTranscript({}, ctx)
+      case 'log':
+        if (payload.text) {
+          ctx.items.push({
+            kind: 'notice',
+            tone: 'info',
+            text: String(payload.text).slice(0, 500),
+          })
+          syncTranscript({}, ctx)
+        }
         return
-      }
-      if (payload.type === 'exit') {
+      case 'exit':
         setRunning(false, ctx)
         ctx.items.push({
           kind: 'notice',
@@ -1341,17 +1353,14 @@
         syncTranscript({}, ctx)
         refreshStatus(ctx)
         return
-      }
-      if (payload.type === 'notice' && payload.text) {
-        ctx.items.push({ kind: 'notice', tone: 'info', text: String(payload.text) })
-        syncTranscript({}, ctx)
-      }
-    }
-    source.onerror = () => {
-      if (ctx === active()) setHint('Lost the event stream — reconnecting…', 'error')
-    }
-    source.onopen = () => {
-      if (ctx === active()) setHint('')
+      case 'notice':
+        if (payload.text) {
+          ctx.items.push({ kind: 'notice', tone: 'info', text: String(payload.text) })
+          syncTranscript({}, ctx)
+        }
+        return
+      default:
+        return
     }
   }
 
@@ -2011,6 +2020,9 @@
     })
     connectEvents(ctx)
     activate(ctx)
+    // The shared stream's hello was sent before this console existed, so ask for its status
+    // rather than waiting for the next live frame.
+    void refreshStatus(ctx)
     // Every open tab is one the next page reopens, whether it was just started or restored.
     rememberOpenFile(ctx.sessionFile)
     if (sessionFile) await restoreHistory(ctx)
@@ -2027,7 +2039,6 @@
     )
     if (!spare) return false
     await fetch(`${API}/instances/${spare.id}/close`, { method: 'POST' }).catch(() => {})
-    spare.source?.close()
     state.consoles.delete(spare.id)
     // Closing a conversation is the one thing that forgets it: it is not idle by accident.
     if (spare.sessionFile) openFiles.delete(spare.sessionFile)

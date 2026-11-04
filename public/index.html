@@ -19,7 +19,7 @@
 
   <div class="container">
     <div class="dashboard-header">
-      <div class="dashboard-header-inner">          <p class="dashboard-eyebrow">Agent Harness · local routing</p>
+      <div class="dashboard-header-inner">
         <h1 class="dashboard-heading">
           <svg class="hx-brand" viewBox="0 0 32 32" aria-hidden="true">
             <g transform="translate(-0.17 2.22) rotate(-32 16 16) translate(16 16) scale(1.05) translate(-16 -16)">
@@ -29,15 +29,19 @@
           </svg>
           <span>Hammer</span>
         </h1>
-        <p style="margin: 14px 0 0; color: var(--text-muted); font-size: 0.78rem; display:flex; align-items:center; justify-content:center; gap:10px; flex-wrap:wrap;">
-          <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
-            <span id="reload-label">Restart router</span>
+        <nav class="hx-nav" aria-label="Workspace">
+          <button class="hx-nav-btn active" id="hx-nav-agent" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="2"></rect><path d="M2 14h2M20 14h2M15 13v2M9 13v2"></path></svg>
+            Agent
           </button>
-          <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
-            <span id="theme-icon">🌙</span>
+          <button class="hx-nav-btn" id="hx-nav-router" type="button">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><circle cx="5" cy="6" r="2"></circle><circle cx="19" cy="6" r="2"></circle><circle cx="5" cy="18" r="2"></circle><circle cx="19" cy="18" r="2"></circle><path d="m9.5 10.4-3-3M14.5 10.4l3-3M9.5 13.6l-3 3M14.5 13.6l3 3"></path></svg>
+            Router
           </button>
-        </p>
+        </nav>
+
+        <span class="hx-nav-spacer"></span>
+
         <!-- What the page is doing, in words, for as long as it is doing it. A zeroed dashboard
              and a loading dashboard used to look identical: every readout shipped a literal
              `0`, so a slow first snapshot read as a router with nothing online. The line is
@@ -48,23 +52,21 @@
           <span id="load-status-text">Loading router state…</span>
           <button id="load-retry-btn" type="button" onclick="retryInitialLoad()" style="display:none;">Retry</button>
         </p>
+
+        <div class="dashboard-header-controls">
+          <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            <span id="reload-label">Restart router</span>
+          </button>
+          <button class="hx-chip" id="hx-palette-btn" type="button" title="Command palette (Ctrl/Cmd+K)">
+            Commands <b>⌘K</b>
+          </button>
+          <button id="theme-toggle" onclick="toggleTheme()" title="Toggle dark mode" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
+            <span id="theme-icon">🌙</span>
+          </button>
+        </div>
       </div>
     </div>
-
-    <nav class="hx-nav" aria-label="Workspace">
-      <button class="hx-nav-btn active" id="hx-nav-agent" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8V4H8"></path><rect x="4" y="8" width="16" height="12" rx="2"></rect><path d="M2 14h2M20 14h2M15 13v2M9 13v2"></path></svg>
-        Agent
-      </button>
-      <button class="hx-nav-btn" id="hx-nav-router" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><circle cx="5" cy="6" r="2"></circle><circle cx="19" cy="6" r="2"></circle><circle cx="5" cy="18" r="2"></circle><circle cx="19" cy="18" r="2"></circle><path d="m9.5 10.4-3-3M14.5 10.4l3-3M9.5 13.6l-3 3M14.5 13.6l3 3"></path></svg>
-        Router
-      </button>
-      <span class="hx-nav-spacer"></span>
-      <button class="hx-chip" id="hx-palette-btn" type="button" title="Command palette (Ctrl/Cmd+K)">
-        Commands <b>⌘K</b>
-      </button>
-    </nav>
 
     <!-- The agent is the application. Everything below it is the router that feeds it, kept
          reachable in one click so the ranking, providers and request logs stay inspectable. -->
@@ -99,14 +101,19 @@
         </div>
 
         <form class="hx-composer" id="hx-composer">
+          <!-- Messages Pi is holding for this conversation, stacked above the line you type on:
+               the queue is what happens next, so it pops in where you are already looking. -->
+          <div class="hx-queue" id="hx-queue" hidden>
+            <div class="hx-queue-head">
+              <span class="hx-queue-label">Queued</span>
+              <span class="hx-queue-count" id="hx-queue-count">0</span>
+            </div>
+            <ul class="hx-queue-list" id="hx-queue-list"></ul>
+          </div>
           <textarea id="hx-input" class="hx-input" rows="2" spellcheck="false"
             placeholder="Ask Hammer to build, fix or explain something in this workspace…  (/new for a fresh session, /stop to halt a turn)"></textarea>
           <div class="hx-attachments" id="hx-attachments" hidden></div>
           <input type="file" id="hx-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-          <div class="hx-queue" id="hx-queue" hidden>
-            <span class="hx-queue-label">Queued</span>
-            <ul class="hx-queue-list" id="hx-queue-list"></ul>
-          </div>
           <div class="hx-composer-bar">
             <span class="hx-hint" id="hx-hint">Enter sends · Shift+Enter for a newline · Ctrl/Cmd+K for commands</span>
             <div class="hx-composer-btns">
