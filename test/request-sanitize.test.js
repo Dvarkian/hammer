@@ -118,3 +118,38 @@ test('the refusals the parser already knew still parse', () => {
   assert.equal(unnamed.rejectsUnknownFields, true)
   assert.equal(isHealableFieldRejection(unnamed), true)
 })
+
+test('a malformed tool call replayed from history is repaired before it poisons the session', () => {
+  // The concrete failure: a model emitted a call whose arguments were the bare word
+  // "command". Pi executed it (the tool answered "Tool tool not found"), then replayed the
+  // turn on every later request, and NIM rejected the whole conversation with
+  // `messages[38].tool_calls[2].function.arguments must be a valid JSON object string`.
+  const body = {
+    model: 'a-model',
+    messages: [
+      { role: 'user', content: 'hi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } },
+          { id: 'c2', type: 'function', function: { name: 'tool', arguments: 'command' } },
+          { id: 'c3', type: 'function', function: { name: 'tool', arguments: '' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'c2', content: 'Tool tool not found' },
+    ],
+  }
+
+  const healed = sanitizeProviderPayload(body, 'nvidia', createLearnedStrips({}))
+  const calls = healed.body.messages[1].tool_calls
+  assert.equal(calls[0].function.arguments, '{"command":"ls"}', 'valid arguments are untouched')
+  assert.equal(calls[1].function.arguments, '{}', 'a bare word becomes an empty object')
+  assert.equal(calls[2].function.arguments, '{}', 'empty text becomes an empty object')
+  assert.deepEqual(healed.stripped, ['tool_call_arguments'], 'the rewrite is disclosed')
+  assert.equal(
+    body.messages[1].tool_calls[1].function.arguments,
+    'command',
+    'the caller body is not mutated',
+  )
+})

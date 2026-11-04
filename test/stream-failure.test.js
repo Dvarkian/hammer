@@ -25,6 +25,10 @@ test('transport-shaped failures read as retryable', () => {
     // The literal the parenthesised entry pins, and the reason it needs the escape.
     'stream terminated (ETIMEDOUT)',
     'upstream connect error or disconnect/reset before headers',
+    // The relay's own words for a stream that ended before the agent answered: the agent
+    // decides whether to continue the turn from this text, so it must read as transport.
+    'Stream interrupted before the agent answered',
+    'Upstream stream stalled (idle timeout).',
   ]) {
     assert.equal(isTransportStreamFailure(text), true, JSON.stringify(text))
   }
