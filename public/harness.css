@@ -436,10 +436,11 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-transcript-wrap {
   position: relative;
-  flex: 1;
-  min-height: 0;
-  /* Allow the transcript to stretch to the full width of its container. */
-  max-width: none;
+  /* Keep the transcript at least as wide as the composer, so they always match. */
+  min-width: 0;
+  flex: 1 1 auto;
+  /* Cap the transcript width on very wide screens so lines stay readable. */
+  max-width: 900px;
   margin-left: auto;
   margin-right: auto;
 }
