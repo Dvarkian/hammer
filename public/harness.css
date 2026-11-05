@@ -438,8 +438,8 @@ body.hx-details-collapsed .hx-side-details {
   position: relative;
   flex: 1;
   min-height: 0;
-  /* Cap the transcript width on very wide screens so lines stay readable. */
-  max-width: 900px;
+  /* Allow the transcript to stretch to the full width of its container. */
+  max-width: none;
   margin-left: auto;
   margin-right: auto;
 }
