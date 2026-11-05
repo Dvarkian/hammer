@@ -279,7 +279,10 @@ body[data-view='agent'] #reload-btn {
      log, details right of it. Each column collapses independently on the body classes the
      header's toggle buttons set. */
   grid-template-columns: 268px minmax(0, 1fr) 292px;
-  gap: 0 32px;
+  /* No column gap: the gutters the sidebar panels carry are the only air, and a gap here
+     showed as page background around the transcript's shaded block — the log read as a card
+     floating in the window instead of the window's own pane. */
+  gap: 0;
   align-items: stretch;
   flex: 1;
   min-height: 0;
@@ -322,26 +325,9 @@ body.hx-details-collapsed .hx-side-details {
   grid-column: 2;
 }
 
-/* The toolbar and the routing line sit in the same column as the log, so the page has one left
-   edge from the title down to the composer. */
-.hx-head {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  box-sizing: border-box;
-  width: 100%;
-  /* The log's own gutter: without it the title starts 28px left of the text it heads, now that
-     neither is held in by a shared measure. */
-  padding: 0 var(--hx-gutter) 10px;
-}
-
-.hx-head-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
+/* The console's controls moved up into the top bar (beside Commands), so the log gained its
+   head row's height. The session name and phase pill keep their styling in the new home; the
+   name drops the separator, since the top bar already has its own rhythm. */
 .hx-session-name {
   color: var(--text-muted);
   font-size: 0.74rem;
@@ -349,16 +335,7 @@ body.hx-details-collapsed .hx-side-details {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 44ch;
-  padding-left: 10px;
-  border-left: 1px solid var(--border);
-}
-
-.hx-head-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
+  max-width: 34ch;
 }
 
 /* The phase pill is the process, not the turn: starting / alive / busy / down. It is a dot and
@@ -429,7 +406,8 @@ body.hx-details-collapsed .hx-side-details {
   box-sizing: border-box;
   width: 100%;
   /* 1px of the padding is the border below, so the strip's text lands on the log's left edge and
-     its rule still spans the pane. */
+     its rule still spans the pane. The top is flush: the strip is the transcript's first edge,
+     and air above it read as padding around the shaded log rather than as the strip's own. */
   padding: 0 calc(var(--hx-gutter) - 1px) 12px;
   border-bottom: 1px solid var(--border);
   font-size: 0.74rem;
@@ -478,9 +456,19 @@ body.hx-details-collapsed .hx-side-details {
      on top of it: the transcript grew 26px taller than its wrapper and its last lines landed
      on top of the composer. */
   box-sizing: border-box;
+  /* Rows wrap, they do not run off the edge — a horizontal scrollbar here is always a bug
+     made visible (a long `pre`, a wide table), and the transcript has somewhere to put long
+     things: its own disclosures collapse their output. It is hidden, not forbidden. */
+  overflow-x: hidden;
+  /* The vertical scrollbar is hidden, not removed: the wheel, the keys and the outline rail
+     all still scroll, and the rail already says where in the log you are — a grey track
+     running behind it said it a second time, in the way. */
+  scrollbar-width: none;
   overflow-y: auto;
   background: var(--chat-bg);
-  padding: 18px var(--hx-gutter) 20px;
+  /* No top padding: the routing strip's rule is the log's own top edge, so the shaded ground
+     starts right at it and the first row breathes only against the sides and the dock. */
+  padding: 0 var(--hx-gutter) 20px;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -492,6 +480,11 @@ body.hx-details-collapsed .hx-side-details {
    * write retargeted an animation that had not finished, so the log crept behind the turn and
    * "follow the bottom" kept deciding it was no longer at the bottom.
    */
+}
+
+.hx-transcript::-webkit-scrollbar {
+  /* Chromium still ships ::-webkit-scrollbar (Firefox ignores it): same hiding, that engine. */
+  display: none;
 }
 
 .hx-transcript > * {
@@ -990,10 +983,11 @@ body.hx-details-collapsed .hx-side-details {
 /* ── Outline rail ────────────────────────────────────────────────────────────────────── */
 
 /*
- * One tick per row, at the position the row actually occupies — a tool row is one line, an
- * assistant turn can be a page of prose, so the rail's proportions are the log's own. It is a
- * mirror of #hx-transcript (its same 22px gutter on the right), so it overlays the transcript
- * rather than taking width from it: the text column never moves.
+ * The outline of the conversation: a mark per prompt and per answer, at the position it
+ * actually occupies — a tool line is one row, an answer can be a page of prose, so the
+ * rail's proportions are the log's own. It is a mirror of #hx-transcript (its same 22px
+ * gutter on the right), so it overlays the transcript rather than taking width from it: the
+ * text column never moves.
  */
 .hx-minimap {
   position: absolute;
@@ -1017,8 +1011,10 @@ body.hx-details-collapsed .hx-side-details {
 
 /*
  * A tick is a button — the rail is keyboard- and screen-reader-navigable, and each tick's
- * label is "You: <the prompt's first words>" rather than an untitled dot. The colour is the
- * same one the row's left edge already carries, so the rail reads as the log's shadow.
+ * label is "Hammer: <the answer's first words>" rather than an untitled dot. The colours are
+ * the rows' own: the transcript's maroon spine is carried by the rows that are the agent's
+ * WORK (tool calls, thinking), and the free-standing rows are what the rail marks — the
+ * model's answers in that same maroon, the reader's prompts in the blue their rows carry.
  */
 .hx-minimap-tick {
   position: absolute;
@@ -1027,9 +1023,9 @@ body.hx-details-collapsed .hx-side-details {
   min-height: 5px;
   padding: 0;
   border: 0;
-  background: var(--text-muted);
+  background: var(--accent);
   border-radius: 2px;
-  opacity: 0.5;
+  opacity: 0.75;
   cursor: pointer;
   transition:
     opacity 0.12s ease,
@@ -1039,24 +1035,17 @@ body.hx-details-collapsed .hx-side-details {
 .hx-minimap-tick.is-user {
   background: var(--success);
   opacity: 0.85;
-}
-
-.hx-minimap-tick.is-assistant {
-  background: var(--accent);
-  opacity: 0.75;
-}
-
-/* A notice is a waypoint in the conversation — an error, a restart — so it is drawn to look. */
-.hx-minimap-tick.is-notice {
-  background: var(--error);
-  opacity: 0.9;
+  /* Prompts sit over the answers' maroon when turns crowd; the reader's question wins. */
+  z-index: 1;
 }
 
 .hx-minimap-tick:hover,
 .hx-minimap-tick:focus-visible {
   opacity: 1;
   outline: none;
-  background: var(--text);
+  /* Hover keeps the tick's own colour, only lit: a prompt stays blue under the pointer. */
+  filter: brightness(1.25);
+  z-index: 2;
 }
 
 /* The window over the part of the log on screen: the rail then also says where you are. */
@@ -1076,7 +1065,7 @@ body.hx-details-collapsed .hx-side-details {
   cursor: grabbing;
 }
 
-/* A run of rows the rail did not have room to draw: the tool work between two landmarks. */
+/* A run of rows the rail did not have room to draw: the agent's work between two answers. */
 .hx-minimap-gap {
   position: absolute;
   left: 5px;
@@ -1214,6 +1203,13 @@ body.hx-details-collapsed .hx-side-details {
   align-items: center;
   justify-content: center;
   padding: 6px 8px;
+}
+
+/* The same display-beats-[hidden] trap as the queue and the attachments: the stop button is
+   hidden while the agent is idle, and without this rule the icon's flex display would hold
+   its box open — a dead square next to Send. */
+.hx-btn.hx-icon[hidden] {
+  display: none;
 }
 
 /*
@@ -1577,7 +1573,9 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-side-sessions {
   grid-column: 1;
-  padding-right: 0;
+  /* A little air before the border: the sidebar's content was flush against its rule, and
+     the row text sat on the line. */
+  padding-right: 12px;
   border-right: 1px solid var(--border);
 }
 
@@ -1971,6 +1969,14 @@ body.hx-details-collapsed .hx-side-details {
     gap: 0;
   }
 
+  /* In drawer mode all three items stack in the single track; only the non-fixed item
+     (.hx-main) actually occupies space. Reset the desktop explicit grid-column pins. */
+  .hx-side-sessions,
+  .hx-side-details,
+  .hx-main {
+    grid-column: 1 / -1;
+  }
+
   /* On a phone-width pane the desktop collapse states must not hide a drawer before it is
      even open, so the collapsed classes stop applying here. */
   body.hx-sessions-collapsed .hx-side-sessions,
@@ -2023,7 +2029,7 @@ body.hx-details-collapsed .hx-side-details {
   }
 
   .hx-transcript {
-    padding: 16px var(--hx-gutter) 20px;
+    padding: 0 var(--hx-gutter) 20px;
   }
 }
 

@@ -308,6 +308,22 @@
     }
 
     let allModels = [];
+    // provider::model -> time-series usage samples for the usage plots.
+    // Each entry is { t: epochMs, ttft: ms|null, tps: tok/s|null, tokens: count|null }.
+    const usageSeriesByKey = new Map();
+    // The same samples, restricted to what the running router process served (the
+    // "current session" plot). The all-time view is the map above.
+    const usageSessionByKey = new Map();
+    // Last time the series was fetched (so we only pull deltas).
+    let usageSeriesLastFetchedAt = null;
+    // In-flight guard so overlapping series fetches can't clobber each other.
+    let usageSeriesFetching = false;
+    // providerKey -> color hue for per-model sparklines (stable per provider).
+    const usageProviderHue = (pk) => {
+      let h = 0;
+      for (const ch of String(pk)) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
+      return Math.abs(h) % 360;
+    };
     // providerKey -> the domains whose favicons may mark it in the topology plot, best first.
     // Sent by the router (see providerFaviconDomains), which derives them from the sites each
     // provider's own descriptor names — this replaced a hand-written list here that covered
@@ -396,6 +412,7 @@
     let scatterScales = null;     // plot extents, refreshed by every draw
     let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
     let selectorGuaranteeSlope = 0;   // fastest-row guarantee slope, applied only at 100%
+    let selectorNotches = [];         // slider positions (0..1000) furthest from any model changeover
     const isTableHovered = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
@@ -840,6 +857,8 @@
         // current by the staged pass above, which is the only place that holds a roster matching
         // this snapshot — see the comment there about quotaPending.
         if (data.usagePending === true) scheduleUsageFollowUp();
+        // Pull the time-series usage samples for the usage plots after the table is painted.
+        fetchUsageSeriesDelta().then(() => drawUsagePlots());
         return true;
       } catch (e) {
         console.error('Fetch error:', e);
@@ -855,6 +874,48 @@
     // visibility handler, the coalesced refresh). It is now exactly the model snapshot.
     function fetchData() {
       return loadModelSnapshot();
+    }
+
+    // Fetch time-series usage samples for the usage plots.
+    // `since` limits points to those at or after that epoch ms (used for incremental pulls).
+    async function fetchUsageSeries({ since, limit = 200 } = {}) {
+      if (usageSeriesFetching) return;
+      usageSeriesFetching = true;
+      try {
+        const qs = new URLSearchParams();
+        if (since != null) qs.set('since', String(since));
+        qs.set('limit', String(limit));
+        const res = await fetch(`/api/usage-series?${qs}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const series = data && data.series ? data.series : {};
+        const session = data && data.session ? data.session : {};
+        for (const [key, pts] of Object.entries(series)) {
+          if (!Array.isArray(pts)) continue;
+          const existing = usageSeriesByKey.get(key) || [];
+          const merged = [...existing, ...pts];
+          // Deduplicate by timestamp, keep last `limit` points.
+          const byTime = new Map();
+          for (const p of merged) byTime.set(Number(p.t), p);
+          const deduped = [...byTime.values()].sort((a, b) => Number(a.t) - Number(b.t));
+          usageSeriesByKey.set(key, deduped.slice(-limit));
+        }
+        // The session view is authoritative from the server (it knows when its own
+        // process started), so it replaces the local copy rather than being merged.
+        usageSessionByKey.clear();
+        for (const [key, pts] of Object.entries(session)) {
+          if (Array.isArray(pts)) usageSessionByKey.set(key, pts);
+        }
+        usageSeriesLastFetchedAt = data?.at != null ? Number(data.at) : Date.now();
+      } catch { /* best effort */ }
+      finally { usageSeriesFetching = false; }
+    }
+
+    // Re-pull the series. The server caps each row at 200 points (see recordUsage in
+    // lib/server.js), so the payload is bounded and there is no need for a delta filter —
+    // and a `since` boundary could drop the sample a just-arrived event announced.
+    async function fetchUsageSeriesDelta() {
+      await fetchUsageSeries();
     }
 
     function calculateBestModel(models) {
@@ -1536,6 +1597,71 @@
       return 2 * ySpan / minSpeedGap;
     }
 
+    // Changeover slopes: the exact slopes where the argmax pick flips from one model
+    // to the next. With slope m the pick maximizes intell + m·speed, so each eligible
+    // row is a line L(s) = intell + s·speed and the pick is whichever line is highest.
+    // The changeovers are where the upper envelope of those lines hands over. Building
+    // that envelope (rather than comparing every pair) matters: two models may cross
+    // without either of them ever being the pick, because a third line sits above them
+    // at that slope — a notch derived from such a crossing would be a place where
+    // nothing changes.
+    function computeChangeoverSlopes(rows) {
+      const eligible = (rows || [])
+        .filter(r => isRoutableRow(r))
+        .filter(r => Number.isFinite(r.intell) && Number.isFinite(r.speed))
+        .filter(r => r.intell > 0 && r.speed > 0);
+      // One line per distinct speed: at a given speed only the smartest row can win.
+      const bySpeed = new Map();
+      for (const r of eligible) {
+        const prev = bySpeed.get(r.speed);
+        if (!prev || r.intell > prev.intell) bySpeed.set(r.speed, r);
+      }
+      // Hull of lines, ordered by increasing slope (speed). Each entry records the
+      // slope at which that line starts to be the highest one; a line whose takeover
+      // comes no later than its predecessor's is popped — it never wins.
+      const hull = [];
+      for (const p of [...bySpeed.values()].sort((a, b) => a.speed - b.speed)) {
+        const m = p.speed;
+        const b = p.intell;
+        let start = -Infinity;
+        while (hull.length) {
+          const last = hull[hull.length - 1];
+          const x = (last.line.b - b) / (m - last.line.m);
+          if (x <= last.start) { hull.pop(); continue; }
+          start = x;
+          break;
+        }
+        if (hull.length === 0) start = -Infinity;
+        hull.push({ line: { m, b }, start });
+      }
+      // Every takeover after the first is a changeover. Slopes at or below zero are
+      // outside the slider's range (it runs from the flat line to the vertical one),
+      // so they are not changeovers the user can reach.
+      return hull.slice(1).map(h => h.start).filter(s => s > 0);
+    }
+
+    // Slider notches sit at the positions furthest from every model changeover. With N
+    // changeovers there are N+1 selection regions (each region picks one model); placing
+    // one notch per region at its midpoint puts each notch as far as possible from its
+    // region's changeover boundaries. The slider maps fraction v (0..1) to visual angle
+    // v·85°, then to a data slope via tan(θ)·(selectorSlopeMax/tan(85°)) — so a data
+    // slope s corresponds to v = atan(s·tan(85°)/selectorSlopeMax) / 85°.
+    function computeSelectorNotches(rows) {
+      const crossings = computeChangeoverSlopes(rows);
+      if (!selectorSlopeMax || crossings.length === 0) return [];
+      // Region edges in slope space: 0 → crossings sorted → +Infinity
+      const edges = [0, ...crossings.slice().sort((a, b) => a - b), Infinity];
+      const positions = [];
+      for (let i = 0; i < edges.length - 1; i++) {
+        const loSlope = edges[i] === 0 ? 0 : edges[i];
+        const hiSlope = edges[i + 1] === Infinity ? selectorSlopeMax : edges[i + 1];
+        const midSlope = (loSlope + hiSlope) / 2;
+        const frac = Math.atan(midSlope * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX;
+        positions.push(Math.round(Math.min(1, Math.max(0, frac)) * 1000));
+      }
+      return positions;
+    }
+
     // One definition of "what the plot shows as selected", shared by the label
     // pass and the overlay so the highlighted dot, its label, the Selected
     // readout, and the drawn line can never disagree. Mirrors the router's
@@ -1784,6 +1910,7 @@
       if (rows.length === 0) {
         selectorSlopeMax = 0;
         selectorGuaranteeSlope = 0;
+        selectorNotches = [];
         syncSelectorControls();
         const muted = cssVarValue('--text-muted') || '#999';
         const t = svgEl('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
@@ -1798,6 +1925,7 @@
       // 'Current' KPI, and the router all key off the same numbers.
       selectorSlopeMax = computeSelectorSlopeMax(scales);
       selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
+      selectorNotches = computeSelectorNotches(rows);
       const selection = getPlotSelection(rows);
       drawScatterGrid(svg, scales);
       drawScatterPoints(svg, rows, scales);
@@ -1886,6 +2014,18 @@
         ? Math.min(1, Math.atan(slopeValue * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX)
         : 0;
       if (slider) slider.value = String(Math.round(frac * 1000));
+      // Paint the changeover notches as a gradient of hairlines in a CSS custom property,
+      // which the track rules read as their background-image. A datalist cannot be used:
+      // -webkit-appearance:none removes the native ticks. Positions are per-mille of the
+      // 0..1000 slider range; each tick is 2px wide, centred on its stop.
+      if (slider) {
+        const stops = selectorNotches.map(p => p / 10); // per-mille -> percent
+        slider.style.setProperty('--slope-notches', stops.length
+          ? `linear-gradient(to right, ${stops.map(pc =>
+            `transparent calc(${pc}% - 1px), var(--border) calc(${pc}% - 1px) calc(${pc}% + 1px), transparent calc(${pc}% + 1px)`
+          ).join(', ')})`
+          : 'none');
+      }
       if (valEl) {
         // Slope 0 is a real setting — the flat line that picks the smartest row — so it
         // reads as '0%'. Only a missing slope, or a positive one the plot has no scale
@@ -2028,6 +2168,360 @@
       }
 
       loadSelectorState();
+    }
+
+    // ──────── Usage plots ────────
+    // Time-series usage plots: tokens/s over time, rendered as ~100 equal time buckets,
+    // each drawn as one column carrying the bucket's average rate. Each point is one
+    // successful proxy request recorded in `usageSeriesByKey`.
+
+    const usageSvgNS = 'http://www.w3.org/2000/svg';
+    function usageSvgEl(name, attrs) {
+      const n = document.createElementNS(usageSvgNS, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      return n;
+    }
+
+    const fmtTps = (v) => {
+      if (v == null || !Number.isFinite(v)) return '—';
+      if (v >= 1000) return v.toFixed(0);
+      if (v >= 10) return v.toFixed(1);
+      return v.toPrecision(3);
+    };
+
+    // Build a polyline path from a series of points mapped into the plot box.
+    // `valueOf(p)` picks which field of each sample to plot (tps, ttft, tokens).
+    function usageLinePath(points, xOf, yOf, valueOf) {
+      let d = '';
+      let first = true;
+      for (const p of points) {
+        const v = valueOf(p);
+        if (v == null || !Number.isFinite(v)) continue;
+        const x = xOf(p.t);
+        const y = yOf(v);
+        if (first) { d = `M ${x} ${y}`; first = false; }
+        else d += ` L ${x} ${y}`;
+      }
+      return d;
+    }
+
+    // Draw one time-series plot inside an SVG element.
+    // options: { id, title, valueOf (p => number), yLabel, color, maxPoints,
+    //            fallback { width, height }, pad }
+    // fallback: measured size to use while the SVG's view is hidden (a hidden element has
+    // no client box, and the 640x160 default would be wrong for a narrow rail plot).
+    // pad: axis padding override — the rail plot is narrow, so its labels sit closer in.
+    function drawUsagePlot(svgId, pointsByKey, options) {
+      const svg = document.getElementById(svgId);
+      const empty = document.getElementById(svgId.replace('-svg', '-empty'));
+      if (!svg) return;
+
+      const fb = options.fallback || { width: 640, height: 160 };
+      const W = svg.clientWidth || fb.width;
+      const H = svg.clientHeight || fb.height;
+      const pad = options.pad || { top: 14, right: 40, bottom: 22, left: 34 };
+      const plotW = W - pad.left - pad.right;
+      const plotH = H - pad.top - pad.bottom;
+
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+      svg.innerHTML = '';
+
+      // Gather all points across all rows for this plot.
+      let allPoints = [];
+      for (const pts of Object.values(pointsByKey)) {
+        if (Array.isArray(pts)) allPoints = allPoints.concat(pts);
+      }
+      allPoints.sort((a, b) => Number(a.t) - Number(b.t));
+
+      // Filter out points with no plottable value.
+      const plottable = allPoints.filter(p => {
+        const v = options.valueOf(p);
+        return v != null && Number.isFinite(v);
+      });
+
+      if (plottable.length === 0) {
+        svg.style.display = 'none';
+        if (empty) empty.style.display = 'flex';
+        return;
+      }
+      svg.style.display = 'block';
+      if (empty) empty.style.display = 'none';
+
+      const tMin = plottable[0].t;
+      const tMax = plottable[plottable.length - 1].t;
+      const tSpan = tMax - tMin || 1;
+      const values = plottable.map(p => options.valueOf(p));
+      // Tokens per second is a rate, so the floor is zero: a value below it would draw
+      // below the axis and read as a negative speed, which nothing measures.
+      const vMin = 0;
+      const vMax = Math.max(...values, 0) || 1;
+      const yHeadroom = vMax * 1.1;
+
+      const yOf = (v) => pad.top + plotH - (v / yHeadroom) * plotH;
+
+      // Which row each point came from, so a bucket can be coloured by the provider that
+      // landed last in it (the points arrive flattened, without their keys attached).
+      const keyOf = new Map();
+      for (const [key, pts] of Object.entries(pointsByKey)) {
+        if (!Array.isArray(pts)) continue;
+        for (const p of pts) if (p && typeof p === 'object') keyOf.set(p, key);
+      }
+
+      // ── Bin into ~100 equal time buckets, averaging within each ──
+      // Averaging (not summing) keeps a burst of fast requests in one bucket from reading
+      // as a taller column than the rates it actually contained: what the plot describes
+      // is speed over time, not volume. A bucket's colour is the hue of the request that
+      // landed last in it, so a column is never a blend the legend cannot name.
+      const BIN_TARGET = 100;
+      const binCount = Math.max(1, Math.min(BIN_TARGET, plottable.length));
+      const bins = Array.from({ length: binCount }, () => ({ sum: 0, n: 0, key: '' }));
+      for (const p of plottable) {
+        const idx = Math.min(binCount - 1, Math.floor(((p.t - tMin) / (tSpan || 1)) * binCount));
+        const b = bins[idx];
+        b.sum += options.valueOf(p);
+        b.n += 1;
+        b.key = keyOf.get(p) || b.key;
+      }
+
+      // Columns: one rect per non-empty bucket. Width leaves a hair of gap so the
+      // buckets read as columns rather than one solid band.
+      const binW = plotW / binCount;
+      const barW = Math.max(1, binW - Math.min(2, binW * 0.18));
+      for (let i = 0; i < binCount; i++) {
+        const b = bins[i];
+        if (b.n === 0) continue;
+        const avg = b.sum / b.n;
+        const hue = usageProviderHue((b.key || '').split('::')[0]);
+        const x = pad.left + i * binW + (binW - barW) / 2;
+        const y = yOf(avg);
+        svg.appendChild(usageSvgEl('rect', {
+          x: x.toFixed(2),
+          y: y.toFixed(2),
+          width: barW.toFixed(2),
+          height: (pad.top + plotH - y).toFixed(2),
+          fill: `hsl(${hue} 65% 55%)`,
+          'fill-opacity': 0.8,
+          rx: Math.min(2, barW / 3).toFixed(2),
+          'class': 'usage-bar',
+        }));
+      }
+
+      // ── Columns drawn above replace the old per-series lines, areas and single-point
+      // dots: one averaged bucket per column describes the same data with less ink, and
+      // a lone request gets its own 1-sample bucket instead of disappearing (< 2 points
+      // used to mean an invisible series).
+
+      // Grid lines + axes.
+      const muted = getComputedStyle(document.documentElement).getPropertyValue('--text-muted') || '#999';
+      for (let i = 0; i <= 4; i++) {
+        const v = (i / 4) * vMax;
+        const y = yOf(v);
+        svg.appendChild(usageSvgEl('line', {
+          x1: pad.left, y1: y, x2: pad.left + plotW, y2: y,
+          stroke: muted, 'stroke-opacity': 0.12, 'stroke-width': 1,
+        }));
+        const txt = usageSvgEl('text', {
+          x: pad.left - 6, y: y + 3,
+          fill: muted, 'font-size': '8px', 'text-anchor': 'end',
+        });
+        txt.textContent = fmtTps(v);
+        svg.appendChild(txt);
+      }
+      // Time axis labels — bucket-aligned: label i sits at the centre of bucket
+      // floor(i * binCount / 4), so the stamps describe the columns rather than
+      // arbitrary fractions of the span.
+      const fmtTime = (t) => {
+        const d = new Date(t);
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      };
+      const xOfBin = (i) => pad.left + (i + 0.5) * binW;
+      for (let i = 0; i <= 4; i++) {
+        const bi = Math.min(binCount - 1, Math.round((i / 4) * (binCount - 1)));
+        const x = xOfBin(bi);
+        const txt = usageSvgEl('text', {
+          x: x.toFixed(2), y: pad.top + plotH + 15,
+          fill: muted, 'font-size': '8px', 'text-anchor': 'middle',
+        });
+        txt.textContent = fmtTime(tMin + (bi / Math.max(1, binCount - 1)) * tSpan);
+        svg.appendChild(txt);
+      }
+      // Y axis label.
+      const yLab = usageSvgEl('text', {
+        x: 10, y: pad.top + plotH / 2,
+        fill: muted, 'font-size': '8px', 'text-anchor': 'middle',
+        transform: `rotate(-90 10 ${pad.top + plotH / 2})`,
+      });
+      yLab.textContent = options.yLabel || 'tok/s';
+      svg.appendChild(yLab);
+    }
+
+    // Draw both usage plots from the current series state, then every visible row's
+    // per-model sparkline. The sparkline pass is last and separately id'd so it can also
+    // run on its own from the 'usage' router event (see connectRouterEvents).
+    function drawUsagePlots() {
+      // Session plot: only what the running router process served. It renders in the
+      // agent page's inspector rail, which is often hidden when this runs (the page boots
+      // on the router view), so the fallback box and the tighter padding match the rail
+      // rather than the wide cards this plot used to live in.
+      drawUsagePlot('usage-session-svg', Object.fromEntries(usageSessionByKey), {
+        valueOf: (p) => p.tps,
+        yLabel: 'tokens/s',
+        fallback: { width: 240, height: 120 },
+        pad: { top: 10, right: 8, bottom: 16, left: 30 },
+      });
+      // Global plot: every sample Hammer has recorded, this run and before it.
+      drawUsagePlot('usage-global-svg', Object.fromEntries(usageSeriesByKey), {
+        valueOf: (p) => p.tps,
+        yLabel: 'tokens/s',
+      });
+      drawUsageSparklines();
+    }
+
+    // One sparkline per provider::model row currently rendered in the table.
+    // Repaints every usage cell currently on screen. Group rows are included: their cell
+    // holds a series no row key owns, so it is refreshed through the group members
+    // rather than by looking up usageSeriesByKey.
+    function drawUsageSparklines() {
+      for (const key of usageSeriesByKey.keys()) {
+        drawUsageSparkline(`usage-cell-${key}`, key);
+      }
+      for (const tbody of [document.getElementById('table-body'), document.getElementById('graveyard-body')]) {
+        if (!tbody) continue;
+        for (const row of tbody.querySelectorAll('tr.model-group-row')) {
+          const cell = row.querySelector('td.usage-sparkline-cell');
+          if (!cell) continue;
+          const groupKey = (row.dataset.rowKey || '').slice(2); // strip the 'g:' prefix
+          const group = lastMainGroups.find(g => g.key === groupKey)
+            || pendingGraveyardGroups.find(g => g.key === groupKey);
+          if (group) drawGroupUsageSparklineInto(cell, group.members);
+        }
+      }
+    }
+
+    // A model's combined series, keyed provider::model one per member and summed at
+    // matching timestamps. A group's rate is the rate of whoever served that request, not
+    // the sum of the providers' rates — so the combined sample is the best (fastest)
+    // provider among those that answered within the same window. Where no window is that
+    // tight it degrades to that one provider's sample, which is why the sparkline reads
+    // the same as its rows do.
+    function combinedGroupSeries(members) {
+      const merged = new Map();
+      for (const m of members) {
+        const pts = usageSeriesByKey.get(`${m.providerKey}::${m.modelId}`);
+        if (!Array.isArray(pts)) continue;
+        for (const p of pts) {
+          if (!p || p.t == null) continue;
+          const bucket = Math.floor(Number(p.t) / 1000);
+          const prev = merged.get(bucket);
+          if (!prev) {
+            merged.set(bucket, { ...p, t: Number(p.t) });
+          } else {
+            const prevTps = Number.isFinite(prev.tps) ? prev.tps : -Infinity;
+            const nextTps = Number.isFinite(p.tps) ? p.tps : -Infinity;
+            merged.set(bucket, nextTps > prevTps ? { ...p, t: Number(p.t) } : prev);
+          }
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.t - b.t);
+    }
+
+    function drawGroupUsageSparkline(cellId, members) {
+      const container = document.getElementById(cellId);
+      if (container) drawGroupUsageSparklineInto(container, members);
+    }
+
+    // Element form, for the same reason drawUsageSparklineInto exists: the group row is
+    // assembled before it is attached to the table.
+    function drawGroupUsageSparklineInto(container, members) {
+      if (!container) return;
+      const combined = combinedGroupSeries(members);
+      if (combined.length === 0) {
+        container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>';
+        return;
+      }
+      // Reuse the single-series renderer: it takes the series directly, so the combined
+      // series does not have to be stuffed into usageSeriesByKey to be plotted.
+      drawUsageSparklineSeries(container, combined, members[0].providerKey);
+    }
+
+    // Per-model sparkline: tiny tokens/s sparkline for one row's series.
+    // The element form is the real implementation (a row is drawn before it is attached,
+    // so it cannot be looked up by id yet); the id form is what the refresh passes use.
+    function drawUsageSparkline(containerId, key) {
+      const container = document.getElementById(containerId);
+      if (container) drawUsageSparklineInto(container, key);
+    }
+
+    function drawUsageSparklineInto(container, key) {
+      if (!container) return;
+      const pts = usageSeriesByKey.get(key);
+      if (!pts || pts.length === 0) {
+        container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>';
+        return;
+      }
+      drawUsageSparklineSeries(container, pts, key.split('::')[0]);
+    }
+
+    function drawUsageSparklineSeries(container, pts, providerKey) {
+      // Replace, never accumulate: the create/update passes and every 'usage' event each
+      // re-enter here for a cell that already holds its sparkline, so without this the row
+      // grew a stack of them. One row, one plot.
+      container.innerHTML = '';
+      const W = 96, H = 28;
+      const pad = { top: 2, right: 2, bottom: 6, left: 2 };
+      const plotW = W - pad.left - pad.right;
+      const plotH = H - pad.top - pad.bottom;
+
+      const svg = usageSvgEl('svg', {
+        width: String(W),
+        height: String(H),
+        class: 'usage-sparkline',
+        viewBox: `0 0 ${W} ${H}`,
+      });
+      const values = pts.map(p => p.tps).filter(v => v != null && Number.isFinite(v));
+      if (values.length === 0) {
+        container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>';
+        return;
+      }
+      // A rate, so the floor is zero (see drawUsagePlot).
+      const vMax = Math.max(...values, 0) || 1;
+      const tMin = pts[0].t, tMax = pts[pts.length - 1].t;
+      const tSpan = tMax - tMin || 1;
+
+      const xOf = (t) => pad.left + ((t - tMin) / tSpan) * plotW;
+      const yOf = (v) => pad.top + plotH - (v / vMax) * plotH;
+
+      // Area fill. Hue comes from the provider whose sample this is (the group row passes
+      // its first member's provider, which is close enough for a sparkline).
+      const hue = usageProviderHue(providerKey);
+      const fill = `hsl(${hue} 60% 50%)`;
+      const linePts = pts.filter(p => p.tps != null && Number.isFinite(p.tps));
+      if (linePts.length >= 2) {
+        const d = usageLinePath(linePts, xOf, yOf, (p) => p.tps);
+        svg.appendChild(usageSvgEl('path', {
+          d: d + ` L ${xOf(linePts[linePts.length - 1].t)} ${pad.top + plotH} L ${xOf(linePts[0].t)} ${pad.top + plotH} Z`,
+          fill, 'fill-opacity': 0.25, 'class': 'usage-area',
+        }));
+        svg.appendChild(usageSvgEl('path', {
+          d,
+          fill: 'none', stroke: `hsl(${hue} 75% 55%)`, 'stroke-width': 1.5,
+          'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'class': 'usage-line',
+        }));
+      } else if (linePts.length === 1) {
+        const p = linePts[0];
+        svg.appendChild(usageSvgEl('circle', {
+          cx: xOf(p.t), cy: yOf(p.tps), r: 2,
+          fill: `hsl(${hue} 75% 55%)`, 'class': 'usage-point',
+        }));
+      }
+
+      container.appendChild(svg);
+      // Label with latest value.
+      const last = pts[pts.length - 1];
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:0.68rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
+      label.textContent = `last ${fmtTps(last.tps)} tok/s`;
+      container.appendChild(label);
     }
 
     // Spring-layout topology: provider nodes (favicon or monogram + ring + name)
@@ -3873,6 +4367,11 @@
           })()}</div></td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
+          <!-- Combined usage of every provider under this heading. The heading row is the
+               one row that stays on screen when a group is collapsed, so it is where the
+               sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
+               since the id does not resolve until then. -->
+          <td id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -3930,6 +4429,11 @@
       const pinButton = tr.querySelector('.pin-row-btn');
       const pinned = isFamilyPinnedGroup(g.members);
       bindPinButton(pinButton, { modelId: g.members[0]?.modelId, groupKey: g.key, pinned });
+      // Aggregated sparkline. Drawn even though the row is not attached yet — the
+      // container is passed by element here (the id inside groupRowInnerHTML cannot
+      // resolve until the row is in the document), which is the same reason createRow
+      // hands its usage cell straight to the plotter.
+      drawGroupUsageSparklineInto(tr.querySelector('.usage-sparkline-cell'), g.members);
       return tr;
     }
 
@@ -3941,6 +4445,7 @@
       const pinButton = row.querySelector('.pin-row-btn');
       const pinned = isFamilyPinnedGroup(g.members);
       bindPinButton(pinButton, { modelId: g.members[0]?.modelId, groupKey: g.key, pinned });
+      drawGroupUsageSparklineInto(row.querySelector('.usage-sparkline-cell'), g.members);
     }
 
     // `precomputedGroups` is the caller's { mainGroups, graveyardGroups } for the unfiltered
@@ -4095,8 +4600,8 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds)
-      const ctxCell = row.cells[4];
+      // Update context window (known limit or observed bounds) — col 5 after the usage sparkline (col 4)
+      const ctxCell = row.cells[5];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -4106,12 +4611,20 @@
       const intellCell = row.cells[1];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // Update status cell (col 5) and response cell (col 6); never clobber an in-flight test
-      const statusCell = row.cells[5];
+      // Usage sparkline (col 4), status cell (col 6) and response cell (col 7);
+      // never clobber an in-flight test
+      const usageCell = row.cells[4];
+      if (usageCell) {
+        usageCell.className = 'usage-sparkline-cell';
+        usageCell.id = `usage-cell-${getModelRowKey(m)}`;
+        drawUsageSparklineInto(usageCell, getModelRowKey(m));
+      }
+      // Update status cell (col 6) and response cell (col 7); never clobber an in-flight test
+      const statusCell = row.cells[6];
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[6];
+      const responseCell = row.cells[7];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
       }
@@ -5620,6 +6133,7 @@
           <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
+          <td></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -5638,6 +6152,7 @@
 
       const isPinnedRow = isExactPinnedRow(m);
       tr.classList.toggle('row-best', isCurrentBestRow(m));
+      const rowKey = getModelRowKey(m);
       tr.innerHTML = `
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
@@ -5649,6 +6164,7 @@
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
           ${formatTpsCell(rowTps(m), 'tok/s')}
+          <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -5660,6 +6176,9 @@
         providerKey: m.providerKey,
         pinned: isPinnedRow,
       });
+      // The usage cell is filled here rather than by id, because the row is not in the
+      // document yet: getElementById cannot see it until reconcileTable attaches it.
+      drawUsageSparklineInto(tr.cells[4], rowKey);
       return tr;
     }
 
@@ -9203,6 +9722,12 @@
           }
         } else if (payload.type === 'selection' && payload.source === 'restored') {
           routerFallbackSelection = null;
+        } else if (payload.type === 'usage' && payload.key) {
+          // A real request just landed on `key`. Pull the fresh series and redraw the plots
+          // and that row's sparkline without reloading the whole snapshot.
+          fetchUsageSeriesDelta().then(() => {
+            drawUsagePlots();
+          });
         }
 
         // Reconcile against the server in the background. The immediate paint above is never

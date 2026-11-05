@@ -2,18 +2,6 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-// ── The transcript's outline rail ────────────────────────────────────────────────────
-//
-// A rail of ticks down the right edge of the log, one per row, at the height that row
-// actually occupies: it answers "where in this conversation is that thing?" without a
-// scroll hunt. That is the whole feature, and each assertion below names a half of it that
-// a plausible-looking port loses.
-//
-// The page is a classic script, so this guards the fold the same way the transcript fold is
-// guarded (pi-agent.test.js): by the source text, plus the CSS rules that make it visible at
-// all. What is checked here is what cannot be left out — the rail must be a *mirror* of the
-// rows, measured from them, and must never disagree with the log.
-
 const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
@@ -36,30 +24,60 @@ test('the rail is in the transcript pane, beside the jump rather than under it',
 
 test('a tick stands at the position its row actually occupies', () => {
   assert.match(harness, /top: node\.offsetTop/)
-  assert.match(harness, /height: Math\.max\(node\.offsetHeight, 1\)/)
+  assert.match(harness, /markHeight = Math\.max\(node\.offsetHeight, 1\)/)
+  // A long thinking block must not be painted with its turn's answer: thinking and prose
+  // share one bubble, so the tick covers the bubble's non-thinking children — the union of
+  // their extents, first prose top to last prose bottom.
+  assert.match(harness, /filter\(\s*\(el\) => !el\.classList\.contains\('hx-thinking'\),?\s*\)/)
+  assert.match(harness, /markHeight = Math\.max\(last\.bottom - first\.top, 1\)/)
+  assert.match(harness, /row\.markTop \* scale/)
+  assert.match(harness, /row\.markHeight \* scale/)
   assert.match(harness, /const track = rail\.clientHeight/)
   assert.match(harness, /const scale = Math\.max\(\(track - MINIMAP_TICK\)/)
   assert.match(harness, /if \(!node \|\| !node\.isConnected\) return null/)
 })
 
 test('the rail repaints with the transcript, on every path that rebuilds it', () => {
-  assert.match(harness, /if \(jump\) jump\.style\.display = atBottom\(transcript\) \? 'none' : ''\s*\n\s*scheduleMinimap\(\)/)
+  assert.match(
+    harness,
+    /if \(jump\) jump\.style\.display = atBottom\(transcript\) \? 'none' : ''\s*\n\s*scheduleMinimap\(\)/,
+  )
   assert.match(harness, /function renderMinimap\(\)/)
   assert.match(harness, /if \(minimapFrame\) return/)
   assert.match(harness, /minimapFrame = requestAnimationFrame\(/)
-  assert.match(harness, /item\.node\.innerHTML = assistantMarkup[\s\S]{0,200}scheduleMinimap\(\)/)
+  assert.match(
+    harness,
+    /item\.node\.innerHTML = assistantMarkup\(item, item\.showRole !== false\)[\s\S]{0,250}scheduleMinimap\(\)/,
+  )
 })
 
 test('the rail is hidden when there is nothing worth mirroring', () => {
   assert.match(harness, /if \(!total \|\| transcript\.querySelector\('\.hx-empty'\)\)/)
   assert.match(harness, /rail\.hidden = true/)
-  assert.match(harness, /if \(!rail \|\| !transcript \|\| !rail\.clientHeight\) return/)
+  // Unhidden before measuring: `hidden` is display:none, which measures as a 0px track, so a
+  // height guard first would deadlock — the rail could never unhide itself.
+  assert.match(harness, /rail\.hidden = false[\s\S]{0,300}if \(!rail\.clientHeight\) return/)
 })
 
-test('when rows outnumber the rail, the landmarks are kept and the filler condenses', () => {
-  assert.match(harness, /const MINIMAP_KEEP = new Set\(\['user', 'assistant', 'notice'\]\)/)
+test('only prompts and answers get marks; the work between them condenses', () => {
+  // The transcript's maroon spine is carried by tool and thinking rows; the prompts and the
+  // answers are the rows that stand free of it. The rail marks exactly those.
+  assert.match(harness, /function minimapMark\(item\)/)
+  assert.match(harness, /item\.kind === 'user'\) return true/)
+  assert.match(
+    harness,
+    /item\.kind === 'assistant'[\s\S]{0,120}block\.kind === 'text' && block\.text/,
+  )
+  assert.match(harness, /mark: minimapMark\(item\)/)
+  assert.doesNotMatch(harness, /MINIMAP_KEEP/)
+  assert.match(harness, /'hx-minimap-tick is-user' : 'hx-minimap-tick'/)
+  assert.doesNotMatch(harness, /is-\$\{row\.kind\}/)
+  assert.doesNotMatch(harness, /is-notice/)
+
+  // When marks would fuse, the answers stay and the work between them collapses into gaps.
   assert.match(harness, /const capacity = Math\.max\(Math\.floor\(track \/ MINIMAP_TICK\), 1\)/)
   assert.match(harness, /if \(rows\.length > capacity\)/)
+  assert.match(harness, /const kept = rows\.filter\(\(row\) => row\.mark\)/)
   assert.match(harness, /let stride = Math\.max\(Math\.ceil\(rows\.length \/ capacity\), 1\)/)
   assert.match(harness, /drawn\.length <= capacity \|\| stride >= rows\.length/)
   assert.match(harness, /stride \+= 1/)
@@ -80,17 +98,13 @@ test('a tick jumps to its row, instantly, and the row is marked', () => {
 
 test('a tick names its row to a screen reader and to a hover', () => {
   assert.match(harness, /function minimapAriaLabel\(item\)/)
-  assert.match(harness, /return excerpt \? `\\$\\{who\\}: \\$\\{excerpt\\}` : who/)
-  assert.match(
-    harness,
-    /return `\\$\\{item\\.name \\|\\| 'tool'\\} — \\$\\{toolSummary\\(item\\)\\}`/,
-  )
+  // The excerpt alone — the tick's colour carries the role, so no "You:"/"Hammer:" prefix.
+  assert.doesNotMatch(harness, /\$\{who\}: \$\{excerpt\}/)
+  assert.match(harness, /item\.name.*tool.*toolSummary/)
   assert.match(harness, /\.slice\(0, 120\)/)
   assert.match(harness, /function minimapHover\(event\)/)
   assert.ok(
-    harness.includes(
-      'tip.innerHTML = `<b>${escapeHtml(who)}</b>${escapeHtml(minimapLabel(item))}`',
-    ),
+    harness.includes('tip.innerHTML = escapeHtml(minimapLabel(item))'),
     'the tooltip label must be escaped, not assembled from raw text',
   )
 })
@@ -98,7 +112,10 @@ test('a tick names its row to a screen reader and to a hover', () => {
 test('the viewport window says where in the conversation you are', () => {
   assert.match(harness, /function updateMinimapWindow\(\)/)
   assert.match(harness, /const scrollable = transcript\.scrollHeight - transcript\.clientHeight/)
-  assert.match(harness, /windowEl\.style\.top = `\$\{Math\.round\(Math\.min\(top, track - height\)\)\}px`/)
+  assert.match(
+    harness,
+    /windowEl\.style\.top = `\$\{Math\.round\(Math\.min\(top, track - height\)\)\}px`/,
+  )
   assert.match(harness, /if \(scrollable <= 0\) \{/)
   assert.match(harness, /\$\('hx-transcript'\)\?\.addEventListener\('scroll', \(\) => \{/)
   assert.match(harness, /setPointerCapture\?\.\(event\.pointerId\)/)
@@ -119,27 +136,32 @@ test('the rail is navigable from the keyboard too', () => {
     harness,
     /\{ label: 'Previous prompt', hint: 'Alt\+↑', run: \(\) => jumpPrompt\(-1\) \}/,
   )
-  assert.match(
-    harness,
-    /\{ label: 'Next prompt', hint: 'Alt\+↓', run: \(\) => jumpPrompt\(1\) \}/,
-  )
+  assert.match(harness, /\{ label: 'Next prompt', hint: 'Alt\+↓', run: \(\) => jumpPrompt\(1\) \}/)
 })
 
 test('the rail stays a rail below the two-column width', () => {
   assert.match(css, /@media \(max-width: 960px\) \{[\s\S]{0,900}\.hx-minimap \{\s*display: none;/)
-  assert.match(css, /@media \(max-width: 960px\) \{[\s\S]{0,700}\.hx-jump \{\s*right: var\(--hx-gutter\);/)
+  assert.match(
+    css,
+    /@media \(max-width: 960px\) \{[\s\S]{0,700}\.hx-jump \{\s*right: var\(--hx-gutter\);/,
+  )
 })
 
-test('the rail reads as the log: one language, the same colour keys', () => {
-  assert.match(css, /\.hx-minimap-tick\.is-user/)
-  assert.match(css, /\.hx-minimap-tick\.is-assistant/)
-  assert.match(css, /\.hx-minimap-tick\.is-user \{\s*background: var\(--success\)/)
-  assert.match(css, /\.hx-minimap-tick\.is-assistant \{\s*background: var\(--accent\)/)
-  assert.match(css, /\.hx-minimap-tick\.is-notice \{\s*background: var\(--error\)/)
+test("the rail speaks in the rows' colours: blue for you, maroon for the answers", () => {
+  // The colours are the rows' own — blue where the reader asked, maroon where Hammer answered.
+  assert.match(css, /\.hx-minimap-tick \{[\s\S]{0,400}background: var\(--accent\);/)
+  assert.match(css, /\.hx-minimap-tick\.is-user \{\s*background: var\(--success\);/)
+  assert.doesNotMatch(css, /\.hx-minimap-tick\.is-assistant/)
+  assert.doesNotMatch(css, /\.hx-minimap-tick\.is-notice/)
+  // Blue prompts win the overlap, and hover lights a tick without repainting it: a prompt
+  // stays blue under the pointer.
+  assert.match(css, /\.hx-minimap-tick\.is-user \{[\s\S]{0,200}z-index: 1;/)
+  assert.match(css, /\.hx-minimap-tick:hover,[\s\S]{0,200}filter: brightness\(1\.25\);/)
+  assert.doesNotMatch(css, /\.hx-minimap-tick:hover,[\s\S]{0,200}background: var\(--text\);/)
   assert.match(css, /\.hx-minimap-tip \{\s*position: absolute;\s*right: 22px;\s*left: auto;/)
   assert.match(css, /pointer-events: none/)
   assert.match(
     css,
-    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,120}\.hx-row-flash \{\s*animation: none;/,
+    /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,300}\.hx-row-flash \{\s*animation: none;/,
   )
 })

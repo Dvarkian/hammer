@@ -554,6 +554,20 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   assert.match(harness, /status: 'running',\n {8}result: ''/)
 })
 
+test('the stop button exists only while the agent is running', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+
+  // The button ships hidden and JS drives it off the console's running state.
+  assert.match(html, /id="hx-stop"[^>]*hidden/)
+  assert.match(harness, /stop\.hidden = !state\.running/)
+
+  // `.hx-btn.hx-icon` sets `display: inline-flex`, which beats the UA `[hidden]` default and
+  // would hold a dead square next to Send while the agent is idle.
+  assert.match(css, /\.hx-btn\.hx-icon\[hidden\] \{\s*display: none;/)
+})
+
 test('the transcript renders Markdown: headings, tables, lists and code', () => {
   // The same fold-guard style: the renderer is line grammar the port must keep. Every rule
   // here names a construct a model answers with and a plain <br> wall would flatten.

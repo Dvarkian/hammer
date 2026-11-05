@@ -54,6 +54,19 @@
         </p>
 
         <div class="dashboard-header-controls">
+          <!-- The console's own controls live in the top bar, beside Commands: the phase pill
+               (Ready/busy/down), the session name, the sidebar toggles and Restart agent.
+               That frees the head row inside the console, and the log gets its height back. -->
+          <span class="hx-phase" id="hx-phase" data-phase="idle"><i aria-hidden="true"></i><span id="hx-phase-label">idle</span></span>
+          <span class="hx-session-name" id="hx-session-name">new session</span>
+          <button class="hx-btn hx-icon" id="hx-toggle-sessions" type="button" title="Show or hide the sessions sidebar" aria-label="Toggle sessions sidebar" aria-pressed="true">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7.5 3.5v13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="hx-btn hx-details-btn" id="hx-details" type="button" title="Show run details">Details</button>
+          <button class="hx-btn hx-icon" id="hx-toggle-details" type="button" title="Show or hide the details sidebar" aria-label="Toggle details sidebar" aria-pressed="true">
+            <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 3.5v13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button class="hx-btn" id="hx-restart" type="button" title="Replace the agent process, keeping this conversation">Restart agent</button>
           <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
             <span id="reload-label">Restart router</span>
@@ -87,23 +100,6 @@
       </aside>
 
       <div class="hx-main">
-        <header class="hx-head">
-          <div class="hx-head-title">
-            <span class="hx-phase" id="hx-phase" data-phase="idle"><i aria-hidden="true"></i><span id="hx-phase-label">idle</span></span>
-            <span class="hx-session-name" id="hx-session-name">new session</span>
-          </div>
-          <div class="hx-head-actions">
-            <button class="hx-btn hx-icon" id="hx-toggle-sessions" type="button" title="Show or hide the sessions sidebar" aria-label="Toggle sessions sidebar" aria-pressed="true">
-              <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M7.5 3.5v13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
-            <button class="hx-btn hx-details-btn" id="hx-details" type="button" title="Show run details">Details</button>
-            <button class="hx-btn hx-icon" id="hx-toggle-details" type="button" title="Show or hide the details sidebar" aria-label="Toggle details sidebar" aria-pressed="true">
-              <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 3.5v13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
-            </button>
-            <button class="hx-btn" id="hx-restart" type="button" title="Replace the agent process, keeping this conversation">Restart agent</button>
-          </div>
-        </header>
-
         <div class="hx-route-strip" id="hx-route-strip">
           <span id="hx-model-via">via <span id="hx-model-provider">—</span></span>
           <span class="hx-route-badge" id="hx-routed-badge" hidden></span>
@@ -151,7 +147,9 @@
                 <span id="hx-model-name">waiting for the router…</span>
               </div>
               <button class="hx-btn hx-queue-mode" id="hx-queue-mode" type="button" data-mode="steer">Queue: steer</button>
-              <button class="hx-btn" id="hx-stop" type="button" hidden>Stop</button>
+              <button class="hx-btn hx-icon" id="hx-stop" type="button" hidden title="Halt the running turn" aria-label="Halt the running turn">
+                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>
+              </button>
               <button class="hx-btn hx-primary" id="hx-send" type="submit">Send</button>
             </div>
           </div>

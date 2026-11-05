@@ -823,20 +823,19 @@
 
   // ── Outline rail ────────────────────────────────────────────────────────────────────
   //
-  // The rail on the transcript's right edge mirrors the rows on screen: one tick per row,
-  // at the height that row actually occupies, in the colour the row's edge already carries.
+  // The rail on the transcript's right edge marks the model's answers: one maroon tick per
+  // turn that produced prose, at the height that turn actually occupies. The transcript's
+  // maroon spine is carried by the rows that are the agent's work (tool calls, thinking);
+  // the answers are the rows that stand free of it, so those are the ones the rail marks.
   // It is a mirror only — it reads `state.items` and the rows the transcript built, owns no
   // state of its own beyond one paint frame — so switching conversations repaints it from
   // scratch for free, and it can never disagree with the log for longer than one frame.
 
-  /** A tick's height plus the gap under it; keeps proportional ticks from fusing together. */
+  /** A tick's height plus the gap under it; keeps proportional marks from fusing together. */
   const MINIMAP_TICK = 5
 
-  /** Between sampled ticks, a hairline stands for the rows that were dropped. */
+  /** Between sampled marks, a hairline stands for the rows that were dropped. */
   const MINIMAP_GAP = 3
-
-  /** Kinds whose ticks survive sampling — they are the landmarks a reader navigates by. */
-  const MINIMAP_KEEP = new Set(['user', 'assistant', 'notice'])
 
   /** One paint frame requested, not yet run. */
   let minimapFrame = 0
@@ -875,6 +874,24 @@
   }
 
   /**
+   * Whether one row earns a mark on the rail.
+   *
+   * The transcript carries a 2px maroon spine (its left border) on the rows that are the
+   * agent's *work* — tool calls and thinking — while the model's answers and the reader's
+   * prompts stand free of it. The rail marks those free-standing rows, and only those: the
+   * maroon ticks say where Hammer actually said something, the blue ones where you asked,
+   * and the hairline gaps say where it worked. A turn that only called tools is work, not
+   * an answer, so it stays unmarked.
+   */
+  function minimapMark(item) {
+    if (item.kind === 'user') return true
+    if (item.kind === 'assistant') {
+      return (item.blocks || []).some((block) => block.kind === 'text' && block.text)
+    }
+    return false
+  }
+
+  /**
    * Rebuilds the rail for the conversation on screen.
    *
    * Positions are measured, not assumed: a tool row is one line while an assistant turn can
@@ -885,9 +902,7 @@
   function renderMinimap() {
     const rail = $('hx-minimap')
     const transcript = $('hx-transcript')
-    // Below 960px the rail is display:none, so it has no height to measure and nothing to
-    // draw: measuring a 0px track maps every row onto the same tick.
-    if (!rail || !transcript || !rail.clientHeight) return
+    if (!rail || !transcript) return
     if (minimapFrame) {
       cancelAnimationFrame(minimapFrame)
       minimapFrame = 0
@@ -902,7 +917,14 @@
       rail.hidden = true
       return
     }
+    // Unhidden BEFORE measuring. The nav ships with `hidden` in the markup, and `display: none`
+    // measures as a 0px track — a guard on clientHeight first would bail forever and the rail
+    // could never unhide itself. Below 960px the media query keeps it display:none anyway, so
+    // the height check below still skips the narrow layout.
     rail.hidden = false
+    // Below 960px the rail is display:none, so it has no height to measure and nothing to
+    // draw: measuring a 0px track maps every row onto the same tick.
+    if (!rail.clientHeight) return
 
     // Measured geometry first, all reads before any writes so the whole pass is one layout.
     const transcriptHeight = Math.max(transcript.scrollHeight, 1)
@@ -911,12 +933,35 @@
       // A row with no node cannot be positioned — but it also cannot be jumped to, so it
       // drops out of the rail rather than sitting at a fake coordinate.
       if (!node || !node.isConnected) return null
+      // A mark stands for what earned it, not for the whole row: on a turn that thought at
+      // length before answering, the tick covers the prose alone, not the thinking above it.
+      // Thinking and prose share one bubble, so the geometry is the union of the bubble's
+      // non-thinking children — first prose top to last prose bottom.
+      let markTop = node.offsetTop
+      let markHeight = Math.max(node.offsetHeight, 1)
+      if (item.kind === 'assistant' && minimapMark(item)) {
+        const bubble = node.querySelector(':scope > .hx-assistant')
+        if (bubble) {
+          const nodeRect = node.getBoundingClientRect()
+          const parts = [...bubble.children].filter(
+            (el) => !el.classList.contains('hx-thinking'),
+          )
+          if (parts.length) {
+            const first = parts[0].getBoundingClientRect()
+            const last = parts[parts.length - 1].getBoundingClientRect()
+            markTop = node.offsetTop + (first.top - nodeRect.top)
+            markHeight = Math.max(last.bottom - first.top, 1)
+          }
+        }
+      }
       return {
         index,
         item,
         top: node.offsetTop,
-        height: Math.max(node.offsetHeight, 1),
-        kind: item.kind,
+        height: markHeight,
+        markTop,
+        markHeight,
+        mark: minimapMark(item),
       }
     })
     const rows = measured.filter(Boolean)
@@ -932,15 +977,16 @@
     const track = rail.clientHeight || MINIMAP_TICK
     const scale = Math.max((track - MINIMAP_TICK) / Math.max(transcriptHeight - MINIMAP_TICK, 1), 0)
 
-    // Overflow: when ticks would fuse, sample. Kept kinds stay, tool rows between them
-    // collapse into gap markers; if even that is not enough, gaps themselves are sampled.
+    // Overflow: when marks would fuse, sample. The model's answers stay, the rows between
+    // them (tool work, thinking) collapse into gap markers; if even that is not enough, gaps
+    // themselves are sampled.
     const capacity = Math.max(Math.floor(track / MINIMAP_TICK), 1)
     let drawn = rows
     let gaps = []
     if (rows.length > capacity) {
-      const kept = rows.filter((row) => MINIMAP_KEEP.has(row.kind))
+      const kept = rows.filter((row) => row.mark)
       if (kept.length && kept.length <= capacity) {
-        // Tool rows whose neighbours are both kept become gaps: a gap between two landmarks
+        // Dropped rows whose neighbours are both kept become gaps: a gap between two answers
         // stands for the tool work between them.
         const keptSet = new Set(kept)
         drawn = rows.filter((row, position) => {
@@ -950,7 +996,7 @@
           return !previous || !next || !keptSet.has(previous) || !keptSet.has(next)
         })
       } else {
-        // Landmarks alone overflow: sample everything on a stride. The stride starts at the
+        // The answers alone overflow: sample everything on a stride. The stride starts at the
         // count that fits and grows until the drawn set does — an even spread beats a
         // clipped tail, which would put the latest turn (the one being read) off the rail.
         let stride = Math.max(Math.ceil(rows.length / capacity), 1)
@@ -972,8 +1018,10 @@
         if (run >= MINIMAP_GAP) {
           const before = rows[position - run]
           const after = row
-          const top = Math.round(before.top * scale)
-          const bottom = Math.min(Math.round(after.top * scale), track)
+          // The gap runs between the neighbours' marks, not their whole rows: dropped work
+          // that trails a long thinking block should not be drawn under that block's tick.
+          const top = Math.round((before.markTop + before.markHeight) * scale)
+          const bottom = Math.min(Math.round(after.markTop * scale), track)
           if (bottom - top >= MINIMAP_TICK) gaps.push({ top, height: bottom - top })
         }
         run = 0
@@ -983,14 +1031,16 @@
     // One rebuild, once: the rail is tens of nodes, and a diff here would outlive its worth.
     const fragment = document.createDocumentFragment()
     for (const row of drawn) {
+      if (!row.mark) continue
       const tick = document.createElement('button')
       tick.type = 'button'
-      tick.className = `hx-minimap-tick is-${row.kind}`
+      // User prompts and prose answers both carry a kind class; the CSS gives each its colour.
+      tick.className = row.item.kind === 'user' ? 'hx-minimap-tick is-user' : 'hx-minimap-tick'
       tick.dataset.index = String(row.index)
-      tick.style.top = `${Math.round(row.top * scale)}px`
-      // A tool row is one line, a turn can be a page: the tick keeps the row's own height
+      tick.style.top = `${Math.round(row.markTop * scale)}px`
+      // A tool row is one line, a turn can be a page: the tick keeps the prose's own height
       // where that is visible, and never less than the tick's minimum.
-      tick.style.height = `${Math.max(Math.round(row.height * scale), MINIMAP_TICK)}px`
+      tick.style.height = `${Math.max(Math.round(row.markHeight * scale), MINIMAP_TICK)}px`
       tick.setAttribute('aria-label', minimapAriaLabel(row.item))
       fragment.appendChild(tick)
     }
@@ -1006,18 +1056,12 @@
     updateMinimapWindow()
   }
 
-  /** The rail tick's accessible name: role first, then the same excerpt the tooltip shows. */
+  /**
+   * The rail tick's accessible name. The excerpt alone: the tick's colour carries the role,
+   * and the transcript itself is right there — "Hammer:" in every label would only shout.
+   */
   function minimapAriaLabel(item) {
-    const who =
-      item.kind === 'user'
-        ? 'You'
-        : item.kind === 'assistant'
-          ? 'Hammer'
-          : item.kind === 'tool'
-            ? 'Tool'
-            : 'Notice'
-    const excerpt = minimapLabel(item).replace(/\s+/g, ' ').trim().slice(0, 120)
-    return excerpt ? `${who}: ${excerpt}` : who
+    return minimapLabel(item).replace(/\s+/g, ' ').trim().slice(0, 120)
   }
 
   /**
@@ -1096,15 +1140,9 @@
       tip.className = 'hx-minimap-tip'
       rail.appendChild(tip)
     }
-    const who =
-      item.kind === 'user'
-        ? 'You'
-        : item.kind === 'assistant'
-          ? 'Hammer'
-          : item.kind === 'tool'
-            ? 'Tool'
-            : 'Notice'
-    tip.innerHTML = `<b>${escapeHtml(who)}</b>${escapeHtml(minimapLabel(item))}`
+    // The excerpt speaks for itself: the colours already say who is talking, so the tooltip
+    // is just the words.
+    tip.innerHTML = escapeHtml(minimapLabel(item))
     tip.style.top = `${tick.offsetTop + tick.offsetHeight / 2}px`
     tip.hidden = false
     rail.classList.add('is-hovering')

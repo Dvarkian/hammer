@@ -2001,6 +2001,59 @@
       background: var(--card);
     }
 
+    /* Slope selector: notch ticks mark the slider positions furthest from any model
+       changeover — each notch sits in the middle of a model-selection region, as far
+       from a handoff as possible. The positions are data-dependent, so JS paints them
+       into the --slope-notches custom property as a gradient of 2px hairlines, which
+       the track rules read as their background-image. (A datalist cannot be used:
+       -webkit-appearance:none removes the native ticks.) The WebKit and Firefox track
+       rules stay separate — a selector list mixing the two is invalid in Chromium and
+       the rule would be dropped whole. */
+    #sel-slope-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--surface-alt);
+      border: none;
+      outline: none;
+      margin: 0;
+      padding: 0;
+    }
+    #sel-slope-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: var(--accent);
+      cursor: pointer;
+      box-shadow: 0 0 0 1px var(--border);
+      margin-top: -3px;
+    }
+    #sel-slope-slider::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: var(--accent);
+      cursor: pointer;
+      border: 1px solid var(--border);
+    }
+    #sel-slope-slider::-webkit-slider-runnable-track {
+      height: 6px;
+      border-radius: 3px;
+      background-color: var(--surface-alt);
+      border: none;
+      background-image: var(--slope-notches, none);
+    }
+    #sel-slope-slider::-moz-range-track {
+      height: 6px;
+      border-radius: 3px;
+      background-color: var(--surface-alt);
+      border: none;
+      background-image: var(--slope-notches, none);
+    }
+
     /* ── The loading shell ───────────────────────────────────────────────────────────────
        A dashboard that is still loading used to be indistinguishable from a dashboard that
        has nothing: every readout shipped a literal `0`, both plots sat empty and the table
@@ -2119,4 +2172,113 @@
       .quota-bars-pending .quota-provenance::before {
         opacity: 0.6;
       }
+    }
+
+    /* ── Usage plots ─────────────────────────────────────────────────────────────────────
+       Time-series usage on the router page: session tokens/s, global tokens/s, and
+       per-model sparklines inside the telemetry table rows. */
+    .usage-plots {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .usage-plots-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .usage-plots-header h2 {
+      margin: 0;
+      font-size: 1.25rem;
+      color: var(--text);
+    }
+    .usage-plots-header p {
+      margin: 0;
+      font-size: 0.875rem;
+      color: var(--text-muted);
+      flex: 1;
+      max-width: 60ch;
+    }
+    .usage-plot-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    @media (max-width: 900px) {
+      .usage-plot-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .usage-plot-card {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 14px 16px 16px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      min-height: 210px;
+    }
+    .usage-plot-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+    .usage-plot-svg {
+      flex: 1 1 0;
+      width: 100%;
+      height: 190px;
+      min-height: 150px;
+      pointer-events: all;
+      cursor: crosshair;
+      background: var(--bg);
+      border-radius: 8px;
+    }
+    .usage-plot-empty {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      background: var(--card);
+      border-radius: 8px;
+    }
+    .usage-plot-card rect.usage-bar {
+      /* Provider hue is applied per-rect from JS; this rule only carries the shared look. */
+      shape-rendering: crispEdges;
+    }
+    .usage-sparkline-cell {
+      width: 96px;
+      min-width: 96px;
+      flex-shrink: 0;
+    }
+    .usage-sparkline {
+      width: 96px;
+      height: 28px;
+      display: block;
+    }
+
+    /* Rail variant: the session plot on the agent page lives inside the narrow inspector
+       column, so it drops the card chrome (the rail already draws its own hairlines) and
+       shrinks to the column. Axes keep the same geometry, only tighter. */
+    .usage-plot-card-rail {
+      padding: 0;
+      border: none;
+      border-radius: 0;
+      background: transparent;
+      min-height: 0;
+      gap: 6px;
+    }
+    .usage-plot-svg-rail {
+      height: 120px;
+      min-height: 120px;
+      flex: 0 0 auto;
+      cursor: default;
     }
