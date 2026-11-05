@@ -152,7 +152,10 @@ route module never contains a launch decision:
 The runtime resolver exists for one failure: the `pi` on PATH is a shim whose
 shebang resolves to whatever `node` is first, and Pi needs Node ≥ 22. A
 resolver that skips the shim and finds an interpreter beside it turns "the
-agent is broken" into a note on the status card. `pi.node` / `pi.command` pin it
+agent is broken" into a note on the status card. When no system Node is new
+enough, the packaged app falls back to the Node inside its own Electron binary,
+run with `ELECTRON_RUN_AS_NODE` (the keeper gets the same flag), so a desktop
+install needs no separate Node. `pi.node` / `pi.command` pin it
 in `~/.hammer.json`; `HAMMER_PI_COMMAND`, `HAMMER_PI_NODE`,
 `HAMMER_PI_WORKSPACE`, `HAMMER_PI_SESSIONS`, `HAMMER_PI_BRAIN` and
 `HAMMER_PI_AGENT_DIR` do the same from outside, for a container or a test.

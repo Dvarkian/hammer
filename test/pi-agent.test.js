@@ -25,7 +25,14 @@ import {
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes } from '../lib/http/routes/pi.js'
 import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
-import { planPiLaunch, resolvePiRuntime, usableWorkspace } from '../lib/pi/runtime.js'
+import {
+  MIN_NODE_MAJOR,
+  isAppBinary,
+  nodeMajor,
+  planPiLaunch,
+  resolvePiRuntime,
+  usableWorkspace,
+} from '../lib/pi/runtime.js'
 import { normalizeConfigShape } from '../lib/config.js'
 
 const FAKE_PI = fileURLToPath(new URL('./support/fake-pi.mjs', import.meta.url))
@@ -728,6 +735,34 @@ test('a pi that cannot run is reported with the reason, not launched blindly', (
   const plan = planPiLaunch(settings)
   assert.equal(plan.command, null)
   assert.match(String(plan.error), /Could not find a runnable pi/)
+})
+
+test('with no system Node, a packaged app runs pi on the Node inside Electron', () => {
+  // Stand in for the desktop build: process.execPath is Hammer's Electron binary, not a plain
+  // node. Overridden only inside this synchronous test, and always restored.
+  Object.defineProperty(process.versions, 'electron', { value: '45.0.0', configurable: true })
+  try {
+    assert.equal(isAppBinary(process.execPath), true)
+    // Probed as Node it reports a version instead of relaunching the app into a deadlock.
+    assert.ok(nodeMajor(process.execPath) >= MIN_NODE_MAJOR)
+
+    const root = mkdtempSync(join(tmpdir(), 'hammer-pi-electron-'))
+    const plan = planPiLaunch(normalizePiSettings({ command: process.execPath }), {
+      baseUrl: 'http://127.0.0.1:7352/v1',
+      agentDir: join(root, 'agent'),
+    })
+    assert.equal(plan.error, null)
+    assert.equal(plan.node, process.execPath)
+    assert.equal(plan.env.ELECTRON_RUN_AS_NODE, '1', 'the child is told to behave as Node')
+    assert.equal(
+      plan.env.PI_CODING_AGENT_DIR,
+      join(root, 'agent'),
+      'the routing env survives the flag',
+    )
+    assert.match(plan.notes.join(' '), /Node inside Hammer/)
+  } finally {
+    delete process.versions.electron
+  }
 })
 
 test('preparing the agent directory writes the configuration and keeps instances apart', () => {
