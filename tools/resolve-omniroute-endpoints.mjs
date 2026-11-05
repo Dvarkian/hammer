@@ -109,10 +109,11 @@ const OPENAI_COMPATIBLE_OVERRIDES = {
  * completion without a key returns `missing_api_key`, and with a placeholder bearer returns
  * `invalid_api_key`. Discovery had only ever exercised the listing endpoint.
  *
- * So the bar is a **completion** returned with no credential — which is what makes
- * `uncloseai` legitimately keyless (verified 2026-09-22: a real `chat.completion` with no
- * header at all). Where the upstream declaration says `authType: "optional"`, that
- * declaration is accepted as-is, because it is the provider's own statement about itself.
+ * So the bar is a **completion** returned with no credential. Where the upstream declaration
+ * says `authType: "optional"`, that declaration is accepted as-is, because it is the
+ * provider's own statement about itself — with the caveat that a declaration can go stale:
+ * `uncloseai` satisfied the completion rule when it was probed on 2026-09-22, but by 2026-11-05
+ * every host answered 401 `public_beta_closed`, which is why the roster no longer carries it.
  *
  * No overrides are currently needed; this comment is where the next one should record its
  * evidence, in this shape: `<completion|declared> — <date> — <what was actually observed>`.

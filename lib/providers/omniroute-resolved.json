@@ -693,25 +693,6 @@
     "t3-web": {
       "activation": "staged",
       "reason": "t3.chat authenticates with a session cookie and streams its own frame shape, so it needs a wire adapter"
-    },
-    "uncloseai": {
-      "activation": "active",
-      "chatUrl": "https://hermes.ai.unturf.com/v1/chat/completions",
-      "modelsUrl": "https://hermes.ai.unturf.com/v1/models",
-      "auth": {
-        "kind": "none",
-        "optional": true,
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 3,
-        "declaredModels": [
-          "adamo1139/Hermes-3-Llama-3.1-8B-FP8-Dynamic",
-          "qwen3.6:27b",
-          "gemma4:31b"
-        ]
-      }
     }
   }
 }

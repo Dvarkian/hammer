@@ -98,6 +98,11 @@ const ACCESS_BY_FREE_TYPE = {
  * - **A duplicate of a host hammer already routes** (`kilo-gateway`): the same chat endpoint and
  *   the same model list as hammer's own `kilocode`, so every row it reaches is a second copy.
  * - **Dead services** (`predibase`, `monsterapi`): neither host answers at all any more.
+ * - **Closed to new use** (`uncloseai`): its three model hosts still route, but every one of
+ *   them answers HTTP 401 `{"type":"public_beta_closed"}` — "This endpoint needs an API key,
+ *   and key registration is closed" — so no credential can be obtained and nothing can be
+ *   configured. The site's access notes still describe the old keyless beta; the deployment
+ *   does not.
  *
  * `scaleway` is listed even though it is hammer's own row rather than an import. The roster lists
  * it, so leaving it out would let the import re-register it as an OmniRoute provider the moment
@@ -133,6 +138,8 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   'kilo-gateway',
   'predibase',
   'monsterapi',
+  // Closed to new use rather than dead: key registration is closed, so nothing can configure it.
+  'uncloseai',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }

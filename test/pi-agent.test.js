@@ -746,8 +746,14 @@ test('with no system Node, a packaged app runs pi on the Node inside Electron', 
     // Probed as Node it reports a version instead of relaunching the app into a deadlock.
     assert.ok(nodeMajor(process.execPath) >= MIN_NODE_MAJOR)
 
+    // A pi entry point of its own, with no `node` beside it — the shape a packaged app sees.
+    // Pointing `command` at process.execPath instead would look for a sibling `node` next to
+    // the running interpreter, which is a different resolver branch (and one that finds a
+    // system Node on a developer machine).
     const root = mkdtempSync(join(tmpdir(), 'hammer-pi-electron-'))
-    const plan = planPiLaunch(normalizePiSettings({ command: process.execPath }), {
+    const piEntry = join(root, 'pi')
+    writeFileSync(piEntry, '#!/usr/bin/env node\n')
+    const plan = planPiLaunch(normalizePiSettings({ command: piEntry }), {
       baseUrl: 'http://127.0.0.1:7352/v1',
       agentDir: join(root, 'agent'),
     })
@@ -1700,6 +1706,318 @@ test('stopping during the backoff cancels the continuation', async () => {
     await new Promise((resolve) => setTimeout(resolve, 80))
 
     assert.equal(prompts, 0, 'a deliberate Stop is not followed by the queued continuation')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the continuation backoff doubles exponentially and is capped like OpenCode', () => {
+  // OpenCode's session retry schedule: 2s base, exponential 2^n, capped at 10s.
+  // Hammer matches: AUTO_CONTINUE_BASE_MS = 2000, exponential, AUTO_CONTINUE_MAX_DELAY_MS = 10000.
+  const base = 2000
+  const cap = 10_000
+  const expected = [1, 2, 3, 4, 5].map((attempt) => Math.min(cap, base * 2 ** (attempt - 1)))
+  assert.deepEqual(expected, [2000, 4000, 8000, 10_000, 10_000], 'reference schedule')
+
+  const seen = []
+  const bridge = new PiBridge({ autoContinueBaseMs: base, autoContinueLimit: 5 })
+  try {
+    bridge.prompt = async () => ({ data: {} })
+    bridge.syncUsageFromSession = async () => {}
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      endFailedTurn(bridge, 'socket hang up')
+      // Read the delay from the timer Node scheduled.
+      const delay = bridge.continueTimer?._idleTimeout
+      seen.push(delay)
+      // Cancel the timer so it does not fire during the test.
+      clearTimeout(bridge.continueTimer)
+      bridge.continueTimer = null
+    }
+    assert.deepEqual(seen, expected, 'Hammer backoff matches OpenCode exactly')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+/**
+ * One `agent_end` for a run that finished on prose, the way Pi reports it: a user message, an
+ * optional tool turn, then the assistant message that ended the run.
+ */
+function endProseTurn(
+  bridge,
+  {
+    routedModel = 'reflection/beam-free',
+    responseModel,
+    text,
+    priorTool = true,
+    stopReason = 'stop',
+  } = {},
+) {
+  // What the router reports `best` resolved to; Pi itself records only `best` on a message.
+  bridge.routedModel = () => routedModel
+  /** @type {any[]} */
+  const messages = [{ role: 'user', content: [{ type: 'text', text: 'Fix the queue.' }] }]
+  if (priorTool) {
+    messages.push({
+      role: 'assistant',
+      stopReason: 'toolUse',
+      content: [{ type: 'toolCall', id: 't1', name: 'bash', arguments: { command: 'ls' } }],
+    })
+    messages.push({ role: 'toolResult', toolCallId: 't1', content: [{ type: 'text', text: 'ok' }] })
+  }
+  messages.push({ role: 'assistant', stopReason, responseModel, content: [{ type: 'text', text }] })
+  bridge.track({ type: 'agent_end', messages })
+  bridge.track({ type: 'agent_settled' })
+}
+
+test('a Beam turn that stops on an announcement is continued', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {Array<{ message: string, options: any }>} */
+    const prompts = []
+    bridge.prompt = async (message, options) => {
+      prompts.push({ message, options })
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, { text: 'Let me look at the queue handling code more carefully.' })
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0].message, /make that tool call now/)
+    assert.equal(prompts[0].options.queueMode, 'followUp')
+    assert.match(bridge.status().notes.join('\n'), /stopped after prose \(1\)/)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a leaked Beam tool-call template also continues the turn', async () => {
+  // The same failure without an announcement: Beam's native chat template is what the gateway
+  // left in the content instead of a tool call.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, { text: '<|rf|parameter name="command">pwd</|rf|parameter>' })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a Beam turn that stops with no visible text is continued', async () => {
+  // Observed live: after a tool call Beam ends the run with an empty assistant message, which
+  // has no announcement to match. An empty message is never a finished answer, so it continues
+  // even though this run had not used a tool yet.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {string[]} */
+    const prompts = []
+    bridge.prompt = async (message) => {
+      prompts.push(message)
+      return { data: {} }
+    }
+
+    endProseTurn(bridge, { text: '', priorTool: false })
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0], /no visible text and no tool call/)
+    assert.match(bridge.status().notes.join('\n'), /stopped with no text \(1\)/)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('an empty turn is continued when agent_end carries no messages', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+    bridge.routedModel = () => 'reflection/beam-free'
+
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_start',
+      message: { role: 'user', content: [{ type: 'text', text: 'Fix the queue.' }] },
+    })
+    bridge.track({
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [] },
+    })
+    // An older Pi record (and the console's stub) can report the run without its messages;
+    // the empty assistant message was already delivered above and must still be nudged.
+    bridge.track({ type: 'agent_end', messages: [] })
+    bridge.track({ type: 'agent_settled' })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a Beam response is continued after the router has already picked another model', async () => {
+  // Observed live: the empty assistant message says responseModel "beam", while the router's
+  // selection at agent_end is already the next request's row. The answer is what counts.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, {
+      routedModel: 'poolside/laguna-xs-2.1',
+      responseModel: 'beam',
+      text: '',
+      priorTool: false,
+    })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a toolUse stop with no tool call is treated as an empty turn', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, { text: '', priorTool: false, stopReason: 'toolUse' })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a Beam alias that resolves to another id is still continued', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, {
+      routedModel: 'kilo-auto/free reflection/beam-1.0-501b-a23b',
+      text: 'Let me look at the queue handling code more carefully.',
+    })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('another model finishing on the same prose is not continued', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, {
+      routedModel: 'openai/gpt-5',
+      text: 'Let me look at the queue handling code more carefully.',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a Beam final answer is not continued', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, {
+      text: 'The queue now waits for the previous message to finish. No further change is needed.',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a Beam announcement before any tool call is not continued', async () => {
+  // A plain answer may open with "Let me explain". Only a run that already used a tool can be
+  // mid-task, so the first assistant message is never nudged.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endProseTurn(bridge, { priorTool: false, text: 'Let me explain how the queue works.' })
+    await new Promise((resolve) => setTimeout(resolve, 40))
+
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('prose continuations have no cap', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {string[]} */
+    const prompts = []
+    bridge.prompt = async (message) => {
+      prompts.push(message)
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    // More turns than the old five-continuation ceiling, each ending the same way.
+    for (let turn = 1; turn <= 7; turn += 1) {
+      endProseTurn(bridge, { text: 'Let me read the next section.' })
+      await waitFor(() => prompts.length === turn)
+    }
+
+    assert.equal(prompts.length, 7)
+    assert.equal(bridge.proseContinuesUsed, 7)
+    assert.ok(
+      !bridge.status().notes.some((note) => note.startsWith('Stopped continuing a turn')),
+      'no budget note is written',
+    )
   } finally {
     bridge.dispose()
   }

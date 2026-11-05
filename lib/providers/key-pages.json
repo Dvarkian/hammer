@@ -170,12 +170,6 @@
       "httpStatus": 200,
       "note": "Timed out from this environment."
     },
-    "uncloseai": {
-      "url": "https://uncloseai.com/",
-      "evidence": "project homepage; signup lives here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "huggingchat": {
       "url": "https://huggingface.co/chat/",
       "evidence": "HuggingChat; a Hugging Face token is what authenticates it",

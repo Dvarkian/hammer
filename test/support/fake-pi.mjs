@@ -52,6 +52,15 @@ const note = (line) => {
 // What the launcher decided to run us with, once: `--session` and friends only exist here.
 note(`argv:${JSON.stringify(argv.slice(2))}`)
 
+// Parse `--session <path>` so get_state reports the correct file.
+let fakeSessionFile = process.env.FAKE_PI_SESSION_FILE || null
+for (let i = 2; i < argv.length; i++) {
+  if (argv[i] === '--session' && i + 1 < argv.length) {
+    fakeSessionFile = argv[i + 1]
+    break
+  }
+}
+
 function respond(command, data, success = true, error) {
   write({
     id: command.id,
@@ -91,7 +100,7 @@ function handle(command) {
         isStreaming: streaming,
         pendingMessageCount: steeringQueue.length + followUpQueue.length,
         sessionId: process.env.FAKE_PI_SESSION_ID || 'session-1',
-        sessionFile: process.env.FAKE_PI_SESSION_FILE || null,
+        sessionFile: fakeSessionFile,
         // Echoed so a test can prove which configuration directory the child inherited.
         agentDir: process.env.PI_CODING_AGENT_DIR || null,
       })

@@ -465,7 +465,7 @@
       'groq': 'Groq', 'googleai': 'Google',
       'nvidia': 'NVIDIA', 'openrouter': 'OpenRouter', 'codestral': 'Codestral',
       'kilocode': 'KiloCode',
-      'empero': 'Empero Free', 'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
+      'ollama': 'Ollama', 'kiro': 'Kiro', 'g4f': 'G4F',
       'gptfree': 'GPTFree',
       'github-copilot': 'GitHub Copilot',
       'openai-codex': 'OpenAI Codex',
@@ -4353,7 +4353,7 @@
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
             </div>
-            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${escapeHtml(g.canonicalId)} • ${s.upCount}/${members.length} providers`}</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
           <td><div style="font-weight: 600;">${(() => {
             const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
@@ -4918,6 +4918,10 @@
     // (the primary route to the Paid badge), and this copy is what keeps evidence stored before
     // that rule existed — or a row whose flag was never persisted — from reading as the clock.
     const INSUFFICIENT_FUNDS_RE = /\b(?:insufficient|not enough|no|out of|low|zero|negative|empty)\b[^.\n]{0,24}\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b|\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b[^.\n]{0,24}\b(?:insufficient|empty|zero|negative|too low|depleted|exhausted|out of funds?)\b/i;
+    // The other half of the account refusals, kept in step with isRateLimitedErrorText in
+    // lib/utils.js: a quota the row waits out. It outranks a bare 402 in the verdicts below,
+    // because a provider that labels its rate limit 402 must not earn a Paid badge for it.
+    const RATE_LIMIT_RE = /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests|\b(?:reached|exceeded)\s+(?:the|your)\s+limit\b/i;
     // The incompatible half of the same mirror, kept in step with isIncompatibleModelError in
     // lib/utils.js — the rule the server reads the same stored text with. The narrow
     // `image/video only | not support text` pair this replaces missed most of the canonical
@@ -4986,7 +4990,7 @@
       if (lr.paymentRequired === true || lr.dead === true || lr.incompatible === true) return null;
       if (lr.overloaded === true) return 'overloaded';
       const text = String(lr.error);
-      if (Number(lr.status) === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(text)) return 'rate-limited';
+      if (Number(lr.status) === 429 || RATE_LIMIT_RE.test(text)) return 'rate-limited';
       if (Number(lr.status) === 503 || Number(lr.status) >= 500) {
         return /overload|high demand|capacity|too busy|temporarily unavailable|service unavailable|try again later/i.test(text)
           ? 'overloaded'
@@ -5018,7 +5022,11 @@
       if (lr.incompatible === true) return 'incompatible';
       const code = Number(lr.status || 0);
       const errText = String(lr.error || '');
-      if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
+      // The wording outranks the status here for the same reason it does in lib/utils.js: a
+      // provider that labels a rate limit 402 must not get a Paid badge for it. "You have
+      // reached the limit." is a quota on a clock, and the base rule below is where it lands.
+      if (!RATE_LIMIT_RE.test(errText)
+        && (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText))) return 'paid';
       // The access phrasing wins over the generic 'does not exist' tombstone: the provider
       // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
       const deadText = /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)
@@ -5117,7 +5125,8 @@
           const code = Number(lr.status || 0);
           const errText = String(lr.error || '');
 
-          if (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText)) return 'paid';
+          if (!RATE_LIMIT_RE.test(errText)
+            && (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText))) return 'paid';
           // 'model does not exist' is kept in step with isDeadModelError in lib/utils.js so a
           // row whose stored evidence predates that rule still reads Dead rather than Down.
           // The access phrasing wins over the generic 'does not exist' tombstone: the provider
@@ -5128,7 +5137,7 @@
           // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
           // before a clause existed still classifies the way the server classifies the same text.
           if (isIncompatibleModelText(errText)) return 'incompatible';
-          if (code === 429 || /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errText)) {
+          if (code === 429 || RATE_LIMIT_RE.test(errText)) {
             return 'rate-limited';
           }
           if (code === 503 || /overload|high demand|capacity|too busy|temporarily unavailable|service unavailable|try again later/i.test(errText)) {
@@ -5684,7 +5693,7 @@
       if (!lr) return null;
       const errorText = String(lr.error || '');
       const statusIs429 = Number(lr.status) === 429;
-      const textSaysLimited = /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests/i.test(errorText);
+      const textSaysLimited = RATE_LIMIT_RE.test(errorText);
       if (!statusIs429 && !textSaysLimited) return null;
       const at = Number(lr.at);
       const atMs = Number.isFinite(at) && at > 0 ? at : Date.now();
@@ -6208,26 +6217,41 @@
         case 'lmarena-overall': return { short: 'Elo*', label: 'LMArena overall Elo, AA-interpolated' };
         case 'lmarena-coding': return { short: 'Code*', label: 'LMArena coding Elo, AA-interpolated' };
         case 'artificial-analysis': return { short: 'AA', label: 'Artificial Analysis Intelligence Index' };
+        case 'benchmarklist-aa-index': return { short: 'BL-AA', label: 'Benchmarklist-hosted Artificial Analysis Intelligence Index' };
         case 'design-arena': return { short: 'Arena*', label: 'Design Arena Elo, AA-interpolated' };
         case 'coding-index': return { short: 'Code*', label: "AA coding index, projected onto the intelligence scale" };
         case 'agentic-index': return { short: 'Agent*', label: "AA agentic index, projected onto the intelligence scale" };
-        case 'combined-estimate': return { short: 'Est*', label: 'Combined estimate from several fetched measurements' };
-        case 'unscored': return { short: '', label: 'No fetched intelligence evidence for this model' };
+        case 'combined-estimate': return { short: 'Est*', label: 'Combined estimate from several benchmarklist measurements' };
+        case 'scicode': return { short: 'SciC*', label: 'SciCode benchmark, AA-calibrated' };
+        case 'vals_terminal_bench_2_1': return { short: 'TB2.1*', label: 'VALS Terminal-Bench 2.1, AA-calibrated' };
+        case 'swe_marathon': return { short: 'SWE-M*', label: 'SWE-Marathon benchmark, AA-calibrated' };
+        case 'kernelbench_cuda': return { short: 'KB*', label: 'KernelBench CUDA, AA-calibrated' };
+        case 'frontierswe': return { short: 'FSWE*', label: 'FrontierSWE benchmark, AA-calibrated' };
+        case 'vals_vibe_code': return { short: 'Vibe*', label: 'VALS Vibe Code, AA-calibrated' };
+        case 'vals_swebench': return { short: 'SBV*', label: 'VALS SWE-bench Verified, AA-calibrated' };
+        case 'deepswe_1_1': return { short: 'DSWE*', label: 'DeepSWE 1.1, AA-calibrated' };
+        case 'vals_lcb': return { short: 'LCB*', label: 'VALS LiveCodeBench, AA-calibrated' };
+        case 'vals_code_migration': return { short: 'Mig*', label: 'VALS Code Migration, AA-calibrated' };
+        case 'vals_vals_index': return { short: 'VALS*', label: 'VALS Index, AA-calibrated' };
+        case 'vals_vals_multimodal_index': return { short: 'VMM*', label: 'VALS Multimodal Index, AA-calibrated' };
+        case 'frontiercode': return { short: 'FC*', label: 'FrontierCode benchmark, AA-calibrated' };
+        case 'swe_bench_pro': return { short: 'SBP*', label: 'SWE-bench Pro, AA-calibrated' };
+        case 'openai_swe_bench_verified': return { short: 'SBV*', label: 'SWE-bench Verified, AA-calibrated' };
+        case 'unscored': return { short: '', label: 'No benchmarklist intelligence evidence for this model' };
         default: return { short: 'Estimate*', label: 'Estimated intelligence score' };
       }
     }
 
     // Every row displays one number: the Artificial Analysis Intelligence Index.
-    // AA's own rating is shown plain; a value projected from another fetched measurement
-    // (coding/agentic index, Design Arena or LMArena Elo) is an estimate and gets an
-    // asterisk. A model the fetched evidence does not cover shows a dash, never a guess.
+    // Benchmarklist measurements are projected onto the AA index scale and marked as
+    // estimates. A model benchmarklist does not cover shows a dash, never a guess.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);
       const n = Number(aa);
       if (Number.isFinite(n) && n > 0) {
         const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
-        const marker = source === 'artificial-analysis' ? '' : '<span class="pill-estimate">*</span>';
+        const marker = source === 'artificial-analysis' || source === 'benchmarklist-aa-index' ? '' : '<span class="pill-estimate">*</span>';
         return `<span title="${title}">${shown}${marker}</span>`;
       }
       // Degraded/offline mode: no AA value at all, show the local score.
@@ -6706,6 +6730,14 @@
         actions.push('<button class="onboard-btn" onclick="closeProviderOnboardModal()">Close</button>');
       }
 
+      // This body is rebuilt on every 700ms poll. Replacing its children discards the scroll
+      // position of both the body and its model list, which yanked the list back to the top
+      // while it was still being tested. Save them and restore them after the rebuild, so a
+      // list the user has scrolled stays where they left it.
+      const previousList = bodyEl.querySelector('.onboard-list');
+      const previousListScrollTop = previousList ? previousList.scrollTop : null;
+      const previousBodyScrollTop = bodyEl.scrollTop;
+
       bodyEl.innerHTML = `
         ${headline}
         <div class="onboard-meter"><span>${escapeHtml(readyText)}</span><span>${total ? `${completed}/${total}` : ''}</span></div>
@@ -6713,6 +6745,12 @@
         <div class="onboard-list">${onboardRowsHtml(job)}</div>
         <div class="onboard-actions">${actions.join('')}</div>
       `;
+
+      // Restore after the new nodes exist: assigning to the old list would do nothing, since it
+      // is no longer in the document.
+      const nextList = bodyEl.querySelector('.onboard-list');
+      if (nextList && previousListScrollTop != null) nextList.scrollTop = previousListScrollTop;
+      bodyEl.scrollTop = previousBodyScrollTop;
     }
 
     async function runProviderOnboarding(key, name) {

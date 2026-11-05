@@ -358,6 +358,7 @@
     if (!ctx || !ctx.sessionFile || ctx.historyLoaded) return
     try {
       await loadMessages(ctx)
+      if (ctx) ctx.pendingFullRestore = false
     } catch {
       // The agent may still be starting; the stream will fill the transcript instead.
     }
@@ -655,9 +656,10 @@
   const EMPTY_MARKUP = `
     <div class="hx-empty">
       <svg class="hx-empty-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <rect width="32" height="32" rx="6" fill="#7d2231"/>
         <g transform="translate(-0.17 2.22) rotate(-32 16 16) translate(16 16) scale(1.05) translate(-16 -16)">
-          <path d="M11.75 8.6L15.25 8.6C15.15 13 15 18 15 20.8C15 22.8 15.2 24.6 15.25 25.8C15.3 27.3 14.7 27.9 13.5 27.9C12.3 27.9 11.7 27.3 11.75 25.8C11.8 24.6 12 22.8 12 20.8C12 18 11.85 13 11.75 8.6Z" fill="currentColor"/>
-          <path d="M21.6 6.9L22.6 7.5L22.6 10.9L21.8 11.3C18.8 11.9 16.2 11.9 13.8 11.4C12.2 11.1 11 10.3 10.2 9.2C9 10.4 7.4 11.9 6.4 13.1C6 13.6 5.4 13.4 5.4 12.8C5.3 11.2 5.6 9.4 6.5 8C7.5 6.7 9 6.3 10.4 6.1C13.8 5.8 18.2 6.2 21.6 6.9Z" fill="var(--hx-brand)"/>
+          <path d="M11.75 8.6L15.25 8.6C15.15 13 15 18 15 20.8C15 22.8 15.2 24.6 15.25 25.8C15.3 27.3 14.7 27.9 13.5 27.9C12.3 27.9 11.7 27.3 11.75 25.8C11.8 24.6 12 22.8 12 20.8C12 18 11.85 13 11.75 8.6Z" fill="#d9c3bb"/>
+          <path d="M21.6 6.9L22.6 7.5L22.6 10.9L21.8 11.3C18.8 11.9 16.2 11.9 13.8 11.4C12.2 11.1 11 10.3 10.2 9.2C9 10.4 7.4 11.9 6.4 13.1C6 13.6 5.4 13.4 5.4 12.8C5.3 11.2 5.6 9.4 6.5 8C7.5 6.7 9 6.3 10.4 6.1C13.8 5.8 18.2 6.2 21.6 6.9Z" fill="#f6ece5"/>
         </g>
       </svg>
       <h3>What should Hammer build?</h3>
@@ -763,10 +765,15 @@
         </details>`
   }
 
-  /** The role label is shown only when the speaker changes from the row above it. */
+  /** The role label is shown only when the speaker changes from the row above it.
+   *  A tool row is not a speaker: it sits inside an assistant's turn, so it must not
+   *  move the current-speaker cursor and make the next assistant line re-print "Hammer". */
   function roleChanged(item) {
     const changed = state.lastRole !== item.kind
-    state.lastRole = item.kind
+    // Tool and notice rows are not speakers: they sit inside an assistant's turn, so
+    // they must not move the current-speaker cursor and make the next assistant line
+    // re-print "Hammer". Only a real speaker (user or assistant) changes who is talking.
+    if (item.kind === 'user' || item.kind === 'assistant') state.lastRole = item.kind
     return changed
   }
 
@@ -1486,7 +1493,11 @@
       refreshSessionsSoon()
       // A turn that was followed live left the transcript holding only that turn; once it
       // settles the session file is complete, so the conversation is rebuilt from it in full.
-      if (!ctx.running && !ctx.historyLoaded) void restoreHistory(ctx)
+      // Also restore if we skipped the replay log during applyHello (pendingFullRestore).
+      if (!ctx.running && (!ctx.historyLoaded || ctx.pendingFullRestore)) {
+        ctx.pendingFullRestore = false
+        void restoreHistory(ctx)
+      }
       // Remembered per tab: a conversation still working when the app closes is the one a
       // later page resumes, and settling clears the flag again.
       if (ctx.instanceId && ctx.sessionFile) {
@@ -1800,8 +1811,15 @@
    * The replay log describes the conversation only when the transcript was not rebuilt from
    * the session file. Resetting here unconditionally is what emptied a tab that had just been
    * restored: the file's history was cleared and the log was then skipped.
+   *
+   * For a console that is streaming when the hello arrives (mid-turn after restart), defer
+   * to restoreHistory instead of using the bounded replay log. The replay log is capped at
+   * 400 events or 512KB, which loses early history in long sessions.
    */
   function applyHello(ctx, entry) {
+    const status = entry.status
+    const isStreaming = status && (status.phase === 'busy' || Boolean(status.isStreaming))
+
     if (!ctx.historyLoaded) {
       ctx.items = []
       ctx.tools.clear()
@@ -1815,8 +1833,20 @@
       // A page opened mid-run catches up from the log instead of starting from whatever this
       // tab happened to witness.
       ;(entry.log || []).forEach((record) => applyRecord(record, ctx))
+      // The replay log is bounded (REPLAY_LIMIT/REPLAY_MAX_CHARS), so a streaming console
+      // after restart may only recover recent history. Mark for a full authoritative load
+      // from the session file once the turn settles (setRunning edge), losing no early text.
+      if (isStreaming && status && status.sessionFile) {
+        ctx.pendingFullRestore = true
+      }
     }
     applyStatusFrame(ctx, entry.status)
+    // If the turn already settled by the time hello arrived, restore immediately instead
+    // of waiting for a running-edge that will never come.
+    if (!ctx.running && ctx.pendingFullRestore && !ctx.historyLoaded) {
+      ctx.pendingFullRestore = false
+      void restoreHistory(ctx)
+    }
     if (ctx === active()) updateComposer()
     syncTranscript({ reset: true }, ctx)
     renderSessions()
@@ -2055,7 +2085,11 @@
       const res = await fetch(consoleApi(console, '/prompt'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, images: images.length ? images : undefined }),
+        body: JSON.stringify({
+          message: text,
+          images: images.length ? images : undefined,
+          queueMode: state.queueMode,
+        }),
         signal: control.signal,
       })
       const data = await res.json().catch(() => ({}))
@@ -2187,7 +2221,12 @@
    * first turn, while a status frame can name it before the store's next read sees it.
    */
   function rememberSessionFile(ctx, file) {
-    if (!file || ctx.sessionFile === file) return
+    if (ctx.sessionFile === file) return
+    if (!file) {
+      // A detached console (deleted session, or fresh reset) has no file.
+      ctx.sessionFile = null
+      return
+    }
     const previousKey = draftKey(ctx)
     const wasActive = ctx === active()
     ctx.sessionFile = file
@@ -2298,7 +2337,7 @@
             <div class="hx-session-top">
               ${running ? '<span class="hx-session-spin" aria-hidden="true"></span>' : ''}
               <span class="hx-session-label">${escapeHtml(rowLabel(session))}</span>
-              <span class="hx-session-rename" data-rename="${escapeHtml(session.file)}" role="button" title="Rename this session" aria-label="Rename session">✎</span>
+              <span class="hx-session-rename" data-rename="${escapeHtml(session.file)}" role="button" title="Rename this session" aria-label="Rename session">✎</span><span class="hx-session-delete" data-delete="${escapeHtml(session.file)}" role="button" title="Delete this session" aria-label="Delete session">✕</span>
             </div>
             <div class="hx-session-meta">${escapeHtml(meta || session.fileName)}</div>
           </button>`
@@ -2409,6 +2448,43 @@
     } catch (err) {
       // The edit stays open so the user can fix or escape it; the message says what failed.
       setHint(err?.message || 'Could not rename that session.', 'error')
+    }
+  }
+
+  /**
+   * Deletes one saved session after a confirm. Deletion is immediate — the file is gone,
+   * not moved aside — so the browser's own dialog is the one undo this affordance has. A
+   * running conversation is refused by the server as well as here, but checking first keeps
+   * the obvious case from being a round trip that answers "no".
+   * @param {string} file
+   */
+  async function deleteSession(file) {
+    if (!file) return
+    if (isSessionRunning(file)) {
+      setHint('That conversation is running — stop it before deleting it.', 'error')
+      return
+    }
+    const session = state.sessions.find((row) => row.file === file)
+    const label = session ? rowLabel(session) : 'this session'
+    if (!confirm(`Delete "${label}"? This cannot be undone.`)) return
+    try {
+      const res = await fetch(`${API}/sessions/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: file }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.success) throw new Error(data.error || `delete ${res.status}`)
+      setHint('Session deleted.', 'success')
+      // Clear the sessionFile from any console that was attached to it.
+      for (const ctx of state.consoles.values()) {
+        if (ctx.sessionFile === file) {
+          ctx.sessionFile = null
+        }
+      }
+      await loadSessions()
+    } catch (err) {
+      setHint(err?.message || 'Could not delete that session.', 'error')
     }
   }
 
@@ -2842,6 +2918,14 @@
         event.preventDefault()
         event.stopPropagation()
         openRename(pencil.dataset.rename)
+        return
+      }
+      // The delete button is inside the row button; it deletes instead of opening.
+      const deleteBtn = event.target.closest('[data-delete]')
+      if (deleteBtn) {
+        event.preventDefault()
+        event.stopPropagation()
+        deleteSession(deleteBtn.dataset.delete)
         return
       }
       const row = event.target.closest('[data-session]')

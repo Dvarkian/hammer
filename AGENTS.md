@@ -41,7 +41,7 @@ reversible, and the HTTP check is what proves the app is actually serving the ne
 
    The script runs `electron-packager` with `--overwrite --prune` and ignores `release`, `test`,
    `tools`, `docs` and dot-directories. It needs `desktop/assets/icon.png`; `npm run icons`
-   regenerates it.
+   regenerates it (the icon tool has no dependencies, so it runs on any Node).
 
 3. **Verify the payload _inside_ the asar**, not the working tree — this is the step that catches
    "I edited it but it is not in the build":
@@ -55,7 +55,10 @@ reversible, and the HTTP check is what proves the app is actually serving the ne
    NODE
    ```
 
-   `@electron/asar` is already present as a dependency of `@electron/packager`.
+   `@electron/asar` is already present as a dependency of `@electron/packager`; `require` it from
+   the repo root, or use the CLI at `node_modules/@electron/asar/bin/asar.mjs`. That CLI's
+   `extract-file` writes into the **current directory**, not stdout — run it from a scratch dir, or
+   you will spray `harness.js`, `pi.js` and friends into the repo root.
 
 4. **Install the payload, not the whole bundle.** Replace `resources/app.asar` only:
 
@@ -108,6 +111,68 @@ Two things to keep straight when touching `lib/pi`:
   releases on purpose, which is why a restart no longer kills a run.
 - A keeper stops a child that no router has been attached to for ten minutes
   (`HAMMER_PI_SUPERVISOR_IDLE_MS`), so a Hammer that never comes back leaves nothing behind.
+
+## Toolchain: find a Node before anything else
+
+`node` and `npm` are **not** guaranteed to exist, and where they exist they may not be on `PATH`.
+`npm run …` can be unavailable outright, so do not assume the scripts will run.
+
+```bash
+command -v node || command -v nodejs
+bash -lic 'command -v node'     # a login shell often has it when this one does not
+```
+
+The packaging and the agent both need **Node ≥ 22.12** (`@electron/asar`'s `engines`; Pi dies on
+import below 22 because `node:fs` has no `globSync`). The `"node": ">=18"` in `package.json`
+understates it for those paths.
+
+When no Node exists, the Electron binary in `node_modules` **is** one, and so is the packaged app
+binary — both run as Node with `ELECTRON_RUN_AS_NODE=1`:
+
+```bash
+export ELECTRON_RUN_AS_NODE=1
+NODE=node_modules/electron/dist/electron     # or ~/.local/opt/hammer/hammer
+```
+
+Every `package.json` script is just a command that Node runs, so an absent `npm` costs nothing —
+invoke the tool directly:
+
+| Script                    | Direct invocation                                                                         |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `npm test`                | `$NODE --test "test/**/*.test.js"`                                                        |
+| `npm run lint`            | `$NODE node_modules/eslint/bin/eslint.js .`                                               |
+| `npm run typecheck`       | `$NODE node_modules/typescript/bin/tsc --noEmit`                                          |
+| `npm run format:check`    | `$NODE node_modules/prettier/bin/prettier.cjs --check .`                                  |
+| `npm run desktop:package` | `$NODE node_modules/@electron/packager/bin/electron-packager.mjs` with the script's flags |
+
+**Prefer a real Node for the check gate.** Run under Electron-as-node, two `pi-agent` tests fail on
+Electron's own quirks rather than on the code: writing a file whose path ends in `.asar` is
+intercepted by the asar shim (`Invalid package …`), and Electron injects `ELECTRON_RUN_AS_NODE=1`
+into a child environment a test asserts is empty. Lint, typecheck and Prettier are unaffected, and
+every other test passes. If Electron-as-node is the only runtime available, those two failures are
+expected — report them as such instead of "fixing" the tests.
+
+**The packager requires a real Node.** `electron-packager` writes the asar from inside Electron
+(when invoked under `ELECTRON_RUN_AS_NODE=1`), but Electron's asar shim cannot write a valid
+archive — it emits an empty `resources/` directory and then fails with `Invalid package`.
+Use the system Node or Playwright's bundled Node (`/home/murray/.local/lib/python3.14/site-packages/playwright/driver/node` on this machine) for the packaging step, or invoke the installed app binary
+(`~/.local/opt/hammer/hammer`) with `ELECTRON_RUN_AS_NODE=1` **only** for lint/typecheck/format, never for packaging.
+
+## The check gate, and what it is picky about
+
+The suite is 422 tests across 27 files (`node --test`, no framework). `npm run check` is
+lint → typecheck → format:check → test, in that order, so fix the earliest failure first.
+
+Two of the gate's rules are not style preferences and will bite a careless edit:
+
+- **Many tests read source text**, especially `lib/server.js`, `public/dashboard.js` and
+  `public/index.html`. They match on exact lines, semicolons included. A cosmetic reflow fails them
+  for no behavioural reason — that is why `lib/server.js` and `public/` are in `.prettierignore`,
+  and why `format:check` does **not** cover them. Do not “fix” a failing source-text assertion by
+  reformatting the file it reads; change behaviour and update the assertion deliberately.
+- **`tsc --noEmit` only covers `lib/`, `bin/` and `sources.js`** (`tsconfig.json` `include`), and
+  `checkJs` is off. `public/` and `test/` are not type-checked, so a green `typecheck` is not a
+  promise about the dashboard or the harness.
 
 ## Rolling back
 

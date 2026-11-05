@@ -16,6 +16,16 @@ export const MODEL_ID_ALIASES = {
   'deepseek-v3.1:671b': 'deepseek-ai/deepseek-v3.1',
   'deepseek-v3.2': 'deepseek-ai/deepseek-v3.2',
   'devstral-2:123b': 'devstral-2-123b-instruct-2512',
+  // KiloCode's free tier advertises Reflection's free Beam endpoint (`reflection/beam-free`)
+  // while the benchmark catalog measures the paid OpenRouter twin
+  // (`reflection/beam-1.0-501b-a23b`, AA 17.7). Same weights, so the free row is scored from
+  // that measurement instead of sitting unscored and off the plot.
+  'reflection/beam-free': 'reflection/beam-1.0-501b-a23b',
+  // Ollama publishes the same Beam under its bare model name. Alias it to the measured twin
+  // so it joins KiloCode's row in the model list and inherits the same AA score; the tag form
+  // is what a locally pulled copy reports.
+  beam: 'reflection/beam-1.0-501b-a23b',
+  'beam:latest': 'reflection/beam-1.0-501b-a23b',
   'mimo-v2-omni-free': 'xiaomi/mimo-v2-omni:free',
   'devstral-small-2': 'devstral-small-2-24b',
   'devstral-small-2:24b': 'devstral-small-2-24b',
@@ -39,7 +49,7 @@ export const MODEL_ID_ALIASES = {
   'claude-haiku-4-5': 'claude-haiku-4.5',
   'anthropic/claude-haiku-4-5': 'claude-haiku-4.5',
   // g4f backends serve the GLM 5.3 Flash family under their own repo spelling;
-  // it is the same model the empero/nvidia catalogs list as glm-5.3-flash.
+  // map those wire ids onto the curated glm-5.3-flash label.
   'zai-z/zai-org-glm-5-3-flash': 'glm-5.3-flash',
   'zai-org/glm-5.3-flash': 'glm-5.3-flash',
   // The Grok 4 Fast family reaches Hammer through g4f under backend-specific
@@ -281,14 +291,41 @@ export function getModelVersionTuple(modelId) {
  * separator spelling are folded away, so one model advertised under several id
  * spellings compares equal. Version digits are preserved (3.5 != 3.8).
  */
+/**
+ * Normalized names are recomputed for both sides of every pairwise identity comparison, and a
+ * single grouping pass makes hundreds of thousands of them over the same few hundred ids. The
+ * name is a pure function of its argument, so one bounded cache serves every caller. Cleared
+ * wholesale when it fills: the ids come from provider catalogs, so the working set is small
+ * and a few thousand entries cover it without holding a catalog's whole history forever.
+ */
+const identityNameCache = new Map()
+/** Folded keys (the name with its spaces removed) are what comparisons actually consult. */
+const identityKeyCache = new Map()
+const IDENTITY_NAME_CACHE_LIMIT = 4096
+
 function normalizedModelIdentityName(modelId) {
+  const cacheable = typeof modelId === 'string'
+  if (cacheable) {
+    const cached = identityNameCache.get(modelId)
+    if (cached !== undefined) return cached
+  }
   let value = stripRoutingNamespace(resolveAliasedModelId(modelId)).toLowerCase()
-  if (!value) return ''
+  if (!value) {
+    if (cacheable) cacheIdentityName(modelId, '')
+    return ''
+  }
   value = value.replace(/^models\//, '')
   const segments = value.split('/')
   value = segments[segments.length - 1]
   value = value.replace(/(?::(?:free|optimized|cloud))+$/i, '')
-  return value.replace(/[-_:./\s]+/g, ' ').trim()
+  const normalized = value.replace(/[-_:./\s]+/g, ' ').trim()
+  if (cacheable) cacheIdentityName(modelId, normalized)
+  return normalized
+}
+
+function cacheIdentityName(modelId, normalized) {
+  if (identityNameCache.size >= IDENTITY_NAME_CACHE_LIMIT) identityNameCache.clear()
+  identityNameCache.set(modelId, normalized)
 }
 
 /**
@@ -302,7 +339,31 @@ function normalizedModelIdentityName(modelId) {
  *   qwen/qwen3.6-27b              -> qwen3627b  (a different model)
  */
 export function getModelIdentityKey(modelId) {
-  return normalizedModelIdentityName(modelId).replace(/\s+/g, '')
+  const cacheable = typeof modelId === 'string'
+  if (cacheable) {
+    const cached = identityKeyCache.get(modelId)
+    if (cached !== undefined) return cached
+  }
+  const key = normalizedModelIdentityName(modelId).replace(/\s+/g, '')
+  if (cacheable) {
+    if (identityKeyCache.size >= IDENTITY_NAME_CACHE_LIMIT) identityKeyCache.clear()
+    identityKeyCache.set(modelId, key)
+  }
+  return key
+}
+
+/**
+ * The leading family token of an id ("nvidia/nemotron-3-super-120b-a12b" → "nemotron").
+ *
+ * A size-qualified alias can only match when the shorter name is a token-wise prefix of the
+ * longer one, so two ids that compare equal always agree here (or on their identity key).
+ * Grouping reads it as a necessary condition, which is what keeps the pairwise identity test
+ * off the buckets that could never match.
+ */
+export function getModelIdentityFirstToken(modelId) {
+  const name = normalizedModelIdentityName(modelId)
+  if (!name) return ''
+  return name.split(' ').filter(Boolean)[0] || ''
 }
 
 /**
@@ -324,12 +385,16 @@ export function isModelSizeToken(token) {
  * family, "flash" vs "flash-lite", or "nano" vs "nano-omni".
  */
 export function isSameModelIdentity(a, b) {
-  const keyA = getModelIdentityKey(a)
-  const keyB = getModelIdentityKey(b)
+  // One normalization per side: the key is the name with its spaces folded away, so deriving
+  // both from the same normalized string costs one pass instead of two.
+  const normalizedA = normalizedModelIdentityName(a)
+  const normalizedB = normalizedModelIdentityName(b)
+  const keyA = normalizedA.replace(/\s+/g, '')
+  const keyB = normalizedB.replace(/\s+/g, '')
   if (!keyA || !keyB) return false
   if (keyA === keyB) return true
-  const nameA = normalizedModelIdentityName(a).split(' ').filter(Boolean)
-  const nameB = normalizedModelIdentityName(b).split(' ').filter(Boolean)
+  const nameA = normalizedA.split(' ').filter(Boolean)
+  const nameB = normalizedB.split(' ').filter(Boolean)
   if (!nameA.length || !nameB.length) return false
   const [shortTokens, longTokens] = nameA.length <= nameB.length ? [nameA, nameB] : [nameB, nameA]
   if (shortTokens.length === longTokens.length) return false
@@ -487,16 +552,6 @@ export const sources = {
       ['openai/gpt-oss-120b', 'GPT OSS 120B', '128k'],
       ['openai/gpt-oss-20b', 'GPT OSS 20B', '128k'],
       ['qwen/qwen3-32b', 'Qwen3 32B', '131k'],
-    ],
-  },
-  empero: {
-    name: 'Empero Free',
-    url: 'https://free.empero.org/v1/chat/completions',
-    contextUrl: 'https://free.empero.org/',
-    discoverable: true,
-    models: [
-      ['glm-5.3-flash', 'GLM 5.3 Flash', '128k'],
-      ['qwen3.8-flash', 'Qwen3.8 Flash', '128k'],
     ],
   },
   'openai-compatible': {

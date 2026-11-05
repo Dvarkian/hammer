@@ -15,15 +15,8 @@
 /* ── Shell ─────────────────────────────────────────────────────────────────────────── */
 
 :root {
-  /* Maroon is the brand: the head of the mark, and the accent the router already uses. */
-  --hx-brand: #7d2231;
   --hx-gutter: 28px;
   --hx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-}
-
-/* On a near-black ground a deep maroon disappears, so the mark lightens with the theme. */
-[data-theme='dark'] {
-  --hx-brand: #e08c96;
 }
 
 html,
@@ -44,7 +37,8 @@ body {
 }
 
 .container {
-  max-width: 1500px;
+  /* Full width: sidebars extend to window edges, header content is constrained inside. */
+  width: 100%;
   height: 100%;
   box-sizing: border-box;
   display: flex;
@@ -56,6 +50,12 @@ body {
   padding-bottom: 0 !important;
   margin-top: 0 !important;
   margin-bottom: 0 !important;
+  /* Override dashboard.css centering but add small edge breathing room. */
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  max-width: none !important;
 }
 
 /* The router keeps its own scrollbar inside the shell: the page still never scrolls. */
@@ -151,13 +151,12 @@ body[data-view='router'] .container {
   }
 }
 
-/* The mark, sized to the wordmark: the same drawing as the app icon, minus the ink ground so it
-   sits on either theme. The handle is currentColor; the head keeps its ember. */
+/* Bit-for-bit the app icon, scaled to the wordmark: the same drawing, the same ground and
+   the same three tones, so the header mark and the taskbar cannot drift apart. */
 .hx-brand {
   width: 24px;
   height: 24px;
   flex: none;
-  color: var(--text);
 }
 
 .hx-details-btn {
@@ -275,10 +274,10 @@ body[data-view='agent'] #reload-btn {
 
 #agent-view {
   display: grid;
-  /* Sessions read the conversation's history, details read its run: sessions sit left of the
-     log, details right of it. Each column collapses independently on the body classes the
-     header's toggle buttons set. */
-  grid-template-columns: 268px minmax(0, 1fr) 292px;
+  /* Flexibly sized: sessions (auto), transcript (1fr), details (auto). Sidebars share available
+     space with the transcript on resize, allowing varied window sizes without fixed constraints.
+     Each column collapses independently on the body classes the header's toggle buttons set. */
+  grid-template-columns: minmax(200px, auto) 1fr minmax(200px, auto);
   /* No column gap: the gutters the sidebar panels carry are the only air, and a gap here
      showed as page background around the transcript's shaded block — the log read as a card
      floating in the window instead of the window's own pane. */
@@ -289,15 +288,15 @@ body[data-view='agent'] #reload-btn {
 }
 
 body.hx-sessions-collapsed #agent-view {
-  grid-template-columns: 0 minmax(0, 1fr) 292px;
+  grid-template-columns: 0 1fr minmax(200px, auto);
 }
 
 body.hx-details-collapsed #agent-view {
-  grid-template-columns: 268px minmax(0, 1fr) 0;
+  grid-template-columns: minmax(200px, auto) 1fr 0;
 }
 
 body.hx-sessions-collapsed.hx-details-collapsed #agent-view {
-  grid-template-columns: 0 minmax(0, 1fr) 0;
+  grid-template-columns: 0 1fr 0;
 }
 
 /* A collapsed sidebar is out of the grid flow, not gone: hidden so its focusable children
@@ -311,10 +310,6 @@ body.hx-details-collapsed .hx-side-details {
    shares with the window moves. That is the point; the gutter padding inside keeps the text
    aligned with either neighbouring sidebar's title. */
 
-/*
- * The main pane is not a card. It is the page: a toolbar, the log, and the composer dock, all
- * flush with the window. A frame here plus a frame per tool call was three borders deep.
- */
 .hx-main {
   display: flex;
   flex-direction: column;
@@ -399,7 +394,7 @@ body.hx-details-collapsed .hx-side-details {
  * of the weight, and it is the only rule between the toolbar and the transcript.
  */
 .hx-route-strip {
-  display: flex;
+  display: none;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px 10px;
@@ -408,7 +403,7 @@ body.hx-details-collapsed .hx-side-details {
   /* 1px of the padding is the border below, so the strip's text lands on the log's left edge and
      its rule still spans the pane. The top is flush: the strip is the transcript's first edge,
      and air above it read as padding around the shaded log rather than as the strip's own. */
-  padding: 0 calc(var(--hx-gutter) - 1px) 12px;
+  padding: 0 calc(var(--hx-gutter) - 1px) 0;
   border-bottom: 1px solid var(--border);
   font-size: 0.74rem;
   color: var(--text-muted);
@@ -443,6 +438,10 @@ body.hx-details-collapsed .hx-side-details {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* Cap the transcript width on very wide screens so lines stay readable. */
+  max-width: 900px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /*
@@ -925,14 +924,13 @@ body.hx-details-collapsed .hx-side-details {
   line-height: 1.65;
 }
 
-/* The mark again, large and quiet: the page carries the logo rather than only the tab. */
+/* The app icon again, large and undimmed: the same drawing at the same colours, because a
+   mark that fades or shifts with the theme is a different mark. */
 .hx-empty-mark {
   width: 64px;
   height: 64px;
   display: block;
   margin: 0 auto 14px;
-  color: var(--text-muted);
-  opacity: 0.45;
 }
 
 .hx-suggestions {
@@ -1136,6 +1134,11 @@ body.hx-details-collapsed .hx-side-details {
   border-top: 1px solid var(--border);
   background: var(--card);
   padding: 12px var(--hx-gutter) 14px;
+  /* Match the transcript's max width so the entry area aligns with the conversation. */
+  max-width: 900px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /* While a file drag hovers over the composer, the border says drop here. */
@@ -1568,7 +1571,9 @@ body.hx-details-collapsed .hx-side-details {
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  padding: 2px 2px 4px;
+  padding: 2px 4px 4px;
+  /* Reduced padding and borders for tighter integration with the flexible layout.
+     Sidebars now dynamically share space with the transcript. */
 }
 
 .hx-side-sessions {
@@ -1822,6 +1827,34 @@ body.hx-details-collapsed .hx-side-details {
   background: var(--surface-hover);
 }
 
+/* The delete affordance sits beside the pencil and follows the same visibility rules, so a
+   row's two actions appear together. It is red on hover rather than the pencil's neutral
+   hover: the action is irreversible, and the pointer should say so. */
+.hx-session-delete {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.hx-session-row:hover .hx-session-delete,
+.hx-session-row.current .hx-session-delete,
+.hx-session-delete:focus-visible {
+  opacity: 1;
+}
+
+.hx-session-delete:hover {
+  color: var(--status-error-text, #b91c1c);
+  background: var(--status-error-bg, #fee2e2);
+}
+
 /* In-place rename: the row being edited swaps its label for an input. It is drawn as a
    div (not a button) while editing, so Enter cannot also open the conversation. */
 .hx-session-row.renaming {
@@ -1965,20 +1998,12 @@ body.hx-details-collapsed .hx-side-details {
   }
 
   #agent-view {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 1fr;
     gap: 0;
   }
 
-  /* In drawer mode all three items stack in the single track; only the non-fixed item
-     (.hx-main) actually occupies space. Reset the desktop explicit grid-column pins. */
-  .hx-side-sessions,
-  .hx-side-details,
-  .hx-main {
-    grid-column: 1 / -1;
-  }
-
-  /* On a phone-width pane the desktop collapse states must not hide a drawer before it is
-     even open, so the collapsed classes stop applying here. */
+  /* On phone-width pane the desktop collapse states don't hide a drawer before it is
+     even open, so the collapsed classes stop applying here. Sidebars become fixed drawers. */
   body.hx-sessions-collapsed .hx-side-sessions,
   body.hx-details-collapsed .hx-side-details {
     display: flex;

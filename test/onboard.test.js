@@ -77,6 +77,13 @@ test('the onboarding job is wired to the shared test path and the verdict helper
   // Discovery reuses the per-provider refresh, so a keyless or templated provider is read the way
   // it is everywhere else.
   assert.match(server, /await refreshProviderModelsForApi\(job\.providerKey\)/)
+  // Discovery returns rows, not scores: the refresh has to re-attach the quality index after the
+  // new roster exists, or a freshly onboarded model stays off the intelligence/speed plot.
+  assert.match(
+    server,
+    /const refreshProviderModelsForApi = async \(providerKey\) => \{\n\s+const models = await discoverProviderModelsForApi\(providerKey\);[\s\S]{0,600}?if \(qualityData\) \{/,
+  )
+  assert.match(server, /await refreshQualityScores\(false, true\);/)
 })
 
 test('the dashboard popup drives, polls, and hands off to the plots', () => {

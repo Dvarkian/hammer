@@ -7,16 +7,99 @@ import {
   combinePredictions,
   extractLMArenaEntries,
   fetchLMArenaBoards,
+  fetchOpenRouterQualityIndex,
   fitMonotone,
   LMARENA_BOARD_URLS,
   LMARENA_DATASET_URLS,
+  OPENROUTER_MODELS_URL,
   parameterlessModelIds,
   predictMonotone,
   qualityLookupKeys,
   resolveModelQuality,
+  resolveModelQualityWithFallback,
   scoreForAa,
 } from '../lib/model-quality.js'
+import {
+  benchmarklistLookupKeys,
+  BENCHMARKLIST_CALIBRATION_BENCHMARKS,
+  resolveBenchmarkListQuality,
+  buildBenchmarkListQualityIndex,
+} from '../lib/benchmarklist-quality.js'
 import { canonicalizeModelId } from '../sources.js'
+
+test('a free twin inherits the measured score of the same weights', () => {
+  // KiloCode advertises `reflection/beam-free` and Ollama publishes the same weights as bare
+  // `beam`; the benchmark catalog measures the paid OpenRouter spelling. Both aliases must
+  // resolve to the measured index entry, and a model with no public evidence must stay
+  // unscored rather than being given a guessed number.
+  const quality = {
+    benchmarklistOnly: true,
+    aaValues: [10, 20, 30, 40],
+    benchmarklist: {
+      modelIndex: new Map([
+        [
+          'reflection-beam-1-0-501b-a23b',
+          {
+            aa: 17.7,
+            name: 'Beam 1.0',
+            sampledAt: '2026-10-29T00:00:00.000Z',
+            sampleTime: 1,
+            isProxy: false,
+          },
+        ],
+      ]),
+      calibrations: {},
+      scoreLookups: {},
+    },
+  }
+  for (const id of ['reflection/beam-free', 'beam', 'beam:latest']) {
+    const scored = resolveModelQuality(quality, id)
+    assert.equal(scored.aa, 17.7, `${id} resolves to the measured Beam`)
+    assert.equal(scored.source, 'benchmarklist-aa-index')
+    assert.equal(scored.isEstimated, false)
+  }
+  for (const id of ['stealth/crouton-alpha', 'stealth/glyph-cluster']) {
+    assert.equal(resolveModelQuality(quality, id).source, 'unscored')
+  }
+})
+
+test('the index keys a requested alias under its measured twin', async () => {
+  // The model index is built from the *requested* ids. A requested id that is a provider's
+  // spelling of a catalog model must therefore be indexed under the catalog spelling too,
+  // otherwise the direct AA measurement is never found and the row falls back to a weaker
+  // cross-benchmark estimate.
+  const catalog = Array.from({ length: 10 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 2 }),
+  )
+  const indexSnapshots = [
+    benchmarklistSnapshot(
+      catalog
+        .map((model, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 40 + i * 2))
+        .concat([benchmarklistRow('reflection/beam-1.0-501b-a23b', 'Beam 1.0', 17.7)]),
+    ),
+  ]
+  const fetchImpl = async (url) => ({
+    ok: true,
+    json: async () => {
+      if (String(url).includes('artificial_analysis_intelligence_index')) {
+        return { snapshots: indexSnapshots, next_cursor: null }
+      }
+      return { snapshots: [], next_cursor: null }
+    },
+  })
+  const benchmarklist = await buildBenchmarkListQualityIndex(catalog, {
+    fetchImpl,
+    modelIds: ['reflection/beam-free'],
+  })
+  const quality = buildOpenRouterQualityIndex(catalog)
+  quality.benchmarklistOnly = true
+  quality.benchmarklist = benchmarklist
+
+  const beam = resolveModelQuality(quality, 'reflection/beam-free')
+  assert.equal(beam.source, 'benchmarklist-aa-index')
+  assert.equal(beam.aa, 17.7)
+  assert.equal(beam.isEstimated, false)
+})
 
 function catalogModel(id, { intelligence = null, coding = null, agentic = null, elo = null } = {}) {
   return {
@@ -216,6 +299,447 @@ test('a model with no fetched evidence is unscored rather than invented', () => 
   assert.equal(quality2.aa, null)
   assert.equal(quality2.score, 0)
   assert.match(quality2.detail, /no fetched intelligence evidence/)
+})
+
+// ── benchmarklist scoring ───────────────────────────────────────────────────────────────
+
+function benchmarklistSnapshot(rows) {
+  return { sampled_at: '2026-10-29T00:00:00.000Z', results: rows }
+}
+
+function benchmarklistRow(modelId, displayName, score) {
+  return {
+    model_id: modelId,
+    display_name: displayName,
+    score,
+    metrics: { score: { unit: '%', label: 'Score', value: score } },
+  }
+}
+
+test('benchmarklist leaf slugs reach the bare model behind a vendor prefix', () => {
+  // Benchmarklist publishes vendor-prefixed ids while the catalog may use a bare namespace.
+  assert.ok(benchmarklistLookupKeys('anthropic-claude-opus-5').includes('claude-opus-5'))
+  assert.ok(benchmarklistLookupKeys('cognition-swe-1-6').includes('swe-1-6'))
+  const terra = benchmarklistLookupKeys('gpt-5.6-terra')
+  assert.equal(terra[0], 'gpt-5.6-terra')
+  assert.ok(!terra.includes('5.6-terra'), 'a model-family token is not a vendor prefix')
+  assert.ok(terra.includes('gpt-5-6-terra'), 'the dotted version keeps its dash spelling')
+
+  // A version digit is not a suffix: it names the model, so no leaf may drop it. This is
+  // what keeps `jamba-large-1.6` from answering for `swe-1.6`, two different families that
+  // share only the 1.6.
+  const swe = benchmarklistLookupKeys('cognition-swe-1.6')
+  assert.ok(swe.includes('swe-1.6'))
+  assert.ok(!swe.includes('1'), 'the bare version alone is never a match')
+  assert.ok(benchmarklistLookupKeys('swe-1-6-slow').includes('cognition-swe-1.6'))
+  assert.ok(benchmarklistLookupKeys('swe-2-flash-medium').includes('cognition-swe-2'))
+
+  // Keep the family name on size-based IDs; `2-7b` alone matches unrelated 2.7B models.
+  assert.ok(!benchmarklistLookupKeys('ALLaM-2-7b').includes('2-7b'))
+  assert.ok(!benchmarklistLookupKeys('groq/ALLaM-2-7b').includes('2-7b'))
+  assert.ok(benchmarklistLookupKeys('ALLaM-2-7b').includes('olmo-2-7b'))
+  assert.ok(
+    benchmarklistLookupKeys('nvidia/nemotron-3.5-bolt-e4b').includes(
+      'nvidia-nemotron-3.5-bolt-74b-a9b',
+    ),
+  )
+  assert.ok(benchmarklistLookupKeys('stepfun-ai/step-5-preview').includes('stepfun-step-5-preview'))
+
+  // The fast/slow tiers of the same family are different models: dropping the tier changes
+  // the identity of the row, so the leaf keeps it.
+  assert.ok(benchmarklistLookupKeys('swe-1-6-fast').includes('swe-1-6-fast'))
+})
+
+test('user-approved Benchmarklist proxies resolve ALLaM and Nemotron Bolt variants', () => {
+  const quality = {
+    calibrations: {
+      scicode: { xs: [0, 1], ys: [0, 100], weight: 1, source: 'scicode', n: 8 },
+    },
+    scoreLookups: {
+      scicode: new Map([
+        ['olmo-2-7b', 0.037],
+        ['nvidia-nemotron-3.5-bolt-74b-a9b', 0.4449],
+      ]),
+    },
+  }
+
+  const allam = resolveBenchmarkListQuality(quality, 'ALLaM-2-7b')
+  const bolt = resolveBenchmarkListQuality(quality, 'nvidia/nemotron-3.5-bolt-e4b')
+  assert.equal(allam.aa, 3.7)
+  assert.equal(allam.source, 'scicode')
+  assert.equal(bolt.aa, 44.5)
+  assert.equal(bolt.source, 'scicode')
+
+  const allamIndex = resolveBenchmarkListQuality(
+    {
+      modelIndex: new Map([['olmo-2-7b', { aa: 5.6, sampledAt: '2026-10-18T00:00:00.000Z' }]]),
+    },
+    'ALLaM-2-7b',
+  )
+  assert.equal(allamIndex.aa, 5.6)
+  assert.equal(allamIndex.isEstimated, true)
+  assert.match(allamIndex.detail, /proxy model: OLMo 2 7B/)
+})
+
+test('a benchmarklist benchmark with 8+ AA anchors fits a calibration', async () => {
+  // Twelve AA-rated anchors, so a fitted curve is a real calibration and not a guess.
+  const catalog = Array.from({ length: 12 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 2 }),
+  )
+  const anchors = catalog.map((model) => model)
+  const snapshots = [
+    benchmarklistSnapshot(
+      anchors
+        .map((model, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 40 + i * 2))
+        .concat(benchmarklistRow('cognition-swe-1-6', 'Devin SWE 1.6', 47)),
+    ),
+  ]
+  let call = 0
+  const fetchImpl = async (url) => ({
+    ok: true,
+    json: async () => {
+      call += 1
+      if (String(url).includes('/api/v1/models')) return { data: catalog }
+      return { snapshots, next_cursor: null }
+    },
+  })
+  const quality = await buildBenchmarkListQualityIndex(catalog, { fetchImpl })
+  assert.ok(quality.calibrations, 'at least one benchmark calibrated')
+  assert.ok(call >= 1, 'the catalog was consulted for AA anchors')
+})
+
+test('benchmarklist evidence scores Devin SWE 1.6 from its own benchmark rows', async () => {
+  // Devin SWE 1.6 has no AA rating, no LMArena row, and no Design Arena row, so it is
+  // unscored everywhere else. benchmarklist's own board carries it, and the row is
+  // inside the fitted curve's range, so it must resolve rather than stay unscored.
+  const catalog = Array.from({ length: 12 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 2 }),
+  )
+  const snapshots = [
+    benchmarklistSnapshot(
+      catalog
+        .map((model, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 40 + i * 2))
+        .concat([benchmarklistRow('cognition-swe-1-6', 'Devin SWE 1.6', 47)]),
+    ),
+  ]
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ snapshots, next_cursor: null }) })
+  const quality = await buildBenchmarkListQualityIndex(catalog, { fetchImpl })
+  const only = Object.values(quality.calibrations)[0]
+  assert.ok(only, 'one calibration is enough to resolve a row')
+  const single = {
+    calibrations: { vals_terminal_bench_2_1: only },
+    scoreLookups: {
+      vals_terminal_bench_2_1: new Map([
+        ['cognition-swe-1-6', 0.47],
+        ['devin-swe-1-6', 0.47],
+        ['swe-1-6', 0.47],
+        ['openai-gpt-0', 0.47],
+      ]),
+    },
+  }
+  const resolved = resolveBenchmarkListQuality(single, 'devin/swe-1.6')
+  assert.ok(resolved, 'a benchmarklist row resolves the model')
+  assert.equal(resolved.isEstimated, true)
+  assert.ok(resolved.aa > 0 && resolved.aa <= 100)
+  assert.match(resolved.detail, /vals_terminal_bench_2_1/)
+  const integratedQuality = buildOpenRouterQualityIndex(catalog)
+  integratedQuality.benchmarklistOnly = true
+  integratedQuality.benchmarklist = single
+  const integrated = resolveModelQuality(integratedQuality, 'devin/swe-1.6')
+  assert.equal(integrated.source, 'vals_terminal_bench_2_1')
+  assert.equal(integrated.aa, resolved.aa)
+  const measuredCatalogModel = resolveModelQuality(integratedQuality, 'openai/gpt-0')
+  assert.equal(measuredCatalogModel.source, 'vals_terminal_bench_2_1')
+  assert.equal(measuredCatalogModel.aa, resolved.aa, 'benchmarklist overrides AA direct ratings')
+  assert.equal(measuredCatalogModel.isEstimated, true)
+})
+
+test('benchmarklist is the exclusive score source when its endpoints have no data', async () => {
+  const catalog = [catalogModel('vendor/measured', { intelligence: 42 })]
+  let catalogCalls = 0
+  const fetchImpl = async (url) => {
+    if (url === OPENROUTER_MODELS_URL) {
+      catalogCalls += 1
+      return { ok: true, json: async () => ({ data: catalog }) }
+    }
+    return { ok: false, status: 404 }
+  }
+  const quality = await fetchOpenRouterQualityIndex({
+    fetchImpl,
+    force: true,
+    nowMs: Date.now(),
+  })
+
+  assert.equal(catalogCalls, 1, 'the benchmark provider reuses the already-fetched catalog')
+  assert.equal(resolveModelQuality(quality, 'vendor/measured').source, 'unscored')
+  assert.deepEqual(quality.benchmarklist.benchmarks, [])
+})
+
+test('a model with no benchmarklist row is unscored by that source', () => {
+  const single = {
+    calibrations: {
+      scicode: { xs: [10, 50], ys: [3, 30], weight: 0.01, source: 'scicode', n: 20 },
+    },
+    scoreLookups: { scicode: new Map([['gpt-5.6-terra', 12]]) },
+  }
+  assert.equal(resolveBenchmarkListQuality(single, 'vendor/total-unknown'), null)
+})
+
+test('Benchmarklist index-feed scores use latest exact variants, not stale model-page values', async () => {
+  const modelIds = [
+    'deepseek-ai/deepseek-v4.1-flash',
+    'nvidia/nemotron-3-ultra-550b-a55b',
+    'nvidia/nemotron-3.5-super-vl-120b-a12b',
+    'stepfun-ai/step-5-preview',
+    'ALLaM-2-7b',
+  ]
+  const indexSnapshots = [
+    {
+      sampled_at: '2026-10-29T00:00:00.000Z',
+      results: [
+        {
+          model_id: 'deepseek-deepseek-v4.1-flash-1017',
+          display_name: 'DeepSeek V4.1 Flash 1017 (Max)',
+          score: 32.5,
+        },
+        {
+          model_id: 'nvidia-nemotron-3-ultra-550b-a55b',
+          display_name: 'Nemotron 3 Ultra (Reasoning)',
+          score: 11.8,
+        },
+        {
+          model_id: 'nvidia-nemotron-3.5-super-vl-120b-a12b',
+          display_name: 'Nemotron 3.5 Super VL',
+          score: 13.6,
+        },
+        {
+          model_id: 'stepfun-step-5-preview',
+          display_name: 'Step 5 Preview',
+          score: 28.5,
+        },
+      ],
+    },
+    {
+      sampled_at: '2026-10-18T00:00:00.000Z',
+      results: [
+        {
+          model_id: 'deepseek-deepseek-v4.1-flash',
+          display_name: 'DeepSeek V4.1 Flash (Max)',
+          score: 39.5,
+        },
+        {
+          model_id: 'deepseek-deepseek-v4.1-flash',
+          display_name: 'DeepSeek V4.1 Flash (Non-reasoning)',
+          score: 24.7,
+        },
+        {
+          model_id: 'nvidia-nemotron-3-ultra-550b-a55b',
+          display_name: 'Nemotron 3 Ultra (Reasoning)',
+          score: 22.9,
+        },
+        {
+          model_id: 'stepfun-step-5-preview',
+          display_name: 'Step 5 Preview',
+          score: 43.7,
+        },
+        {
+          model_id: 'olmo-2-7b',
+          display_name: 'OLMo 2 7B',
+          score: 5.6,
+        },
+      ],
+    },
+    {
+      sampled_at: '2026-06-10T00:00:00.000Z',
+      results: [
+        {
+          model_id: 'nvidia-nemotron-3-ultra-550b-a55b',
+          display_name: 'Nemotron 3 Ultra (Reasoning)',
+          score: 47.6,
+        },
+      ],
+    },
+  ]
+  const fetchImpl = async (url) => {
+    const value = String(url)
+    if (value.includes('/results/artificial_analysis_intelligence_index.json')) {
+      return {
+        ok: true,
+        json: async () => ({ snapshots: indexSnapshots, next_cursor: null }),
+      }
+    }
+    return { ok: true, json: async () => ({ snapshots: [], next_cursor: null }) }
+  }
+  const catalog = [catalogModel(modelIds[0], { intelligence: 10 })]
+  const benchmarklist = await buildBenchmarkListQualityIndex(catalog, { fetchImpl, modelIds })
+  const quality = buildOpenRouterQualityIndex(catalog)
+  quality.benchmarklistOnly = true
+  quality.benchmarklist = benchmarklist
+
+  const deepseek = resolveModelQuality(quality, modelIds[0])
+  const nemotron = resolveModelQuality(quality, modelIds[1])
+  const superVl = resolveModelQuality(quality, modelIds[2])
+  const step = resolveModelQuality(quality, modelIds[3])
+  const allam = resolveModelQuality(quality, modelIds[4])
+  assert.ok(deepseek.aa > nemotron.aa)
+  assert.equal(deepseek.aa, 39.5, 'uses the latest exact DeepSeek V4.1 Flash index row')
+  assert.equal(nemotron.aa, 11.8, 'uses Nemotron’s latest index-feed row')
+  assert.equal(deepseek.source, 'benchmarklist-aa-index')
+  assert.equal(deepseek.isEstimated, false)
+  assert.equal(superVl.aa, 13.6, 'uses the latest exact Super VL index row')
+  assert.equal(superVl.source, 'benchmarklist-aa-index')
+  const resolvedSuperBackend = resolveModelQualityWithFallback(
+    quality,
+    'private/nvidia/nemotron-3.5-super-120b-a12b',
+    modelIds[2],
+  )
+  assert.equal(resolvedSuperBackend.aa, 13.6, 'falls back to the exact advertised model identity')
+  assert.equal(resolvedSuperBackend.source, 'benchmarklist-aa-index')
+  assert.equal(
+    resolveModelQualityWithFallback(quality, modelIds[3], modelIds[2]).aa,
+    28.5,
+    'a scored backend remains authoritative over the advertised model',
+  )
+  assert.equal(step.aa, 28.5, 'maps Stepfun’s provider ID to Benchmarklist’s model identity')
+  assert.equal(step.source, 'benchmarklist-aa-index')
+  assert.equal(allam.aa, 5.6, 'uses the explicitly accepted OLMo 2 7B proxy')
+  assert.equal(allam.isEstimated, true, 'a proxy identity is not represented as an exact match')
+  assert.match(allam.detail, /proxy model: OLMo 2 7B/)
+})
+
+test('an out-of-range benchmarklist score resolves to nothing, not a floor', () => {
+  // Same refusal as every other source: below the fitted curve is not a prediction.
+  const single = {
+    calibrations: {
+      scicode: { xs: [10, 50], ys: [3, 30], weight: 0.01, source: 'scicode', n: 20 },
+    },
+    scoreLookups: { scicode: new Map([['some-new-model', 5]]) },
+  }
+  assert.equal(resolveBenchmarkListQuality(single, 'some-new-model'), null)
+})
+
+test('historical snapshots only normalize against the same publisher', () => {
+  const sourceKey = 'artificial_analysis_api:https://example.test/benchmark'
+  const calibration = new Map(Array.from({ length: 8 }, (_, i) => [`anchor-${i}`, i / 7]))
+  const historical = new Map([
+    ...Array.from({ length: 8 }, (_, i) => [`anchor-${i}`, i / 7]),
+    [benchmarklistLookupKeys('new-model')[0], 0.5],
+  ])
+  const quality = {
+    calibrations: {
+      scicode: { xs: [0, 1], ys: [10, 90], weight: 1, source: 'scicode', n: 8 },
+    },
+    scoreLookups: {
+      scicode: {
+        calibration: calibration,
+        calibrationSnapshotKey: `2026-10-29|${sourceKey}`,
+        snapshots: new Map([
+          [`2026-10-29|${sourceKey}`, { sourceKey, scores: calibration }],
+          [`2026-10-18|${sourceKey}`, { sourceKey, scores: historical }],
+        ]),
+      },
+    },
+  }
+  const comparable = resolveBenchmarkListQuality(quality, 'new-model')
+  assert.ok(comparable)
+  assert.equal(comparable.aa, 50)
+
+  quality.scoreLookups.scicode.snapshots.set('2026-10-18|other-source', {
+    sourceKey: 'other-source',
+    scores: historical,
+  })
+  quality.scoreLookups.scicode.snapshots.delete(`2026-10-18|${sourceKey}`)
+  assert.equal(
+    resolveBenchmarkListQuality(quality, 'new-model'),
+    null,
+    'a different publisher may use an incompatible score scale',
+  )
+})
+
+test('Devin SWE variants resolve BenchmarkList scores across percent/fraction units', () => {
+  const calibrationKey = 'calibration'
+  const cognitionKey = 'cognition'
+  const calibrationScores = new Map(
+    Array.from({ length: 8 }, (_, i) => [`anchor-${i}`, 0.1 + (0.8 * i) / 7]),
+  )
+  const cognitionScores = new Map([
+    ['cognition-swe-1.6', 0.397],
+    ['cognition-swe-2', 0.928],
+  ])
+  const quality = {
+    calibrations: {
+      vals_terminal_bench_2_1: {
+        xs: [0.1, 0.9],
+        ys: [10, 90],
+        weight: 1,
+        source: 'vals_terminal_bench_2_1',
+        n: 8,
+      },
+      deepswe_1_1: {
+        xs: [0.6, 0.8],
+        ys: [20, 80],
+        weight: 1,
+        source: 'deepswe_1_1',
+        n: 8,
+      },
+    },
+    scoreLookups: {
+      vals_terminal_bench_2_1: {
+        calibration: calibrationScores,
+        calibrationSnapshotKey: calibrationKey,
+        snapshots: new Map([
+          [
+            calibrationKey,
+            { sourceKey: 'artificial-analysis', unit: 'proportion', scores: calibrationScores },
+          ],
+          [cognitionKey, { sourceKey: 'cognition', unit: 'proportion', scores: cognitionScores }],
+        ]),
+      },
+      deepswe_1_1: {
+        calibration: calibrationScores,
+        calibrationSnapshotKey: calibrationKey,
+        snapshots: new Map([
+          [
+            calibrationKey,
+            { sourceKey: 'artificial-analysis', unit: 'proportion', scores: calibrationScores },
+          ],
+          [
+            cognitionKey,
+            {
+              sourceKey: 'cognition',
+              unit: 'proportion',
+              scores: new Map([['cognition-swe-2', 0.73]]),
+            },
+          ],
+        ]),
+      },
+    },
+  }
+
+  assert.equal(resolveBenchmarkListQuality(quality, 'swe-1-6-slow').aa, 39.7)
+  assert.equal(resolveBenchmarkListQuality(quality, 'swe-2-flash-medium').aa, 59)
+  quality.scoreLookups.vals_terminal_bench_2_1.snapshots.get(cognitionKey).unit = null
+  assert.equal(
+    resolveBenchmarkListQuality(quality, 'swe-1-6-slow'),
+    null,
+    'cross-publisher results without a comparable unit are not used',
+  )
+})
+
+test('the selected benchmarklist surfaces are coding-relevant and calibratable', () => {
+  // Every entry that ships must be a coding/agentic benchmark capable of anchoring
+  // against AA's intelligence index; a non-coding surface would bias scores sideways.
+  const ids = BENCHMARKLIST_CALIBRATION_BENCHMARKS.map((benchmark) => benchmark.id)
+  assert.ok(ids.includes('vals_terminal_bench_2_1'))
+  assert.ok(ids.includes('scicode'))
+  assert.ok(ids.includes('frontierswe'))
+  for (const benchmark of BENCHMARKLIST_CALIBRATION_BENCHMARKS) {
+    assert.equal(
+      benchmark.minAnchors,
+      8,
+      `${benchmark.id} must not calibrate off fewer than eight AA anchors`,
+    )
+  }
 })
 
 test('LMArena boards predict an Elo-only model, ordered by Elo', () => {

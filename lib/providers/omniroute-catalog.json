@@ -243,7 +243,6 @@
       "tos": "avoid",
       "modelCount": 23,
       "note": "Terms restrict accounts to personal use and ban automated access."
-    },
-    { "key": "uncloseai", "access": "keyless", "tos": "caution", "modelCount": 3 }
+    }
   ]
 }

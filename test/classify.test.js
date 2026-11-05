@@ -26,6 +26,7 @@ import {
   isFallbackSelectionActive,
   isOutputCapOnlyErrorText,
   isPaymentRequiredError,
+  isRateLimitedErrorText,
   isRequestTooLargeErrorText,
   parseContextLimitFromError,
   parseMaxTokensCapFromError,
@@ -602,6 +603,31 @@ test('an unfunded account is Paid, not a quota on a clock', () => {
     false,
   )
   assert.equal(isPaymentRequiredError('A balance is a scale that measures mass.', 0), false)
+})
+
+test('a generic "reached the limit" is rate-limited, not paid', () => {
+  // The model error "You have reached the limit." should be treated as Exhausted (rate-limited),
+  // not as a payment-wall. It describes a provider-side capacity constraint, not an account
+  // funding issue.
+  const msg = 'You have reached the limit.'
+  assert.equal(resolveRefusalVerdict(msg, 0), 'rate-limited')
+  assert.equal(resolveRefusalVerdict(msg, 400), 'rate-limited')
+  assert.equal(resolveRefusalVerdict(msg, 429), 'rate-limited')
+  // It should NOT be treated as a payment wall
+  assert.equal(isPaymentRequiredError(msg, 0), false)
+  assert.equal(isPaymentRequiredError(msg, 402), false)
+  // It SHOULD be detected as a rate limit error
+  assert.equal(isRateLimitedErrorText(msg), true)
+
+  // Negative control: a payment wall that says nothing about a window is still Paid.
+  const paymentMsg = 'Sorry, your account balance is insufficient'
+  assert.equal(resolveRefusalVerdict(paymentMsg, 200), 'paid')
+  assert.equal(isPaymentRequiredError(paymentMsg, 200), true)
+
+  // And a 402 that names no rate limit at all keeps its status: the money then comes from the
+  // code rather than from the wording.
+  assert.equal(isPaymentRequiredError('Upstream refused the request.', 402), true)
+  assert.equal(resolveRefusalVerdict('Upstream refused the request.', 402), 'paid')
 })
 
 // --- The output ceilings providers actually state -------------------------------------------

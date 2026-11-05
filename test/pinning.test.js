@@ -91,6 +91,92 @@ test('server grouping applies the shared alias catalog across model families', (
   }
 })
 
+test('a relay alias groups under the model it actually resolved to', () => {
+  const rows = [
+    row('kilocode', 'kilo-auto/free', 'kilo-auto/free'),
+    row('kilocode', 'openrouter/free', 'openrouter/free'),
+    row('kilocode', 'nvidia/nemotron-3.5-super-vl:free', 'Nemotron 3.5 Super Vl 120b A12b'),
+    row('kilocode', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'Nemotron 3 Ultra'),
+  ]
+  // The resolution the router captured from live responses, not a hardcoded alias.
+  rows[0].realModelId = 'nvidia/nemotron-3.5-super-vl:free'
+  rows[0].realModelLabel = 'Nemotron 3.5 Super Vl'
+  rows[1].realModelId = 'nvidia/nemotron-3-ultra-550b-a55b:free'
+  rows[1].realModelLabel = 'Nemotron 3 Ultra'
+
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const groupOf = (modelId) =>
+    groups.find((group) => group.models.some((model) => model.modelId === modelId))
+
+  assert.equal(groups.length, 2)
+  assert.equal(groupOf('kilo-auto/free'), groupOf('nvidia/nemotron-3.5-super-vl:free'))
+  assert.equal(groupOf('openrouter/free'), groupOf('nvidia/nemotron-3-ultra-550b-a55b:free'))
+  assert.notEqual(groupOf('kilo-auto/free'), groupOf('openrouter/free'))
+  assert.match(groupOf('kilo-auto/free').label, /^Nemotron 3\.5 Super Vl/)
+  assert.doesNotMatch(groupOf('kilo-auto/free').label, /[/:_]/)
+  assert.equal(groupOf('openrouter/free').label, 'Nemotron 3 Ultra')
+})
+
+test('a relay alias joins a group that also learned another upstream spelling', () => {
+  const rows = [
+    row('kilocode', 'kilo-auto/free', 'kilo-auto/free'),
+    row('kilocode', 'nvidia/nemotron-3.5-super-vl:free', 'nvidia/nemotron-3.5-super-vl:free'),
+    row('nvidia', 'nvidia/nemotron-3.5-super-vl-120b-a12b', 'Nemotron 3.5 Super Vl 120b A12b'),
+  ]
+  rows[0].realModelId = 'nvidia/nemotron-3.5-super-vl:free'
+  rows[0].realModelLabel = 'Nemotron 3.5 Super Vl'
+  rows[2].realModelId = 'private/nvidia/nemotron-3.5-super-120b-a12b'
+  rows[2].realModelLabel = 'Nemotron 3.5 Super 120b A12b'
+
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const groupOf = (modelId) =>
+    groups.find((group) => group.models.some((model) => model.modelId === modelId))
+
+  assert.equal(groups.length, 1)
+  assert.equal(groupOf('kilo-auto/free'), groupOf('nvidia/nemotron-3.5-super-vl:free'))
+  assert.equal(groupOf('kilo-auto/free'), groupOf('nvidia/nemotron-3.5-super-vl-120b-a12b'))
+  assert.match(groupOf('kilo-auto/free').label, /^Nemotron 3\.5 Super Vl/)
+  assert.doesNotMatch(groupOf('kilo-auto/free').label, /[/:_]/)
+})
+
+test('a relay alias follows a changed upstream resolution', () => {
+  const rows = [
+    row('kilocode', 'kilo-auto/free', 'kilo-auto/free'),
+    row('kilocode', 'nvidia/nemotron-3.5-super-vl:free', 'Nemotron 3.5 Super Vl 120b A12b'),
+    row('kilocode', 'nvidia/nemotron-3-ultra-550b-a55b:free', 'Nemotron 3 Ultra'),
+  ]
+  rows[0].realModelId = 'nvidia/nemotron-3-ultra-550b-a55b:free'
+  rows[0].realModelLabel = 'Nemotron 3 Ultra'
+
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const groupOf = (modelId) =>
+    groups.find((group) => group.models.some((model) => model.modelId === modelId))
+
+  assert.equal(groupOf('kilo-auto/free'), groupOf('nvidia/nemotron-3-ultra-550b-a55b:free'))
+  assert.notEqual(groupOf('kilo-auto/free'), groupOf('nvidia/nemotron-3.5-super-vl:free'))
+  assert.equal(groupOf('kilo-auto/free').label, 'Nemotron 3 Ultra')
+})
+
+test('ollama beam joins the measured Beam family in one group', () => {
+  // Ollama publishes the same weights under its bare model name while KiloCode calls it
+  // `reflection/beam-free`; both alias to the measured `reflection/beam-1.0-501b-a23b`.
+  assert.equal(MODEL_ID_ALIASES.beam, 'reflection/beam-1.0-501b-a23b')
+  assert.equal(MODEL_ID_ALIASES['beam:latest'], 'reflection/beam-1.0-501b-a23b')
+
+  const groups = buildModelGroups(
+    [
+      row('kilocode', 'reflection/beam-free', 'reflection/beam-free'),
+      row('ollama', 'beam', 'Beam'),
+    ],
+    canonicalizeModelId,
+  )
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].models.map((model) => model.modelId).sort(), [
+    'beam',
+    'reflection/beam-free',
+  ])
+})
+
 test('the dashboard consumes server model groups instead of rebuilding model identity', () => {
   const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
   const server = serverSource

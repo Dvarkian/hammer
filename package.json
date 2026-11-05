@@ -44,7 +44,8 @@
   },
   "dependencies": {
     "chalk": "^5.4.1",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "undici": "^6.29.1"
   },
   "overrides": {
     "path-to-regexp": "8.4.0"

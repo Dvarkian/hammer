@@ -155,7 +155,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
   sortsDeepEqual(apiKeyEnvVarTable(), {
     nvidia: 'NVIDIA_API_KEY',
     groq: 'GROQ_API_KEY',
-    empero: 'EMPERO_API_KEY',
     openrouter: 'OPENROUTER_API_KEY',
     'openai-compatible': 'OPENAI_COMPATIBLE_API_KEY',
     ollama: 'OLLAMA_API_KEY',
@@ -213,7 +212,7 @@ test('the optional-auth set stays keyless, and ollama stays local-only', () => {
   // The refactor replaced a hardcoded `OPTIONAL_BEARER_AUTH_PROVIDERS` set with a lookup on
   // `auth.optional`. These providers must still declare it.
   const config = { apiKeys: {}, providers: {} }
-  for (const key of ['kilocode', 'empero', 'gptfree']) {
+  for (const key of ['kilocode', 'gptfree']) {
     assert.equal(getProvider(key).auth.optional, true, `${key} must declare optional`)
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
@@ -248,7 +247,7 @@ test('a public catalog on a key-gated provider is not read as capability', () =>
 
   // Not a blanket rule for every provider: one hammer treats as genuinely keyless still has
   // its catalog read with no credential at all.
-  assert.equal(providerDiscoveryNeedsCredential(hosted, 'uncloseai'), false)
+  assert.equal(providerDiscoveryNeedsCredential(hosted, 'kilocode'), false)
 })
 
 test('a provider that cannot authenticate contributes no rows, whatever its catalog declares', async () => {
@@ -337,10 +336,17 @@ test('a provider that cannot authenticate contributes no rows, whatever its cata
     // providerHasCredential, and the table test below): a provider that only answers anonymous
     // traffic is reachable, but it is not "set up", and its rows must not appear beside the ones
     // a key was configured for.
-    for (const key of ['gptfree', 'kilocode', 'empero', 'uncloseai']) {
-      assert.equal(providerCanServe(empty, key), true, `${key} is keyless by declaration`)
-      assert.equal(providerHasCredential(empty, key), false, `${key} holds no credential`)
-    }
+    assert.equal(providerCanServe(empty, 'kilocode'), true, 'kilocode is keyless by declaration')
+    assert.equal(providerHasCredential(empty, 'kilocode'), false, 'kilocode holds no credential')
+    // gptfree is the one keyless-by-declaration provider the listing rule must admit: there is
+    // nothing a user could configure (the bearer is minted), and its row is declared rather than
+    // discovered, so denying it a credential hid the row for good — the "0 models" card.
+    assert.equal(providerCanServe(empty, 'gptfree'), true, 'gptfree is keyless by declaration')
+    assert.equal(
+      providerHasCredential(empty, 'gptfree'),
+      true,
+      'gptfree has nothing to configure, so its declared row stays listable',
+    )
     // Ollama is keyless by where it points instead: a local base URL needs no credential, and
     // the hosted default does.
     assert.equal(
@@ -387,8 +393,11 @@ test('the model table lists only a provider that holds a credential', () => {
     const empty = { apiKeys: {}, providers: {} }
 
     // No credential, no rows: the providers that declare a catalog of their own are the ones
-    // that used to leak.
-    for (const key of ['g4f', 'kilocode', 'empero', 'gptfree', 'nvidia', 'groq']) {
+    // that used to leak. gptfree is deliberately absent from this list — its row is declared, it
+    // is enabled by default, and the only credential it can ever hold is the anonymous bearer
+    // hammer mints, so gating it would suppress the row permanently instead of keeping an
+    // unconfigured provider quiet.
+    for (const key of ['g4f', 'kilocode', 'nvidia', 'groq']) {
       assert.equal(
         providerHasCredential(empty, key),
         false,
@@ -803,14 +812,14 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
   }
 })
 
-test('the 16 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 15 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(
     (key) => PROVIDER_DESCRIPTORS[key].signupUrl,
   )
-  assert.equal(hammerOwned.length, 16)
+  assert.equal(hammerOwned.length, 15)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
@@ -900,8 +909,8 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 16 providers and none of them regressed', () => {
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 16)
+test('hammer ships 15 providers and none of them regressed', () => {
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 15)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -1163,10 +1172,21 @@ test('the NO_KEY gate reads the registry, so a keyless import is actually callab
   // listed in /v1/models, and then refused at dispatch with NO_KEY because the gate
   // consulted a hardcoded set of hammer's own five providers and never saw the import.
   const config = { apiKeys: {}, providers: {} }
-  // `uncloseai` declares authType "optional" and was verified serving a real completion
-  // with no credential at all (2026-09-22).
-  assert.equal(getProvider('uncloseai').auth.optional, true)
-  assert.equal(isProviderAuthOptional(config, 'uncloseai'), true)
+  // No imported provider declares optional auth any more (`uncloseai` was the last, and its
+  // hosts now answer 401 public_beta_closed), so the rule is pinned on a descriptor registered
+  // the same way an import is rather than on a live provider that may disappear next month.
+  try {
+    registerProvider('keyless-import', {
+      label: 'Keyless Import',
+      chatUrl: 'https://keyless.test/v1/chat/completions',
+      discoverable: true,
+      auth: { kind: 'bearer', optional: true },
+    })
+    assert.equal(getProvider('keyless-import').auth.optional, true)
+    assert.equal(isProviderAuthOptional(config, 'keyless-import'), true)
+  } finally {
+    initProviders({ reset: true })
+  }
   // A credential-requiring import must still be gated. `llm7` looks keyless (its /v1/models
   // is public) but a completion without a key returns missing_api_key, so it stays gated —
   // the reason a models-level probe is not accepted as evidence of keylessness.
@@ -1174,14 +1194,14 @@ test('the NO_KEY gate reads the registry, so a keyless import is actually callab
   assert.equal(isProviderAuthOptional(config, 'llm7'), false)
   assert.equal(isProviderAuthOptional(config, 'cohere'), false)
   // And hammer's own optional providers keep working, now via their descriptors.
-  for (const key of ['gptfree', 'kilocode', 'empero']) {
+  for (const key of ['gptfree', 'kilocode']) {
     assert.equal(isProviderAuthOptional(config, key), true, `${key} must stay optional`)
   }
 })
 
 test('the credential header shape is data, so a non-bearer provider needs no new branch', () => {
   // A provider that wants its key sent bare, in a named header, is a descriptor field.
-  const bare = buildProviderRequestHeaders('uncloseai', { apiKey: 'k', __unused: true })
+  const bare = buildProviderRequestHeaders('groq', { apiKey: 'k', __unused: true })
   assert.equal(bare.Authorization, 'Bearer k')
   resetRegistry()
   registerProvider('barekey', {
@@ -1542,9 +1562,7 @@ test('only unresolved, answerable imports are probed on demand', () => {
   const helpers = { isAuthOptional: isProviderAuthOptional, hasApiKey: getApiKey }
 
   const candidates = lazyDiscoveryCandidates(sources, new Set(['nvidia']), config, helpers)
-  // The one keyless import is reachable on first use...
-  assert.ok(candidates.includes('uncloseai'))
-  // ...and a keyed import the user configured is too.
+  // A keyed import the user configured is reachable on first use.
   assert.ok(candidates.includes('cohere'))
   // A credential-requiring import with no key is left to the explicit refresh: probing it
   // would spend somebody else's quota to learn nothing.
@@ -1557,7 +1575,7 @@ test('only unresolved, answerable imports are probed on demand', () => {
   assert.equal(candidates.includes('nvidia'), false)
   // A provider that already has rows is not probed again.
   assert.equal(
-    lazyDiscoveryCandidates(sources, new Set(['uncloseai']), config, helpers).includes('uncloseai'),
+    lazyDiscoveryCandidates(sources, new Set(['cohere']), config, helpers).includes('cohere'),
     false,
   )
 })
@@ -2530,16 +2548,17 @@ test('a provider with no credential concept activates keyless', () => {
 })
 
 test("an optional-auth provider activates keyless, matching hammer's optional-bearer semantics", () => {
-  // `uncloseai` is the live example of the rule: an import that declares `authType: "optional"`
-  // and has answered a real completion with no credential.
+  // An import that declares `authType: "optional"` activates keyless. No live import currently
+  // makes that declaration — `uncloseai` was the last, and its hosts now answer 401
+  // `public_beta_closed` — so this pins the rule on the declaration itself.
   const decision = decideResolution({
-    key: 'uncloseai',
+    key: 'somekeyless',
     access: 'keyless',
     tos: 'caution',
     entry: {
       format: 'openai',
       executor: 'default',
-      baseUrl: 'https://hermes.ai.unturf.com/v1/chat/completions',
+      baseUrl: 'https://keyless.test/v1/chat/completions',
       authType: 'optional',
       authHeader: 'bearer',
       models: [],
@@ -2660,7 +2679,6 @@ test('the quota table is read through the registry, and sources.js no longer shi
     'codestral',
     'kiro',
     'kilocode',
-    'empero',
     'github-copilot',
     'openai-codex',
     'g4f',
