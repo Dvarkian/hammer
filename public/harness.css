@@ -131,11 +131,12 @@ body[data-view='router'] .container {
 }
 
 /*
- * On a narrow window the single row cannot hold the wordmark, two view pills, the status line
- * and three controls without crushing them. Let it wrap and drop the spacer, so the controls
- * fall to their own line instead of overflowing the viewport.
+ * Below the two-column threshold the single row cannot hold the wordmark, two view pills, the
+ * status line and the whole control cluster — the Details button also appears here — without
+ * crushing them. Let the bar wrap and drop the spacer, so the controls fall to their own line
+ * instead of running off the right edge.
  */
-@media (max-width: 720px) {
+@media (max-width: 960px) {
   .dashboard-header-inner {
     flex-wrap: wrap !important;
     gap: 8px 10px !important;
@@ -148,6 +149,27 @@ body[data-view='router'] .container {
   .dashboard-header-inner > .load-status {
     order: 4;
     flex-basis: 100%;
+  }
+
+  /* With the spacer gone the cluster would sit at the left of its wrapped line. Give it a line
+     of its own (`flex-basis: 100%`) so its width is finally constrained — `flex: none` above
+     sized it to its content, which is why the buttons ran off the edge — then let it break and
+     push the rows to the right. `!important` because the base rule is declared later in this
+     file and would otherwise win the tie. */
+  .dashboard-header-controls {
+    flex: 1 1 100% !important;
+    max-width: 100% !important;
+    flex-wrap: wrap !important;
+    justify-content: flex-end !important;
+    margin-left: auto !important;
+  }
+}
+
+/* The session name is the longest item in the bar and the least load-bearing; the phase pill
+   still says whether the agent is alive, so the name goes before anything is clipped. */
+@media (max-width: 720px) {
+  .dashboard-header-controls > .hx-session-name {
+    display: none !important;
   }
 }
 
@@ -274,10 +296,13 @@ body[data-view='agent'] #reload-btn {
 
 #agent-view {
   display: grid;
-  /* Flexibly sized: sessions (auto), transcript (1fr), details (auto). Sidebars share available
-     space with the transcript on resize, allowing varied window sizes without fixed constraints.
+  /* Sessions and details are bounded rails; the transcript takes what is left. An `auto`
+     maximum let a long session name or workspace path grow a sidebar without limit and crush
+     the transcript to a sliver, and a `1fr` middle could not shrink below its content, so it
+     overflowed the window instead. Both rails are capped and the middle is minmax(0, 1fr):
+     it yields space first, and it may shrink below its content rather than clip.
      Each column collapses independently on the body classes the header's toggle buttons set. */
-  grid-template-columns: minmax(200px, auto) 1fr minmax(200px, auto);
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr) minmax(200px, 320px);
   /* No column gap: the gutters the sidebar panels carry are the only air, and a gap here
      showed as page background around the transcript's shaded block — the log read as a card
      floating in the window instead of the window's own pane. */
@@ -288,15 +313,15 @@ body[data-view='agent'] #reload-btn {
 }
 
 body.hx-sessions-collapsed #agent-view {
-  grid-template-columns: 0 1fr minmax(200px, auto);
+  grid-template-columns: 0 minmax(0, 1fr) minmax(200px, 320px);
 }
 
 body.hx-details-collapsed #agent-view {
-  grid-template-columns: minmax(200px, auto) 1fr 0;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr) 0;
 }
 
 body.hx-sessions-collapsed.hx-details-collapsed #agent-view {
-  grid-template-columns: 0 1fr 0;
+  grid-template-columns: 0 minmax(0, 1fr) 0;
 }
 
 /* A collapsed sidebar is out of the grid flow, not gone: hidden so its focusable children
@@ -438,9 +463,20 @@ body.hx-details-collapsed .hx-side-details {
   position: relative;
   /* Keep the transcript at least as wide as the composer, so they always match. */
   min-width: 0;
-  flex: 1 1 auto;
+  /* Fill the pane left over once the composer is docked, and *only* that: basis 0 rather than
+     `auto`, so the log's own height is not the wrap's starting size. */
+  flex: 1 1 0;
+  /* Without this the automatic minimum of a flex item is its content height, so a long
+     conversation stretches the wrap to the full height of the log instead of the pane: the
+     transcript never scrolls, floods the space the composer docks in, and shoves the input
+     below the viewport. The scroll belongs to `.hx-transcript` inside; the wrap must yield. */
+  min-height: 0;
   /* Cap the transcript width on very wide screens so lines stay readable. */
   max-width: 900px;
+  /* `width: 100%` is what makes the cap and the centring work: with only `margin: auto` the
+     wrap is fit-content and narrower than the composer it is meant to match. Stretch to the
+     pane, cap at 900, and the auto margins only absorb the slack past the cap. */
+  width: 100%;
   margin-left: auto;
   margin-right: auto;
 }
@@ -911,6 +947,9 @@ body.hx-details-collapsed .hx-side-details {
   max-width: 560px;
   text-align: center;
   padding: 20px;
+  /* As with the composer: without border-box the padding sits outside the width the pane hands
+     it, so the welcome card is wider than the transcript and its last few words are clipped. */
+  box-sizing: border-box;
 }
 
 .hx-empty h3 {
@@ -1132,12 +1171,17 @@ body.hx-details-collapsed .hx-side-details {
  * transcript, so the line you type on sits under the line you read.
  */
 .hx-composer {
+  /* The dock keeps its own height: the transcript shrinks, the composer does not. */
+  flex: none;
   border-top: 1px solid var(--border);
   background: var(--card);
   padding: 12px var(--hx-gutter) 14px;
   /* Match the transcript's max width so the entry area aligns with the conversation. */
   max-width: 900px;
   width: 100%;
+  /* Without border-box, the horizontal padding is added *outside* `width: 100%`, so the dock
+     is gutter-wide too wide and its right edge is clipped on a narrow window. */
+  box-sizing: border-box;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1362,7 +1406,10 @@ body.hx-details-collapsed .hx-side-details {
 .hx-composer-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  /* The hint, the thinking control and the buttons cannot share one line in a narrow pane.
+     Wrap them instead of letting the cluster run off the right edge and hide Send. */
+  flex-wrap: wrap;
+  gap: 8px 10px;
   width: 100%;
   margin: 8px 0 0;
   min-height: 28px;
@@ -1518,6 +1565,10 @@ body.hx-details-collapsed .hx-side-details {
   margin-left: auto;
   display: flex;
   align-items: center;
+  /* Attach, the model name, the queue toggle and Send are a cluster that must stay whole.
+     Wrapped and right-aligned so it falls to its own line rather than overflowing the pane. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 8px;
 }
 
@@ -1998,9 +2049,20 @@ body.hx-details-collapsed .hx-side-details {
     right: var(--hx-gutter);
   }
 
-  #agent-view {
-    grid-template-columns: 1fr;
+  /* One column: the sidebars are fixed drawers, out of the grid flow. The collapse-state
+     templates above would otherwise win on specificity and rebuild a multi-track grid, and
+     `.hx-main`'s explicit `grid-column: 2` would then drop it into an implicit second track —
+     shifting the whole console right and sizing it to its content. */
+  #agent-view,
+  body.hx-sessions-collapsed #agent-view,
+  body.hx-details-collapsed #agent-view,
+  body.hx-sessions-collapsed.hx-details-collapsed #agent-view {
+    grid-template-columns: minmax(0, 1fr);
     gap: 0;
+  }
+
+  .hx-main {
+    grid-column: 1;
   }
 
   /* On phone-width pane the desktop collapse states don't hide a drawer before it is
