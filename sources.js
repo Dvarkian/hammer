@@ -620,8 +620,12 @@ export const sources = {
   },
   googleai: {
     name: 'Google AI',
+    // Google's OpenAI-compatible layer on the Gemini Developer API. It serves the Gemini
+    // family (discovered from /v1/models — see the omniroute `gemini` resolution that was
+    // retired 2026-11-08 as a duplicate of this provider) as well as the Gemma open models
+    // curated below, all under the one GOOGLE_API_KEY the user already holds.
     url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
-    contextUrl: 'https://ai.google.dev/gemma/docs/core/model_card_3',
+    contextUrl: 'https://ai.google.dev/gemini-api/docs/models',
     discoverable: true,
     models: [
       ['gemma-3-27b-it', 'Gemma 3 27B', '128k'],

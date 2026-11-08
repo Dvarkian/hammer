@@ -12,7 +12,7 @@
     "tosPolicy": "Terms flags are advisory, matching OmniRoute, which does not gate routing on them. The flag travels on every descriptor so it stays visible; pass --exclude-avoid to withhold flagged providers instead."
   },
   "summary": {
-    "active": 29,
+    "active": 28,
     "refused": 0,
     "staged": 7,
     "registryEntriesRead": 36
@@ -54,30 +54,6 @@
           "gpt-4.1-nano-2025-04-14",
           "deepseek-r1-0528",
           "qwen2.5-coder-32b-instruct"
-        ]
-      }
-    },
-    "gemini": {
-      "activation": "active",
-      "chatUrl": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "x-goog-api-key",
-        "scheme": null
-      },
-      "provenance": {
-        "endpointOverride": "Google publishes an OpenAI-compatible layer at /v1beta/openai; hammer's own googleai provider already calls a sibling of this URL, so the shape is proven in-tree.",
-        "modelCount": 8,
-        "declaredModels": [
-          "gemini-3.7-flash",
-          "gemini-3.1-pro-preview",
-          "gemini-3.1-flash-lite",
-          "gemini-3-flash-preview",
-          "gemini-3.1-flash-tts-preview",
-          "gemini-2.5-pro",
-          "gemini-2.5-flash",
-          "gemini-2.5-flash-lite"
         ]
       }
     },

@@ -591,10 +591,11 @@ test("a chat endpoint names the site a provider's brand mark comes from", () => 
   // the site a logo should come from.
   assert.equal(providerFaviconDomain('googleai'), 'ai.google.dev')
   assert.equal(providerFaviconDomain('gptfree'), 'gptfree.com')
-  // `gemini` and `googleai` are the same endpoint reached by two keys, and had been drawing
-  // differently: googleai's override gave it the Gemini site while gemini was left with the
-  // hostname it is served from — Google's API platform, which resolves to no icon at all.
-  assert.equal(providerFaviconDomain('gemini'), 'ai.google.dev')
+  // `gemini` was the same endpoint reached by a second key, and had been drawing differently:
+  // googleai's override gave it the Gemini site while gemini was left with the hostname it is
+  // served from — Google's API platform, which resolves to no icon at all. The import is now
+  // excluded as a duplicate of googleai, so `gemini` is no longer a provider at all.
+  assert.equal(getProvider('gemini'), null)
   // A provider reached through a cloud is named by its own site rather than the cloud's.
   assert.equal(providerFaviconDomain('baidu'), 'baidu.com')
   assert.equal(providerFaviconDomain('no-such-provider'), '')
@@ -677,11 +678,12 @@ test('the plot asks one place for a brand mark, and keeps no second domain list'
     'one third-party fallback',
   )
   assert.equal((src.match(/\/api\/favicon\?domain=/g) || []).length, 1, 'one router URL')
-  // The helper's definition and its two callers — the model node and the provider node. The old
-  // singular helper is gone: a node carries a list now, and one name for the URL is what keeps
-  // the third-party fallback and the router's own route from being spelled twice.
+  // The helper's definition and its callers — the model node and the provider node in the plot,
+  // and the models table's logo column. The old singular helper is gone: a node carries a list
+  // now, and one name for the URL is what keeps the third-party fallback and the router's own
+  // route from being spelled twice.
   assert.equal((src.match(/function faviconHrefs\(/g) || []).length, 1, 'one URL builder')
-  assert.equal((src.match(/faviconHrefs\(/g) || []).length, 3, 'both image builders must ask it')
+  assert.equal((src.match(/faviconHrefs\(/g) || []).length, 4, 'every image builder must ask it')
   assert.ok(!src.includes('PROVIDER_DOMAINS'), 'the hand-written domain list must not come back')
   // The provider node walks its candidates on a failed load, and the walk is bounded by the list
   // it was given: a node whose every candidate 404s must still end on its monogram. A handler
@@ -770,9 +772,8 @@ test('a model node resolves its brand from the id, its gateway namespace, or its
   assert.equal(getModelDomain({ modelId: 'kilo-auto/free' }), 'kilocode.com')
   assert.equal(getModelDomain({ modelId: 'openrouter/free' }), 'openrouter.ai')
 
-  // The negative that keeps the map honest: an anonymous model has no brand to draw, and a
-  // gateway's routing row is a verb, not a product — both keep their monogram rather than
-  // borrowing the mark of whoever happens to serve them.
+  // The negative that keeps the map honest: an anonymous model, or a bare `auto` id that names
+  // no vendor at all, keeps its monogram rather than borrowing the mark of whoever serves it.
   for (const id of [
     'corethink:free',
     'giga-potato-thinking:free',
@@ -785,7 +786,9 @@ test('a model node resolves its brand from the id, its gateway namespace, or its
       `${id} names no brand and must stay a monogram`,
     )
   }
-  assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (G4F)' }), '')
+  // The bare id is anonymous either way, but these two rows name their gateway in the label, so
+  // the mark is readable: GPTFree's `auto` is its own product and G4F's is the gateway's.
+  assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (G4F)' }), 'g4f.dev')
   assert.equal(getModelDomain({ modelId: '' }), '')
 })
 
@@ -793,10 +796,11 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
   // The same invariant the provider table holds, for the other kind of node: a curated row exists
   // because hammer offers the model, so its node should arrive carrying a mark instead of an empty
   // disc. The exceptions are ids that name no brand at all — the two stealth models OpenRouter
-  // publishes anonymously and the gateways' own `auto` routers — and they are listed here so that
-  // a third one cannot appear unnoticed.
+  // publishes anonymously — and they are listed here so that a third one cannot appear unnoticed.
+  // A gateway's `auto` row is not one of them: GPTFree's only model is `Auto (GPTFree)`, so the
+  // label names the vendor even though the id cannot.
   const getModelDomain = modelDomainResolverFromPlot()
-  const anonymous = new Set(['corethink:free', 'giga-potato-thinking:free', 'auto'])
+  const anonymous = new Set(['corethink:free', 'giga-potato-thinking:free'])
   for (const [modelId, label] of MODELS) {
     const domain = getModelDomain({ modelId, label })
     if (anonymous.has(modelId)) {
@@ -2761,4 +2765,73 @@ test('discovery shares the router probe window and never reaches back into the s
     false,
     'discovery.js must not call fetch at import time',
   )
+})
+
+test('the models table leads with a logo column for the model brand', () => {
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+
+  // The header comes first in the main table only: the graveyard keeps its own eight columns.
+  const table = html.slice(html.indexOf('id="models-table"'), html.indexOf('id="graveyard-table"'))
+  assert.match(table, /<th>Logo<\/th>\s*<th>Model<\/th>/)
+
+  // The cell reuses the plot's own model-family → vendor domain (published by drawPlots) and the
+  // router's favicon proxy, over the model's initial so a row is never blank.
+  assert.match(js, /let modelDomainFor = \(\) => ''/)
+  assert.match(js, /modelDomainFor = getModelDomain/)
+  assert.match(js, /function modelLogoHTML\(m\)/)
+  assert.match(js, /class="model-logo-cell">\$\{modelLogoHTML\(first\)\}/)
+  assert.match(js, /<td class="model-logo-cell"><\/td>/)
+  assert.match(css, /\.model-logo-cell \{/)
+  assert.match(css, /\.model-logo-mono \{/)
+  assert.match(css, /\.model-logo-img \{/)
+
+  // Everything after the logo shifted by one. A stale index writes context into the status cell
+  // and blanks the response, which is worse than no logo column at all.
+  assert.match(js, /const modelCell = row\.cells\[1\];/)
+  assert.match(js, /const intellCell = row\.cells\[2\];/)
+  assert.match(js, /const ctxCell = row\.cells\[6\];/)
+  assert.match(js, /const usageCell = row\.cells\[5\];/)
+  assert.match(js, /const statusCell = row\.cells\[7\];/)
+  assert.match(js, /const responseCell = row\.cells\[8\];/)
+  assert.match(js, /const ttftCell = row\.cells\[3\];/)
+  assert.match(js, /const tpsCell = row\.cells\[4\];/)
+})
+
+test('the brand map names Beam, GPTFree and ALLaM', () => {
+  const getModelDomain = modelDomainResolverFromPlot()
+
+  // Reflection AI's Beam, under every id the catalogs publish it as.
+  assert.equal(getModelDomain({ modelId: 'beam' }), 'reflection.ai')
+  assert.equal(
+    getModelDomain({ modelId: 'beam-1.0-501b-a23b', label: 'Beam 1.0 501b A23b' }),
+    'reflection.ai',
+  )
+  assert.equal(getModelDomain({ modelId: 'reflection/beam-free' }), 'reflection.ai')
+  assert.equal(getModelDomain({ modelId: 'reflection/beam-1.0-501b-a23b' }), 'reflection.ai')
+
+  // Both gateway `auto` rows are called `auto`, so the vendor is named only by the label's
+  // brackets: GPTFree's is the gateway itself, and G4F's is the gateway that publishes it.
+  assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (GPTFree)' }), 'gptfree.com')
+  assert.equal(getModelDomain({ modelId: 'auto', label: 'Auto (G4F)' }), 'g4f.dev')
+
+  // ALLaM is SDAIA's, served by its steward's site — the one that actually answers an icon.
+  assert.equal(getModelDomain({ modelId: 'ALLaM-2-7b', realModelId: 'allam-2-7b' }), 'humain.ai')
+})
+
+test('a stealth preview gets a badge, not its gateway’s logo', () => {
+  const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+  const getModelDomain = modelDomainResolverFromPlot()
+
+  // Glyph Cluster and Crouton Alpha are anonymous: Kilo, OpenRouter and Vercel only relay them,
+  // so the map must resolve nothing rather than hand the row a gateway's brand.
+  assert.equal(getModelDomain({ modelId: 'stealth/glyph-cluster' }), '')
+  assert.equal(getModelDomain({ modelId: 'stealth/crouton-alpha' }), '')
+
+  // The table marks those rows as stealth instead of drawing a letter as a brand.
+  assert.match(js, /function isStealthModel\(m\)/)
+  assert.match(js, /model-logo-stealth/)
+  assert.match(css, /\.model-logo-stealth \{/)
 })

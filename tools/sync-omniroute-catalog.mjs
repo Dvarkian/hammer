@@ -97,6 +97,16 @@ const ACCESS_BY_FREE_TYPE = {
  *   refers to OpenRouter's routing, which is OpenRouter's grant rather than Arcee's.
  * - **A duplicate of a host hammer already routes** (`kilo-gateway`): the same chat endpoint and
  *   the same model list as hammer's own `kilocode`, so every row it reaches is a second copy.
+ * - **A duplicate of a key hammer already routes** (`gemini`, 2026-11-08): OmniRoute's registry
+ *   resolves it to Google's own OpenAI-compatible endpoint — the exact URL hammer's own
+ *   `googleai` provider calls — and the credential is the same `GOOGLE_API_KEY` that backs
+ *   `googleai`. Keeping both gave one Google key two dashboard rows that drew differently, and
+ *   the import carried none of the special handling the endpoint needs (Gemini thinking models
+ *   400 on tool-turn continuations lacking a thought_signature; that machinery in
+ *   `lib/server.js` / `lib/http/routes/proxy.js` is keyed to `googleai`). The free-tier facts
+ *   the row recorded were stale anyway — Google no longer publishes free-tier numbers, quotas
+ *   are per project in AI Studio (see docs/PROVIDER-FREE-TIER-AUDIT.md) — so nothing is lost
+ *   by dropping the row rather than merging it into `googleai`'s descriptor.
  * - **Dead services** (`predibase`, `monsterapi`): neither host answers at all any more.
  * - **Closed to new use** (`uncloseai`): its three model hosts still route, but every one of
  *   them answers HTTP 401 `{"type":"public_beta_closed"}` — "This endpoint needs an API key,
@@ -113,6 +123,9 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   'liquid',
   'novita',
   'longcat',
+  // A duplicate of hammer's own `googleai`: same endpoint, same GOOGLE_API_KEY (see the
+  // exclusion rationale above).
+  'gemini',
   // Bucket C of the free-tier audit: no recurring free usage.
   'scaleway',
   'vertex',

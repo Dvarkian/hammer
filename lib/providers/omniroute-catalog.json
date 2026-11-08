@@ -31,14 +31,6 @@
       "modelCount": 4
     },
     {
-      "key": "gemini",
-      "access": "recurring",
-      "steadyTokensPerMonth": 60000000,
-      "tos": "caution",
-      "modelCount": 6,
-      "note": "Free tier is Flash-family only; Pro left the free tier 2026-04."
-    },
-    {
       "key": "cloudflare-ai",
       "access": "recurring",
       "steadyTokensPerMonth": 30000000,

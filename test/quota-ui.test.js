@@ -155,8 +155,12 @@ test('every published numeric limit renders a bar, and none without a number doe
   const numeric = Object.values(table).filter(
     (quota) => Array.isArray(quota.limits) && quota.limits.length > 0,
   )
+  // 18, not 19: the vendored `gemini` row carried a 60M tokens/month figure that was retired
+  // with the row (2026-11-08) — Google no longer publishes free-tier numbers, quotas are per
+  // project in AI Studio (see docs/PROVIDER-FREE-TIER-AUDIT.md). A figure nobody can source
+  // must not render a bar.
   assert.ok(
-    numeric.length >= 20,
+    numeric.length >= 18,
     `expected a wide spread of published limits, saw ${numeric.length}`,
   )
   for (const quota of numeric) {

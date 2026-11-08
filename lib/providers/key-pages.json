@@ -25,12 +25,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "gemini": {
-      "url": "https://aistudio.google.com/apikey",
-      "evidence": "Google AI Studio; API keys page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "cloudflare-ai": {
       "url": "https://dash.cloudflare.com/profile/api-tokens",
       "evidence": "Cloudflare dashboard; API tokens page (Workers AI also needs an account ID)",
