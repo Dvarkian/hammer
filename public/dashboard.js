@@ -320,6 +320,8 @@
     // conversation (see publishSessionUsage), and it is redrawn whenever that conversation
     // changes — so the label and the data are always about the same transcript.
     let usageSessionShown = null;
+    // What that history looked like when the plot last drew it (see usagePointsSignature).
+    let usageSessionSignature = '';
     // Last time the series was fetched (so we only pull deltas).
     let usageSeriesLastFetchedAt = null;
     // In-flight guard so overlapping series fetches can't clobber each other.
@@ -2609,6 +2611,26 @@
     }
 
     /**
+     * A cheap fingerprint of the history a publish describes.
+     *
+     * The plot is a full SVG rebuild, so republishing the samples already on it (a status
+     * frame, a tab switch back to the conversation) must not pay for one. The count, the
+     * newest timestamp and the billed total are enough: appending a turn changes all three,
+     * and reordering the same samples draws the same picture.
+     */
+    function usagePointsSignature(session, points) {
+      const list = Array.isArray(points) ? points : [];
+      let total = 0;
+      let newest = 0;
+      for (const p of list) {
+        total += Number(p?.tokens) || 0;
+        const t = Number(p?.t);
+        if (Number.isFinite(t) && t > newest) newest = t;
+      }
+      return `${session}|${list.length}|${total}|${newest}`;
+    }
+
+    /**
      * Hands the rail's session plot the transcript it should describe.
      *
      * The plot used to draw the router's "this process" view of /api/usage-series, which
@@ -2629,12 +2651,16 @@
      */
     function publishSessionUsage(session, points) {
       // The same conversation repainting (a status frame, a resumed turn) must not clear the
-      // plot on its way to the same picture: that flash reads as "the history is gone".
+      // plot on its way to the same picture: that flash reads as "the history is gone". Only a
+      // history that changed pays for the rebuild — the rail's plot is a whole SVG per publish,
+      // and a page that reopens several conversations publishes it several times.
       if (session === usageSessionShown && Array.isArray(points)) {
+        if (usagePointsSignature(session, points) === usageSessionSignature) return;
         applySessionUsagePoints(points);
         return;
       }
       usageSessionShown = session;
+      usageSessionSignature = '';
       if (session == null) {
         usageSessionByKey.clear();
         return;
@@ -2696,6 +2722,7 @@
         usageSessionByKey.set(key, series)
       }
       renderSessionUsageLegend()
+      usageSessionSignature = usagePointsSignature(usageSessionShown, points)
       requestSessionPlotRedraw()
     }
 
@@ -6695,6 +6722,24 @@
       return { until: atMs + RATE_LIMIT_UNSTATED_GRACE_MS, resetAt: null };
     }
 
+    // Google scopes Antigravity's allowance per model and per account. A quota refusal from
+    // one account is not a model-wide exhaustion while another signed-in account still has
+    // allowance for that same model; the row carries both accounts' windows.
+    function hasAlternativeAntigravityQuota(m) {
+      if (String(m?.providerKey || '') !== 'google-antigravity') return false;
+      const now = Date.now();
+      return (Array.isArray(m.quotaWindows) ? m.quotaWindows : []).some((window) => {
+        if (!window || window.unavailable) return false;
+        const resetAt = Number(window.resetAt);
+        if (Number.isFinite(resetAt) && resetAt > 0 && resetAt <= now) return false;
+        const remaining =
+          window.percentOnly && window.usedPercent != null
+            ? 100 - Number(window.usedPercent)
+            : Number(window.remaining);
+        return Number.isFinite(remaining) && remaining > 0;
+      });
+    }
+
     // Whether a row is benched on a provider window or quota — and until when that is
     // still a live verdict. Two sources say it, and they expire differently:
     //
@@ -6712,6 +6757,15 @@
       // clock would be a claim nobody can act on. Read before the sources below, because a bench
       // the server has not yet re-derived would otherwise outlive the verdict that replaced it.
       if (permanentOutranksBench(m)) return { limited: false, resetAt: null };
+      // A quota refusal from one Antigravity account is not a verdict on the model while
+      // another account still has allowance. Keep the row's own down/failure evidence, but
+      // do not paint the first account's reset clock across the model.
+      if (
+        /quota|resource_exhausted/i.test(String(m.lastResponse?.error || '')) &&
+        hasAlternativeAntigravityQuota(m)
+      ) {
+        return { limited: false, resetAt: null };
+      }
       const now = Date.now();
       const status = String(m.status || '').toLowerCase();
       const creditExhausted = Number(m.rateLimit?.creditLimit) > 0

@@ -1985,19 +1985,35 @@ test('the rail usage plot describes the conversation, not the router process', (
     /window\.requestSessionPlotRedraw = requestSessionPlotRedraw/,
     'the repaint is exposed with it: the rail is usually hidden when a publish happens',
   )
-
-  // The three moments the plot must be re-published, and the two it must be released.
-  const publish = harness.match(/async function publishSessionUsage\(ctx\) \{[\s\S]*?\n[ ]{2}\}\n/)
-  assert.ok(publish, 'publishSessionUsage exists, so the assertions below test the real function')
-  const body = publish[0]
+  // Identical samples are already drawn, and the repaint is a whole SVG rebuild.
   assert.match(
-    body,
+    dashboard,
+    /if \(usagePointsSignature\(session, points\) === usageSessionSignature\) return;/,
+    'republishing a history the plot already shows must not rebuild it',
+  )
+
+  // Only the conversation on screen paints the rail, and a burst of publishes is one read.
+  // Reopening Hammer used to read and redraw the plot once per conversation restored beside
+  // the one on screen, which is the flitting the page showed on the way in.
+  const publish = harness.match(/function publishSessionUsage\(ctx\) \{[\s\S]*?\n[ ]{2}\}\n/)
+  assert.ok(publish, 'publishSessionUsage exists, so the assertions below test the real function')
+  assert.match(
+    publish[0],
+    /if \(!ctx \|\| ctx !== active\(\) \|\| usageSettling\) return/,
+    'a conversation that is not on screen does not get to paint the rail plot',
+  )
+  assert.match(publish[0], /clearTimeout\(usagePublishTimer\)/, 'a burst collapses into one read')
+  // The three moments the plot must be re-published, and the two it must be released.
+  const read = harness.match(/async function readSessionUsage\(ctx\) \{[\s\S]*?\n[ ]{2}\}\n/)
+  assert.ok(read, 'the read is its own function, scheduled by publishSessionUsage')
+  assert.match(
+    read[0],
     /window\.publishSessionUsage\?\.\(null, \[\]\)/,
     'a conversation with no file publishes nothing rather than an empty plot',
   )
   assert.match(
-    body,
-    /if \(ctx\.sessionFile !== file\) return/,
+    read[0],
+    /if \(ctx\.sessionFile !== file \|\| ctx !== active\(\)\) return/,
     'a console that switched conversations mid-read must not be handed the earlier one',
   )
   // A switch of console, and a reopened transcript, are what the rail describes.

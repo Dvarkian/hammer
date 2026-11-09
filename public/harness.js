@@ -370,7 +370,12 @@
       : null
     if (onScreen) activate(onScreen)
     restoringTabs = false
+    usageSettling = false
     saveOpenConversations()
+    // The page has settled on its conversation: one read and one repaint, however many tabs
+    // came back beside it.
+    const settled = active()
+    if (settled) void publishSessionUsage(settled)
   }
 
   /**
@@ -395,6 +400,39 @@
     }
   }
 
+  /** How long a burst of publishes waits so it becomes one read and one repaint. */
+  const USAGE_PUBLISH_DELAY_MS = 150
+  /** The console the next scheduled read is for, and its pending timer. */
+  let pendingUsageConsole = null
+  let usagePublishTimer = null
+  /** True while the page is still opening the conversations it remembers. */
+  let usageSettling = false
+
+  /**
+   * Asks for the rail's plot to describe a conversation, once per burst of changes.
+   *
+   * Only the conversation on screen owns that plot. A tab restored beside this one, or a
+   * parallel console landing a turn in the background, describes a history the rail is not
+   * showing, so it publishes nothing: opening Hammer used to read and redraw the plot for every
+   * conversation the page reopened, one after another, which is the flitting it is meant to
+   * avoid.
+   *
+   * The read is coalesced as well. A page load republishes from several places at once — the
+   * activation, the rebuilt transcript, the first status frame — and each read walks its whole
+   * session file before a full SVG rebuild, so only the last of a burst is read.
+   */
+  function publishSessionUsage(ctx) {
+    if (!ctx || ctx !== active() || usageSettling) return
+    pendingUsageConsole = ctx
+    if (usagePublishTimer) clearTimeout(usagePublishTimer)
+    usagePublishTimer = setTimeout(() => {
+      usagePublishTimer = null
+      const target = pendingUsageConsole
+      pendingUsageConsole = null
+      void readSessionUsage(target)
+    }, USAGE_PUBLISH_DELAY_MS)
+  }
+
   /**
    * Points the rail's plot at a conversation's usage history, read from its session file.
    *
@@ -406,7 +444,7 @@
    * Failures are silent: the plot is decoration, and a conversation that opens while the
    * store is unreadable must not also fail its transcript.
    */
-  async function publishSessionUsage(ctx) {
+  async function readSessionUsage(ctx) {
     const file = ctx?.sessionFile
     if (!file) {
       window.publishSessionUsage?.(null, [])
@@ -417,8 +455,9 @@
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `usage ${res.status}`)
       // A console that switched conversations while this read was in flight must not have its
-      // plot handed the earlier conversation's history.
-      if (ctx.sessionFile !== file) return
+      // plot handed the earlier conversation's history, and one that is no longer the
+      // conversation on screen must not take the plot off it.
+      if (ctx.sessionFile !== file || ctx !== active()) return
       window.publishSessionUsage?.(file, data.points || [])
     } catch {
       // The router view is the better answer than a plot stuck on the last conversation, and
@@ -4130,6 +4169,10 @@
     showView(stored === 'router' ? 'router' : 'agent')
     // The main console is the conversation this page has always opened on; every other one is
     // added beside it as it is opened, and neither disturbs the other's turn.
+    // The remembered tabs are reopened beside this one before the page settles on the
+    // conversation it showed last. Until that pass finishes the rail has no conversation to
+    // describe, so publishing is held back rather than painting each one on the way in.
+    usageSettling = openFiles.size > 0
     const main = createConsole({ id: 'main' })
     state.activeId = null
     activate(main)
