@@ -22,8 +22,9 @@ import {
 import {
   benchmarklistLookupKeys,
   BENCHMARKLIST_CALIBRATION_BENCHMARKS,
-  resolveBenchmarkListQuality,
   buildBenchmarkListQualityIndex,
+  exactModelIdentityKeys,
+  resolveBenchmarkListQuality,
 } from '../lib/benchmarklist-quality.js'
 import { canonicalizeModelId } from '../sources.js'
 
@@ -348,6 +349,44 @@ test('benchmarklist leaf slugs reach the bare model behind a vendor prefix', () 
   // The fast/slow tiers of the same family are different models: dropping the tier changes
   // the identity of the row, so the leaf keeps it.
   assert.ok(benchmarklistLookupKeys('swe-1-6-fast').includes('swe-1-6-fast'))
+})
+
+test('a namespaced provider id meets the vendor-prefixed benchmarklist slug', () => {
+  // Google publishes `models/gemini-3.8-flash` while benchmarklist rates the same weights as
+  // `google-gemini-3.8-flash`. Both sides of the index match are keyed through the same
+  // identity function, so the stripped spelling has to survive on each side; without it the
+  // rated row stayed unscored next to a relay's bare id that was scored.
+  assert.ok(benchmarklistLookupKeys('models/gemini-3.8-flash').includes('gemini-3.8-flash'))
+
+  const benchmarklist = {
+    modelIndex: new Map([
+      ['gemini-3.8-flash', { aa: 40.9, name: 'Gemini 3.8 Flash (High)', isProxy: false }],
+    ]),
+    calibrations: {},
+    scoreLookups: {},
+  }
+  for (const id of ['models/gemini-3.8-flash', 'gemini-3.8-flash', 'google/gemini-3.8-flash']) {
+    const resolved = resolveBenchmarkListQuality(benchmarklist, id)
+    assert.equal(resolved?.aa, 40.9, `${id} resolves the rated twin`)
+    assert.equal(resolved?.isEstimated, false, `${id} is measured, not a proxy`)
+  }
+
+  // The index is also built from benchmarklist's own row ids, so the prefixed slug has to
+  // offer the same stripped identity as the provider's spelling of those weights.
+  assert.ok(exactModelIdentityKeys('google-gemini-3.8-flash').has('gemini-3.8-flash'))
+  assert.ok(
+    exactModelIdentityKeys('mistralai-mistral-small-24b-instruct-2501').has(
+      'mistral-small-24b-instruct-2501',
+    ),
+  )
+
+  // The bare-id direction matters too: `gpt-4.5-preview` sat unscored beside the catalog's
+  // `openai-gpt-4.5-preview` entry for exactly the same reason.
+  const bare = resolveBenchmarkListQuality(
+    { modelIndex: new Map([['gpt-4.5-preview', { aa: 9.6 }]]), calibrations: {}, scoreLookups: {} },
+    'gpt-4.5-preview',
+  )
+  assert.equal(bare?.aa, 9.6)
 })
 
 test('user-approved Benchmarklist proxies resolve ALLaM and Nemotron Bolt variants', () => {
@@ -829,6 +868,122 @@ test('a non-namespace id is untouched by the new spelling', () => {
 })
 
 // ── The routing scale ────────────────────────────────────────────────────────────────
+
+test('a Mistral Large generation spells itself several ways', () => {
+  // The index rates Large 3 under its snapshot id and Large 4 under the major version.
+  assert.ok(exactModelIdentityKeys('mistral-large-4-0').has('mistral-large-4'))
+  assert.ok(exactModelIdentityKeys('mistral-large-3:675b').has('mistral-large-2512'))
+
+  const benchmarklist = {
+    modelIndex: new Map([
+      ['mistral-large-4', { aa: 26 }],
+      ['mistral-large-2512', { aa: 9.3 }],
+      ['mistral-large-2411', { aa: 7.6 }],
+    ]),
+    calibrations: {},
+    scoreLookups: {},
+  }
+  const direct = resolveBenchmarkListQuality(benchmarklist, 'mistral-large-4-0')
+  assert.equal(direct?.aa, 26)
+  assert.equal(direct?.isEstimated, false, '4.0 is the same model as 4')
+  assert.equal(resolveBenchmarkListQuality(benchmarklist, 'mistral-large-3:675b')?.aa, 9.3)
+
+  // `-latest` names no generation of its own, so it is reported as a labelled stand-in.
+  const latest = resolveBenchmarkListQuality(benchmarklist, 'mistral-large-latest')
+  assert.equal(latest?.aa, 26)
+  assert.equal(latest?.isEstimated, true)
+  assert.match(latest?.detail || '', /proxy model: Mistral Large 4/)
+
+  const two = resolveBenchmarkListQuality(benchmarklist, 'mistral-large-2-instruct')
+  assert.equal(two?.aa, 7.6)
+  assert.equal(two?.isEstimated, true)
+})
+
+test('Llama Instant is a proxy for the Llama 3.1 8B Instruct it serves', () => {
+  // benchmarklist spells Llama with the vendor and the family repeated, so the catalog's bare
+  // id never met the rating. Groq brands those same weights "Instant".
+  assert.ok(exactModelIdentityKeys('meta-llama-llama-3.1-8b-instruct').has('llama-3.1-8b-instruct'))
+
+  const benchmarklist = {
+    modelIndex: new Map([
+      ['llama-3.1-8b-instruct', { aa: 6.9, sampledAt: '2026-10-18T00:00:00.000Z' }],
+    ]),
+    calibrations: {},
+    scoreLookups: {},
+  }
+  const direct = resolveBenchmarkListQuality(benchmarklist, 'llama-3.1-8b-instruct')
+  assert.equal(direct?.aa, 6.9)
+  assert.equal(direct?.isEstimated, false, 'the catalog spelling is the measured model')
+
+  const proxy = resolveBenchmarkListQuality(benchmarklist, 'llama-instant')
+  assert.equal(proxy?.aa, 6.9, 'the Instant row reaches the rated 8B weights')
+  assert.equal(proxy?.isEstimated, true, 'it is a labelled stand-in, not a direct measure')
+  assert.match(proxy?.detail || '', /proxy model: Llama 3\.1 8B Instruct/)
+})
+
+test('a dated Mistral snapshot uses the benchmark rating for its generation', () => {
+  // Mistral serves Ministral 3 under dated snapshot ids while benchmarklist rates the
+  // generation. sources.js equates `ministral-3:14b` with the 2512 snapshot, so the rating is
+  // the same weights and must not be reported as a proxy.
+  const benchmarklist = {
+    modelIndex: new Map([['ministral-3-14b', { aa: 6, sampledAt: '2026-10-18T00:00:00.000Z' }]]),
+    calibrations: {},
+    scoreLookups: {},
+  }
+  for (const id of [
+    'ministral-14b-2512',
+    'ministral-14b-latest',
+    'mistralai/ministral-14b-instruct-2512',
+  ]) {
+    const resolved = resolveBenchmarkListQuality(benchmarklist, id)
+    assert.equal(resolved?.aa, 6, `${id} reaches Ministral 3 14B`)
+    assert.equal(resolved?.isEstimated, false, `${id} is the same weights, not a proxy`)
+  }
+
+  // A smaller sibling must not borrow the 14B rating, and Codestral has no rating at all.
+  assert.equal(resolveBenchmarkListQuality(benchmarklist, 'ministral-3b-2512'), null)
+  assert.equal(resolveBenchmarkListQuality(benchmarklist, 'codestral-2508'), null)
+})
+
+test('a free twin carries the rated score of the model it serves', () => {
+  // `:free` / `-free` is a billing plan, not a model: the twin serves the same weights, so it
+  // must reach the measured row instead of showing a dash.
+  const benchmarklist = {
+    modelIndex: new Map([
+      ['nemotron-3-ultra-550b-a55b', { aa: 11.8, sampledAt: '2026-10-29T00:00:00.000Z' }],
+    ]),
+    calibrations: {},
+    scoreLookups: {},
+  }
+  for (const id of [
+    'nvidia/nemotron-3-ultra-550b-a55b:free',
+    'nemotron-3-ultra-550b-a55b:free',
+    'nvidia/nemotron-3-ultra-550b-a55b',
+  ]) {
+    const resolved = resolveBenchmarkListQuality(benchmarklist, id)
+    assert.equal(resolved?.aa, 11.8, `${id} is the same weights`)
+    assert.equal(resolved?.isEstimated, false, `${id} is not a proxy`)
+  }
+
+  // A provider that glues the marker to the snapshot (`…-0731free:free`) is the same twin.
+  assert.equal(
+    resolveBenchmarkListQuality(
+      {
+        modelIndex: new Map([['deepseek-v4-flash-0731', { aa: 31.3 }]]),
+        calibrations: {},
+        scoreLookups: {},
+      },
+      'deepseek/deepseek-v4-flash-0731free:free',
+    )?.aa,
+    31.3,
+  )
+
+  const keys = benchmarklistLookupKeys('nvidia/nemotron-3-ultra-550b-a55b:free')
+  assert.ok(
+    keys.some((key) => !key.includes('free') && key.includes('nemotron-3-ultra-550b-a55b')),
+    'the twin offers a key without the billing marker',
+  )
+})
 
 test('the routing score is a bounded, monotone position in the measured distribution', () => {
   const aaValues = [4.3, 12.5, 20.1, 28.9, 36.4, 46, 58.4]

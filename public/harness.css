@@ -578,8 +578,21 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 .hx-row-tool {
-  border-left: 2px solid var(--accent);
+  position: relative;
   padding-left: 12px;
+}
+
+/* The vertical spine line runs ONLY below the 24px tool icon header (from top: 24px down),
+   so it never cuts straight through the icon graphics. The icon's line art itself enters
+   at (12,0) and exits at (12,24), serving as the spine for the top 24px. */
+.hx-row-tool::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
 }
 
 /* A notice is a system line, not the agent's work: it keeps the tool indent without the rail. */
@@ -639,19 +652,98 @@ body.hx-details-collapsed .hx-side-details {
   font-style: italic;
 }
 
-/* Thinking is content, and it sits on its own rail: what the model considered, in the order it
-   considered it. */
-/* Thinking is the model's work, so it draws the same maroon spine a tool call does — a
-   segment of the one line, with the considered text set off it. */
+/* Thinking is the model's work, so it is a station on the same maroon spine the tool calls sit
+   on: one line while it is being written, with the thought itself behind it. It settles folded,
+   like a finished tool call, so reasoning that has already been used does not push the answer
+   down the page. */
 .hx-thinking {
+  position: relative;
   margin: 6px 0;
-  border-left: 2px solid var(--accent);
-  padding-left: 12px;
+}
+
+/* The spine resumes under the 24px icon, exactly as it does for a tool row: the icon's own line
+   art carries it through the mark, so the glyph is a growth of the rail rather than a badge. */
+.hx-thinking::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+
+.hx-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* The line art sits in the gutter to the left of the prose; the label starts after it. */
+  padding-left: 20px;
+  /* The icon is a 24px station and the head is exactly its height. A taller head started the
+     rail inside its padding, so a closed thought showed a 4px stub under the mark; a shorter
+     one left the mark's lower joint hanging below the block. Matching them joins both ends. */
+  height: 24px;
+  min-width: 0;
+  font-size: 0.755rem;
+  list-style: none;
+  cursor: pointer;
+}
+
+.hx-thinking-head::-webkit-details-marker {
+  display: none;
+}
+
+.hx-thinking-head::marker {
+  content: "";
+}
+
+/* The tool icon's geometry, one gutter younger: an assistant row has no 12px indent of its own,
+   so a 24px node centred on the 2px rail takes 1 - 0 - 12 = -11px rather than -23px. It is
+   pinned to the top of the block and never stretched by an opened thought. */
+.hx-thinking-icon {
+  position: absolute;
+  left: -11px;
+  top: 0;
+  height: 24px;
+  width: 24px;
+  display: block;
+  color: var(--accent);
+  background: transparent;
+}
+
+/* While the model is still thinking the mark pulses, like a running tool's. It keeps the
+   spine's maroon afterwards: the thought is part of the log, not a decoration. */
+.hx-thinking.running .hx-thinking-icon {
+  animation: hx-pulse 1.1s ease-in-out infinite;
+}
+
+.hx-thinking-icon svg {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The head states what the thought cost, in the same register as a tool's "done · 1.2s":
+   measured streaming time and the reasoning tokens the provider reported for the message. */
+.hx-thinking-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hx-thinking-text {
   /* No inner scroll box: thinking is read in the flow of the turn, and a scroller here also
      swallowed the wheel, so pointing at a thought stopped the transcript from scrolling. */
+  padding: 2px 0 4px 20px;
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 0.8rem;
@@ -811,7 +903,11 @@ body.hx-details-collapsed .hx-side-details {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  padding: 2px 0;
+  /* The line art sits in the gutter to the left of the row; the text starts after it. */
+  padding-left: 20px;
+  padding-right: 0;
+  padding-top: 2px;
+  padding-bottom: 2px;
   min-width: 0;
   font-size: 0.755rem;
   list-style: none;
@@ -826,42 +922,67 @@ body.hx-details-collapsed .hx-side-details {
   display: none;
 }
 
-/* The icon sits on the rail: the badge is pulled back over the line and its paper-coloured
-   ground cuts the rail around it, so the icon reads as a station on the spine. */
+/* The icon is line art woven into the spine: the glyph itself is drawn from the maroon
+   line, entering at the top of the row and leaving at the bottom, so the spine appears to
+   grow the tool's mark and then rejoin itself below it. The badge carries no ring and no
+   ground — the drawing is the station. */
 .hx-tool-icon {
   position: absolute;
-  /* The badge straddles the rail: the rail is 2px wide at the row's edge and the badge is
-     20px, so it is centred on the line and overhangs it by 9px on each side. */
+  /* The icon is offset from the <details>, not from the row: the details is the nearest
+     positioned ancestor, and the row's border is gone (its spine is a pseudo-element now),
+     so the details starts at the row's content edge — its 12px of padding. Centring the
+     node's 24px width on the 2px spine, whose own centre is 1px into the row, therefore
+     takes 1 - 12 - 12 = -23px. Getting this wrong is silent: the icon still draws, it just
+     hangs half outside the row while the spine passes through only its last 2px, which is
+     the cross-eyed look this rule exists to avoid. */
   left: -23px;
-  top: 1px;
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  background: var(--chat-bg);
-  border-radius: 5px;
+  top: 0;
+  bottom: auto;
+  /* The node is a fixed 24px square, pinned to the row's top edge and NOT stretched by the
+     row's height: an open tool row grows to a page of output, and a node sized to the whole
+     row would scale the 24-unit viewBox up with it, so the drawing's ends would drift far
+     past the row's edges — the two joints that make it read as part of the spine would be
+     the first thing to go. */
+  height: 24px;
+  width: 24px;
+  display: block;
   color: var(--accent);
+  background: transparent;
 }
 
+/* While it runs the drawing is lit maroon and pulses: the spine's own colour moving
+   through the station. */
 .hx-tool.running .hx-tool-icon {
   color: var(--accent);
   animation: hx-pulse 1.1s ease-in-out infinite;
 }
 
 .hx-tool.ok .hx-tool-icon {
-  color: var(--text-muted);
+  color: var(--accent);
 }
 
 .hx-tool.error .hx-tool-icon {
   color: var(--error);
 }
 
+/* A call whose end never arrived: quiet rather than red. The command may have done its work —
+   the turn stopped before pi could report it, so this is not a failure to read as one. */
+.hx-tool.interrupted .hx-tool-icon {
+  color: var(--text-muted);
+}
+
+/* The line art is stroked thin and joins with round caps, so the joins into the spine
+   read as growths of one vine rather than soldered joints. */
 .hx-tool-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 24px;
+  height: 24px;
+  /* Do not letterbox or upscale: the drawing's top and bottom points must land exactly on
+     the row's top and bottom edges, because that is what makes the joins read as the
+     spine's own growth. */
+  overflow: visible;
   stroke: currentColor;
   fill: none;
-  stroke-width: 2;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -895,12 +1016,19 @@ body.hx-details-collapsed .hx-side-details {
   font-variant-numeric: tabular-nums;
 }
 
+/* A finished call stays on the spine: its state is maroon like the rail and the mark, not a
+   green that reads as a separate verdict floating beside the line. */
 .hx-tool.ok .hx-tool-state {
-  color: var(--status-success-text);
+  color: var(--accent);
 }
 
 .hx-tool.error .hx-tool-state {
   color: var(--status-error-text);
+}
+
+.hx-tool.interrupted .hx-tool-state {
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* Output hangs under the line it belongs to, indented past the icon. */
@@ -938,6 +1066,324 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-notice-text {
   word-break: break-word;
+}
+
+/*
+ * A compaction is a station on the same spine as a tool call: it happened inside the agent's
+ * turn, it cost tokens, and it changed what the rest of the turn can see. It used to be a card
+ * with a border and a ground of its own, which read as a separate kind of thing parked beside
+ * the log; now it is one line of that log, and the mark that names it is a capacitor.
+ */
+.hx-row-compaction {
+  position: relative;
+  padding-left: 12px;
+}
+
+/* The same spine rule the tool rows use: it resumes under the 24px icon box, so the glyph's
+   own plate-to-plate drawing is what carries the line through the mark. */
+.hx-row-compaction::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+
+.hx-compaction {
+  position: relative;
+  padding: 0;
+  font-family: var(--hx-mono);
+}
+
+.hx-compaction-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  /* The line art sits in the gutter to the left of the row; the text starts after it. */
+  padding-left: 20px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  min-width: 0;
+  font-size: 0.755rem;
+}
+
+/* The tool icon's geometry, for the tool icon's reason: a 24px box centred on the 2px spine,
+   whose centre is 1px into the row, inside a container that starts at the row's 12px content
+   edge takes 1 - 12 - 12 = -23px. The node is pinned to the row's top edge and never stretched
+   by the row's height, or an open summary would scale the 24-unit viewBox with it and pull the
+   plate ends away from the line they are supposed to join. */
+.hx-compaction-icon {
+  position: absolute;
+  left: -23px;
+  top: 0;
+  height: 24px;
+  width: 24px;
+  display: block;
+  color: var(--accent);
+  background: transparent;
+}
+
+/* While it runs the mark is lit and pulses, like a running tool's: this is work in progress. */
+.hx-compaction.running .hx-compaction-icon {
+  color: var(--accent);
+  animation: hx-pulse 1.1s ease-in-out infinite;
+}
+
+.hx-compaction.ok .hx-compaction-icon {
+  color: var(--text-muted);
+}
+
+.hx-compaction.error .hx-compaction-icon {
+  color: var(--error);
+}
+
+.hx-compaction.interrupted .hx-compaction-icon {
+  color: var(--text-muted);
+}
+
+.hx-compaction-icon svg {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/*
+ * A model change is the turn's other station: the router answered with a different model, and
+ * what follows is not from the one that was talking before. It gets the tool row's spine, the
+ * tool row's 24px station box and the same -23px centring, so the mark sits ON the line; the
+ * drawing is two lines diverging, one leaving to the right and one arriving from the left.
+ */
+.hx-row-model {
+  position: relative;
+  padding-left: 12px;
+}
+
+/* The spine resumes under the icon box; the glyph's own strokes carry the line through it. */
+.hx-row-model::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 24px;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+}
+
+.hx-model {
+  position: relative;
+  padding: 0;
+  font-family: var(--hx-mono);
+}
+
+.hx-model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-left: 20px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  min-width: 0;
+  font-size: 0.755rem;
+}
+
+.hx-model-icon {
+  position: absolute;
+  left: -23px;
+  top: 0;
+  height: 24px;
+  width: 24px;
+  display: block;
+  color: var(--accent);
+  background: transparent;
+}
+
+.hx-model-icon svg {
+  width: 24px;
+  height: 24px;
+  overflow: visible;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.hx-model-name {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/* Both ends of the change, because the arrival alone does not say what it replaced. */
+.hx-model-change {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+.hx-compaction-name {
+  flex: none;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.hx-compaction-cmd {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.755rem;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hx-compaction.error .hx-compaction-cmd {
+  color: var(--status-error-text);
+}
+
+/* The figures sit at the line's end, where a tool row puts its state. "Pi compacted" tells a
+   reader nothing; "123k → 20k tokens" tells them what happened to what they were working on. */
+.hx-compaction-figures {
+  flex: none;
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The summary being written, shown while a compaction runs. It is the only visible work during
+   a long pause, so it is not hidden behind a disclosure the way the finished summary is — but
+   it is bounded, because it grows and the reader is watching the newest lines. Both hang under
+   the line indented past the icon, exactly as a tool's output does. */
+.hx-compaction-stream {
+  margin: 0;
+  padding: 4px 0 6px 20px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.hx-compaction-summary {
+  /* The summary is the only thing left of the conversation above this line, so it is not
+     clipped to one line — but it is also past context, so it is quiet and reflows. */
+  margin: 0;
+  padding: 2px 0 6px 20px;
+}
+
+.hx-compaction-summary[hidden] {
+  display: none;
+}
+
+.hx-compaction-summary > summary {
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.hx-compaction-summary > pre {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  font-size: 0.72rem;
+}
+
+/* ── Context meter ──────────────────────────────────────────────────────────────────── */
+
+/*
+ * The context meter is drawn against the model's own window, which is the only number that
+ * means "about to compact". A share of the turn is not that: a long turn and a full context
+ * look identical, and the reader then cannot see the thing coming.
+ * `.hx-usage-bar` is the older turn-share bar, kept for a session that has no window
+ * reported; a reported window swaps this one in.
+ */
+.hx-usage-bar.is-context {
+  position: relative;
+  height: 4px;
+  margin-top: 6px;
+}
+
+.hx-usage-bar.is-context > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+}
+
+/* Pi's own trigger: it compacts when the context passes window minus reserve. Marked so a
+   reader can see how much room is actually left, rather than having to know the rule. */
+.hx-usage-bar.is-context::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 1px;
+  background: var(--text-muted);
+  opacity: 0.6;
+}
+
+.hx-usage-bar.is-context.is-full > span {
+  background: var(--status-error-text);
+}
+
+.hx-context-note {
+  margin-top: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+.hx-compaction-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.hx-compaction-badge[hidden] {
+  display: none;
+}
+
+#hx-compaction-panel .hx-btn[data-compaction-now] {
+  width: 100%;
+  margin-top: 8px;
+}
+
+/* A compaction in flight reads as work being done, not as an unavailable control: the
+   label changes and the button keeps its shape, so the user sees the same button they
+   pressed now saying "Compacting…" instead of a greyed-out one that says nothing. */
+#hx-compaction-panel .hx-btn[data-compaction-now][data-working='true'] {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+#hx-compaction-panel .hx-kv {
+  margin: 8px 0 0;
+}
+
+#hx-compaction-panel .hx-notice[data-compaction-note] {
+  margin-top: 8px;
+}
+
+#hx-compaction-panel .hx-notice[data-compaction-note][hidden] {
+  display: none;
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────────────── */

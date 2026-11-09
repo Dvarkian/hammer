@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   buildRecordedUsage,
+  buildRecordedUsageForEntry,
   isoWeekKey,
   readRecordedBucket,
   recordUsageBuckets,
@@ -114,4 +115,68 @@ test('an entry with no recorded buckets reads as zero rather than throwing', () 
   assert.equal(recorded.tokensToday, 0)
   assert.equal(recorded.requestsToday, 0)
   assert.equal(readRecordedBucket({}, 'month', at('2026-09-24')), null)
+})
+
+test('a model-scoped total counts only that model', () => {
+  const usageStats = new Map()
+  const first = {}
+  recordUsageBuckets(first, { contextTokens: 1200, completionTokens: 0 }, at('2026-09-24'))
+  usageStats.set('groq::llama-3', first)
+  const second = {}
+  recordUsageBuckets(second, { contextTokens: 9000, completionTokens: 0 }, at('2026-09-24'))
+  usageStats.set('groq::mixtral', second)
+
+  const row = buildRecordedUsageForEntry(usageStats.get('groq::llama-3'), at('2026-09-24'))
+  assert.equal(row.tokensToday, 1200)
+  assert.equal(row.tokensThisMonth, 1200)
+  assert.equal(row.tokensLifetime, 1200)
+  // The provider total still sums both models: an account-scoped limit needs the other one.
+  assert.equal(buildRecordedUsage(usageStats, 'groq', at('2026-09-24')).tokensToday, 10200)
+})
+
+// "200 requests/hour" is a rolling window at the provider, so the counter has to be one too: a
+// fixed hourly bucket would report zero at 11:01 for traffic the provider was still throttling
+// at 10:59.
+test('the trailing hour counts the last sixty minutes and forgets the rest', () => {
+  const entry = {}
+  recordUsageBuckets(entry, { contextTokens: 100 }, new Date('2026-09-24T12:00:00.000Z'))
+  recordUsageBuckets(entry, { contextTokens: 300 }, new Date('2026-09-24T12:59:00.000Z'))
+
+  const inside = buildRecordedUsageForEntry(entry, new Date('2026-09-24T12:59:30.000Z'))
+  assert.equal(inside.requestsLastHour, 2)
+  assert.equal(inside.tokensLastHour, 400)
+  // The day window is unaffected: the hour is a trailing count, not a slice of the day.
+  assert.equal(inside.requestsToday, 2)
+
+  // At 13:00 the 12:00 request is exactly sixty minutes old and no longer counts.
+  const later = buildRecordedUsageForEntry(entry, new Date('2026-09-24T13:00:00.000Z'))
+  assert.equal(later.requestsLastHour, 1)
+  assert.equal(later.tokensLastHour, 300)
+
+  // Recording again trims the expired minute instead of keeping it forever.
+  recordUsageBuckets(entry, { contextTokens: 50 }, new Date('2026-09-24T13:00:10.000Z'))
+  assert.equal(entry.recorded.hour.length, 2)
+  assert.equal(
+    buildRecordedUsageForEntry(entry, new Date('2026-09-24T13:00:20.000Z')).requestsLastHour,
+    2,
+  )
+})
+
+test('the trailing hour sums a provider across its models', () => {
+  const usageStats = new Map()
+  const first = {}
+  recordUsageBuckets(first, { contextTokens: 100 }, new Date('2026-09-24T12:10:00.000Z'))
+  usageStats.set('kilocode::a', first)
+  const second = {}
+  recordUsageBuckets(second, { contextTokens: 200 }, new Date('2026-09-24T12:20:00.000Z'))
+  recordUsageBuckets(second, { contextTokens: 200 }, new Date('2026-09-24T12:21:00.000Z'))
+  usageStats.set('kilocode::b', second)
+
+  const provider = buildRecordedUsage(usageStats, 'kilocode', new Date('2026-09-24T12:30:00.000Z'))
+  assert.equal(provider.requestsLastHour, 3)
+  assert.equal(provider.tokensLastHour, 500)
+  assert.equal(
+    buildRecordedUsageForEntry(first, new Date('2026-09-24T12:30:00.000Z')).requestsLastHour,
+    1,
+  )
 })

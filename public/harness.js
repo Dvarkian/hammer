@@ -68,7 +68,6 @@
     runningSessions: new Set(),
     items: [],
     mounted: 0,
-    lastRole: null,
     phase: 'idle',
     running: false,
     status: null,
@@ -253,7 +252,8 @@
         }
       }
       const entries = [...openFiles].map(([file, running]) => ({ file, running }))
-      // The conversation on screen goes last, so restoring in order leaves it on screen again.
+      // The conversation on screen goes last: a restore reopens the others quietly and then
+      // puts the reader back on this one.
       // It is only reordered, never required: looking at the main console must not forget the
       // parallel tabs still open beside it.
       const activeFile = active()?.sessionFile
@@ -318,6 +318,12 @@
 
   /** Reopens the conversations the last page had, each rebuilt from its own session file. */
   let restoringTabs = false
+  /**
+   * The consoles this restore pass reopened. The parallel-console cap recycles an idle console
+   * when it is reached, and a tab that is being restored must not be the one it recycles.
+   * @type {Set<string>}
+   */
+  const restoreProtected = new Set()
 
   async function restoreOpenConversations() {
     // One restore at a time, and one console per file: the same conversation opened twice would
@@ -326,12 +332,18 @@
     restoringTabs = true
     const started = new Set()
     const mainFile = state.consoles.get('main')?.sessionFile
+    // The conversation on screen when the page last saved is written last. It is the only one
+    // that should be shown: every other tab is reopened quietly beside it, so opening Hammer
+    // does not flick through each conversation before settling on one.
+    const activeFile = [...openFiles.keys()].at(-1) || null
     for (const [file, wasRunning] of [...openFiles]) {
       if (file === mainFile || started.has(file)) continue
       started.add(file)
       if ([...state.consoles.values()].some((ctx) => ctx.sessionFile === file)) continue
       try {
-        const ctx = await openInstance(file)
+        const ctx = await openInstance(file, { focus: false })
+        if (ctx?.id) restoreProtected.add(ctx.id)
+        // A tab that was mid-turn still picks its work back up; it just does it off screen.
         if (wasRunning) await resumeRunning(ctx)
       } catch (err) {
         // Gone from the store: forget it rather than retrying on every load. One that merely
@@ -342,6 +354,13 @@
         }
       }
     }
+    restoreProtected.clear()
+    // Put the reader back where they left off. A tab that failed to reopen leaves the page on
+    // whatever it was already showing rather than jumping to a background conversation.
+    const onScreen = activeFile
+      ? [...state.consoles.values()].find((ctx) => ctx.sessionFile === activeFile)
+      : null
+    if (onScreen) activate(onScreen)
     restoringTabs = false
     saveOpenConversations()
   }
@@ -682,6 +701,16 @@
   function toolSummary(item) {
     const args = item.args
     if (!args || typeof args !== 'object') return ''
+    // A windowed read names the range it read, not just the file: `path:480-639`. The end is
+    // the last line the call asked for, offset + limit - 1. A whole-file read has neither
+    // number, and a call with only one of them cannot state a range without inventing it.
+    if (args.path && /^read(?:_files)?$/i.test(String(item.name || ''))) {
+      const offset = Number(args.offset)
+      const limit = Number(args.limit)
+      if (Number.isFinite(offset) && Number.isFinite(limit) && offset >= 1 && limit >= 1) {
+        return `${args.path}:${offset}-${offset + limit - 1}`
+      }
+    }
     const raw =
       args.command ||
       args.path ||
@@ -694,26 +723,115 @@
     return String(raw)
   }
 
-  function assistantMarkup(item, showRole = true) {
+  /** 1500 -> "1.5k tokens"; 26 -> "26 tokens". */
+  function formatThinkingTokens(tokens) {
+    const n = Number(tokens)
+    if (!Number.isFinite(n) || n <= 0) return ''
+    if (n < 1000) return `${Math.round(n)} token${Math.round(n) === 1 ? '' : 's'}`
+    return `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k tokens`
+  }
+
+  /**
+   * Spreads one message's reported reasoning tokens over the thought blocks it contains.
+   *
+   * `usage.reasoning` counts the message, not the block: a turn that thought twice reports one
+   * figure, so it is shared out by the length of each thought. A provider that reports no
+   * reasoning figure gets no token count rather than an estimate dressed as one.
+   */
+  function assignThinkingStats(item, reasoningTokens) {
+    const blocks = (item.blocks || []).filter(
+      (block) => block.kind === 'thinking' && String(block.text || '').trim(),
+    )
+    const reported = Number(reasoningTokens)
+    if (!blocks.length || !Number.isFinite(reported) || reported <= 0) return
+    if (blocks.length === 1) {
+      blocks[0].tokens = Math.round(reported)
+      return
+    }
+    const totalChars = blocks.reduce((sum, block) => sum + block.text.length, 0)
+    let assigned = 0
+    blocks.forEach((block, index) => {
+      if (index === blocks.length - 1) {
+        block.tokens = Math.max(0, Math.round(reported) - assigned)
+        return
+      }
+      const share = totalChars
+        ? Math.max(0, Math.round((reported * block.text.length) / totalChars))
+        : 0
+      block.tokens = share
+      assigned += share
+    })
+  }
+
+  /**
+   * The sentence on a thinking head, e.g. "Thought for 10s · 1.5k tokens."
+   *
+   * The duration is the span its deltas streamed for, which only exists for a turn this page
+   * watched; a reopened conversation keeps the provider's token figure but not a wall clock it
+   * never saw, so its head reads "Thought · 1.5k tokens." rather than inventing seconds.
+   */
+  function thinkingLabel(block, settled) {
+    if (!settled) return 'Thinking…'
+    const ms = Number(block.durationMs)
+    const parts = []
+    if (Number.isFinite(ms) && ms > 0) {
+      parts.push(`Thought for ${Math.max(1, Math.round(ms / 1000))}s`)
+    } else {
+      parts.push('Thought')
+    }
+    const tokens = formatThinkingTokens(block.tokens)
+    if (tokens) parts.push(tokens)
+    return `${parts.join(' · ')}.`
+  }
+
+  /**
+   * The thinking station's mark: Gemini's "AI" sparkle — the void between four circles — drawn
+   * as one outlined path, so it reads as line art on the spine rather than a filled glyph. A
+   * stub enters at (12,0) and leaves at (12,24) to meet the star's top and bottom points, so the
+   * maroon line runs through the mark the way it runs through a tool's drawing.
+   */
+  function thinkingIcon() {
+    return `<span class="hx-thinking-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 0v3.2M12 20.8V24"/><path d="M12 3.2C12.7 8 16 11.3 20.8 12C16 12.7 12.7 16 12 20.8C11.3 16 8 12.7 3.2 12C8 11.3 11.3 8 12 3.2Z"/></svg></span>`
+  }
+
+  /**
+   * A thought is a station on the spine, so it behaves like a tool call: while the model is
+   * still writing it the row is open, and once its message settles it folds away. The answer
+   * stays in the log; the reasoning that produced it stays one click behind it.
+   *
+   * The open state lives on the block, not on the <details>: a streaming repaint replaces the
+   * element, and without it every delta would slam an opened thought shut again.
+   */
+  function thinkingMarkup(block, item) {
+    const settled = item.settled === true
+    const open = block.open ?? !settled
+    return `<details class="hx-thinking ${settled ? 'settled' : 'running'}"${open ? ' open' : ''}>
+          <summary class="hx-thinking-head">
+            ${thinkingIcon()}
+            <span class="hx-thinking-label">${thinkingLabel(block, settled)}</span>
+          </summary>
+          <div class="hx-thinking-text">${renderText(block.text || '')}</div>
+        </details>`
+  }
+
+  function assistantMarkup(item) {
     const blocks = item.blocks || []
-    const role = showRole ? '<div class="hx-role">Hammer</div>' : ''
     if (!blocks.length) {
-      return `${role}<div class="hx-assistant hx-pending">…</div>`
+      return `<div class="hx-assistant hx-pending">…</div>`
     }
     const body = blocks
       .map((block) => {
-        if (block.kind === 'thinking') {
-          return `<div class="hx-thinking"><div class="hx-thinking-text">${renderText(block.text || '')}</div></div>`
-        }
+        if (block.kind === 'thinking') return thinkingMarkup(block, item)
         return `<div>${renderText(block.text || '')}</div>`
       })
       .join('')
-    return `${role}<div class="hx-assistant">${body}</div>`
+    return `<div class="hx-assistant">${body}</div>`
   }
 
   function toolStateLabel(item) {
     if (item.status === 'preparing') return 'preparing'
     if (item.status === 'running') return 'running'
+    if (item.status === 'interrupted') return 'interrupted'
     if (item.status === 'error') return 'failed'
     return 'done'
   }
@@ -721,27 +839,42 @@
   /**
    * A tool call is one line of the log; its output is what you open when you need it. The whole
   /**
-   * An icon per tool, drawn in a 24x24 box and stroked in currentColor so the badge colour —
-   * maroon while the call runs, muted once it is done, red when it failed — is the only tint
-   * it needs. Kept to a handful of paths: they render at 12px.
+   * Line art for each tool that links directly into the maroon spine line at top (12,0) and
+   * bottom (12,24). The spine line itself branches into the tool glyph and reconnects, making
+   * the tool icon an organic part of the spine stream rather than a separate badge.
    */
   function toolIcon(name) {
     const key = String(name || '').toLowerCase()
-  const icons = {
-    bash: '<path d="M5 5l5.5 5.5L5 16"/><path d="M13 8h7"/><path d="M13 17h6"/>',
-    read: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M10 12h6M10 15.5h6"/>',
-    edit: '<path d="M4 20l1.4-4.2L16.6 4.6a2.1 2.1 0 0 1 3 3L8.2 18.6z"/><path d="M14.6 6.6l3 3"/>',
-    write: '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4"/><path d="M12 11v7M8.5 14.5h7"/>',
-    grep: '<circle cx="11" cy="11" r="6.5"/><path d="M15.8 15.8 21 21"/>',
-    find: '<circle cx="11" cy="11" r="6.5"/><path d="M15.8 15.8 21 21"/>',
-    glob: '<path d="M3 6.5h6l2 2h10v11H3z"/>',
-    ls: '<path d="M3 5h18v14H3z"/><path d="M3 9.5h18"/><path d="M9 9.5V19M14.5 9.5V15"/>',
-    task: '<path d="M4 12.5l5.5 5.5L20 6"/>',
-    todo: '<path d="M4 12.5l5.5 5.5L20 6"/>',
-    webfetch: '<path d="M4 11a8 8 0 0 1 16 0"/><path d="M12 11v7M8.5 14.5 12 18l3.5-3.5"/>',
-  }
-  const body = icons[key] || '<circle cx="12" cy="12" r="7.5"/><path d="M12 7.5V12l3.5 2"/>'
-  return `<span class="hx-tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${body}</svg></span>`
+    const icons = {
+      // Terminal prompt chevron branching out of and back into the spine at 45 degree angles.
+      bash: '<path d="M12 0v4l8 8-8 8v4"/>',
+      // Curly book pages fanned off the spine, which runs straight down the middle.
+      read: '<path d="M12 0v24"/><path d="M12 5c-3-1.5-6.5-1.5-9 0v11c2.5-1.5 6-1.5 9 0M12 5c3-1.5 6.5-1.5 9 0v11c-2.5-1.5-6-1.5-9 0"/>',
+      // Stylized drafting nib angled across a spine capsule.
+      edit: '<path d="M12 0v3C6 3 4 7 4 12c0 5 2 9 6.5 9.5l1.5 2.5M12 3c6 0 8 4 8 9s-2 9-7 9"/><path d="M14 7.5l2 2-6.5 6.5H7.5v-2.5z"/>',
+      // Plus node inside the same capsule frame the drafting nib sits in.
+      write: '<path d="M12 0v3C6 3 4 7 4 12c0 5 2 9 6.5 9.5l1.5 2.5M12 3c6 0 8 4 8 9s-2 9-7 9"/><path d="M12 8v8M8 12h8"/>',
+      // Magnifying lens built into the spine stream with handle angling off it.
+      grep: '<path d="M12 0v3C8 3 5.5 5.5 5.5 9.5C5.5 13.5 8 16 12 16v8M12 3C16 3 18.5 5.5 18.5 9.5C18.5 13.5 16 16 12 16"/><path d="M12 16l4.5 4.5M9 8.5h6M10 11h4"/>',
+      // Target reticle locator node woven into the spine.
+      find: '<path d="M12 0v3C7 3 4.5 5.5 4.5 10.5C4.5 15.5 7 18 12 18v6M12 3c5 0 7.5 2.5 7.5 7.5s-2.5 7.5-7.5 7.5"/><path d="M8 10.5h2.5M13.5 10.5h2.5M12 6.5v2M12 12.5v2"/><circle cx="12" cy="10.5" r="1"/>',
+      // 3-way branching tree node returning to the spine.
+      glob: '<path d="M12 0v4C8 4 6 7 6 12c0 5 2 8 6 8v4M12 4c4 0 6 3 6 8s-2 8-6 8M12 4v16"/><circle cx="6" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="18" cy="12" r="1.5"/>',
+      // Directory tree listing branching from the spine trunk.
+      ls: '<path d="M12 0v24M12 6h7M12 12h7M12 18h7M7.5 6h2M7.5 12h2M7.5 18h2"/>',
+      // Checklist badge node with checkmark woven into the spine.
+      task: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><path d="M8.5 10.5l2.5 2.5 4.5-4.5"/>',
+      // Diamond checkbox node woven into the spine stream.
+      todo: '<path d="M12 0v3L5 10.5L12 18v6M12 3l7 7.5L12 18"/><path d="M9 10.5l2 2 4-4"/>',
+      // Globe node with equator and meridians linking top and bottom to spine.
+      webfetch: '<path d="M12 0v2.5C6.5 2.5 4 6.5 4 12c0 5.5 2.5 9.5 8 9.5v2.5M12 2.5c5.5 0 8 4 8 9.5s-2.5 9.5-8 9.5"/><path d="M4 12h16M12 2.5C8.5 6 8.5 18 12 21.5M12 2.5C15.5 6 15.5 18 12 21.5"/>',
+      // Question mark node branching out of the spine stream.
+      question: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><path d="M10 8c0-1.2 1-2 2-2s2 .8 2 2c0 1.5-2 1.8-2 3.5M12 14v.5"/>',
+      // Gear node woven into the spine stream.
+      other: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><circle cx="12" cy="10.5" r="2.5"/><path d="M12 6.5v1.5M12 13v1.5M8 10.5h1.5M14.5 10.5h1.5"/>',
+    }
+    const body = icons[key] || icons.other
+    return `<span class="hx-tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${body}</svg></span>`
   }
 
   function toolMarkup(item) {
@@ -765,26 +898,138 @@
         </details>`
   }
 
-  /** The role label is shown only when the speaker changes from the row above it.
-   *  A tool row is not a speaker: it sits inside an assistant's turn, so it must not
-   *  move the current-speaker cursor and make the next assistant line re-print "Hammer". */
-  function roleChanged(item) {
-    const changed = state.lastRole !== item.kind
-    // Tool and notice rows are not speakers: they sit inside an assistant's turn, so
-    // they must not move the current-speaker cursor and make the next assistant line
-    // re-print "Hammer". Only a real speaker (user or assistant) changes who is talking.
-    if (item.kind === 'user' || item.kind === 'assistant') state.lastRole = item.kind
-    return changed
-  }
-
   function itemMarkup(item) {
     if (item.kind === 'user') {
       return `<div class="hx-role">You</div><div class="hx-turn-text">${escapeHtml(item.text)}</div>`
     }
-    if (item.kind === 'assistant') return assistantMarkup(item, item.showRole !== false)
+    if (item.kind === 'assistant') return assistantMarkup(item)
     if (item.kind === 'tool') return toolMarkup(item)
+    if (item.kind === 'compaction') return compactionMarkup(item)
+    if (item.kind === 'model') return modelMarkup(item)
     const tone = item.tone === 'error' ? ' error' : item.tone === 'success' ? ' success' : ''
     return `<div class="hx-notice${tone}"><span class="hx-notice-text">${escapeHtml(item.text)}</span></div>`
+  }
+
+  /**
+   * A compaction row: the boundary in the conversation, and what it cost.
+   *
+   * The summary is behind a disclosure because it is past context — it stays available (a
+   * reader who wants to know what survived can look) without being re-read as the current
+   * instruction.
+   */
+
+  /** How much of a still-arriving summary the row keeps on screen. */
+  const COMPACTION_PREVIEW = 8000
+
+  /**
+   * The compaction mark: a capacitor on the spine.
+   *
+   * A compaction banks the conversation and hands back a smaller one — a store and a release,
+   * which is exactly what the symbol means. Two plates across the spine, each joined to the
+   * row's edge above and below, so the mark is a station on the same line the tool calls sit
+   * on rather than a badge beside it.
+   */
+  function compactionIcon() {
+    return `<span class="hx-compaction-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 0v9M4 9h16M4 15h16M12 15v9"/></svg></span>`
+  }
+
+  /**
+   * Two lines diverging: one leaving the spine to the right, one arriving from the left.
+   *
+   * It enters at the row's top edge (12,0) and leaves at its bottom edge (12,24), so the
+   * spine appears to pass through the station and split rather than stop at a badge beside
+   * it. The top stroke is the outgoing model, the bottom stroke the incoming one.
+   */
+  function modelIcon() {
+    return `<span class="hx-model-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 0v4c0 3 3 4 8 4M4 16c5 0 8 1 8 4v4"/></svg></span>`
+  }
+
+  /** A model as a string: Pi sends ids, but a message can carry a model object. */
+  function modelName(model) {
+    if (typeof model === 'string') return model
+    return (model && (model.name || model.id)) || 'unknown model'
+  }
+
+  /**
+   * A change of model is a station on the spine, like a tool call: the turn passed through it,
+   * and the reply that follows is not from the model that was talking before. It names both
+   * ends — "changed to X" alone leaves the reader guessing what X replaced.
+   */
+  function modelMarkup(item) {
+    const from = modelName(item.from)
+    const to = modelName(item.to)
+    return `<div class="hx-model">
+      <div class="hx-model-head">
+        ${modelIcon()}
+        <span class="hx-model-name">Model</span>
+        <span class="hx-model-change">changed from ${escapeHtml(from)} to ${escapeHtml(to)}</span>
+      </div>
+    </div>`
+  }
+
+  /**
+   * A compaction row: a station on the spine, drawn like a tool call.
+   *
+   * It is the agent's own work — the turn paused, tokens were spent, and what the rest of the
+   * turn can see changed — so it belongs on the line with the tool calls, not in a card of its
+   * own beside the log. The summary stays behind a disclosure because it is past context:
+   * available to a reader who wants to know what survived, without being re-read as the
+   * current instruction.
+   */
+  function compactionMarkup(item) {
+    const state = item.state || 'done'
+    // The tool row's own tone names, so one set of state rules styles both kinds of station.
+    const tone =
+      state === 'running'
+        ? 'running'
+        : state === 'error'
+          ? 'error'
+          : state === 'aborted'
+            ? 'interrupted'
+            : 'ok'
+    const figures = item.figures
+      ? `<span class="hx-compaction-figures">${escapeHtml(item.figures)}</span>`
+      : ''
+    const summary = item.summary
+      ? `<details class="hx-compaction-summary"><summary>What was kept</summary><pre>${escapeHtml(item.summary.slice(0, 20000))}</pre></details>`
+      : ''
+    // While it is being written, the summary is shown in place: the pause is the model working,
+    // and a row that says only "Compacting the context…" hides the one thing that explains it.
+    // The tail is kept rather than the whole text — the reader wants to watch it arrive, not to
+    // scroll back through a page that is still growing.
+    const stream = state === 'running' && item.stream
+      ? `<pre class="hx-compaction-stream" data-compaction-stream>${escapeHtml(item.stream.slice(-COMPACTION_PREVIEW))}</pre>`
+      : ''
+    return `<div class="hx-compaction ${tone}" data-state="${state}">
+      <div class="hx-compaction-head">
+        ${compactionIcon()}
+        <span class="hx-compaction-name">Compaction</span>
+        <span class="hx-compaction-cmd">${escapeHtml(item.text || compactionText(item))}</span>
+        ${figures}
+      </div>
+      ${stream}
+      ${summary}
+    </div>`
+  }
+
+  /**
+   * Repaints one compaction row while its summary streams.
+   *
+   * The row is already mounted and nothing before it moved, so only its own markup is rebuilt:
+   * a summary arrives a token at a time, and a full transcript sync per token would rebuild
+   * every row on the page to change one of them.
+   */
+  function patchCompactionItem(item, ctx = active()) {
+    if (ctx !== active()) return
+    const transcript = $('hx-transcript')
+    if (!item?.node || !item.node.isConnected) {
+      syncTranscript({}, ctx)
+      return
+    }
+    const stick = transcript && atBottom(transcript)
+    item.node.innerHTML = compactionMarkup(item)
+    if (stick && transcript) transcript.scrollTop = transcript.scrollHeight
+    scheduleMinimap()
   }
 
   function atBottom(el) {
@@ -803,7 +1048,6 @@
     if (reset) {
       transcript.innerHTML = ''
       state.mounted = 0
-      state.lastRole = null
     }
     if (!state.items.length) {
       transcript.innerHTML = EMPTY_MARKUP
@@ -814,9 +1058,16 @@
     const stick = atBottom(transcript)
     for (let i = state.mounted; i < state.items.length; i += 1) {
       const item = state.items[i]
+      // An assistant row with no visible text is not a message: the pending "…" belongs to a
+      // turn that is still arriving, and a settled one has already been dropped at message_end.
+      // Skipping it here is what keeps a restored or background conversation free of them.
+      if (
+        item.kind === 'assistant' &&
+        !(item.blocks || []).some((block) => String(block.text || '').trim())
+      )
+        continue
       const row = document.createElement('div')
       row.className = `hx-row hx-row-${item.kind}`
-      item.showRole = roleChanged(item)
       row.innerHTML = itemMarkup(item)
       item.node = row
       transcript.appendChild(row)
@@ -1235,7 +1486,7 @@
       }
       const transcript = $('hx-transcript')
       const stick = transcript && atBottom(transcript)
-      if (item.node) item.node.innerHTML = assistantMarkup(item, item.showRole !== false)
+      if (item.node) item.node.innerHTML = assistantMarkup(item)
       if (stick && transcript) transcript.scrollTop = transcript.scrollHeight
       // The row grew, so every tick after it moved: the rail is repainted rather than nudged.
       scheduleMinimap()
@@ -1258,12 +1509,16 @@
     )
     if (!block) {
       block = { kind, index: contentIndex, text: '' }
+      // The head reports how long the thought took to arrive, so the clock starts on its first
+      // delta; `lastDeltaAt` is what stops before the model moves on to writing the answer.
+      if (kind === 'thinking') block.startedAt = Date.now()
       item.blocks.push(block)
       // Pi restarts `contentIndex` at 0 for every assistant message and grows it in production
       // order, so the index is the model's order — not the order the frames happened to arrive.
       item.blocks.sort((a, b) => a.index - b.index)
     }
     block.text = clip(block.text + (delta || ''), MAX_TEXT)
+    if (kind === 'thinking') block.lastDeltaAt = Date.now()
     patchStreamingItem(ctx)
   }
 
@@ -1278,9 +1533,36 @@
     return item
   }
 
+  /**
+   * Closes the rows whose end never arrived.
+   *
+   * `tool_execution_start` and `tool_execution_end` are two separate records, and anything that
+   * ends a run between them — Stop, a crashed or replaced child, a replay log whose bounded
+   * tail is a start — leaves the row claiming to be running for as long as it stays on screen.
+   * A tool cannot still be executing once its turn is over, so every place a run stops being
+   * live settles what is still open here; a row the agent already finished is left untouched.
+   *
+   * @returns {boolean} whether any row changed
+   */
+  function settleOpenTools(ctx = active()) {
+    if (!ctx) return false
+    let changed = false
+    for (const item of ctx.tools.values()) {
+      if (item.status !== 'running' && item.status !== 'preparing') continue
+      item.status = 'interrupted'
+      item.partial = ''
+      changed = true
+    }
+    // The rows are already mounted, so a repaint is what makes the settled state visible.
+    if (changed) syncTranscript({ reset: true }, ctx)
+    return changed
+  }
+
   function contentParts(content) {
     if (typeof content === 'string') {
-      return content ? [{ kind: 'text', index: 0, text: clip(content, MAX_TEXT) }] : []
+      // Whitespace is not an answer. A turn that produced only a newline used to keep a row
+      // that rendered as the pending "…", which reads as a message nobody sent.
+      return content.trim() ? [{ kind: 'text', index: 0, text: clip(content, MAX_TEXT) }] : []
     }
     if (!Array.isArray(content)) return []
     const blocks = []
@@ -1301,7 +1583,7 @@
           ? part.text
           : ''
       const kind = thinking ? 'thinking' : text ? 'text' : null
-      if (kind && text) blocks.push({ kind, index, text: clip(text, MAX_TEXT) })
+      if (kind && text.trim()) blocks.push({ kind, index, text: clip(text, MAX_TEXT) })
     })
     return blocks
   }
@@ -1341,7 +1623,15 @@
         setRunning(true, ctx)
         break
       case 'agent_settled':
+        // Pi is finished with the run — retries, compaction and queued work included — so no
+        // tool can still be executing. Whatever the stream left open was cut off, not in flight.
+        settleOpenTools(ctx)
         setRunning(false, ctx)
+        break
+      case 'agent_end':
+        // A tool still open when the run's messages are finished is one whose end never arrived
+        // (a crash or a stop mid-command). `agent_settled` follows and settles again harmlessly.
+        settleOpenTools(ctx)
         break
       case 'queue_update':
         applyQueue(record.steering, record.followUp, ctx)
@@ -1352,7 +1642,13 @@
           ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
           syncTranscript({}, ctx)
         } else if (message.role === 'assistant') {
-          ctx.items.push({ kind: 'assistant', blocks: [] })
+          const model = message.responseModel || message.model
+          if (ctx.routedModel != null && model && model !== ctx.routedModel) {
+            const previous = ctx.routedModel
+            ctx.routedModel = model
+            ctx.items.push({ kind: 'model', from: modelName(previous), to: modelName(model) })
+          }
+          ctx.items.push({ kind: 'assistant', blocks: [], settled: false })
           syncTranscript({}, ctx)
         }
         break
@@ -1376,10 +1672,23 @@
         if (message.role === 'assistant') {
           const item = lastAssistant(ctx)
           if (item) {
-            const streamed = item.blocks.some((block) => block.text)
+            // The message is complete: its thoughts stop being live and fold away with it.
+            item.settled = true
+            // Only visible text counts as streamed: a turn whose one delta was a newline is as
+            // empty as one that streamed nothing, and must not keep the block it made.
+            const streamed = item.blocks.some((block) => String(block.text || '').trim())
             if (!streamed) item.blocks = contentParts(message.content)
-            if (!item.blocks.length && item.node) {
-              // A turn that produced nothing leaves no empty bubble; the notice explains it.
+            // The head reports what the thought cost: the span its deltas streamed for, and the
+            // reasoning tokens the provider billed for this message.
+            for (const block of item.blocks) {
+              if (block.kind !== 'thinking' || !block.startedAt) continue
+              block.durationMs = Math.max(0, (block.lastDeltaAt || Date.now()) - block.startedAt)
+            }
+            assignThinkingStats(item, message.usage?.reasoning)
+            if (!item.blocks.some((block) => String(block.text || '').trim())) {
+              // A turn that produced nothing leaves no row at all: neither an empty bubble nor
+              // the pending "…" it was drawn as. The notice below, if any, explains the turn.
+              item.settled = true
               ctx.items.splice(ctx.items.indexOf(item), 1)
               syncTranscript({ reset: true }, ctx)
             } else {
@@ -1427,9 +1736,118 @@
       case 'turn_end':
       case 'message_finished':
         break
+      // ── Compaction ───────────────────────────────────────────────────────────────────
+      //
+      // Pi replaces everything above a boundary with a summary. The reader keeps the whole
+      // transcript on screen, so without a row here the conversation would appear to lose
+      // turns it never lost, and a long unexplained pause would read as a hung agent. Both
+      // halves of the pair are needed: `compaction_start` says it is happening and why, and
+      // `compaction_end` says whether it worked, what it cost, and how much room is left.
+      case 'compaction_delta': {
+        // Pi has no summary event of its own: the text arrives because the proxy tapped the
+        // completion it streams while this console is compacting (see lib/pi/compaction-stream.js).
+        const item = lastCompaction(ctx)
+        const delta = typeof record.delta === 'string' ? record.delta : ''
+        if (!item || !delta) break
+        item.stream = clip((item.stream || '') + delta, MAX_TEXT)
+        patchCompactionItem(item, ctx)
+        break
+      }
+      case 'compaction_start':
+        ctx.items.push({
+          kind: 'compaction',
+          reason: String(record.reason || ''),
+          text: 'Compacting the context…',
+          figures: '',
+          tokensBefore: null,
+          tokensAfter: null,
+          summary: '',
+          stream: '',
+          error: '',
+          state: 'running',
+        })
+        syncTranscript({}, ctx)
+        break
+      case 'compaction_end': {
+        const result = record.result || {}
+        const before = Number(result.tokensBefore)
+        const after = Number(result.estimatedTokensAfter)
+        const item = lastCompaction(ctx) || {
+          kind: 'compaction',
+          reason: String(record.reason || ''),
+          text: '',
+          figures: '',
+          tokensBefore: null,
+          tokensAfter: null,
+          summary: '',
+          stream: '',
+          error: '',
+          state: 'running',
+        }
+        if (!lastCompaction(ctx)) ctx.items.push(item)
+        item.state = record.aborted ? 'aborted' : record.errorMessage ? 'error' : 'done'
+        if (record.reason) item.reason = String(record.reason)
+        item.error = String(record.errorMessage || '')
+        item.tokensBefore = Number.isFinite(before) ? before : null
+        item.tokensAfter = Number.isFinite(after) ? after : null
+        if (typeof result.summary === 'string') item.summary = result.summary
+        // The finished summary takes over the row; the live preview is done.
+        item.stream = ''
+        item.text = compactionText(item)
+        item.figures = compactionFigures(item)
+        syncTranscript({}, ctx)
+        break
+      }
       default:
         break
     }
+  }
+
+  /**
+   * The compaction row still waiting for its outcome.
+   *
+   * Search runs backwards because a second `compaction_start` with no end between them is
+   * the only shape a cancelled compaction can leave (pi aborts on cancel, and an abort can
+   * race the record that reports it).
+   * @returns {any|null}
+   */
+  function lastCompaction(ctx = active()) {
+    for (let i = ctx.items.length - 1; i >= 0; i -= 1) {
+      const item = ctx.items[i]
+      if (item.kind !== 'compaction') continue
+      if (item.state === 'running') return item
+    }
+    return null
+  }
+
+  /** Why it compacted, in the words a reader needs. Pi's three reasons are not three states. */
+  function compactionReasonLabel(reason) {
+    if (reason === 'threshold') return 'the context was nearly full'
+    if (reason === 'overflow') return 'the context overflowed'
+    if (reason === 'manual') return 'you asked for it'
+    return ''
+  }
+
+  /** The figures Pi reported, rounded to the same thousands the token strip uses. */
+  function compactionFigures(item) {
+    if (item.tokensBefore == null && item.tokensAfter == null) return ''
+    const fmt = (n) => (typeof window.hxCompact === 'function' ? window.hxCompact(n) : String(n))
+    if (item.tokensBefore != null && item.tokensAfter != null)
+      return `${fmt(item.tokensBefore)} → ${fmt(item.tokensAfter)} tokens`
+    if (item.tokensBefore != null) return `from ${fmt(item.tokensBefore)} tokens`
+    return `to ${fmt(item.tokensAfter)} tokens`
+  }
+
+  /** The row's sentence, which is what the notice summary shows. */
+  function compactionText(item) {
+    if (item.state === 'error') {
+      const why = item.error ? item.error.replace(/\s+/g, ' ').trim() : 'Pi could not compact.'
+      return `Compaction failed: ${why.slice(0, 300)}`
+    }
+    if (item.state === 'aborted') return 'Compaction was cancelled.'
+    if (item.state === 'running') return 'Compacting the context…'
+    const why = compactionReasonLabel(item.reason)
+    return why ? `Context compacted — ${why}.` : 'Context compacted.'
   }
 
   // ── Status and routing ──────────────────────────────────────────────────────────────
@@ -1486,6 +1904,9 @@
       updateComposer()
     }
     if (changed) {
+      // Nothing executes while no turn does, so a status frame that says idle is the authority
+      // on rows whose end the page never saw — a dead child, or a stop the stream did not report.
+      if (!ctx.running) settleOpenTools(ctx)
       renderSessions()
       // A turn is when a session file is written: pi creates it with the first message and
       // appends through the run. Checking the store on both edges is what puts a conversation
@@ -1699,6 +2120,10 @@
       if (v >= 1e3) { const u = v / 1e3; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}k` }
       return String(Math.round(v))
     }
+    // The same rounding everywhere a token figure is shown. The compaction row calls it through
+    // the window object, which is the only place a classic script can share a helper between
+    // two function scopes without a build step.
+    window.hxCompact = compact
     if (total > 0 && input + output + cacheRead + cacheWrite === 0) {
       // No split available: show the one number we were given.
       parts.push(`${compact(total)} tokens`)
@@ -1710,12 +2135,72 @@
     const cost = Number(usage.cost) || 0
     if (cost > 0) parts.push(`$${cost.toFixed(cost >= 1 ? 2 : 4)}`)
     el.textContent = parts.join(' · ')
+    // The meter is drawn against the model's own window, not against the turn's spend: only
+    // the window says how close compaction is. Both figures come from the frame.
+    renderContext(bar, usage, compact)
+  }
+
+  /**
+   * The context meter.
+   *
+   * Drawn against pi's own context window — the number that decides compaction — rather than
+   * against the turn's tokens. The turn total is a spending report; the window is a limit,
+   * and only the limit can show a reader that compaction is about to happen.
+   *
+   * Pi reports three states and each is answered differently, because a bar drawn from a
+   * number pi would not vouch for is a bar that lies:
+   *   - `{tokens, contextWindow}` — the real meter, with pi's own trigger marked on it.
+   *   - `{tokens: null, contextWindow}` — pi cannot measure yet (no post-compaction usage);
+   *     it says so rather than guessing a magnitude.
+   *   - absent — a pi too old to compute anything; the older turn-share bar stays, labelled.
+   * @param {HTMLElement|null} bar
+   * @param {any} usage
+   * @param {(n: number) => string} compact
+   */
+  function renderContext(bar, usage, compact) {
+    const note = $('hx-context-note')
+    // `contextUsage` is pi's figure (it may also ride along on a live usage frame);
+    // `usage.contextWindow` is the flat estimate a bare per-message count would give.
+    const context = usage.contextUsage || null
+    const window_ = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
+    if (window_ <= 0) {
+      // No window declared: the turn-share bar, kept and labelled for what it actually is.
+      if (bar) {
+        bar.classList.remove('is-context', 'is-full')
+        const spent = Number(usage.totalTokens ?? usage.tokens) || 0
+        const contextTokens = Number(usage.contextTokens ?? usage.context) || 0
+        bar.style.width = `${spent > 0 ? Math.min(100, Math.round((contextTokens / spent) * 100)) : 0}%`
+      }
+      if (note) {
+        note.hidden = true
+        note.textContent = ''
+      }
+      return
+    }
+    const used = Number(context?.tokens)
+    const measured = Number.isFinite(used) && used >= 0
+    // Pi reserves room for the reply: it compacts at `window - reserve`, which is why a
+    // meter filled to 100% is a meter that has already compacted.
+    const RESERVE = 16384
+    const trigger = window_ - RESERVE
+    const pct = measured ? Math.max(0, Math.min(100, (used / window_) * 100)) : null
     if (bar) {
-      // A context meter without a declared window is still useful as a magnitude bar; it is
-      // labelled as a share of the turn, not of a limit we were not told.
-      const context = Number(usage.contextTokens ?? usage.context ?? 0)
-      const share = total > 0 ? Math.min(100, Math.round((context / total) * 100)) : 0
-      bar.style.width = `${share}%`
+      bar.classList.add('is-context')
+      bar.classList.toggle('is-full', pct != null && pct >= 95)
+      bar.style.width = pct != null ? `${pct}%` : '0%'
+      // The trigger tick sits at the share of the window pi holds back for its reply.
+      const fill = bar.firstElementChild
+      if (fill) fill.style.right = `${100 - (trigger / window_) * 100}%`
+    }
+    if (note) {
+      note.hidden = false
+      if (!measured) {
+        // Pi's own answer to "how full is it": it cannot tell until a model answers again.
+        note.textContent = `context not measured · window ${compact(window_)}`
+      } else {
+        const left = Math.max(0, window_ - used)
+        note.textContent = `${compact(used)} of ${compact(window_)} · ${compact(left)} free`
+      }
     }
   }
 
@@ -1742,6 +2227,7 @@
       }
       if (console === active()) updateComposer()
       renderSessions()
+      renderCompactionPanel(console)
     } catch (err) {
       setHint(`Could not reach the agent: ${err?.message || err}`, 'error', console)
       setPhase('dead', console)
@@ -1841,6 +2327,9 @@
       }
     }
     applyStatusFrame(ctx, entry.status)
+    // A replay log that ends on a tool start — the usual tail after a crash or a replaced
+    // child — would otherwise restore a spinner with nothing behind it.
+    if (!ctx.running) settleOpenTools(ctx)
     // If the turn already settled by the time hello arrived, restore immediately instead
     // of waiting for a running-edge that will never come.
     if (!ctx.running && ctx.pendingFullRestore && !ctx.historyLoaded) {
@@ -1865,6 +2354,13 @@
     if (Array.isArray(status.queuedSteering) || Array.isArray(status.queuedFollowUp)) {
       applyQueue(status.queuedSteering, status.queuedFollowUp, ctx)
     }
+    // The compaction panel reads the same status, and is repainted from every status frame
+    // rather than only on a poll: a threshold compaction mid-turn carries its `isCompacting`
+    // on the frame the event stream delivers, and this panel is the only thing on screen that
+    // can explain why a turn is taking longer than it should. Without it the "Pi is
+    // compacting" note stayed hidden until the next refresh, and a compaction nobody asked
+    // for looked exactly like a hang.
+    renderCompactionPanel(ctx)
     // The status frame carries the session's rehydrated totals, so a page opened after the
     // tokens were spent still shows them without waiting for a fresh turn.
     if (status.usage) {
@@ -1873,6 +2369,15 @@
         state.usage = ctx.usage
         renderUsage(ctx)
       }
+    }
+    if (ctx === active()) updateComposer()
+
+    // Pi's context figure lives on the status, not the usage frame, after a rehydration — so a
+    // page opened onto a full context sees the meter (not an empty one) on the first frame.
+    if (status.contextUsage && ctx === active()) {
+      state.usage = state.usage || {}
+      state.usage.contextUsage = status.contextUsage
+      renderUsage(ctx)
     }
   }
 
@@ -1887,6 +2392,8 @@
         if (ctx === active()) updateComposer()
         return
       case 'usage':
+        // The usage frame may carry pi's context figure alongside the totals; the compaction
+        // the bridge just finished is exactly when it changes.
         ctx.usage = payload.usage || payload
         if (ctx === active()) {
           state.usage = ctx.usage
@@ -2056,12 +2563,33 @@
       return
     }
 
-    // Slash commands are the two things a harness must do without a round trip through the
-    // model: start over, and stop.
+    // Slash commands are the few things a harness must do without a round trip through the
+    // model: start over, stop, and compact. `/compact help` is not a compaction — it explains
+    // one, so it is matched before the bare word and answers in place.
     if (text === '/new') {
       input.value = ''
       saveDraft(console, '')
       await newSession()
+      return
+    }
+    if (text === '/compact help') {
+      input.value = ''
+      saveDraft(console, '')
+      setHint(
+        'Compaction replaces the older turns with a summary. /compact does it now; '
+          + 'text after it becomes your instructions to the summariser.',
+        null,
+        console,
+      )
+      return
+    }
+    if (text === '/compact' || text.startsWith('/compact ') || text.startsWith('/compact\n')) {
+      // Everything after the command is the instruction the summary is written against, which
+      // is the part of a compaction a user most wants to control.
+      const instructions = text.slice('/compact').trim()
+      input.value = ''
+      saveDraft(console, '')
+      await compactNow(instructions)
       return
     }
     if (text === '/stop') {
@@ -2178,6 +2706,152 @@
       refreshSessionsSoon()
     } catch (err) {
       setHint(err?.message || 'Could not start a new session.', 'error')
+    }
+  }
+
+  /**
+   * Compacts this conversation by hand.
+   *
+   * Pi aborts the running turn to do it, so a busy agent is refused by the server (409) and
+   * the hint says why rather than silently truncating an answer the model was still writing.
+   * The compaction row is not pushed here: it is appended by the `compaction_start` record
+   * that arrives with the agent's own event, so a threshold compaction and this one are
+   * indistinguishable in the transcript and neither can disagree with the other.
+   */
+  async function compactNow(instructions = '') {
+    const console = active()
+    if (!console) return
+    const button = $('hx-compaction-panel')?.querySelector('[data-compaction-now]')
+    if (console.running) {
+      setHint('Pi is answering — stop the turn before compacting.', 'error', console)
+      return
+    }
+    // The button carries its own in-flight state as well as the hint does. A compaction is
+    // an LLM call that can run for many seconds, and during it the only thing that changed
+    // on screen was a line of hint text the user may not have read. Without this the button
+    // sits there looking available — and a second click starts a second compaction, on a
+    // conversation the first one has not finished resetting. The label says what is happening,
+    // which is the feedback the panel's own "Pi is compacting" note gives a moment later.
+    if (button) {
+      button.disabled = true
+      button.dataset.working = 'true'
+      if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent
+      button.textContent = 'Compacting…'
+    }
+    const restore = () => {
+      if (!button) return
+      button.disabled = Boolean(console.running) || console.status?.available === false
+      delete button.dataset.working
+      button.textContent = button.dataset.idleLabel || 'Compact now'
+    }
+    setHint('Compacting the context…', null, console)
+    try {
+      const res = await fetch(consoleApi(console, '/compact'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(instructions ? { instructions } : {}),
+      })
+      const data = await res.json().catch(() => {})
+      if (!res.ok) throw new Error(data?.error || `Could not compact (${res.status}).`)
+      // "Nothing here grew" is the answer to a question well asked, not a failure.
+      if (data?.tokensBefore == null && data?.tokensAfter == null) setHint('Compacted.', 'success', console)
+      else {
+        const fmt = window.hxCompact || ((n) => String(n))
+        setHint(
+          `Compacted — ${fmt(data.tokensBefore)} → ${fmt(data.tokensAfter)} tokens.`,
+          'success',
+          console,
+        )
+      }
+      await refreshStatus(console)
+    } catch (err) {
+      setHint(err?.message || 'Could not compact the context.', 'error', console)
+    } finally {
+      restore()
+    }
+  }
+
+  /**
+   * Turns Pi's auto-compaction on or off.
+   *
+   * The server reads the answer back from the agent rather than trusting the request, so an
+   * older Pi that ignores the command shows as "not reported" instead of as a switch that
+   * claims to have moved.
+   */
+  async function setAutoCompaction(enabled) {
+    const console = active()
+    if (!console) return
+    try {
+      const res = await fetch(consoleApi(console, '/auto-compaction'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled }),
+      })
+      const data = await res.json().catch(() => {})
+      if (!res.ok) throw new Error(data?.error || `Could not change auto-compaction (${res.status}).`)
+      renderCompactionPanel(console)
+      setHint(
+        data?.reported == null
+          ? 'Auto-compaction is not reported by this Pi.'
+          : `Auto-compaction ${data.reported ? 'on' : 'off'}.`,
+        data?.reported == null ? null : 'success',
+        console,
+      )
+    } catch (err) {
+      setHint(err?.message || 'Could not change auto-compaction.', 'error', console)
+    }
+  }
+
+  /**
+   * Paints the compaction panel in the details rail: the context figure, whether Pi will
+   * compact on its own, and the button that does it now.
+   *
+   * Every field is read from what the agent actually reported. A pi that reports nothing
+   * (too old for the state) leaves the panel saying so, rather than presenting a toggle that
+   * would be a lie.
+   */
+  function renderCompactionPanel(console = active()) {
+    const panel = $('hx-compaction-panel')
+    if (!panel) return
+    const status = console?.status || state.status || {}
+    const auto = status.autoCompactionEnabled
+    const toggle = panel.querySelector('[data-compaction-toggle]')
+    if (toggle) {
+      toggle.hidden = auto == null
+      toggle.setAttribute('aria-pressed', String(auto === true))
+      const label = toggle.querySelector('[data-compaction-state]')
+      if (label) label.textContent = auto === true ? 'on' : auto === false ? 'off' : '—'
+    }
+    const badge = panel.querySelector('[data-compaction-count]')
+    if (badge) {
+      const n = Number(status.compactionCount) || 0
+      badge.textContent = n === 1 ? '1 compaction' : `${n} compactions`
+      badge.hidden = n === 0
+    }
+    const note = panel.querySelector('[data-compaction-note]')
+    if (note) {
+      note.hidden = status.isCompacting !== true
+      if (status.isCompacting === true) {
+        const why =
+          status.compactionReason === 'manual'
+            ? 'you asked for it'
+            : status.compactionReason === 'overflow'
+              ? 'the context overflowed'
+              : 'the context is nearly full'
+        note.textContent = `Pi is compacting — ${why}.`
+      }
+    }
+    // The button is repainted from every status frame, so its own in-flight marker must
+    // be respected here or a frame arriving mid-compaction would wipe it: the label would
+    // snap back to "Compact now" with a compaction still running. Either side can own the
+    // working state (`compactNow` set it, or the agent is compacting on its own), and both
+    // read the same way.
+    const button = panel.querySelector('[data-compaction-now]')
+    if (button) {
+      const working = button.dataset.working === 'true' || status.isCompacting === true
+      const idleLabel = button.dataset.idleLabel || 'Compact now'
+      button.textContent = working ? 'Compacting…' : idleLabel
+      button.disabled = working || Boolean(console?.running) || status.available === false
     }
   }
 
@@ -2514,7 +3188,11 @@
         const blocks = contentParts(message.content)
         // A turn that only called tools wrote no prose. Its tool rows carry that story, and an
         // empty bubble would sit in the transcript as "…" forever after a resume.
-        if (blocks.length) ctx.items.push({ kind: 'assistant', blocks })
+        if (blocks.length) {
+          const item = { kind: 'assistant', blocks, settled: true }
+          assignThinkingStats(item, message.usage?.reasoning)
+          ctx.items.push(item)
+        }
         for (const part of Array.isArray(message.content) ? message.content : []) {
           if (!part || part.type !== 'toolCall') continue
           calls.set(String(part.id || part.name || 'tool'), {
@@ -2541,13 +3219,15 @@
     }
     // A call that never returned — the turn was interrupted, or the app was closed while the
     // command ran — still happened, so it keeps its row instead of disappearing on a reopen.
+    // It is only "running" when this console really has a turn in flight; a reopened session has
+    // none, and a row that claims one is the stale spinner this settles instead.
     for (const [key, call] of calls) {
       const item = {
         kind: 'tool',
         id: key,
         name: call.name,
         args: call.args,
-        status: 'running',
+        status: ctx.running ? 'running' : 'interrupted',
         result: '',
         partial: '',
       }
@@ -2601,7 +3281,7 @@
   }
 
   /** Adopts a console another page opened: its event stream is the conversation. */
-  async function attachConsole(entry) {
+  async function attachConsole(entry, { focus = true } = {}) {
     const ctx = createConsole({
       id: entry.id,
       instanceId: entry.id,
@@ -2609,7 +3289,7 @@
     })
     ctx.phase = entry.phase || 'idle'
     connectEvents(ctx)
-    activate(ctx)
+    if (focus) activate(ctx)
     rememberOpenFile(ctx.sessionFile)
     saveOpenConversations()
     try {
@@ -2622,13 +3302,13 @@
   }
 
   /** Starts a conversation beside the others. No session starts a fresh one. */
-  async function openInstance(sessionFile) {
+  async function openInstance(sessionFile, { focus = true } = {}) {
     // A conversation has one console: opening it again focuses the one already running rather
     // than starting a second agent on the same session file.
     if (sessionFile) {
       const open = [...state.consoles.values()].find((ctx) => ctx.sessionFile === sessionFile)
       if (open) {
-        activate(open)
+        if (focus) activate(open)
         return open
       }
     }
@@ -2653,7 +3333,7 @@
       sessionFile: data.instance?.sessionFile || sessionFile,
     })
     connectEvents(ctx)
-    activate(ctx)
+    if (focus) activate(ctx)
     // The shared stream's hello was sent before this console existed, so ask for its status
     // rather than waiting for the next live frame.
     void refreshStatus(ctx)
@@ -2669,7 +3349,11 @@
   /** Closes an idle console that is not on screen, freeing a parallel slot. */
   async function closeIdleConsole() {
     const spare = [...state.consoles.values()].find(
-      (candidate) => candidate.instanceId && !candidate.running && candidate.id !== state.activeId,
+      (candidate) =>
+        candidate.instanceId &&
+        !candidate.running &&
+        candidate.id !== state.activeId &&
+        !restoreProtected.has(candidate.id),
     )
     if (!spare) return false
     await fetch(`${API}/instances/${spare.id}/close`, { method: 'POST' }).catch(() => {})
@@ -2727,6 +3411,7 @@
   const COMMANDS = [
     { label: 'Focus the prompt', hint: 'Enter', run: () => $('hx-input')?.focus() },
     { label: 'New session', hint: '/new', run: newSession },
+    { label: 'Compact the context', hint: '/compact', run: compactNow },
     { label: 'Stop the agent', hint: '/stop', run: stopRun },
     { label: 'Previous prompt', hint: 'Alt+↑', run: () => jumpPrompt(-1) },
     { label: 'Next prompt', hint: 'Alt+↓', run: () => jumpPrompt(1) },
@@ -2879,6 +3564,22 @@
     $('hx-new')?.addEventListener('click', newSession)
     $('hx-restart')?.addEventListener('click', restartAgent)
 
+    // Compaction controls. The toggle is hidden until Pi reports whether auto-compaction is
+    // on, so an agent that cannot answer does not present a switch that would do nothing.
+    $('[data-compaction-now]')?.addEventListener('click', () => compactNow())
+    $('[data-compaction-toggle]')?.addEventListener('click', () => {
+      const panel = $('hx-compaction-panel')
+      const toggle = panel?.querySelector('[data-compaction-toggle]')
+      if (!toggle) return
+      const next = toggle.getAttribute('aria-pressed') !== 'true'
+      toggle.disabled = true
+      // The pressed state is optimistic and provisional: the server's answer sets it for
+      // real, and a Pi that ignores the request leaves it where the agent put it.
+      Promise.resolve(setAutoCompaction(next)).finally(() => {
+        toggle.disabled = false
+      })
+    })
+
     $('hx-session-search')?.addEventListener('input', (event) => {
       state.sessionQuery = event.target.value
       renderSessions()
@@ -2952,6 +3653,18 @@
       'toggle',
       (event) => {
         const node = event.target
+        if (node.classList?.contains('hx-thinking')) {
+          // Thinking is one disclosure per reasoning block; the block keeps the state so a
+          // repaint does not fold an opened thought (or reopen one the reader closed).
+          const item = state.items.find((entry) => entry.node?.contains(node))
+          if (item) {
+            const nodes = [...(item.node?.querySelectorAll('.hx-thinking') || [])]
+            const blocks = (item.blocks || []).filter((block) => block.kind === 'thinking')
+            const block = blocks[nodes.indexOf(node)]
+            if (block) block.open = node.open
+          }
+          return
+        }
         if (!node.classList?.contains('hx-tool')) return
         const item = state.items.find((entry) => entry.node?.contains(node))
         if (item) item.open = node.open
@@ -2965,7 +3678,7 @@
     $('hx-transcript')?.addEventListener(
       'click',
       (event) => {
-        const summary = event.target.closest?.('summary.hx-tool-head')
+        const summary = event.target.closest?.('summary.hx-tool-head, summary.hx-thinking-head')
         if (!summary) return
         const selection = window.getSelection()
         if (selection && selection.type === 'Range' && selection.containsNode(summary, true)) {

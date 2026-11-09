@@ -5,6 +5,7 @@ import net from 'node:net'
 import {
   DEFAULT_DESKTOP_PORT,
   dashboardUrl,
+  isBrowserOpenableUrl,
   isPortInUse,
   parseDesktopArgs,
   probeRouter,
@@ -49,6 +50,15 @@ test('the window and the router share one loopback origin', () => {
   // The dashboard's own URLs are relative, so this trailing slash is what makes `/api/models`
   // resolve against the router rather than against the splash file.
   assert.equal(dashboardUrl(7352), 'http://127.0.0.1:7352/')
+})
+
+test('only HTTP(S) URLs are handed to the system browser', () => {
+  assert.equal(isBrowserOpenableUrl('https://accounts.google.com/o/oauth2/v2/auth'), true)
+  assert.equal(isBrowserOpenableUrl('http://127.0.0.1:7352/oauth2callback'), true)
+  assert.equal(isBrowserOpenableUrl('kiro://kiro.kiroAgent/authenticate-success'), false)
+  assert.equal(isBrowserOpenableUrl('javascript:alert(1)'), false)
+  assert.equal(isBrowserOpenableUrl('file:///tmp/oauth.html'), false)
+  assert.equal(isBrowserOpenableUrl(''), false)
 })
 
 test('a foreign service on the port is not mistaken for Hammer', async () => {

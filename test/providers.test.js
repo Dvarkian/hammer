@@ -72,11 +72,6 @@ import {
   substituteCredentialFields,
 } from '../lib/providers/adapters.js'
 import {
-  buildNlpCloudRequestBody,
-  buildNlpCloudUrl,
-  transformNlpCloudResponse,
-} from '../lib/providers/nlpcloud.js'
-import {
   humanizeProviderKey,
   loadKeyPages,
   loadOmniRouteCatalog,
@@ -108,6 +103,7 @@ import {
   isChatCompatibleDiscoveredModel,
   isProviderAuthOptional,
   lazyDiscoveryCandidates,
+  markBazaarLinkPaidModels,
   providerDiscoveryNeedsCredential,
   resolveDiscoveryModelsUrl,
   resolveRequestModels,
@@ -120,10 +116,13 @@ import {
   isAuthoritativeProbeFailure,
   isCachedReplayResponse,
   isIncompatibleModelError,
+  isPaymentRequiredError,
   isProviderOverloadedError,
   isQuotaExhaustionError,
   isRateLimitedErrorText,
+  isZeroFreeTierQuota,
   rankModelsForRouting,
+  resolveRefusalVerdict,
 } from '../lib/utils.js'
 import {
   EXCLUDED_PROVIDER_KEYS,
@@ -164,7 +163,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     devin: 'DEVIN_API_KEY',
     'github-copilot': 'GITHUB_COPILOT_TOKEN',
     g4f: 'G4F_API_KEY',
-    nlpcloud: 'NLPCLOUD_API_KEY',
   })
 })
 
@@ -173,7 +171,6 @@ test('base URL and model id env tables reproduce the old ones', () => {
     'openai-compatible': 'OPENAI_COMPATIBLE_BASE_URL',
     ollama: 'OLLAMA_BASE_URL',
     g4f: 'G4F_BASE_URL',
-    nlpcloud: 'NLPCLOUD_BASE_URL',
   })
   sortsDeepEqual(modelIdEnvVarTable(), {
     'openai-compatible': 'OPENAI_COMPATIBLE_MODEL',
@@ -181,11 +178,22 @@ test('base URL and model id env tables reproduce the old ones', () => {
   })
 })
 
-test('the OAuth account-pool set stays exactly kiro, devin and openai-codex', () => {
-  assert.deepEqual([...oauthAccountProviders()].sort(), ['devin', 'kiro', 'openai-codex'])
+test('the OAuth account-pool set stays exactly kiro, devin, googleai, antigravity and openai-codex', () => {
+  // `google-antigravity` joins here because its only credential is a sign-in: without an entry
+  // in this set `getProviderAccounts` returns [] and a completed login is invisible (hasKey and
+  // canServe stay false, the card reads 0 models). Its pre-pool field is the refresh token.
+  assert.deepEqual([...oauthAccountProviders()].sort(), [
+    'devin',
+    'google-antigravity',
+    'googleai',
+    'kiro',
+    'openai-codex',
+  ])
   sortsDeepEqual(legacyAccountSecretFieldTable(), {
     kiro: 'refreshToken',
     devin: 'sessionToken',
+    googleai: 'refreshToken',
+    'google-antigravity': 'refreshToken',
     'openai-codex': 'refreshToken',
   })
 })
@@ -839,7 +847,10 @@ test('the 15 hammer-owned signup URLs survive the import, which is additive', ()
 
 test('every curated key page is HTTPS and records the evidence behind it', () => {
   const pages = loadKeyPages()
-  assert.ok(Object.keys(pages).length > 25, 'the table should cover the imported fleet')
+  // 22 after `coze`, `bytez`, the duplicate `ollama-cloud` row (2026-11-08) and `nlpcloud`
+  // (2026-11-09) were removed (it was 26). The floor moves only when a provider leaves the
+  // roster; it still has to cover the imported fleet that remains.
+  assert.ok(Object.keys(pages).length >= 22, 'the table should cover the imported fleet')
   for (const [key, entry] of Object.entries(pages)) {
     assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
     assert.ok(
@@ -914,6 +925,8 @@ test('every registered descriptor is valid and unique', () => {
 })
 
 test('hammer ships 15 providers and none of them regressed', () => {
+  // 15 since `google-antigravity` joined: it is hammer-owned, routable and carries a chatUrl,
+  // so it belongs in the same table as the rest rather than in a second one.
   assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 15)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
@@ -1044,7 +1057,7 @@ test('the vendored catalog parses and carries provenance', () => {
   const { source, providers } = loadOmniRouteCatalog()
   assert.equal(source.project, 'OmniRoute')
   assert.equal(source.license, 'MIT')
-  assert.ok(providers.length > 30, `expected a substantial roster, got ${providers.length}`)
+  assert.ok(providers.length >= 29, `expected a substantial roster, got ${providers.length}`)
 })
 
 test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
@@ -1073,7 +1086,7 @@ test('every explicitly removed provider stays absent from every Hammer provider 
 
 test('imported providers never overwrite hammer-owned keys', () => {
   const importedKeys = imported().map((d) => d.key)
-  for (const key of ['nvidia', 'groq', 'openrouter', 'kiro', 'nlpcloud']) {
+  for (const key of ['nvidia', 'groq', 'openrouter', 'kiro']) {
     assert.equal(importedKeys.includes(key), false, `${key} must stay hammer-owned`)
     assert.equal(getProvider(key).origin, 'hammer')
   }
@@ -1092,7 +1105,7 @@ test('every imported provider is active, staged or refused — never undefined',
 
 test('the import actually resolves providers to real endpoints', () => {
   const active = activationOf('active')
-  assert.ok(active.length >= 20, `expected a substantial routable import, got ${active.length}`)
+  assert.ok(active.length >= 19, `expected a substantial routable import, got ${active.length}`)
   for (const provider of active) {
     assert.match(provider.chatUrl, /^https:\/\//, `${provider.key} needs a real https endpoint`)
     assert.ok(
@@ -1218,96 +1231,6 @@ test('the credential header shape is data, so a non-bearer provider needs no new
   assert.equal(headers['x-api-key'], 'secret')
   assert.equal(headers.Authorization, undefined)
   initProviders({ reset: true })
-})
-
-test('NLP Cloud is a complete key-gated Hammer provider, not a generic import', () => {
-  const provider = getProvider('nlpcloud')
-  assert.equal(provider.origin, 'hammer')
-  assert.equal(provider.activation, 'active')
-  assert.equal(provider.access, 'permanent')
-  assert.equal(provider.tos, 'caution')
-  assert.equal(provider.auth.scheme, 'Token')
-  assert.equal(provider.auth.envVar, 'NLPCLOUD_API_KEY')
-  assert.equal(provider.auth.baseUrlEnvVar, 'NLPCLOUD_BASE_URL')
-  assert.equal(provider.discoverable, false)
-  assert.equal(provider.toolSupport, 'unsupported')
-  assert.equal(sources.nlpcloud.models.length, 5)
-  assert.ok(sources.nlpcloud.models.some(([id]) => id === 'gpt-oss-120b'))
-  assert.equal(
-    buildNlpCloudUrl('gpt-oss-120b'),
-    'https://api.nlpcloud.io/v1/gpu/gpt-oss-120b/chatbot',
-  )
-  assert.equal(
-    buildNlpCloudUrl('custom-model/42', 'https://example.test/v1/gpu/'),
-    'https://example.test/v1/gpu/custom-model/42/chatbot',
-  )
-  assert.equal(
-    buildProviderRequestHeaders('nlpcloud', { apiKey: 'secret' }).Authorization,
-    'Token secret',
-  )
-})
-
-test('NLP Cloud translates the complete OpenAI conversation into its chatbot shape', () => {
-  const body = buildNlpCloudRequestBody({
-    model: 'gpt-oss-120b',
-    messages: [
-      { role: 'system', content: 'Answer concisely.' },
-      { role: 'user', content: 'What is a router?' },
-      { role: 'assistant', content: 'It selects a backend.' },
-      { role: 'user', content: [{ type: 'text', text: 'Give me an example.' }] },
-    ],
-    stream: true,
-    max_tokens: 500,
-  })
-  assert.deepEqual(body, {
-    input: 'Give me an example.',
-    context: 'system: Answer concisely.',
-    history: [{ input: 'What is a router?', response: 'It selects a backend.' }],
-  })
-  assert.deepEqual(
-    buildProviderRequestBody(
-      'nlpcloud',
-      {
-        messages: [{ role: 'user', content: 'hello' }],
-      },
-      'gpt-oss-120b',
-    ),
-    {
-      input: 'hello',
-      context: null,
-      history: [],
-    },
-  )
-})
-
-test('NLP Cloud responses become OpenAI JSON or a synthesized SSE stream', async () => {
-  const upstream = () =>
-    new Response(
-      JSON.stringify({
-        response: 'Hello from NLP Cloud.',
-        history: [],
-      }),
-      {
-        status: 200,
-        headers: { 'Content-Type': 'application/json', 'x-ratelimit-limit-requests': '3' },
-      },
-    )
-
-  const jsonResponse = await transformNlpCloudResponse(upstream(), 'gpt-oss-120b', false)
-  assert.equal(jsonResponse.headers.get('x-ratelimit-limit-requests'), '3')
-  const json = await jsonResponse.json()
-  assert.equal(json.object, 'chat.completion')
-  assert.equal(json.model, 'gpt-oss-120b')
-  assert.equal(json.choices[0].message.content, 'Hello from NLP Cloud.')
-  assert.equal(json.choices[0].finish_reason, 'stop')
-
-  const streamResponse = await transformNlpCloudResponse(upstream(), 'gpt-oss-120b', true)
-  assert.match(streamResponse.headers.get('Content-Type'), /^text\/event-stream/)
-  const stream = await streamResponse.text()
-  assert.match(stream, /"object":"chat\.completion\.chunk"/)
-  assert.match(stream, /"content":"Hello from NLP Cloud\."/)
-  assert.match(stream, /"finish_reason":"stop"/)
-  assert.match(stream, /data: \[DONE\]/)
 })
 
 test("an active import's descriptor feeds the real header and body builders", () => {
@@ -1438,10 +1361,9 @@ test('the import layer performs no network I/O at import time', () => {
 // ── On-demand discovery: the request path, not the boot path ───────────────────────────
 
 test('discovery honors a provider-declared models URL, and a base override wins over it', () => {
-  // ollama-cloud declares its native /api/tags, and cloudflare-ai declares an account-scoped
-  // Model Search URL. Re-deriving the sibling of the chat path returns rows that then 404, which
-  // would mark a healthy provider dead.
-  assert.equal(resolveDiscoveryModelsUrl(sources['ollama-cloud']), 'https://ollama.com/api/tags')
+  // cloudflare-ai declares an account-scoped Model Search URL rather than the /v1/models
+  // sibling of its chat path. Re-deriving that sibling returns rows that then 404, which would
+  // mark a healthy provider dead.
   assert.equal(
     resolveDiscoveryModelsUrl(sources['cloudflare-ai']),
     'https://api.cloudflare.com/client/v4/accounts/{accountId}/ai/models/search?task=Text%20Generation&per_page=100',
@@ -1453,9 +1375,48 @@ test('discovery honors a provider-declared models URL, and a base override wins 
   )
   // A configured base URL redirects traffic, so it redirects discovery too.
   assert.equal(
-    resolveDiscoveryModelsUrl(sources['ollama-cloud'], 'https://proxy.test/v1'),
+    resolveDiscoveryModelsUrl(sources['cloudflare-ai'], 'https://proxy.test/v1'),
     'https://proxy.test/v1/models',
   )
+})
+
+test('a catalog that prices per model marks everything outside its free tier as paid', () => {
+  // BazaarLink lists its paid catalog beside the handful of models its free grant covers, and
+  // the only machine-readable free marker is the `:free` twin entry. A plain id whose twin is
+  // listed is served free within the quota, so it must NOT be marked; `auto` routes across the
+  // paid catalog and must be. Pricing alone cannot decide this: a free model's base entry can
+  // still carry a non-zero rate while its `:free` twin is the zero-priced one.
+  // The catalogue's free ids are flat (`qwen3.7-flash`) while their `:free` aliases are
+  // namespaced (`qwen/qwen3.7-flash:free`), and rows are identified by the catalog id. The
+  // twin's id — stripped of `:free`, then of its namespace — is therefore what marks the plain
+  // half; the shared `name` stays as the fallback.
+  const records = [
+    { id: 'qwen3.7-flash', name: 'Qwen3.7 Flash' },
+    { id: 'qwen/qwen3.7-flash:free', name: 'Qwen3.7 Flash (free)' },
+    { id: 'beam-free', name: 'Beam Free' },
+    { id: 'reflection/beam-free:free', name: 'Beam Free (free)' },
+    // The plain DeepSeek entry is itself labelled "(Free)", and its alias carries the same name.
+    { id: 'deepseek-v4-flash-0731free', name: 'DeepSeek V4 Flash 0731 (Free)' },
+    { id: 'deepseek/deepseek-v4-flash-0731free:free', name: 'DeepSeek V4 Flash 0731 (Free)' },
+    { id: 'auto', name: 'Auto Router' },
+    { id: 'auto:free', name: 'Auto Router (free)' },
+    { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash 1017' },
+  ]
+  const models = records.map((record) => ({ modelId: record.id }))
+  markBazaarLinkPaidModels(models, records)
+  const paid = Object.fromEntries(models.map((model) => [model.modelId, model.paymentRequired]))
+  assert.deepEqual(paid, {
+    'qwen3.7-flash': false,
+    'qwen/qwen3.7-flash:free': false,
+    'beam-free': false,
+    'reflection/beam-free:free': false,
+    'deepseek-v4-flash-0731free': false,
+    'deepseek/deepseek-v4-flash-0731free:free': false,
+    // `auto:free` is the router's free twin; the bare `auto` spans the paid catalogue.
+    auto: true,
+    'auto:free': false,
+    'deepseek-v4.1-flash-1017': true,
+  })
 })
 
 test("Cloudflare's model list is account-scoped, and discovery can fill the account id in", () => {
@@ -1527,7 +1488,7 @@ test('a record that declares a non-chat task is not imported as a chat model', (
   )
 })
 
-test('a discovered row is identified by the name you can actually request', () => {
+test('a discovered row is identified by the name you can actually request (UUID ids only)', () => {
   // Cloudflare's search results put a database UUID in `id` and the routable model name in
   // `name`. Reading `id` first stored rows whose every request came back `400 No such model`,
   // so a working account looked like a dead provider. The name is what has to be sent.
@@ -1558,6 +1519,27 @@ test('a discovered row is identified by the name you can actually request', () =
       'cloudflare-ai',
     ).modelId,
     '02c16efa-29f5-4304-8e6c-3d188889f875',
+  )
+})
+
+test('a catalog of slugs is not renamed by its titles', () => {
+  // BazaarLink's `id`s are the wire ids (`qwen/qwen3.7-flash:free`, `deepseek-v4.1-flash-1017`)
+  // and its `name`s are titles ("Qwen3.7 Flash (free)"). Swapping one for the other stored rows
+  // whose every request answered `400 Unknown model: Qwen3.7 Flash (free). This model is not in
+  // our catalog.` — a working account that looked like a dead provider.
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta(
+      { id: 'qwen/qwen3.7-flash:free', name: 'Qwen3.7 Flash (free)', context_length: 1000000 },
+      'bazaarlink',
+    ).modelId,
+    'qwen/qwen3.7-flash:free',
+  )
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta(
+      { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek V4.1 Flash 1017' },
+      'bazaarlink',
+    ).modelId,
+    'deepseek-v4.1-flash-1017',
   )
 })
 
@@ -1771,15 +1753,20 @@ const GOOGLE_OVERLOAD_REFUSAL =
   'This model is currently experiencing high demand. Spikes in demand ' +
   'are usually temporary. Please try again later.'
 
-test('an exhausted quota is a rate limit even when it arrives as limit: 0 on a free tier', () => {
-  // A quota of zero is not a paywall and not a failure: the model is on the free tier, the
-  // window is spent, and the provider names when to come back.
+test('a free-tier allowance of zero is Paid, not a quota to wait out', () => {
+  // `limit: 0` beside a free_tier metric is not a spent window: the project was never granted
+  // the model. The countdown in the same body is generic refusal text, so waiting it out
+  // re-asks a question whose answer cannot change. The row takes the verdict a payment wall
+  // takes, because that is the only thing that does change it.
   assert.equal(isQuotaExhaustionError(GOOGLE_QUOTA_REFUSAL, 429), true)
   assert.equal(
     isRateLimitedErrorText(GOOGLE_QUOTA_REFUSAL),
     false,
     'the text itself is neither of the phrases this predicate looks for — the status is what says it',
   )
+  assert.equal(isZeroFreeTierQuota(GOOGLE_QUOTA_REFUSAL), true)
+  assert.equal(isPaymentRequiredError(GOOGLE_QUOTA_REFUSAL, 429), true)
+  assert.equal(resolveRefusalVerdict(GOOGLE_QUOTA_REFUSAL, 429), 'paid')
 })
 
 test('a busy provider is a wait, not a failure', () => {
@@ -2772,7 +2759,7 @@ test('the models table leads with a logo column for the model brand', () => {
   const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
   const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
 
-  // The header comes first in the main table only: the graveyard keeps its own eight columns.
+  // The header comes first in the main table only: the graveyard keeps its own nine columns.
   const table = html.slice(html.indexOf('id="models-table"'), html.indexOf('id="graveyard-table"'))
   assert.match(table, /<th>Logo<\/th>\s*<th>Model<\/th>/)
 
@@ -2787,14 +2774,16 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(css, /\.model-logo-mono \{/)
   assert.match(css, /\.model-logo-img \{/)
 
-  // Everything after the logo shifted by one. A stale index writes context into the status cell
-  // and blanks the response, which is worse than no logo column at all.
+  // Everything after the logo shifted by one, and the quota column shifts the trailing cells
+  // again. A stale index writes context into the status cell and blanks the response, which is
+  // worse than no logo column at all.
   assert.match(js, /const modelCell = row\.cells\[1\];/)
   assert.match(js, /const intellCell = row\.cells\[2\];/)
-  assert.match(js, /const ctxCell = row\.cells\[6\];/)
   assert.match(js, /const usageCell = row\.cells\[5\];/)
-  assert.match(js, /const statusCell = row\.cells\[7\];/)
-  assert.match(js, /const responseCell = row\.cells\[8\];/)
+  assert.match(js, /const quotaCell = row\.cells\[6\];/)
+  assert.match(js, /const ctxCell = row\.cells\[7\];/)
+  assert.match(js, /const statusCell = row\.cells\[8\];/)
+  assert.match(js, /const responseCell = row\.cells\[9\];/)
   assert.match(js, /const ttftCell = row\.cells\[3\];/)
   assert.match(js, /const tpsCell = row\.cells\[4\];/)
 })

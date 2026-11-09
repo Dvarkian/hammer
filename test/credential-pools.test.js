@@ -23,7 +23,9 @@ import assert from 'node:assert/strict'
 import {
   MAX_CREDENTIAL_BENCH_MS,
   benchCredential,
+  hasSpareCredential,
   isCredentialSpent,
+  isModelScopedCredentialQuota,
   selectNextApiKeyFromPool,
 } from '../lib/utils.js'
 
@@ -87,6 +89,54 @@ test('a pool with nothing left reports that, rather than a spent credential', ()
   benchCredential(entry, 0, now, null, COOLDOWN)
   benchCredential(entry, 1, now, null, COOLDOWN)
   assert.equal(selectNextApiKeyFromPool(pool, entry, 0, now, COOLDOWN), null)
+})
+
+test('a spare credential is one that is neither current nor spent', () => {
+  const pool = ['k1', 'k2', 'k3']
+  const entry = poolState()
+  const now = Date.now()
+  assert.equal(hasSpareCredential(pool, entry, 'k1', now, COOLDOWN), true)
+  benchCredential(entry, 1, now, null, COOLDOWN)
+  benchCredential(entry, 2, now, null, COOLDOWN)
+  assert.equal(hasSpareCredential(pool, entry, 'k1', now, COOLDOWN), false)
+  assert.equal(hasSpareCredential(pool, entry, 'k3', now, COOLDOWN), true)
+  benchCredential(entry, 0, now, null, COOLDOWN)
+  assert.equal(hasSpareCredential(pool, entry, 'k3', now, COOLDOWN), false)
+  assert.equal(hasSpareCredential(['k1'], entry, 'k1', now, COOLDOWN), false)
+})
+
+test('a model-scoped bench skips that credential only for the model', () => {
+  const pool = ['k1', 'k2']
+  const entry = poolState()
+  const model = poolState()
+  const now = Date.now()
+  benchCredential(model, 0, now, null, COOLDOWN)
+  const modelSpent = (idx) => isCredentialSpent(model.accounts.get(idx), now, COOLDOWN)
+  assert.equal(selectNextApiKeyFromPool(pool, entry, 0, now, COOLDOWN, modelSpent), 'k2')
+  // The same account still serves every other model.
+  assert.equal(selectNextApiKeyFromPool(pool, entry, 0, now, COOLDOWN), 'k1')
+  assert.equal(hasSpareCredential(pool, entry, 'k1', now, COOLDOWN), true)
+  assert.equal(hasSpareCredential(pool, entry, 'k1', now, COOLDOWN, model), true)
+  benchCredential(model, 1, now, null, COOLDOWN)
+  assert.equal(hasSpareCredential(pool, entry, 'k1', now, COOLDOWN, model), false)
+  assert.equal(selectNextApiKeyFromPool(pool, entry, 0, now, COOLDOWN, modelSpent), null)
+})
+
+test('Google per-model quota ids are recognized as model-scoped', () => {
+  assert.equal(
+    isModelScopedCredentialQuota({
+      quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+    }),
+    true,
+  )
+  assert.equal(
+    isModelScopedCredentialQuota({
+      quotaId: 'GenerateContentInputTokensPerModelPerDay-FreeTier',
+    }),
+    true,
+  )
+  assert.equal(isModelScopedCredentialQuota({ quotaId: 'requests-per-day' }), false)
+  assert.equal(isModelScopedCredentialQuota(null), false)
 })
 
 test('an exhausted pool still refuses while one credential is merely over its budget', () => {
@@ -199,6 +249,124 @@ test('a card is told the pool size, who is serving, and who is spent', () => {
     assert.equal(described.accounts[0].requests, 7)
     assert.ok(described.accounts[0].resetsInMs > 0 && described.accounts[0].resetsInMs <= 30_000)
     assert.equal(described.accounts[1].resetsInMs, null)
+  } finally {
+    _setKeyPoolState(null)
+  }
+})
+
+test("a card is told each account's remaining quota when a response reported it", () => {
+  const now = Date.now()
+  const state = new Map([
+    [
+      'googleai',
+      poolState([
+        [
+          0,
+          {
+            requests: 2,
+            quota: {
+              remaining: 12,
+              limit: 25,
+              resetAt: now + 60_000,
+              modelId: 'models/gemini-3.6-flash',
+              observedAt: now,
+              source: 'response-headers',
+            },
+          },
+        ],
+        [
+          1,
+          {
+            requests: 1,
+            quota: {
+              remaining: 0,
+              limit: 25,
+              resetAt: now + 60_000,
+              modelId: 'models/gemini-3.1-pro',
+              observedAt: now,
+              source: 'provider-error',
+            },
+          },
+        ],
+      ]),
+    ],
+  ])
+  _setKeyPoolState(state)
+  try {
+    const described = describeCredentialPool(
+      { apiKeys: { googleai: ['key-one-value', 'key-two-value'] }, providers: {} },
+      'googleai',
+    )
+    assert.equal(described.accounts[0].quota.remaining, 12)
+    assert.equal(described.accounts[0].quota.limit, 25)
+    assert.equal(described.accounts[0].quota.modelId, 'models/gemini-3.6-flash')
+    assert.ok(described.accounts[0].quota.resetsInMs > 0)
+    assert.equal(described.accounts[1].quota.remaining, 0)
+    assert.equal(described.accounts[1].quota.limit, 25)
+    assert.equal(described.accounts[1].quota.modelId, 'models/gemini-3.1-pro')
+    assert.ok(described.accounts[1].quota.resetsInMs > 0)
+  } finally {
+    _setKeyPoolState(null)
+  }
+})
+
+test('the lowest reported model quota wins, and an expired window is ignored', () => {
+  const now = Date.now()
+  const state = new Map([
+    [
+      'googleai',
+      poolState([
+        [
+          0,
+          {
+            requests: 3,
+            quotas: new Map([
+              [
+                'models/gemini-3.6-flash',
+                { remaining: 8, limit: 10, resetAt: now + 60_000, observedAt: now - 1 },
+              ],
+              [
+                'models/gemini-3.1-pro',
+                { remaining: 0, limit: 25, resetAt: now + 60_000, observedAt: now },
+              ],
+              ['models/gemini-old', { remaining: 0, limit: 25, resetAt: now - 1, observedAt: now }],
+            ]),
+          },
+        ],
+      ]),
+    ],
+  ])
+  _setKeyPoolState(state)
+  try {
+    const described = describeCredentialPool(
+      { apiKeys: { googleai: ['key-one-value'] }, providers: {} },
+      'googleai',
+    )
+    assert.equal(described.accounts[0].quota.remaining, 0)
+    assert.equal(described.accounts[0].quota.modelId, 'models/gemini-3.1-pro')
+  } finally {
+    _setKeyPoolState(null)
+  }
+})
+
+test('an exhausted account with no numeric quota reports zero rather than a guess', () => {
+  const now = Date.now()
+  const state = new Map([
+    [
+      'googleai',
+      poolState([[0, { requests: 1, rateLimitedAt: now, exhaustedUntil: now + 30_000 }]]),
+    ],
+  ])
+  _setKeyPoolState(state)
+  try {
+    const described = describeCredentialPool(
+      { apiKeys: { googleai: ['key-one-value'] }, providers: {} },
+      'googleai',
+    )
+    assert.equal(described.accounts[0].quota.remaining, 0)
+    assert.equal(described.accounts[0].quota.limit, null)
+    assert.equal(described.accounts[0].quota.source, 'credential-state')
+    assert.ok(described.accounts[0].quota.resetsInMs > 0)
   } finally {
     _setKeyPoolState(null)
   }

@@ -354,16 +354,20 @@
     /* --- KPI background topology: spring-layout model shapes + provider nodes (favicon or monogram) + curved links --- */
     /* The plot draws live models only — a rate-limited, timed-out, down or struck model is not
        a node on it at all, so there is no waiting/broken colour to carry here. 'down' remains
-       the guard for a node whose provider count says it stopped being live after it was drawn. */
+       the guard for a node whose provider count says it stopped being live after it was drawn.
+       The palette is deliberately two-tone: maroon is the resting state (nodes, rings, the link
+       mesh), and the blue marks what the router is actually using — the best model, its serving
+       ring, its serving link and the core pulse — so the highlight never reads as just another
+       healthy neighbour. */
     .topo-model { fill: var(--text-muted); opacity: 0.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
-    .topo-model.up { fill: var(--success); opacity: 0.7; filter: drop-shadow(0 0 1.5px var(--success)); }
+    .topo-model.up { fill: var(--accent); opacity: 0.7; filter: drop-shadow(0 0 1.5px var(--accent)); }
     .topo-model.down { fill: var(--error); opacity: 0.4; }
-    .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--accent)); }
-    .topo-model.best { fill: var(--accent); opacity: 0.9; filter: drop-shadow(0 0 6px var(--accent)); }
+    .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--success)); }
+    .topo-model.best { fill: var(--success); opacity: 0.9; filter: drop-shadow(0 0 6px var(--success)); }
 
     /* 'selected' carries the much stronger pulse: two layered drop-shadows sweeping
        between a tight glow and a wide halo so the best model reads instantly. */
-    .topo-model.selected { filter: drop-shadow(0 0 8px var(--accent)) drop-shadow(0 0 18px var(--accent)); animation: topo-selected-pulse 1.6s ease-in-out infinite; }
+    .topo-model.selected { filter: drop-shadow(0 0 8px var(--success)) drop-shadow(0 0 18px var(--success)); animation: topo-selected-pulse 1.6s ease-in-out infinite; }
 
     .topo-model-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
     .topo-model-img.best { opacity: 1; }
@@ -372,18 +376,18 @@
        glyph (first letter of the display name) is visible even when no
        favicon domain resolves or the remote image fails to load. */
     .topo-model-mono { fill: var(--surface-alt); stroke: var(--text-muted); stroke-width: 0.4; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
-    .topo-model-mono.up { stroke: var(--success); }
+    .topo-model-mono.up { stroke: var(--accent); }
     .topo-model-mono.down { stroke: var(--error); }
-    .topo-model-mono.best { stroke: var(--accent); }
+    .topo-model-mono.best { stroke: var(--success); }
     .topo-model-glyph { fill: var(--text-muted); font-size: 4.5px; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; dominant-baseline: middle; opacity: 0.55; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-glyph.up { fill: var(--success); opacity: 0.7; }
+    .topo-model-glyph.up { fill: var(--accent); opacity: 0.7; }
     .topo-model-glyph.down { fill: var(--error); opacity: 0.6; }
-    .topo-model-glyph.best { fill: var(--accent); opacity: 0.85; }
+    .topo-model-glyph.best { fill: var(--success); opacity: 0.85; }
 
     .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-label.up { fill: var(--success); opacity: 0.55; }
+    .topo-model-label.up { fill: var(--accent); opacity: 0.55; }
     .topo-model-label.down { fill: var(--error); opacity: 0.35; }
-    .topo-model-label.best { fill: var(--accent); opacity: 0.7; }
+    .topo-model-label.best { fill: var(--success); opacity: 0.7; }
 
     /* While the spring layout is settling, geometry is driven by JS every frame —
        disable the 1.5s CSS transitions so the browser doesn't try to interpolate
@@ -411,23 +415,23 @@
     .topo-provider-ring.dimmed { stroke-width: 0.8; }
 
     @keyframes topo-best-pulse {
-      0%, 100% { filter: drop-shadow(0 0 4px var(--accent)); }
-      50% { filter: drop-shadow(0 0 10px var(--accent)); }
+      0%, 100% { filter: drop-shadow(0 0 4px var(--success)); }
+      50% { filter: drop-shadow(0 0 10px var(--success)); }
     }
 
    @keyframes topo-selected-pulse {
-     0%, 100% { filter: drop-shadow(0 0 10px var(--accent)) drop-shadow(0 0 22px var(--accent)); }
-     50% { filter: drop-shadow(0 0 18px var(--accent)) drop-shadow(0 0 44px var(--accent)); }
+     0%, 100% { filter: drop-shadow(0 0 10px var(--success)) drop-shadow(0 0 22px var(--success)); }
+     50% { filter: drop-shadow(0 0 18px var(--success)) drop-shadow(0 0 44px var(--success)); }
    }
 
     .topo-provider-ring { fill: none; stroke-width: 1.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
-    .topo-provider-ring.green { stroke: var(--success); opacity: 0.55; }
+    .topo-provider-ring.green { stroke: var(--accent); opacity: 0.55; }
     .topo-provider-ring.amber { stroke: var(--warning); opacity: 0.45; }
     .topo-provider-ring.red { stroke: var(--error); opacity: 0.35; }
     .topo-provider-ring:hover { stroke-width: 2.4; opacity: 0.9; filter: drop-shadow(0 0 4px currentColor); }
-    /* The ring of the provider actively serving the selected (best) model turns blue;
-       declared after .green/.amber/.red so it wins the cascade at equal specificity. */
-    .topo-provider-ring.selected { stroke: var(--accent); opacity: 0.95; stroke-width: 1.8; filter: drop-shadow(0 0 5px var(--accent)); }
+    /* The ring of the provider actively serving the selected (best) model takes the highlight
+       blue; declared after .green/.amber/.red so it wins the cascade at equal specificity. */
+    .topo-provider-ring.selected { stroke: var(--success); opacity: 0.95; stroke-width: 1.8; filter: drop-shadow(0 0 5px var(--success)); }
 
     .topo-provider-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
 
@@ -442,15 +446,15 @@
        benched or down link to style separately. Exactly one of them is the serving path, which
        'selected' below marks. */
     .topo-link { fill: none; stroke: var(--text-muted); stroke-width: 0.8; opacity: 0.12; transition: all 1.5s ease-in-out; }
-    .topo-link.active { stroke: var(--success); stroke-width: 1.4; opacity: 0.45; }
-    /* The serving link — the active model to the provider serving it, out of the whole blue
-       mesh the one path in maroon, with a flowing dash animation so it reads at a glance, pulsing
+    .topo-link.active { stroke: var(--accent); stroke-width: 1.4; opacity: 0.45; }
+    /* The serving link — the active model to the provider serving it, out of the whole maroon
+       mesh the one path in blue, with a flowing dash animation so it reads at a glance, pulsing
        *into* the model from the provider that serves it. The path is drawn model -> provider (see the edge
        construction in drawBipartiteTopology) and a positive stroke-dashoffset shifts the dash
        pattern back toward the path's start, so the offset animates 0 -> +14 to send the pulses
        the other way. The negative value it used to carry read forwards instead and pulsed
        model -> provider, i.e. away from the model. */
-    .topo-link.selected { stroke: var(--accent); stroke-width: 1.8; opacity: 0.95; stroke-dasharray: 4 3; filter: drop-shadow(0 0 3px var(--accent)); animation: topo-link-flow 0.9s linear infinite; }
+    .topo-link.selected { stroke: var(--success); stroke-width: 1.8; opacity: 0.95; stroke-dasharray: 4 3; filter: drop-shadow(0 0 3px var(--success)); animation: topo-link-flow 0.9s linear infinite; }
     @keyframes topo-link-flow { to { stroke-dashoffset: 14; } }
 
     .topo-provider-label { fill: var(--text); font-size: 4px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.45; transition: all 1.5s ease-in-out; pointer-events: none; }
@@ -462,12 +466,12 @@
     .topo-provider-label.crowded { font-size: 3.4px; }
 
     .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-label.up { fill: var(--success); opacity: 0.5; }
+    .topo-model-label.up { fill: var(--accent); opacity: 0.5; }
     .topo-model-label.down { fill: var(--error); opacity: 0.35; }
 
     .current-core {
       fill: none;
-      stroke: var(--accent);
+      stroke: var(--success);
       stroke-width: 1;
       opacity: 0.2;
       transform-origin: center;
@@ -476,7 +480,7 @@
     }
 
     .current-pulse {
-      fill: var(--accent);
+      fill: var(--success);
       opacity: 0.1;
       transform-origin: center;
       animation: heart-beat 4s ease-in-out infinite alternate;
@@ -599,6 +603,12 @@
       }
 
       .quota-account-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .credential-pool-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -819,9 +829,74 @@
       border-top: 2px solid var(--border);
     }
 
-    /* Indent provider sub-rows under their model heading */
-    tr[data-row-type="row"] td:first-child {
+    /* Indent provider sub-rows under their model heading. The logo column leads every row, so
+       it is the name cell beside it — not the first cell — that moves in. */
+    tr[data-row-type="row"] td:nth-child(2) {
       padding-left: 40px;
+    }
+
+    /* The logo column: each model's own brand mark over its initial, so a row is identifiable
+       before the favicon loads and stays identifiable when no vendor domain resolves. The image
+       covers the monogram only when it actually paints; a failed fetch removes itself and leaves
+       the letter standing. */
+    .model-logo-cell {
+      width: 34px;
+      padding-right: 0;
+    }
+
+    .model-logo {
+      position: relative;
+      display: inline-grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      vertical-align: middle;
+    }
+
+    .model-logo-mono {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.68rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .model-logo-img {
+      position: absolute;
+      inset: 0;
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      object-fit: contain;
+      background: var(--surface-alt);
+    }
+
+    /* A stealth preview has no brand to draw — the lab behind the code name stays anonymous — so
+       it gets a dashed disc and a crossed-out eye instead of a letter that would read as one. */
+    .model-logo-stealth {
+      display: grid;
+      place-items: center;
+      width: 22px;
+      height: 22px;
+      border: 1px dashed var(--border);
+      border-radius: 50%;
+      background: var(--surface-alt);
+      color: var(--text-muted);
+    }
+
+    .model-logo-stealth svg {
+      width: 12px;
+      height: 12px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 2;
+      stroke-linecap: round;
     }
 
     /* Columns size to their own content (table-layout: auto, the default): the Model column gets
@@ -840,11 +915,15 @@
       vertical-align: middle;
     }
 
-    /* Model/name column: never truncate names — write them out in full, wrapping */
-    .table-wrap td:first-child {
+    /* Model/name column: never truncate names — write them out in full, wrapping. The main
+       table's logo column leads, so its name cell is the second one; the graveyard keeps the
+       name in the first. */
+    .table-wrap td:first-child,
+    #models-table td:nth-child(2) {
       white-space: normal;
     }
-    .table-wrap td:first-child div[style*="display:flex"] span:first-child {
+    .table-wrap td:first-child div[style*="display:flex"] span:first-child,
+    #models-table td:nth-child(2) div[style*="display:flex"] span:first-child {
       white-space: normal;
       min-width: 0;
       flex: 0 1 auto;
@@ -854,27 +933,157 @@
        table wider. The aggressive breaking belongs to the *cells*, which have to fit an error
        message into whatever width the column ends up with: a header only names its column, and
        breaking it mid-word ("Stat / us") is what a narrow column made of "Status". */
-    .table-wrap th:nth-child(6),
     .table-wrap th:nth-child(7),
-    .table-wrap th:nth-child(8) {
+    .table-wrap th:nth-child(8),
+    .table-wrap th:nth-child(9),
+    .table-wrap th:nth-child(10) {
       white-space: normal;
       line-height: 1.35;
     }
 
-    .table-wrap td:nth-child(6),
     .table-wrap td:nth-child(7),
-    .table-wrap td:nth-child(8) {
+    .table-wrap td:nth-child(8),
+    .table-wrap td:nth-child(9),
+    .table-wrap td:nth-child(10) {
       white-space: normal;
       overflow-wrap: anywhere;
       word-break: break-word;
       line-height: 1.35;
     }
 
-    .table-wrap td:nth-child(6) > div,
     .table-wrap td:nth-child(7) > div,
-    .table-wrap td:nth-child(8) > div {
+    .table-wrap td:nth-child(8) > div,
+    .table-wrap td:nth-child(9) > div,
+    .table-wrap td:nth-child(10) > div {
       min-width: 0;
       max-width: 100%;
+    }
+
+    /* Quota column: one compact stack per known token window. Every other cell is a single
+       value; this one is allowed to wrap and grow because it carries the denominator, the
+       remainder and the reset for each window the provider states. */
+    .quota-cell {
+      min-width: 220px;
+      max-width: 300px;
+      white-space: normal;
+      vertical-align: top;
+    }
+
+    .quota-row-windows {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .quota-row-window + .quota-row-window {
+      padding-top: 6px;
+      border-top: 1px solid var(--border);
+    }
+
+    .quota-row-window.is-stale {
+      opacity: 0.65;
+    }
+
+    .quota-row-window.is-unavailable {
+      opacity: 0.72;
+    }
+
+    .quota-row-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      line-height: 1.2;
+    }
+
+    .quota-row-period {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+    }
+
+    .quota-row-pct {
+      font-size: 0.68rem;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .quota-row-track {
+      height: 5px;
+      margin: 3px 0 2px;
+      border-radius: 999px;
+      background: var(--input-bg-alt);
+      overflow: hidden;
+    }
+
+    .quota-row-fill {
+      height: 100%;
+      border-radius: inherit;
+    }
+
+    .quota-row-fill-success { background: var(--success); }
+    .quota-row-fill-warning { background: var(--warning); }
+    .quota-row-fill-error { background: var(--error); }
+
+    .quota-row-track-unknown {
+      background: repeating-linear-gradient(
+        135deg,
+        var(--input-bg-alt) 0 3px,
+        var(--border) 3px 4px
+      );
+    }
+
+    .quota-row-fill-unknown { background: transparent; }
+
+    .quota-row-meta {
+      font-size: 0.67rem;
+      line-height: 1.3;
+      color: var(--text-muted);
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .quota-row-provider {
+      font-size: 0.65rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      margin-bottom: 3px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .quota-row-note {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 0.67rem;
+      line-height: 1.3;
+      color: var(--text-muted);
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+
+    .quota-row-note-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .quota-row-note a {
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }
+
+    .quota-row-note a:hover {
+      text-decoration: underline;
+    }
+
+    .quota-row-empty {
+      color: var(--text-muted);
+      font-size: 0.75rem;
     }
 
     @media (max-width: 640px) {
@@ -1266,7 +1475,18 @@
     .onboard-body {
       padding: 18px 22px 22px;
       overflow: auto;
-      max-height: calc(86vh - 200px);
+      max-height: calc(86vh - 260px);
+    }
+
+    /* The dismissal action sits outside the scrolling body: a long model list must not push
+       Cancel below the fold while a setup run is still going. */
+    .onboard-footer {
+      display: flex;
+      justify-content: flex-end;
+      flex: none;
+      padding: 12px 22px 18px;
+      border-top: 1px solid var(--border);
+      background: var(--card);
     }
 
     .onboard-note {
@@ -1563,13 +1783,33 @@
       text-decoration-thickness: 1px;
     }
 
-    /* The currently routed model row (pin > slope-line pick > intelligence ranking) */
+    /* A row nothing is currently serving is faded the same way the model's rating is when no
+       provider can take a request: still legible, but never competing with the rows that are
+       live. The mark is desaturated too, because an untouched brand colour would otherwise be
+       the one vivid thing left on an unavailable row. */
+    tr.row-not-up td {
+      opacity: 0.55;
+    }
+
+    tr.row-not-up .model-logo {
+      filter: grayscale(1);
+    }
+
+    /* The currently routed model row (pin > slope-line pick > intelligence ranking). The blue
+       is explicit rather than --accent: the accent is the app's red, so the old tint read as a
+       warning and at 7% it was almost invisible. The tint is also strong enough to survive the
+       fade a not-up row carries, and the edge matches the blue of an Up status dot. */
     tr.row-best td {
-      background: rgba(59, 130, 246, 0.07);
-      background: color-mix(in srgb, var(--accent) 7%, transparent);
+      background: rgba(59, 130, 246, 0.16);
     }
     tr.row-best td:first-child {
-      box-shadow: inset 3px 0 0 var(--accent);
+      box-shadow: inset 3px 0 0 #3b82f6;
+    }
+    [data-theme="dark"] tr.row-best td {
+      background: rgba(96, 165, 250, 0.18);
+    }
+    [data-theme="dark"] tr.row-best td:first-child {
+      box-shadow: inset 3px 0 0 #60a5fa;
     }
 
     /* A row currently being tested gets the same strong edge as the active row, in warning yellow. */
@@ -1763,6 +2003,148 @@
       border-radius: 8px;
     }
 
+    /* The credential pool is one quota bar per account, side by side. A segmented bar read as
+       one quota shared between accounts; separate bars make each account's reported remaining
+       quota and serving/limited/exhausted state legible on its own. */
+    .credential-pool-section {
+      margin-top: 10px;
+    }
+
+    .credential-pool-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .credential-pool-grid-single {
+      grid-template-columns: 1fr;
+    }
+
+    .credential-pool-account {
+      min-width: 0;
+      padding: 10px;
+      background: var(--card);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+    }
+
+    .credential-pool-account-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .credential-pool-label {
+      overflow: hidden;
+      color: var(--text);
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .credential-pool-state {
+      flex: none;
+      font-size: 0.58rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .credential-pool-state-serving {
+      color: var(--accent);
+    }
+
+    .credential-pool-state-exhausted {
+      color: var(--status-error-text);
+    }
+
+    .credential-pool-state-waiting {
+      color: var(--text-muted);
+    }
+
+    .credential-pool-state-limited {
+      color: var(--warning);
+    }
+
+    .credential-pool-track {
+      height: 6px;
+      margin-top: 6px;
+    }
+
+    .credential-pool-fill-serving {
+      background: var(--accent);
+    }
+
+    .credential-pool-fill-waiting {
+      background: var(--border);
+    }
+
+    .credential-pool-fill-exhausted {
+      background: var(--status-error-bg);
+      background-image: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 3px,
+        var(--status-error-border) 3px,
+        var(--status-error-border) 6px
+      );
+    }
+
+    .credential-pool-fill-limited {
+      background: var(--warning);
+    }
+
+    .credential-pool-fill-unknown {
+      width: 100%;
+      background: repeating-linear-gradient(
+        135deg,
+        var(--border) 0,
+        var(--border) 5px,
+        transparent 5px,
+        transparent 10px
+      );
+      opacity: 0.55;
+    }
+
+    .credential-pool-track-exhausted {
+      border-color: var(--status-error-border);
+    }
+
+    .credential-pool-track-limited {
+      border-color: var(--warning);
+    }
+
+    .credential-pool-track-unknown {
+      border-style: dashed;
+    }
+
+    .credential-pool-meta {
+      margin-top: 5px;
+      color: var(--text-muted);
+      font-size: 0.68rem;
+      line-height: 1.35;
+    }
+
+    .credential-pool-reset {
+      margin-left: 6px;
+      white-space: nowrap;
+    }
+
+    .credential-pool-summary {
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 0.72rem;
+    }
+
+    .credential-pool-note {
+      margin-top: 5px;
+      color: var(--text-muted);
+      font-size: 0.66rem;
+      line-height: 1.35;
+    }
+
     .quota-account-label {
       overflow: hidden;
       margin-bottom: 8px;
@@ -1812,6 +2194,21 @@
       height: 100%;
       min-width: 0;
       border-radius: inherit;
+    }
+
+    /* The tone classes publishedLimitHtml() puts on a recorded-vs-published bar. Without
+       these rules the fill was transparent: the track drew, the "5.8% used" label sat under
+       it, and the provider looked untouched because nothing was painted over the track. */
+    .quota-fill-success {
+      background: var(--success);
+    }
+
+    .quota-fill-warning {
+      background: var(--warning);
+    }
+
+    .quota-fill-error {
+      background: var(--error);
     }
 
     .quota-reset,

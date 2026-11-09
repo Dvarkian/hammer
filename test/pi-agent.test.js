@@ -10,7 +10,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { appendFileSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,8 +26,11 @@ import { PiBridge } from '../lib/pi/bridge.js'
 import {
   HAMMER_MODEL,
   HAMMER_PROVIDER,
+  compactionSettingsForFile,
   defaultAgentDirFor,
+  hammerCompactionSettings,
   hammerModelsConfig,
+  PI_COMPACTION_DEFAULTS,
   prepareHammerAgentDir,
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes } from '../lib/http/routes/pi.js'
@@ -510,6 +520,22 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // The trailing console is the conversation the record belongs to — a page can hold several.
   assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta, ctx\)/)
   assert.match(harness, /class="hx-thinking-text"/)
+  // Thinking is a disclosure on the spine: a station with its own mark, open while it is being
+  // written and folded once the message settles, like a finished tool call.
+  assert.match(harness, /<details class="hx-thinking \$\{settled \? 'settled' : 'running'\}"/)
+  assert.match(harness, /function thinkingIcon\(\)/)
+  assert.match(harness, /class="hx-thinking-icon"/)
+  assert.match(harness, /const open = block\.open \?\? !settled/)
+  assert.match(harness, /item\.settled = true/)
+  // A settled head states what the thought cost, and the reasoning figure comes from the
+  // message's own usage rather than an estimate: "Thought for 10s · 1.5k tokens."
+  assert.match(harness, /function thinkingLabel\(block, settled\)/)
+  assert.match(
+    harness,
+    /parts\.push\(`Thought for \$\{Math\.max\(1, Math\.round\(ms \/ 1000\)\)\}s`\)/,
+  )
+  assert.match(harness, /assignThinkingStats\(item, message\.usage\?\.reasoning\)/)
+  assert.match(harness, /k tokens/)
 
   // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
   // assistant message and grows it in production order.
@@ -542,6 +568,10 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   )
   assert.ok(!summary.includes('replace(/\\s+/g'), 'tool summaries keep newlines')
   assert.ok(!summary.includes('clip('), 'tool summaries are never trimmed')
+  // A read with a window shows the range after the filename — start and end lines only, since
+  // the line count is implied. A whole-file read keeps its bare path.
+  assert.match(summary, /\^read\(\?:_files\)\?\$/)
+  assert.match(summary, /\$\{args\.path\}:\$\{offset\}-\$\{offset \+ limit - 1\}/)
 
   // Sessions persist on the server; the rail lists them and opens one in a console of its own,
   // rebuilding the transcript from the session's own messages for a run this page never saw.
@@ -558,7 +588,31 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
 
   // A call that never returned — closed mid-command — keeps its row instead of vanishing.
   assert.match(harness, /for \(const \[key, call\] of calls\)/)
-  assert.match(harness, /status: 'running',\n {8}result: ''/)
+  // ...but it is not still running. A reopened session has no turn in flight, so the row says
+  // interrupted unless this console really is mid-run.
+  assert.match(harness, /status: ctx\.running \? 'running' : 'interrupted',\n {8}result: ''/)
+})
+
+test('a tool whose end never arrived is not left saying running', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+
+  // `tool_execution_start` and `tool_execution_end` are two records. A stop, a crashed or
+  // replaced child, or a bounded replay log that ends on the start can separate them for good,
+  // and the row then claims to be running forever. A tool cannot execute once its turn is over,
+  // so every place a run stops being live settles the rows still open.
+  assert.match(harness, /function settleOpenTools\(ctx = active\(\)\)/)
+  assert.match(harness, /item\.status = 'interrupted'/)
+  // The turn's own terminal events settle it, and so does a status frame that says idle.
+  assert.match(harness, /case 'agent_settled':[\s\S]{0,400}?settleOpenTools\(ctx\)/)
+  assert.match(harness, /case 'agent_end':[\s\S]{0,400}?settleOpenTools\(ctx\)/)
+  assert.match(harness, /if \(!ctx\.running\) settleOpenTools\(ctx\)/)
+  // A reopened session rebuilds from its file, so a call with no result is settled there too.
+  assert.match(harness, /status: ctx\.running \? 'running' : 'interrupted'/)
+  // The row reads as interrupted, quietly — not as a failure the command might not have caused.
+  assert.match(harness, /if \(item\.status === 'interrupted'\) return 'interrupted'/)
+  assert.match(css, /\.hx-tool\.interrupted \.hx-tool-icon \{/)
+  assert.match(css, /\.hx-tool\.interrupted \.hx-tool-state \{/)
 })
 
 test('the stop button exists only while the agent is running', () => {
@@ -654,6 +708,41 @@ test('the Pi settings block is optional, and the environment wins over the file'
   )
   assert.equal(env.command, '/env/pi')
   assert.equal(env.workspace, '/tmp/env-work')
+
+  // The compaction budgets are Hammer's answer to "how early should Pi start summarising".
+  // They are unset by default: an unset budget lets Pi keep its own default, which is the
+  // behaviour that survives a Pi upgrade — a written file would override whatever the new
+  // release chose instead.
+  assert.equal(defaults.compaction.enabled, true)
+  assert.equal(defaults.compaction.reserveTokens, null)
+  assert.equal(defaults.compaction.keepRecentTokens, null)
+
+  const budgeted = normalizePiSettings({
+    compaction: { reserveTokens: 32768, keepRecentTokens: 40000 },
+  })
+  assert.equal(budgeted.compaction.reserveTokens, 32768)
+  assert.equal(budgeted.compaction.keepRecentTokens, 40000)
+
+  // Bad numbers are dropped rather than written: a budget of 0 tells Pi to compact with no
+  // room for its reply, and a float is a syntax error in a config, not a rounding hint.
+  for (const bad of [0, -1, 1.5, '1024', NaN, Infinity, null]) {
+    const dropped = normalizePiSettings({ compaction: { reserveTokens: bad } })
+    assert.equal(dropped.compaction.reserveTokens, null, `${String(bad)} is not a budget`)
+  }
+
+  // A compaction block with no budgets is the same as no block: it writes nothing. The
+  // `enabled: false` case is the one thing that must survive alone, because a Pi left to its
+  // defaults compacts on its own whether or not the user wanted a growing context.
+  const off = normalizePiSettings({ compaction: { enabled: false } })
+  assert.equal(off.compaction.enabled, false)
+  assert.equal(off.compaction.reserveTokens, null)
+  assert.equal(hammerCompactionSettings(off.compaction)?.enabled, false)
+
+  // ...and a block that names only budgets does not turn auto-compaction off by
+  // accident: the file states `enabled`, and it states true.
+  assert.equal(hammerCompactionSettings(budgeted.compaction).enabled, undefined)
+  assert.equal(compactionSettingsForFile(budgeted.compaction).enabled, true)
+  assert.equal(hammerCompactionSettings(defaults.compaction), null, 'no budgets, no file')
 
   // The `pi` block has to survive config normalization, or it is silently lost on every save.
   const normalized = normalizeConfigShape({ pi: { provider: 'google', model: 'gemini' } })
@@ -791,6 +880,61 @@ test('preparing the agent directory writes the configuration and keeps instances
     defaultAgentDirFor('http://127.0.0.1:7353/v1'),
   )
   assert.match(defaultAgentDirFor('http://127.0.0.1:7352/v1'), /7352$/)
+})
+
+test('the compaction budgets are Pi defaults until one is set, and the file follows', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-compaction-'))
+  const agentDir = join(root, 'agent')
+
+  // No budgets means no settings file: Pi keeps its own defaults, and whatever those defaults
+  // become in a later Pi release is what this install runs. A file written here would freeze
+  // them to today's numbers for an install that never asked for anything.
+  const plain = prepareHammerAgentDir({ baseUrl: 'http://127.0.0.1:7352/v1', agentDir })
+  assert.ok(existsSync(plain.modelsPath), 'models.json is always written')
+  assert.equal(existsSync(plain.settingsPath), false)
+  assert.equal(hammerCompactionSettings(normalizePiSettings({}).compaction), null)
+
+  // The defaults are the ones Pi itself ships, so a reader can see the number that a
+  // compaction will be triggered at without opening Pi's source.
+  assert.equal(PI_COMPACTION_DEFAULTS.reserveTokens, 16384)
+  assert.equal(PI_COMPACTION_DEFAULTS.keepRecentTokens, 20000)
+  assert.ok(PI_COMPACTION_DEFAULTS.reserveTokens > 0)
+
+  // One budget set is enough to write the file; the rest fall back to Pi's own defaults
+  // rather than being spelled out twice in two places that will disagree.
+  const withOne = prepareHammerAgentDir({
+    baseUrl: 'http://127.0.0.1:7352/v1',
+    agentDir,
+    compaction: { enabled: true, reserveTokens: 24576, keepRecentTokens: null },
+  })
+  const written = JSON.parse(readFileSync(withOne.settingsPath, 'utf8'))
+  assert.equal(written.compaction.reserveTokens, 24576)
+  assert.equal(
+    written.compaction.keepRecentTokens,
+    PI_COMPACTION_DEFAULTS.keepRecentTokens,
+    'an unset budget inherits the Pi default rather than inventing one',
+  )
+
+  // Turning auto-compaction off is a budget in the same file. It is the one setting that
+  // reaches Pi even with no numbers attached, because Pi's default is to compact on its own.
+  const disabled = prepareHammerAgentDir({
+    baseUrl: 'http://127.0.0.1:7352/v1',
+    agentDir,
+    compaction: { enabled: false, reserveTokens: null, keepRecentTokens: null },
+  })
+  const off = JSON.parse(readFileSync(disabled.settingsPath, 'utf8'))
+  assert.equal(off.compaction.enabled, false)
+  assert.equal(off.compaction.reserveTokens, PI_COMPACTION_DEFAULTS.reserveTokens)
+
+  // Removing the budgets from the config removes the file, leaving Pi's own settings alone.
+  // Writing an empty block instead would silently override a file the user wrote by hand.
+  const cleared = prepareHammerAgentDir({
+    baseUrl: 'http://127.0.0.1:7352/v1',
+    agentDir,
+    compaction: normalizePiSettings({}).compaction,
+  })
+  assert.equal(existsSync(cleared.settingsPath), false, 'the file is removed, not blanked')
+  assert.ok(existsSync(cleared.modelsPath), 'models.json survives')
 })
 
 // ── The routes ───────────────────────────────────────────────────────────────────────────
@@ -1502,6 +1646,325 @@ test('a session renamed before can be renamed again, chaining to the newest leaf
   })
 })
 
+// ── Compaction ───────────────────────────────────────────────────────────────────────
+
+test('a compaction is reported in the transcript a user can see', async () => {
+  const { bridge } = makeFake()
+  try {
+    // The records the real agent emits, in the order it emits them: it is happening, why,
+    // then it is done and what it cost. A console that only rendered the end would show the
+    // boundary with no beginning, and a long silence in between would read as a hung agent.
+    const seen = []
+    // Status captured at the moment each record lands. The two compaction records arrive
+    // back to back, so by the time the awaited command resolves the in-flight state is over.
+    const atEvent = {}
+    bridge.on('event', (record) => {
+      seen.push(record)
+      if (record.type === 'compaction_start' || record.type === 'compaction_end')
+        atEvent[record.type] = bridge.status()
+    })
+
+    const streamed = await bridge.runCommand('compact')
+
+    // A compaction in flight is its own fact, not a turn: the phase is left alone (a
+    // threshold compaction happens between turns, an overflow one inside one) and
+    // `isCompacting` carries it. Conflating the two would make an idle agent look busy, and
+    // a busy one look like it was doing something else.
+    assert.equal(atEvent.compaction_start.isCompacting, true)
+    assert.equal(atEvent.compaction_start.compactionCount, 1)
+    assert.equal(atEvent.compaction_start.compactionReason, 'manual')
+    assert.equal(atEvent.compaction_start.phase, 'alive', 'a compaction is not a turn')
+
+    // Both halves of the pair are forwarded, in order, so a console can render the boundary
+    // and the two records cannot be confused for one.
+    assert.deepEqual(
+      seen.filter((r) => String(r.type).startsWith('compaction_')).map((r) => r.type),
+      ['compaction_start', 'compaction_end'],
+    )
+    const last = seen[seen.length - 1]
+    assert.equal(last.reason, 'manual')
+    assert.equal(last.result.tokensBefore, 118000)
+    assert.equal(last.result.estimatedTokensAfter, 34000)
+
+    // The outcome is carried forward as a fact of its own: the failure slot is distinct from
+    // the in-flight one, so a compaction that succeeded does not leave an error behind.
+    assert.equal(bridge.status().isCompacting, false)
+    assert.equal(bridge.status().compactionError, null)
+    assert.equal(bridge.status().phase, 'alive', 'a finished compaction is still not a turn')
+    assert.equal(bridge.status().compactionCount, 1, 'the count is a total, not a live flag')
+
+    // A manual compaction answers with its result directly, so a caller that wants the
+    // figures does not have to sift the event stream for them.
+    assert.equal(streamed.data.summary, 'Summary of everything above this point.')
+    assert.equal(streamed.data.tokensBefore, 118000)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a compaction that fails is reported, and it does not leave the agent stuck', async () => {
+  const { bridge, commands } = makeFake()
+  try {
+    await withEnv({ FAKE_PI_COMPACT_ERROR: 'The model refused to summarise' }, async () => {
+      // Pi answers a failed compaction with `success:false` and a message, and the bridge
+      // turns that into a rejection rather than an empty result: a caller must not be able to
+      // mistake a refusal for a compaction that succeeded and simply reported nothing.
+      await assert.rejects(() => bridge.runCommand('compact'), /refused to summarise/)
+      // ...and the failure is not recorded as a compaction that began: the count is of
+      // compactions that actually happened, or the UI would count refusals too.
+      assert.equal(bridge.status().compactionCount, 0)
+      assert.equal(bridge.status().isCompacting, false)
+      // The agent is left able to work, which is the whole of "does not get stuck": a later
+      // compaction is still allowed, because nothing here latches off.
+      await assert.doesNotReject(() => bridge.describe())
+      // ...and the refusal is on the command log, so a test can see the request was sent.
+      assert.match(commands().join('\n'), /compact/)
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the context window is reported, and a null token count is not a zero', async () => {
+  // The fake reads its environment once, at spawn, so each figure needs its own agent: an
+  // env set after the child is up is env the child never sees.
+  // A session that has never been compacted measures nothing yet. Pi reports null rather
+  // than guessing; the bridge must not turn that null into 0, which a context meter would
+  // draw as "empty" and a reader would trust. `get_session_stats` is read directly: the
+  // sync does not need a turn to have happened, which is the whole point of it.
+  await withEnv(
+    {
+      FAKE_PI_SESSION_STATS: JSON.stringify({
+        tokens: { input: 0, output: 0, total: 0 },
+        cost: 0,
+        contextUsage: { tokens: null, contextWindow: 131072, percent: null },
+      }),
+    },
+    async () => {
+      const { bridge } = makeFake()
+      try {
+        const synced = await bridge.syncUsageFromSession()
+        assert.equal(synced.contextUsage.contextWindow, 131072)
+        assert.equal(synced.contextUsage.tokens, null, 'null survives the trip')
+        // And the status card carries it, which is where the page reads it from.
+        assert.equal(bridge.status().contextUsage.tokens, null)
+      } finally {
+        bridge.dispose()
+      }
+    },
+  )
+
+  // And a measured session reports its real figures, against the real window.
+  await withEnv(
+    {
+      FAKE_PI_SESSION_STATS: JSON.stringify({
+        tokens: { input: 100000, output: 9000, total: 109000 },
+        cost: 0.12,
+        contextUsage: { tokens: 109000, contextWindow: 131072, percent: 83.1 },
+      }),
+    },
+    async () => {
+      const { bridge } = makeFake()
+      try {
+        const measured = await bridge.syncUsageFromSession()
+        assert.equal(measured.contextUsage.tokens, 109000)
+        assert.equal(measured.contextUsage.percent, 83.1)
+        // ...and the figure reaches the status card, which is where the page reads it from.
+        const status = bridge.status()
+        assert.equal(status.contextUsage.contextWindow, 131072)
+        assert.equal(status.contextUsage.tokens, 109000)
+      } finally {
+        bridge.dispose()
+      }
+    },
+  )
+})
+
+test('auto-compaction is read from Pi as three-valued, and a change is echoed back', async () => {
+  const { bridge } = makeFake()
+  try {
+    // Unset means "this Pi does not report it", which is not the same as "off". Both are read
+    // as they arrive: a bridge that folded them into one boolean would light a toggle for a
+    // Pi that has no auto-compaction to speak of.
+    await bridge.describe()
+    assert.equal(bridge.status().autoCompactionEnabled, null, 'not reported is not off')
+
+    await bridge.runCommand('set_auto_compaction', { enabled: false })
+    assert.equal(bridge.status().autoCompactionEnabled, false)
+
+    await bridge.runCommand('set_auto_compaction', { enabled: true })
+    assert.equal(bridge.status().autoCompactionEnabled, true)
+
+    // A fresh `get_state` reads it back from the agent rather than from what was sent, which
+    // is the only way to catch a Pi that ignored the command.
+    assert.equal(bridge.status().autoCompactionEnabled, true)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a bridge that is not allowlisted cannot compact', async () => {
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    let called = 0
+    bridge.send = async () => {
+      called += 1
+      return { data: {} }
+    }
+    // The allowlist is the harness's, not the caller's: `compact` is on it because it is a
+    // control a UI reasonably offers, but the command itself stays gated on the bridge.
+    await assert.rejects(() => bridge.runCommand('unknown_thing', { a: 1 }), /not allowed/)
+    await bridge.runCommand('compact')
+    assert.equal(called, 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the harness renders a compaction as a row in the transcript', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+
+  // Both halves of the event are handled: the start says it is happening, the end says what
+  // it cost. Handling only the end would leave a reader with a boundary and no explanation.
+  assert.match(harness, /case 'compaction_start'/)
+  assert.match(harness, /case 'compaction_end'/)
+
+  // The row is its own kind, not a notice: a compaction is a boundary in the conversation
+  // with figures attached, and the markup carries them.
+  assert.match(harness, /if \(item\.kind === 'compaction'\) return compactionMarkup\(item\)/)
+  assert.match(harness, /function compactionMarkup\(item\)/)
+  assert.match(harness, /compactionReasonLabel/)
+
+  // The summary is available — it is the only thing left of the turns above the line — but
+  // behind a disclosure, so it is not re-read as the current instruction.
+  assert.match(harness, /<details class="hx-compaction-summary">/)
+
+  // The figures and the reason are computed, and the meter knows the three states it can be
+  // in: measured, not measurable, and no window at all.
+  assert.match(harness, /function compactionFigures\(/)
+  assert.match(harness, /function renderContext\(/)
+  assert.match(harness, /if \(window_ <= 0\)/)
+  assert.match(harness, /context not measured/)
+
+  // The control is reachable the ways a user reaches anything else: the palette and a slash
+  // command.
+  assert.match(harness, /\{ label: 'Compact the context', hint: '\/compact'/)
+  assert.match(harness, /text === '\/compact'/)
+  assert.match(harness, /await compactNow\(/)
+
+  for (const selector of ['.hx-compaction', '.hx-compaction-head', '.hx-context-note']) {
+    assert.match(css, new RegExp(selector.replace('.', '\\.')))
+  }
+})
+
+test('the compaction panel is repainted by the status frames the page actually receives', () => {
+  // This is the assertion that would have caught the bug. `refreshStatus` repaints the
+  // panel, but `refreshStatus` is a poll: an agent that answers a status request only
+  // when the page asks for one. Everything a page *sees* between polls comes from
+  // `applyStatusFrame`, folding the SSE frames, so a panel that is only painted from a
+  // poll is a panel that is stale for as long as the stream is quiet.
+  //
+  // The threshold compaction is exactly the case that matters: it happens inside a turn
+  // nobody asked for, and the "Pi is compacting — …" note and the compaction count are the
+  // only things on screen that can explain a turn that has gone quiet. A panel painted
+  // from a poll alone shows a hung agent for the whole of that silence.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+
+  const frame = harness.match(
+    /function applyStatusFrame\(ctx, status\) \{[\s\S]*?\n[ ]{2}\}\n\n[ ]{2}\/\*\* Applies one live frame/,
+  )
+  assert.ok(frame, 'applyStatusFrame exists, so the assertion below tests the real function')
+  assert.match(
+    frame[0],
+    /renderCompactionPanel\(ctx\)/,
+    'the panel is repainted from a status frame, not only from a poll',
+  )
+})
+
+test('the Compact now button says what it is doing while a compaction runs', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+
+  // A compaction is an LLM call that runs for many seconds. The hint line is the only
+  // feedback `compactNow` gave while it waited — a line of text at the bottom of the
+  // composer the user may not be looking at, next to a button that still looked available.
+  // A second click therefore started a second compaction on a conversation the first had
+  // not finished resetting, and with no in-flight marker the button gave no sign it had been
+  // heard at all. Both halves are pinned here: it turns itself off, and it says why.
+  const compacting = harness.match(
+    /async function compactNow\(instructions = ''\) \{[\s\S]*?\n[ ]{2}\}\n\n[ ]{2}\/\*\*\n[ ]{3}\* Turns Pi's auto-compaction on or off/,
+  )
+  assert.ok(compacting, 'compactNow exists, so the assertions below test the real function')
+  const body = compacting[0]
+  assert.match(body, /button\.disabled = true/, 'the button refuses a second click')
+  assert.match(body, /'Compacting…'/, 'the label names what is happening')
+  assert.match(
+    body,
+    /finally \{[\s\S]*?restore\(\)/,
+    'the label and the disabled state are restored even when the compaction fails',
+  )
+
+  // The repaint must respect that in-flight state. `renderCompactionPanel` runs from every
+  // status frame, so a frame arriving mid-compaction would otherwise snap the label back to
+  // "Compact now" with a compaction still running — which is precisely the feedback gap,
+  // reintroduced by the very code that fixes the panel.
+  assert.match(
+    harness,
+    /button\.dataset\.working === 'true' \|\| status\.isCompacting === true/,
+    'the repaint keeps the button saying Compacting… while it is',
+  )
+  assert.match(css, /data-compaction-now\]\[data-working='true'\]/)
+})
+
+test('the compaction panel says why a compaction is running, from either cause', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  // The note is what explains a turn that has gone quiet. "You asked for it" and "the
+  // context is nearly full" are different sentences on purpose: one is the user's own
+  // button, the other is the agent protecting itself, and a reader cannot tell them apart
+  // from a bare spinner.
+  assert.match(harness, /compactionReason === 'manual'/)
+  assert.match(harness, /compactionReason === 'overflow'/)
+  assert.match(harness, /note\.textContent = `Pi is compacting — /)
+})
+
+test('a compaction row is drawn for both halves of the event pair', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  // The transcript's compaction row is what the user actually watches. `state: 'running'`
+  // is the only thing on screen between the two records, and without the `compaction_start`
+  // half of it the end record would have no row to attach its figures to.
+  assert.match(harness, /state: 'running'/)
+  assert.match(harness, /lastCompaction\(ctx\)/)
+  assert.match(
+    harness,
+    /item\.state = record\.aborted \? 'aborted' : record\.errorMessage \? 'error' : 'done'/,
+  )
+  // The row's figures and the button's success line must be the same rounded tokens, so a
+  // reader who watched the row sees the same numbers the hint then repeats.
+  assert.match(harness, /window\.hxCompact = compact/)
+})
+
+test('the console renders compaction state from the status the bridge reports', async () => {
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    await bridge.describe()
+    const status = bridge.status()
+    // Every compaction fact a UI needs is on the status card, so the page never has to
+    // guess from an event stream it was not listening to.
+    for (const key of [
+      'isCompacting',
+      'autoCompactionEnabled',
+      'compactionReason',
+      'compactionError',
+    ]) {
+      assert.ok(key in status, `${key} is on the status card`)
+    }
+    assert.equal(typeof status.compactionCount, 'number')
+  } finally {
+    bridge.dispose()
+  }
+})
+
 test('images are attached to a prompt and sent to Pi', async () => {
   const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
   try {
@@ -1887,6 +2350,118 @@ test('a Beam response is continued after the router has already picked another m
     })
 
     await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+/**
+ * One `agent_end` for a run the provider cut off at the output budget, the way a reasoning
+ * model does it: the whole budget goes on thinking and the turn ends with nothing visible.
+ */
+function endLengthTurn(
+  bridge,
+  { routedModel = 'kilocode/nvidia/nemotron-3.5-super-vl:free', text = '', toolCall = false } = {},
+) {
+  bridge.routedModel = () => routedModel
+  /** @type {any[]} */
+  const content = [{ type: 'thinking', thinking: 'Weighing where the spine should attach.' }]
+  if (text) content.push({ type: 'text', text })
+  if (toolCall) {
+    content.push({ type: 'toolCall', id: 't9', name: 'bash', arguments: { command: 'ls' } })
+  }
+  bridge.track({
+    type: 'agent_end',
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'Finish the spine art.' }] },
+      { role: 'assistant', stopReason: 'length', content },
+    ],
+  })
+  bridge.track({ type: 'agent_settled' })
+}
+
+test('a turn cut off by the output limit is continued, whatever the model', async () => {
+  // Observed live: nemotron and stepfun spent all 8192 output tokens thinking, so the turn
+  // ended with no text and no tool call and the console went idle until "Continue" was typed.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {string[]} */
+    const prompts = []
+    bridge.prompt = async (message) => {
+      prompts.push(message)
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endLengthTurn(bridge)
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0], /cut off by the output limit/)
+    assert.match(bridge.status().notes.join('\n'), /output limit cut off \(1\)/)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a length cut that produced prose is continued too', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endLengthTurn(bridge, { text: 'The spine should run between the icon rows so that' })
+
+    await waitFor(() => prompts === 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a length cut that already made its tool call is left to the tool loop', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    endLengthTurn(bridge, { toolCall: true })
+
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('length continuations are not capped at any fixed number', async () => {
+  // A length cut is the provider's doing, not the model declaring it is done, so there is no
+  // count at which the turn has become an answer. The chain continues until the work is
+  // finished or someone presses Stop; the auto-continue limit must not shorten it.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1, autoContinueLimit: 3 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    for (let attempt = 1; attempt <= 6; attempt += 1) {
+      endLengthTurn(bridge)
+      await waitFor(() => prompts === attempt)
+    }
+
+    assert.equal(prompts, 6)
+    const notes = bridge.status().notes.join('\n')
+    assert.match(notes, /output limit cut off \(6\)/)
+    assert.doesNotMatch(notes, /Stopped continuing/)
   } finally {
     bridge.dispose()
   }

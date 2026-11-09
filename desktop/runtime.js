@@ -23,6 +23,20 @@ export function dashboardUrl(port, host = LOOPBACK_HOST) {
   return `http://${host}:${port}/`
 }
 
+/**
+ * Only HTTP(S) URLs are safe to hand to the system browser. In particular, a `file:` or
+ * `javascript:` URL must never reach `shell.openExternal`, and protocol handlers such as
+ * `kiro://` are pasted back into the dashboard rather than launched from here.
+ */
+export function isBrowserOpenableUrl(value) {
+  try {
+    const { protocol } = new URL(String(value || ''))
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function toPort(value) {
   const port = Number(value)
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null

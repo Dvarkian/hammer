@@ -54,6 +54,11 @@ note(`argv:${JSON.stringify(argv.slice(2))}`)
 
 // Parse `--session <path>` so get_state reports the correct file.
 let fakeSessionFile = process.env.FAKE_PI_SESSION_FILE || null
+// `autoCompactionEnabled` stays null until something says whether this fake supports the
+// switch, because a bridge reading Pi's state must be able to tell "off" from "not reported".
+const initialAuto = process.env.FAKE_PI_AUTO_COMPACTION
+let autoCompactionEnabled = initialAuto === '0' || initialAuto === '1' ? initialAuto === '1' : null
+let compacting = false
 for (let i = 2; i < argv.length; i++) {
   if (argv[i] === '--session' && i + 1 < argv.length) {
     fakeSessionFile = argv[i + 1]
@@ -103,6 +108,11 @@ function handle(command) {
         sessionFile: fakeSessionFile,
         // Echoed so a test can prove which configuration directory the child inherited.
         agentDir: process.env.PI_CODING_AGENT_DIR || null,
+        // Pi's own answers about compaction. `autoCompactionEnabled` is unset unless a test
+        // has said whether this fake supports the switch, because a bridge must be able to
+        // tell "off" from "not reported" — and the same for a compaction in flight.
+        ...(autoCompactionEnabled === null ? {} : { autoCompactionEnabled }),
+        ...(compacting ? { isCompacting: true } : {}),
       })
       return
 
@@ -231,6 +241,40 @@ function handle(command) {
 
     case 'get_session_stats':
       respond(command, envJson('FAKE_PI_SESSION_STATS') || { tokens: { total: 42 }, cost: 0 })
+      return
+
+    case 'compact': {
+      // A compaction aborts the running turn first, and its result is the payload a manual
+      // caller reads back. The envs let a test drive both halves: what pi reports, and
+      // whether it refuses.
+      const failure = process.env.FAKE_PI_COMPACT_ERROR
+      if (failure) {
+        respond(command, null, false, failure)
+        return
+      }
+      const result = envJson('FAKE_PI_COMPACT_RESULT') || {
+        summary: 'Summary of everything above this point.',
+        firstKeptEntryId: 'entry-7',
+        tokensBefore: 118000,
+        estimatedTokensAfter: 34000,
+      }
+      // In flight, then done, with the response last: the same order the real agent uses, so
+      // a bridge that waits for the answer still sees both records on its event stream.
+      compacting = true
+      write({ type: 'compaction_start', reason: 'manual' })
+      write({ type: 'compaction_end', reason: 'manual', result })
+      compacting = false
+      respond(command, result)
+      return
+    }
+
+    case 'set_auto_compaction':
+      if (process.env.FAKE_PI_AUTO_COMPACTION_UNSUPPORTED === '1') {
+        respond(command, null, false, 'unknown command: set_auto_compaction')
+        return
+      }
+      autoCompactionEnabled = Boolean(command.enabled)
+      respond(command, null)
       return
 
     case 'new_session':

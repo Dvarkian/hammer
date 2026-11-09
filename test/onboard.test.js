@@ -90,6 +90,10 @@ test('the dashboard popup drives, polls, and hands off to the plots', () => {
   assert.match(index, /id="provider-onboard-modal"/)
   assert.match(index, /id="provider-onboard-stages"/)
   assert.match(index, /id="provider-onboard-body"/)
+  // Cancel belongs in the fixed footer, not the scrolling body, so a long model list cannot hide it.
+  assert.match(index, /id="provider-onboard-cancel"[^>]*>Cancel</)
+  assert.match(dashboard, /function cancelProviderOnboardingOrClose\(/)
+  assert.match(dashboard, /function setProviderOnboardFooterAction\(/)
   assert.match(dashboard, /function runProviderOnboarding\(/)
   assert.match(dashboard, /function pollOnboardJob\(/)
   assert.match(dashboard, /function resumeOnboardingIfRunning\(/)

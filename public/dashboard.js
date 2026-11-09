@@ -311,9 +311,15 @@
     // provider::model -> time-series usage samples for the usage plots.
     // Each entry is { t: epochMs, ttft: ms|null, tps: tok/s|null, tokens: count|null }.
     const usageSeriesByKey = new Map();
-    // The same samples, restricted to what the running router process served (the
-    // "current session" plot). The all-time view is the map above.
+    // The same samples, restricted to the conversation the agent rail is showing. That
+    // plot is the transcript's own history — every turn it ever had — not what the running
+    // router process happened to serve, so it is published per console (see
+    // publishSessionUsage) rather than sliced out of the map above.
     const usageSessionByKey = new Map();
+    // Which session the plot above is currently showing. The rail's plot describes one
+    // conversation (see publishSessionUsage), and it is redrawn whenever that conversation
+    // changes — so the label and the data are always about the same transcript.
+    let usageSessionShown = null;
     // Last time the series was fetched (so we only pull deltas).
     let usageSeriesLastFetchedAt = null;
     // In-flight guard so overlapping series fetches can't clobber each other.
@@ -439,6 +445,31 @@
     let codexDeviceAuthState = null;
     let codexDevicePollTimer = null;
     let codexUiMessage = null;
+    let googleAuthState = null;
+    let googleAuthPollTimer = null;
+    let googleUiMessage = null;
+
+    // OAuth consent pages belong in the user's real browser, not an embedded Electron window.
+    // The desktop preload hands the URL to the main process, which validates it and calls
+    // shell.openExternal; a normal browser keeps its existing new-tab behaviour.
+    async function openExternalAuthUrl(url) {
+      const target = String(url || '').trim();
+      if (!target) return false;
+      if (window.hammerDesktop && typeof window.hammerDesktop.openExternal === 'function') {
+        try {
+          return Boolean(await window.hammerDesktop.openExternal(target));
+        } catch {
+          return false;
+        }
+      }
+      try {
+        window.open(target, '_blank', 'noopener,noreferrer');
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
     const MODEL_ID_ALIASES = {
       'mimo-v2-omni-free': 'xiaomi/mimo-v2-omni:free',
       // g4f backends serve these under their own repo spellings; they are the same
@@ -551,6 +582,14 @@
       }
       return hrefs;
     }
+
+    // How the models table resolves a row's own brand domain. The model-family → vendor map
+    // lives in drawPlots, which draws the same mark on the plot's model nodes, so it publishes
+    // its resolver here rather than the table keeping a second copy that could drift. A model the
+    // map cannot name resolves to '' and keeps its monogram, and before the plots have drawn once
+    // there is nothing to ask — which costs nothing, because the first table paint is monograms by
+    // design and the brand marks arrive with decorationsReady (see the idle pass).
+    let modelDomainFor = () => '';
 
     // Named when it is the exception, silent when it is not: a stale router is worth one line on
     // the plot, and a healthy one is worth none.
@@ -814,6 +853,10 @@
           applyProviderRoster(lastProviderRoster);
           decorationsReady = true;
           drawPlots(allModels, currentBestModelId, currentBestProviderKey);
+          // The table's logo column is monograms until brand marks are allowed (faviconHrefs
+          // answers nothing before the flag above), and the resolver only exists once the plots
+          // have drawn. One re-render swaps the marks in; later refreshes resolve them directly.
+          render(false);
           perfMark('plots');
           // The grid is only touched when it is on screen (the models or settings tab). It is the
           // last thing on the page and the most expensive to build — ~125 cards — so it goes
@@ -902,9 +945,16 @@
         }
         // The session view is authoritative from the server (it knows when its own
         // process started), so it replaces the local copy rather than being merged.
-        usageSessionByKey.clear();
-        for (const [key, pts] of Object.entries(session)) {
-          if (Array.isArray(pts)) usageSessionByKey.set(key, pts);
+        //
+        // It is only the router's own view while no conversation has claimed the plot.
+        // Once the agent rail has published a transcript's history, that is the answer the
+        // rail's reader came for and a background snapshot must not overwrite it with the
+        // uptime view (see publishSessionUsage).
+        if (usageSessionShown == null) {
+          usageSessionByKey.clear();
+          for (const [key, pts] of Object.entries(session)) {
+            if (Array.isArray(pts)) usageSessionByKey.set(key, pts);
+          }
         }
         usageSeriesLastFetchedAt = data?.at != null ? Number(data.at) : Date.now();
       } catch { /* best effort */ }
@@ -2189,20 +2239,49 @@
       return v.toPrecision(3);
     };
 
-    // Build a polyline path from a series of points mapped into the plot box.
-    // `valueOf(p)` picks which field of each sample to plot (tps, ttft, tokens).
-    function usageLinePath(points, xOf, yOf, valueOf) {
-      let d = '';
-      let first = true;
+    // ── The axis all three usage plots share ─────────────────────────────────────────
+    //
+    // Every usage plot encodes tokens as area, so two things decide a column: how many
+    // tokens its slice holds, and how wide that slice is on the axis. Idle time is the trap.
+    // A model can sit unused for hours between turns, and a wall-clock axis spends almost all
+    // of its width on that silence: the burst at the next turn collapses into a pixel, and a
+    // quiet row reads as an empty plot. Gaps longer than USAGE_GAP_CAP_MS are therefore
+    // collapsed to that cap — enough to keep the shape of a quiet stretch, never enough to
+    // decide the scale — and the columns are cut over that compressed axis.
+    const USAGE_GAP_CAP_MS = 5 * 60_000;
+
+    // Real sample times → the collapsed axis. Monotone, and the only place the collapse
+    // happens, so all three plots map time the same way.
+    function usageCompressedSeries(points) {
+      const out = [];
+      let cx = 0;
+      let prev = null;
       for (const p of points) {
-        const v = valueOf(p);
-        if (v == null || !Number.isFinite(v)) continue;
-        const x = xOf(p.t);
-        const y = yOf(v);
-        if (first) { d = `M ${x} ${y}`; first = false; }
-        else d += ` L ${x} ${y}`;
+        const t = Number(p.t);
+        if (prev != null) cx += Math.min(Math.max(0, t - prev), USAGE_GAP_CAP_MS);
+        prev = t;
+        out.push({ p, cx });
       }
-      return d;
+      return out;
+    }
+
+    // Cuts the collapsed axis into `binTarget` equal slices and sums the tokens in each.
+    // `seconds` is one slice's width on that axis — the divisor that turns a slice's token
+    // total into the rate drawn as its height, and the reason height × width is its tokens.
+    // A single sample has no span to divide by, so it is counted a second wide rather than
+    // as milliseconds.
+    function usageTokenBins(compressed, binTarget, keyOf) {
+      const binCount = Math.max(1, Math.min(binTarget, compressed.length));
+      const span = compressed[compressed.length - 1].cx || 1;
+      const seconds = Math.max(1000, span / binCount) / 1000;
+      const bins = Array.from({ length: binCount }, () => ({ tokens: 0, key: '', t: null }));
+      for (const { p, cx } of compressed) {
+        const b = bins[Math.min(binCount - 1, Math.floor((cx / span) * binCount))];
+        b.tokens += Number(p.tokens) || 0;
+        if (b.t == null) b.t = Number(p.t);
+        b.key = keyOf(p) || b.key;
+      }
+      return { bins, binCount, seconds };
     }
 
     // Draw one time-series plot inside an SVG element.
@@ -2233,10 +2312,13 @@
       }
       allPoints.sort((a, b) => Number(a.t) - Number(b.t));
 
-      // Filter out points with no plottable value.
+      // Filter out samples that contribute no volume. The plotted quantity is the token
+      // count each request accounts for (see valueOf in drawUsagePlots): a sample with no
+      // reported tokens has nothing to add to the area, so it is dropped rather than drawn
+      // as a zero.
       const plottable = allPoints.filter(p => {
         const v = options.valueOf(p);
-        return v != null && Number.isFinite(v);
+        return v != null && Number.isFinite(v) && v >= 0;
       });
 
       if (plottable.length === 0) {
@@ -2247,19 +2329,7 @@
       svg.style.display = 'block';
       if (empty) empty.style.display = 'none';
 
-      const tMin = plottable[0].t;
-      const tMax = plottable[plottable.length - 1].t;
-      const tSpan = tMax - tMin || 1;
-      const values = plottable.map(p => options.valueOf(p));
-      // Tokens per second is a rate, so the floor is zero: a value below it would draw
-      // below the axis and read as a negative speed, which nothing measures.
-      const vMin = 0;
-      const vMax = Math.max(...values, 0) || 1;
-      const yHeadroom = vMax * 1.1;
-
-      const yOf = (v) => pad.top + plotH - (v / yHeadroom) * plotH;
-
-      // Which row each point came from, so a bucket can be coloured by the provider that
+      // Which row each point came from, so a column can be coloured by the provider that
       // landed last in it (the points arrive flattened, without their keys attached).
       const keyOf = new Map();
       for (const [key, pts] of Object.entries(pointsByKey)) {
@@ -2267,21 +2337,37 @@
         for (const p of pts) if (p && typeof p === 'object') keyOf.set(p, key);
       }
 
-      // ── Bin into ~100 equal time buckets, averaging within each ──
-      // Averaging (not summing) keeps a burst of fast requests in one bucket from reading
-      // as a taller column than the rates it actually contained: what the plot describes
-      // is speed over time, not volume. A bucket's colour is the hue of the request that
+      // ── Cut the collapsed axis into ~100 equal slices, summing volume in each ──
+      // The area under this curve is the number being read. A column's height is the tokens
+      // that landed in its slice divided by the slice's own width in collapsed seconds, so
+      // height × width = tokens for every column and the whole plot integrates to the tokens
+      // Hammer actually served. Averaging per-request tok/s — what this used to do — drew a
+      // speed instead, and integrating a speed over wall-clock time charges every idle gap as
+      // tokens that were never generated. A column's colour is the hue of the request that
       // landed last in it, so a column is never a blend the legend cannot name.
       const BIN_TARGET = 100;
-      const binCount = Math.max(1, Math.min(BIN_TARGET, plottable.length));
-      const bins = Array.from({ length: binCount }, () => ({ sum: 0, n: 0, key: '' }));
-      for (const p of plottable) {
-        const idx = Math.min(binCount - 1, Math.floor(((p.t - tMin) / (tSpan || 1)) * binCount));
-        const b = bins[idx];
-        b.sum += options.valueOf(p);
-        b.n += 1;
-        b.key = keyOf.get(p) || b.key;
+      const { bins, binCount, seconds } = usageTokenBins(
+        usageCompressedSeries(plottable),
+        BIN_TARGET,
+        (p) => keyOf.get(p) || '',
+      );
+
+      // A tick label needs a real timestamp. A quiet slice carries none, so it inherits the
+      // one to its left (and the stretch before the first request the one to its right): the
+      // label then describes the quiet time rather than inventing a date.
+      const firstKnownT = bins.find((b) => b.t != null)?.t ?? Number(plottable[0].t);
+      let cursorT = firstKnownT;
+      for (const b of bins) {
+        if (b.t == null) b.t = cursorT;
+        else cursorT = b.t;
       }
+
+      // The tallest column sets the scale. Tokens per second is a rate, so the floor is zero:
+      // a value below it would draw under the axis and read as a negative speed, which
+      // nothing measures.
+      const vMax = Math.max(...bins.map((b) => b.tokens / seconds), 0) || 1;
+      const yHeadroom = vMax * 1.1;
+      const yOf = (v) => pad.top + plotH - (v / yHeadroom) * plotH;
 
       // Columns: one rect per non-empty bucket. Width leaves a hair of gap so the
       // buckets read as columns rather than one solid band.
@@ -2289,11 +2375,13 @@
       const barW = Math.max(1, binW - Math.min(2, binW * 0.18));
       for (let i = 0; i < binCount; i++) {
         const b = bins[i];
-        if (b.n === 0) continue;
-        const avg = b.sum / b.n;
+        if (b.tokens <= 0) continue;
+        // The slice's tokens per second of its own width — the rate whose area over
+        // `seconds` is exactly the tokens that landed in the slice.
+        const rate = b.tokens / seconds;
         const hue = usageProviderHue((b.key || '').split('::')[0]);
         const x = pad.left + i * binW + (binW - barW) / 2;
-        const y = yOf(avg);
+        const y = yOf(rate);
         svg.appendChild(usageSvgEl('rect', {
           x: x.toFixed(2),
           y: y.toFixed(2),
@@ -2307,9 +2395,9 @@
       }
 
       // ── Columns drawn above replace the old per-series lines, areas and single-point
-      // dots: one averaged bucket per column describes the same data with less ink, and
-      // a lone request gets its own 1-sample bucket instead of disappearing (< 2 points
-      // used to mean an invisible series).
+      // dots: one bucket per column describes the same data with less ink, and a lone
+      // request gets its own bucket instead of disappearing (< 2 points used to mean an
+      // invisible series).
 
       // Grid lines + axes.
       const muted = getComputedStyle(document.documentElement).getPropertyValue('--text-muted') || '#999';
@@ -2327,9 +2415,10 @@
         txt.textContent = fmtTps(v);
         svg.appendChild(txt);
       }
-      // Time axis labels — bucket-aligned: label i sits at the centre of bucket
-      // floor(i * binCount / 4), so the stamps describe the columns rather than
-      // arbitrary fractions of the span.
+      // Time axis labels — slice-aligned: label i sits at the centre of slice
+      // round(i * binCount / 4) and carries that slice's timestamp. The axis is idle-
+      // collapsed, so the stamps say when each column of activity happened rather than
+      // marking a uniform fraction of the wall-clock span.
       const fmtTime = (t) => {
         const d = new Date(t);
         return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -2342,7 +2431,7 @@
           x: x.toFixed(2), y: pad.top + plotH + 15,
           fill: muted, 'font-size': '8px', 'text-anchor': 'middle',
         });
-        txt.textContent = fmtTime(tMin + (bi / Math.max(1, binCount - 1)) * tSpan);
+        txt.textContent = fmtTime(bins[bi].t);
         svg.appendChild(txt);
       }
       // Y axis label.
@@ -2355,23 +2444,93 @@
       svg.appendChild(yLab);
     }
 
+    /**
+     * Hands the rail's session plot the transcript it should describe.
+     *
+     * The plot used to draw the router's "this process" view of /api/usage-series, which
+     * is only what the running server happened to serve: a conversation resumed after a
+     * restart, or one opened from an earlier day, drew as an empty plot with a label that
+     * claimed a history it was not showing. The session file is the authority — it holds
+     * every turn the conversation ever had, each with its own timestamp and billed tokens
+     * — so the agent page publishes that history here and the plot draws it.
+     *
+     * `null` releases the plot back to the router's own view (a closed conversation, or one
+     * with no session file yet). The redraw is requested rather than performed: the rail is
+     * usually hidden when this is called, and a plot measured while hidden is a plot drawn
+     * at the fallback size (see drawUsagePlot's fallback, and showView's redraw on the way
+     * back to the agent view).
+     *
+     * @param {string|null} session the session file path, or null to release the plot
+     * @param {{ t: number, tokens: number|null }[]} points the transcript's samples
+     */
+    function publishSessionUsage(session, points) {
+      // The same conversation repainting (a status frame, a resumed turn) must not clear the
+      // plot on its way to the same picture: that flash reads as "the history is gone".
+      if (session === usageSessionShown && Array.isArray(points)) {
+        applySessionUsagePoints(points);
+        return;
+      }
+      usageSessionShown = session;
+      if (session == null) {
+        usageSessionByKey.clear();
+        return;
+      }
+      applySessionUsagePoints(points);
+    }
+
+    /** Replaces the plot's data with one conversation's samples, then asks for a repaint. */
+    function applySessionUsagePoints(points) {
+      // One row is enough and is the honest one: every message in a session was served by
+      // the same `hammer::best` alias, so a per-model key would be a claim about which
+      // upstream answered — which the file does not record. The provider hue still
+      // distinguishes the columns the way the router's own view does.
+      usageSessionByKey.clear();
+      const shaped = (Array.isArray(points) ? points : [])
+        .map((p) => ({
+          t: Number(p?.t),
+          ttft: null,
+          tps: null,
+          tokens: Number(p?.tokens) || 0,
+        }))
+        .filter((p) => Number.isFinite(p.t));
+      usageSessionByKey.set('hammer::best', shaped);
+      requestSessionPlotRedraw();
+    }
+
+    /** The rail is usually hidden; redraw it when it next has a real box. */
+    function requestSessionPlotRedraw() {
+      if (typeof requestAnimationFrame !== 'function') return;
+      requestAnimationFrame(() => {
+        // Only the agent's rail holds this plot. While the router view is on screen it is
+        // laid out at zero size, so a draw now would measure the fallback box and the reader
+        // would see a plot sized for a width it does not have.
+        if (document.body?.dataset?.view !== 'agent') return;
+        drawUsagePlot('usage-session-svg', Object.fromEntries(usageSessionByKey), {
+          valueOf: (p) => p.tokens,
+          yLabel: 'tokens/s',
+          fallback: { width: 240, height: 120 },
+          pad: { top: 10, right: 8, bottom: 16, left: 30 },
+        });
+      });
+    }
+
     // Draw both usage plots from the current series state, then every visible row's
     // per-model sparkline. The sparkline pass is last and separately id'd so it can also
     // run on its own from the 'usage' router event (see connectRouterEvents).
     function drawUsagePlots() {
-      // Session plot: only what the running router process served. It renders in the
-      // agent page's inspector rail, which is often hidden when this runs (the page boots
-      // on the router view), so the fallback box and the tighter padding match the rail
-      // rather than the wide cards this plot used to live in.
+      // Session plot: the conversation the agent rail is showing, from its own transcript.
+      // It renders in the agent page's inspector rail, which is often hidden when this runs
+      // (the page boots on the router view), so the fallback box and the tighter padding
+      // match the rail rather than the wide cards this plot used to live in.
       drawUsagePlot('usage-session-svg', Object.fromEntries(usageSessionByKey), {
-        valueOf: (p) => p.tps,
+        valueOf: (p) => p.tokens,
         yLabel: 'tokens/s',
         fallback: { width: 240, height: 120 },
         pad: { top: 10, right: 8, bottom: 16, left: 30 },
       });
       // Global plot: every sample Hammer has recorded, this run and before it.
       drawUsagePlot('usage-global-svg', Object.fromEntries(usageSeriesByKey), {
-        valueOf: (p) => p.tps,
+        valueOf: (p) => p.tokens,
         yLabel: 'tokens/s',
       });
       drawUsageSparklines();
@@ -2478,49 +2637,43 @@
         class: 'usage-sparkline',
         viewBox: `0 0 ${W} ${H}`,
       });
-      const values = pts.map(p => p.tps).filter(v => v != null && Number.isFinite(v));
-      if (values.length === 0) {
+      const samples = pts.filter(p => p && Number.isFinite(Number(p.tokens)) && Number(p.tokens) > 0);
+      if (samples.length === 0) {
         container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>';
         return;
       }
-      // A rate, so the floor is zero (see drawUsagePlot).
-      const vMax = Math.max(...values, 0) || 1;
-      const tMin = pts[0].t, tMax = pts[pts.length - 1].t;
-      const tSpan = tMax - tMin || 1;
-
-      const xOf = (t) => pad.left + ((t - tMin) / tSpan) * plotW;
-      const yOf = (v) => pad.top + plotH - (v / vMax) * plotH;
-
-      // Area fill. Hue comes from the provider whose sample this is (the group row passes
-      // its first member's provider, which is close enough for a sparkline).
+      // The same axis as the full plots, at cell size: idle gaps collapsed, columns cut over
+      // it, height = the slice's tokens per second — so this cell's area is its tokens too,
+      // and a row that idled for hours between turns still shows those turns. Hue comes from
+      // the provider whose samples these are (a group row passes its first member's, which is
+      // close enough for a sparkline).
+      const compressed = usageCompressedSeries(samples);
+      const { bins, binCount, seconds } = usageTokenBins(compressed, 24, () => providerKey);
+      const vMax = Math.max(...bins.map((b) => b.tokens / seconds), 0) || 1;
+      const binW = plotW / binCount;
+      const barW = Math.max(1, binW - Math.min(1.5, binW * 0.2));
       const hue = usageProviderHue(providerKey);
-      const fill = `hsl(${hue} 60% 50%)`;
-      const linePts = pts.filter(p => p.tps != null && Number.isFinite(p.tps));
-      if (linePts.length >= 2) {
-        const d = usageLinePath(linePts, xOf, yOf, (p) => p.tps);
-        svg.appendChild(usageSvgEl('path', {
-          d: d + ` L ${xOf(linePts[linePts.length - 1].t)} ${pad.top + plotH} L ${xOf(linePts[0].t)} ${pad.top + plotH} Z`,
-          fill, 'fill-opacity': 0.25, 'class': 'usage-area',
-        }));
-        svg.appendChild(usageSvgEl('path', {
-          d,
-          fill: 'none', stroke: `hsl(${hue} 75% 55%)`, 'stroke-width': 1.5,
-          'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'class': 'usage-line',
-        }));
-      } else if (linePts.length === 1) {
-        const p = linePts[0];
-        svg.appendChild(usageSvgEl('circle', {
-          cx: xOf(p.t), cy: yOf(p.tps), r: 2,
-          fill: `hsl(${hue} 75% 55%)`, 'class': 'usage-point',
+      for (let i = 0; i < binCount; i++) {
+        const b = bins[i];
+        if (b.tokens <= 0) continue;
+        const h = (b.tokens / seconds / vMax) * plotH;
+        svg.appendChild(usageSvgEl('rect', {
+          x: (pad.left + i * binW + (binW - barW) / 2).toFixed(2),
+          y: (pad.top + plotH - h).toFixed(2),
+          width: barW.toFixed(2),
+          height: Math.max(0.6, h).toFixed(2),
+          fill: `hsl(${hue} 70% 55%)`,
+          'class': 'usage-bar',
         }));
       }
 
       container.appendChild(svg);
-      // Label with latest value.
-      const last = pts[pts.length - 1];
+      // The area is the number now, so the label states the total rather than the last speed
+      // (the Tok/s column already carries that).
+      const totalTokens = samples.reduce((sum, p) => sum + Number(p.tokens || 0), 0);
       const label = document.createElement('div');
       label.style.cssText = 'font-size:0.68rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
-      label.textContent = `last ${fmtTps(last.tps)} tok/s`;
+      label.textContent = `${Math.round(totalTokens).toLocaleString()} tokens`;
       container.appendChild(label);
     }
 
@@ -2625,12 +2778,18 @@
         'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
         'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
         'llama': 'meta.com', 'meta': 'meta.com',
-        // A fine-tune's own leading word still names Llama: NLP Cloud serves this one as
-        // `finetuned-llama-3-70b`, where `llama` is no longer the first token.
+        // A fine-tune's own leading word still names Llama: `finetuned-llama-3-70b` keeps
+        // `llama` out of first position.
         'finetuned-llama': 'meta.com',
         // Meta's named open families — Muse Glimmer and Muse Spark sit beside Llama without it.
         'muse': 'meta.com',
         'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
+        // Reflection AI's Beam. The alias map at the top of sources.js names it
+        // `reflection/beam-*`, and Ollama and Airforce publish the bare id for the same weights.
+        'beam': 'reflection.ai', 'reflection': 'reflection.ai',
+        // GPTFree's only model is `auto`, which names no brand; its label names one instead
+        // ("Auto (GPTFree)"), which is what the parenthesised candidate above is for.
+        'gptfree': 'gptfree.com',
         'gpt': 'openai.com', 'openai': 'openai.com',
         // OpenAI's other wire names: the Codex models that do not say `gpt`, the bare o-series
         // ids an aggregator relays, a gateway's own name for a GPT chat model, and OpenAI's
@@ -2669,6 +2828,9 @@
         // The gateways' own router rows. Their id *is* the gateway's product, which is the
         // opposite of a third-party model relayed by one — there the vendor is the brand.
         'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai',
+        // G4F's own router row follows the same rule — the row is the gateway's product, and its
+        // label says which gateway ("Auto (G4F)"), which is what the parenthesis reader is for.
+        'g4f': 'g4f.dev',
         // xAI appears as `x-ai`, `xai-org` and g4f's `xai-z`, all of them its own name.
         'grok': 'x.ai', 'x-ai': 'x.ai', 'xai': 'x.ai',
         'microsoft': 'microsoft.com', 'phi': 'microsoft.com', 'mai': 'microsoft.com', 'wizardlm': 'microsoft.com',
@@ -2684,7 +2846,10 @@
         'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com', 'titan': 'aws.amazon.com',
         'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
         'laguna': 'poolside.ai', 'poolside': 'poolside.ai',
-        'granite': 'ibm.com', 'ibm': 'ibm.com', 'allam': 'sdaia.gov.sa',
+        'granite': 'ibm.com', 'ibm': 'ibm.com',
+        // ALLaM is SDAIA's model, but the family lives with its steward now: the Hugging Face org
+        // `ALLaM-AI` is `humain-ai`, and sdaia.gov.sa serves no icon the proxy can fetch.
+        'allam': 'humain.ai',
         'stockmark': 'stockmark.co.jp',
         'colosseum': 'igenius.ai', 'igenius': 'igenius.ai',
         'orpheus': 'canopylabs.ai', 'canopylabs': 'canopylabs.ai',
@@ -2733,6 +2898,9 @@
           domainTokens(value),
           domainTokens(value.split('/').pop()),
           domainTokens(value.split(':').pop()),
+          // A label that names its vendor in parentheses — `Auto (GPTFree)` — still names it:
+          // the brackets are punctuation, not part of the brand.
+          domainTokens((value.match(/\(([^)]+)\)/) || [])[1] || ''),
         ].filter(tokens => tokens.length > 0);
       }
       function domainForNames(candidates) {
@@ -2750,6 +2918,10 @@
         return domainForNames(domainNameCandidates(m.modelId))
           || domainForNames(domainNameCandidates(m.label));
       }
+
+      // The table draws the same brand mark on its rows. It renders before this pass on the first
+      // snapshot, and hydrates its logos once the plots have run (see modelDomainFor).
+      modelDomainFor = getModelDomain;
 
       // Display identity per node. A federated origin is named by its catalog and marked by
       // its own hostname; a provider keeps the name and icon it always had. One entry per
@@ -3250,10 +3422,11 @@
           // no benched or down link left for 'warn' or the bare muted stroke to describe.
           //
           // Exactly one link wears the flowing blue: the serving path — the active model to the
-          // provider instance that serves that exact row, the same pair the blue ring marks.
-          // The best model's *other* providers stay green: they can serve it, but the router is
-          // not using them, and matching on the model alone is what painted several paths blue
-          // at once (isModelBest is true for the whole best group, not for one of its links).
+          // provider instance that serves that exact row, the pair the selected ring marks too.
+          // Every other drawn link stays the plain maroon mesh: those providers can serve the
+          // model, but the router is not using them, and matching on the model alone is what
+          // painted several paths as the serving one at once (isModelBest is true for the whole
+          // best group, not for one of its links).
           const servingProviderKey = bestModel ? providerInstanceKey(bestModel) : '';
           const isServingPath = Boolean(bestModel) && isModelBest(um) && line.dataset.pkey === servingProviderKey;
           const cls = `topo-link active${isServingPath ? ' selected' : ''}`;
@@ -3269,7 +3442,8 @@
         // drawn at all (see the group filter above), so this is 'green' by construction — the
         // count is still read rather than hardcoded, so a node that outlived its last live
         // model reads red instead of lying about it.
-        // The provider serving the selected (best) model also gets the blue ring.
+        // The provider serving the selected (best) model also gets the selected ring (the
+        // accent, matching the model it serves).
         const servesBest = Boolean(bestModel) && providerInstanceKey(bestModel) === pk;
         ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}${servesBest ? ' selected' : ''}`);
         const title = ring.querySelector('title');
@@ -4279,12 +4453,13 @@
       return expanded;
     }
 
-    // `opts.onlyUsable` (the default) restricts the *measured* columns to providers the
-    // router would actually use right now. A model heading must not advertise the speed,
-    // context or 'Ready' result of a provider that is rate-limited or timed out: that is
-    // how a heading could read "0/7 providers" while still showing 0.35s / 24.1 tok/s /
-    // Ready from rows that cannot answer. The graveyard opts out — there the row's own
-    // history is the point, and a struck row is never "usable" in the first place.
+    // `opts.onlyUsable` restricts the *measured* columns to providers the router would use
+    // right now. The graveyard and every model heading opt out: TTFT, tok/s and context are
+    // what the row was last seen doing, not a claim that it can serve this second. Filtering
+    // them to usable rows left a heading reading "0/7 providers" with the speed and context it
+    // had in fact measured wiped out, so a rate-limited or timed-out provider keeps lending
+    // its own numbers to its model's heading. The rating is the capacity claim, and
+    // groupRowInnerHTML mutes that separately when nothing is usable.
     function getGroupSummary(g, opts = {}) {
       const members = g.members;
       const usable = members.filter(isRowUsable);
@@ -4314,9 +4489,550 @@
       return { bestQos, bestIntell, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember };
     }
 
+    /** A stealth preview: relayed under a code name, with no lab to draw a mark for. */
+    function isStealthModel(m) {
+      return /^stealth\//i.test(String((m && m.modelId) || ''));
+    }
+
+    /**
+     * One model's logo for the table: its own vendor mark — the same favicon the topology draws on
+     * the model's node — over the model's initial, so the cell is identifiable while the image
+     * loads and stays that way when no vendor domain resolves. The image removes itself on error,
+     * which leaves the monogram standing rather than a broken-image glyph in the column. A stealth
+     * preview has no vendor at all: its lab is anonymous until it reveals itself, so it gets a
+     * crossed-out eye rather than a letter that would read as a brand, and the real mark replaces
+     * it here on the day the lab is named.
+     */
+    function modelLogoHTML(m) {
+      const name = String((m && m.label) || (m && m.modelId) || '');
+      const domain = modelDomainFor(m);
+      const href = domain ? faviconHrefs([domain])[0] : '';
+      const title = escapeAttr(domain ? `${name} · ${domain}` : name);
+      if (!href && isStealthModel(m)) {
+        return `<span class="model-logo model-logo-stealth" title="${escapeAttr(`${name} — stealth preview, the lab is anonymous`)}">`
+          + '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6z"/><path d="M4 20 20 4"/></svg>'
+          + '</span>';
+      }
+      const initial = (name.match(/[a-z0-9]/i) || ['?'])[0].toUpperCase();
+      return `<span class="model-logo" title="${title}">`
+        + `<span class="model-logo-mono" aria-hidden="true">${escapeHtml(initial)}</span>`
+        + (href
+          ? `<img class="model-logo-img" src="${escapeAttr(href)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">`
+          : '')
+        + '</span>';
+    }
+
+    // ── The table's quota column ─────────────────────────────────────────────────
+    //
+    // A row is one provider/model endpoint, so its quota can arrive from three places: a
+    // published limit, a provider usage report, or the last response's rate-limit headers.
+    // They are merged by window so a model with day, week and month caps shows all three,
+    // rather than whichever source happened to speak last. Published limits are drawn against
+    // tokens hammer recorded itself; observed limits already carry the provider's remaining
+    // count. A model-scoped published limit uses that row's tokens, while an account-scoped
+    // one uses the provider total (the same denominator the provider card uses).
+    const QUOTA_ROW_PERIOD_LABEL = {
+      minute: 'MINUTE',
+      hour: 'HOUR',
+      day: 'DAY',
+      week: 'WEEK',
+      month: 'MONTH',
+      lifetime: 'ONE-OFF',
+      rolling: 'ROLLING',
+      window: 'WINDOW',
+    };
+    const QUOTA_ROW_RECORDED_FIELD = {
+      tokens: {
+        hour: 'tokensLastHour',
+        day: 'tokensToday',
+        week: 'tokensThisWeek',
+        month: 'tokensThisMonth',
+        lifetime: 'tokensLifetime',
+      },
+      requests: {
+        hour: 'requestsLastHour',
+        day: 'requestsToday',
+        week: 'requestsThisWeek',
+        month: 'requestsThisMonth',
+      },
+    };
+    const QUOTA_ROW_PERIOD_ORDER = { minute: 0, hour: 0.5, day: 1, week: 2, month: 3, lifetime: 4, rolling: 5, window: 6 };
+    const QUOTA_ROW_METRIC_ORDER = { requests: 0, tokens: 1 };
+
+    function quotaRowPeriod(value) {
+      const text = String(value || '').toLowerCase();
+      if (/\bminute\b|per\s*minute|\brpm\b/.test(text)) return 'minute';
+      if (/\bday\b|daily|24\s*hour|rolling\s*24/.test(text)) return 'day';
+      if (/\bhour\b|hourly|per\s*hour/.test(text)) return 'hour';
+      if (/\bweek\b|weekly|7\s*day/.test(text)) return 'week';
+      if (/\bmonth\b|monthly|30\s*day/.test(text)) return 'month';
+      if (/lifetime|one[- ]?off|one[- ]?time|signup/.test(text)) return 'lifetime';
+      if (/rolling/.test(text)) return 'rolling';
+      return 'window';
+    }
+
+    function quotaRowPeriodLabel(period, rawWindow) {
+      if (QUOTA_ROW_PERIOD_LABEL[period]) return QUOTA_ROW_PERIOD_LABEL[period];
+      return rawWindow ? String(rawWindow).toUpperCase() : 'WINDOW';
+    }
+
+    function nextUtcWeekStart() {
+      const date = new Date();
+      const weekday = date.getUTCDay() || 7;
+      date.setUTCDate(date.getUTCDate() + 8 - weekday);
+      date.setUTCHours(0, 0, 0, 0);
+      return date.getTime();
+    }
+
+    function quotaRowResetAt(period) {
+      if (period === 'day') return nextUtcMidnight();
+      if (period === 'week') return nextUtcWeekStart();
+      if (period === 'month') return quotaWindowReset('month');
+      return null;
+    }
+
+    // A reset at or behind the clock has nothing to count down to: the caller drops the whole
+    // sentence rather than printing "resets in now". Below a minute this counts seconds, which
+    // used to round to a useless "resets in 0m".
+    function formatQuotaReset(ms) {
+      const raw = Number(ms);
+      if (!Number.isFinite(raw) || raw <= 0) return '';
+      const total = Math.max(1, Math.floor(raw / 1000));
+      const days = Math.floor(total / 86400);
+      const hours = Math.floor((total % 86400) / 3600);
+      const minutes = Math.floor((total % 3600) / 60);
+      if (days > 0) return `${days}d ${hours}h`;
+      if (hours > 0) return `${hours}h ${minutes}m`;
+      if (minutes > 0) return `${minutes}m`;
+      return `${total}s`;
+    }
+
+    function quotaRowPercentText(raw) {
+      if (raw == null || !Number.isFinite(raw)) return 'not reported';
+      if (raw > 0 && raw < 0.01) return '<0.01';
+      if (raw < 10) return raw.toFixed(2);
+      if (raw < 100) return raw.toFixed(1);
+      return Math.round(raw).toLocaleString();
+    }
+
+    // Google publishes no fixed per-model free-tier table; the active limits live in AI
+    // Studio for the project behind the key. A row with no observed QuotaFailure can still
+    // answer the quota question by pointing at that live view instead of showing a bare dash.
+    const GOOGLE_ACTIVE_QUOTA_URL = 'https://aistudio.google.com/rate-limit?timeRange=last-28-days';
+
+    function quotaRowWindow({ period, metric = 'tokens', rawWindow, used, total, remaining, resetAt, source, scope, detail, stale, unavailable, usedPercent, percentOnly }) {
+      const normalizedMetric = metric === 'requests' ? 'requests' : 'tokens';
+      let totalValue = total == null ? null : Number(total);
+      let remainingValue = remaining == null ? null : Number(remaining);
+      let usedValue = used == null ? null : Number(used);
+      let usedPercentValue = usedPercent == null ? null : Number(usedPercent);
+      if (!Number.isFinite(totalValue) || totalValue < 0) totalValue = null;
+      if (!Number.isFinite(remainingValue)) remainingValue = null;
+      if (!Number.isFinite(usedValue)) usedValue = null;
+      if (!Number.isFinite(usedPercentValue) || usedPercentValue < 0) usedPercentValue = null;
+      if (usedPercentValue != null) usedPercentValue = Math.min(100, usedPercentValue);
+      const isPercentOnly = Boolean(percentOnly) || (totalValue == null && usedPercentValue != null);
+      const zeroLimit = totalValue === 0 || Boolean(unavailable);
+      if (zeroLimit) {
+        usedValue = 0;
+        remainingValue = 0;
+      }
+      if (usedValue == null && totalValue != null && totalValue > 0 && remainingValue != null) usedValue = Math.max(0, totalValue - remainingValue);
+      if (remainingValue == null && totalValue != null && totalValue > 0 && usedValue != null) remainingValue = Math.max(0, totalValue - usedValue);
+      if (usedPercentValue == null && totalValue != null && totalValue > 0 && usedValue != null) usedPercentValue = Math.max(0, (usedValue / totalValue) * 100);
+      if (usedValue == null && totalValue == null && remainingValue == null && usedPercentValue == null) return null;
+      return {
+        period,
+        metric: normalizedMetric,
+        rawWindow,
+        total: totalValue,
+        remaining: remainingValue,
+        used: usedValue,
+        usedPercent: usedPercentValue,
+        percentOnly: isPercentOnly,
+        resetAt: Number.isFinite(Number(resetAt)) && Number(resetAt) > 0 ? Number(resetAt) : null,
+        source: source || 'observed',
+        scope: scope || null,
+        detail: detail || '',
+        stale: Boolean(stale),
+        unavailable: zeroLimit,
+      };
+    }
+
+    function quotaRowViews(m) {
+      const windows = [];
+      const byWindow = new Map();
+      const keyFor = (window) => `${window.metric}:${window.period}`;
+      const add = (window, replace = false) => {
+        if (!window) return;
+        // A positive window whose stated reset has already passed is history, not a quota the
+        // row is currently under: the provider's own countdown says the counter rolled over, so
+        // its remaining figure describes a window that no longer exists. Zero-limit windows have
+        // no reset and stay: they are the provider saying the model has no free-tier allowance.
+        if (window.total != null && window.total > 0
+          && window.resetAt != null && window.resetAt <= Date.now()) return;
+        const key = keyFor(window);
+        const existing = byWindow.get(key);
+        if (existing && !replace) return;
+        if (existing) {
+          const index = windows.indexOf(existing);
+          if (index >= 0) windows.splice(index, 1);
+        }
+        byWindow.set(key, window);
+        windows.push(window);
+      };
+      const known = m?.knownQuota;
+      const knownLimits = Array.isArray(known?.limits) ? known.limits : [];
+      const scope = known?.limitScope === 'model' ? 'model' : 'account';
+      const recorded = scope === 'model'
+        ? m?.recordedUsage
+        : (m?.providerRecordedUsage || m?.recordedUsage);
+      for (const limit of knownLimits) {
+        const metric = limit?.metric === 'requests' ? 'requests' : limit?.metric === 'tokens' ? 'tokens' : null;
+        if (!metric) continue;
+        const total = Number(limit.limit);
+        if (!Number.isFinite(total) || total < 0) continue;
+        const period = quotaRowPeriod(limit.period);
+        const field = QUOTA_ROW_RECORDED_FIELD[metric]?.[period];
+        // A published limit draws only against a counter that exists for its window: the
+        // trailing hour answers KiloCode's 200 requests/hour pool, and a period hammer does not
+        // count keeps its number without a bar instead of vanishing from the column.
+        const recordedValue = field ? Number(recorded?.[field]) : NaN;
+        const used = field ? (Number.isFinite(recordedValue) ? recordedValue : 0) : null;
+        add(quotaRowWindow({
+          period,
+          metric,
+          rawWindow: limit.period,
+          used,
+          total,
+          remaining: used == null ? null : Math.max(0, total - used),
+          resetAt: quotaRowResetAt(period),
+          source: 'published',
+          scope,
+          detail: limit.label || 'published limit',
+        }));
+      }
+      const report = m?.providerUsage;
+      const reportMetric = report?.metric === 'requests' ? 'requests' : report?.metric === 'tokens' ? 'tokens' : null;
+      if (report && reportMetric) {
+        add(quotaRowWindow({
+          period: quotaRowPeriod(report.window),
+          metric: reportMetric,
+          rawWindow: report.window,
+          used: report.used,
+          total: report.limit,
+          remaining: report.remaining,
+          resetAt: report.resetAt,
+          source: 'provider',
+          scope: report.scope,
+          detail: report.accountLabel || report.model || report.window || 'provider usage',
+          stale: report.freshness === 'stale',
+        }), true);
+      }
+      const rateLimit = m?.rateLimit;
+      if (rateLimit) {
+        const retryReset = rateLimit.capturedAt && rateLimit.retryAfterMs
+          ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
+          : null;
+        if (rateLimit.limitTokens != null || rateLimit.remainingTokens != null) {
+          add(quotaRowWindow({
+            period: 'window',
+            metric: 'tokens',
+            rawWindow: 'last response',
+            used: rateLimit.limitTokens != null && rateLimit.remainingTokens != null
+              ? Math.max(0, Number(rateLimit.limitTokens) - Number(rateLimit.remainingTokens))
+              : null,
+            total: rateLimit.limitTokens,
+            remaining: rateLimit.remainingTokens,
+            resetAt: rateLimit.resetTokensAt || retryReset,
+            source: 'headers',
+            scope: 'account',
+            detail: 'from the last response',
+          }));
+        }
+        if (rateLimit.limitRequests != null || rateLimit.remainingRequests != null) {
+          add(quotaRowWindow({
+            period: 'window',
+            metric: 'requests',
+            rawWindow: 'last response',
+            used: rateLimit.limitRequests != null && rateLimit.remainingRequests != null
+              ? Math.max(0, Number(rateLimit.limitRequests) - Number(rateLimit.remainingRequests))
+              : null,
+            total: rateLimit.limitRequests,
+            remaining: rateLimit.remainingRequests,
+            resetAt: rateLimit.resetRequestsAt || retryReset,
+            source: 'headers',
+            scope: 'account',
+            detail: 'from the last response',
+          }));
+        }
+      }
+      for (const observed of Array.isArray(m?.quotaWindows) ? m.quotaWindows : []) {
+        add(quotaRowWindow({
+          period: quotaRowPeriod(observed.period || observed.rawWindow),
+          metric: observed.metric,
+          rawWindow: observed.rawWindow,
+          used: observed.used,
+          total: observed.limit ?? observed.total,
+          remaining: observed.remaining,
+          resetAt: observed.resetAt,
+          source: observed.source || 'quota-failure',
+          scope: observed.scope,
+          detail: observed.detail,
+          stale: observed.stale,
+          unavailable: observed.unavailable,
+          usedPercent: observed.usedPercent,
+          percentOnly: observed.percentOnly,
+        }), true);
+      }
+      const sorted = windows.sort((a, b) =>
+        (QUOTA_ROW_PERIOD_ORDER[a.period] ?? 9) - (QUOTA_ROW_PERIOD_ORDER[b.period] ?? 9)
+        || (QUOTA_ROW_METRIC_ORDER[a.metric] ?? 9) - (QUOTA_ROW_METRIC_ORDER[b.metric] ?? 9));
+      // A model outside the free tier reports requests/minute, requests/day, tokens/minute and
+      // tokens/day as four zero allowances. Four identical "not available" rows say less than
+      // one sentence, so collapse an all-zero row; when any real window exists, drop the zeros
+      // and keep the numbers that can actually move.
+      const available = sorted.filter((window) => !window.unavailable);
+      if (available.length > 0) return available;
+      if (sorted.length === 0) return [];
+      const first = sorted[0];
+      return [{
+        period: 'window',
+        metric: first.metric,
+        rawWindow: 'free tier',
+        total: 0,
+        remaining: 0,
+        used: 0,
+        usedPercent: null,
+        resetAt: null,
+        source: first.source,
+        scope: first.scope,
+        detail: 'Requests and tokens are not included in the free tier.',
+        stale: false,
+        unavailable: true,
+      }];
+    }
+
+    function quotaRowWindowHtml(w) {
+      const noFreeTier = w.unavailable && !w.percentOnly && w.period === 'window';
+      const periodLabel = noFreeTier ? 'FREE TIER' : quotaRowPeriodLabel(w.period, w.rawWindow);
+      const unit = w.metric === 'requests' ? 'requests' : 'tokens';
+      const remainingPercent = (w.unavailable && !w.percentOnly) || w.usedPercent == null ? null : 100 - Math.min(100, w.usedPercent);
+      const totalText = noFreeTier
+        ? 'not included'
+        : w.percentOnly
+          ? 'allowance not published'
+          : w.total != null
+            ? `${fmtCompactTokens(w.total)} ${unit} / ${periodLabel.toLowerCase()}`
+            : 'limit not reported';
+      const remainingText = noFreeTier
+        ? ''
+        : w.percentOnly
+          ? (remainingPercent == null ? 'remaining not reported' : `${quotaRowPercentText(remainingPercent)}% left`)
+          : w.unavailable
+            ? 'no free-tier allowance'
+            : w.remaining != null
+              ? `${fmtCompactTokens(w.remaining)} left`
+              : 'remaining not reported';
+      const resetMs = w.resetAt == null ? null : w.resetAt - Date.now();
+      const resetText = noFreeTier || resetMs == null || resetMs <= 0 ? '' : `resets in ${formatQuotaReset(resetMs)}`;
+      const percentText = noFreeTier
+        ? 'no allowance'
+        : w.percentOnly && w.usedPercent != null
+          ? `${quotaRowPercentText(w.usedPercent)}% used`
+          : w.unavailable
+            ? 'not available'
+            : w.usedPercent == null ? 'usage not reported' : `${quotaRowPercentText(w.usedPercent)}% used`;
+      const barWidth = w.usedPercent == null || (w.unavailable && !w.percentOnly) ? 0 : Math.min(100, w.usedPercent);
+      const tone = remainingPercent == null ? 'unknown' : remainingPercent <= 10 ? 'error' : remainingPercent <= 30 ? 'warning' : 'success';
+      const titleParts = noFreeTier
+        ? ['No free-tier requests or tokens', w.detail, w.scope ? `${w.scope}-scoped` : '']
+        : [
+          w.percentOnly ? `${percentText} · allowance not published` : (w.unavailable ? `${totalText} · no free-tier allowance` : percentText),
+          w.used != null && w.total != null && !w.unavailable ? `${w.used.toLocaleString()} of ${w.total.toLocaleString()} ${unit}` : '',
+          w.remaining != null && !w.unavailable ? `${w.remaining.toLocaleString()} ${unit} remaining` : '',
+          w.percentOnly && remainingPercent != null ? `${quotaRowPercentText(remainingPercent)}% remaining` : '',
+          resetText,
+          w.detail,
+          w.scope ? `${w.scope}-scoped` : '',
+          w.stale ? 'stale' : '',
+        ].filter(Boolean);
+      const meta = noFreeTier
+        ? w.detail
+        : [totalText, remainingText, resetText].filter(Boolean).join(' · ');
+      return `<div class="quota-row-window${w.stale ? ' is-stale' : ''}${w.unavailable ? ' is-unavailable' : ''}" data-quota-period="${escapeAttr(w.period)}" data-quota-metric="${escapeAttr(w.metric || 'tokens')}" data-quota-unavailable="${w.unavailable ? 'true' : 'false'}" data-quota-used-percent="${w.usedPercent == null ? '' : w.usedPercent.toFixed(2)}" title="${escapeAttr(titleParts.join(' · '))}">
+        <div class="quota-row-head"><span class="quota-row-period">${escapeHtml(periodLabel)}</span><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
+        <div class="quota-row-track${(w.unavailable && !w.percentOnly) || w.usedPercent == null ? ' quota-row-track-unknown' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${(w.unavailable && !w.percentOnly) || w.usedPercent == null ? '' : Math.round(Math.min(100, w.usedPercent))}" aria-label="${escapeAttr(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeAttr(percentText)}"><div class="quota-row-fill quota-row-fill-${tone}" style="width:${barWidth.toFixed(2)}%"></div></div>
+        <div class="quota-row-meta">${escapeHtml(meta)}</div>
+      </div>`;
+    }
+
+    function quotaRowWindowsHtml(windows, opts = {}) {
+      if (windows.length === 0) {
+        return `<div class="quota-row-empty" title="${escapeAttr(opts.emptyTitle || 'No quota is reported for this endpoint yet.')}">—</div>`;
+      }
+      const provider = opts.providerLabel
+        ? `<div class="quota-row-provider" title="${escapeAttr(opts.providerTitle || opts.providerLabel)}">${escapeHtml(opts.providerLabel)}</div>`
+        : '';
+      return `${provider}<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`;
+    }
+
+    function quotaProviderNote(m) {
+      if (m?.providerKey !== 'googleai') return null;
+      const known = m?.knownQuota;
+      if (!known || (Array.isArray(known.limits) && known.limits.length > 0)) return null;
+      return {
+        label: 'Google AI',
+        href: GOOGLE_ACTIVE_QUOTA_URL,
+        source: known.source || 'Google publishes active limits per project in AI Studio.',
+      };
+    }
+
+    function quotaProviderNoteHtml(note) {
+      const href = safeExternalHref(note.href);
+      const link = href
+        ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Open AI Studio</a>`
+        : '';
+      return `<div class="quota-row-note" title="${escapeAttr(note.source)}">
+        <span class="quota-row-note-label">${escapeHtml(note.label)}</span>
+        <span class="quota-row-note-meta">Project limits${link ? ` · ${link}` : ''}</span>
+      </div>`;
+    }
+
+    function quotaRowCellInnerHTML(m, opts = {}) {
+      const windows = quotaRowViews(m);
+      if (windows.length === 0) {
+        const note = quotaProviderNote(m);
+        if (note) return quotaProviderNoteHtml(note);
+      }
+      return quotaRowWindowsHtml(windows, opts);
+    }
+
+    // Rows under a heading repeat a provider whenever it serves several ids in the same model
+    // family (KiloCode lists a dozen), so the heading counts the providers those rows belong to
+    // rather than the rows themselves.
+    function quotaGroupProviderCount(members) {
+      const keys = new Set();
+      for (const member of members || []) keys.add(member?.providerKey || '');
+      return keys.size;
+    }
+
+    // A model heading covers every provider under it, so its quota is the gross of the allowances
+    // behind those rows — but only of the allowances. An account-scoped limit is one allowance no
+    // matter how many of the provider's models are listed, and providerRecordedUsage is already
+    // that account's total, so two KiloCode rows reporting the 200 requests/hour keyless pool must
+    // keep reading 200, not 400, and its usage must not be counted twice. A model-scoped limit is
+    // a separate allowance per model, so those rows do add up: five endpoints with a 1M/day cap
+    // really can serve 5M/day for this model. A window only one row reports still counts once.
+    function quotaGroupViews(members) {
+      const allowances = new Map();
+      for (const member of members || []) {
+        const providerKey = member?.providerKey || '';
+        for (const view of quotaRowViews(member)) {
+          // Anything not explicitly per model belongs to the provider's account: an observed or
+          // header window that names no scope is the endpoint's view of a shared limit, and
+          // deduplicating it is the safer reading than promising an allowance twice over.
+          const perModel = view.scope === 'model';
+          const identity = perModel
+            ? `model:${providerKey}:${member?.modelId || ''}`
+            : `account:${providerKey}`;
+          const key = `${view.metric}:${view.period}:${identity}`;
+          const known = allowances.get(key);
+          if (known) {
+            known.rows += 1;
+            continue;
+          }
+          allowances.set(key, { view, rows: 1 });
+        }
+      }
+      const grouped = new Map();
+      const add = (a, b) => (a == null && b == null ? null : (a || 0) + (b || 0));
+      for (const { view, rows } of allowances.values()) {
+        const key = `${view.metric}:${view.period}`;
+        const current = grouped.get(key);
+        if (!current) {
+          grouped.set(key, { ...view, contributors: 1, rows });
+          continue;
+        }
+        current.total = add(current.total, view.total);
+        current.used = add(current.used, view.used);
+        current.remaining = add(current.remaining, view.remaining);
+        // A remaining fraction is not additive: two allowances that are each 2% used do not
+        // make one that is 4% used. The heading takes the tightest one instead, which is the
+        // allowance that runs out first, so a family whose providers publish only a percentage
+        // still answers the question the column exists for.
+        current.usedPercent =
+          current.usedPercent != null && view.usedPercent != null
+            ? Math.max(current.usedPercent, view.usedPercent)
+            : (current.usedPercent ?? view.usedPercent);
+        current.percentOnly = current.percentOnly && view.percentOnly;
+        current.resetAt = current.resetAt != null && view.resetAt != null
+          ? Math.min(current.resetAt, view.resetAt)
+          : (current.resetAt || view.resetAt);
+        current.stale = current.stale && view.stale;
+        current.unavailable = current.unavailable && view.unavailable;
+        current.contributors += 1;
+        current.rows += rows;
+      }
+      const providers = quotaGroupProviderCount(members);
+      const providerWord = (count) => `${count} provider${count === 1 ? '' : 's'}`;
+      return [...grouped.values()]
+        .map((view) => ({
+          ...view,
+          usedPercent: view.total != null && view.total > 0 && view.used != null
+            ? Math.max(0, (view.used / view.total) * 100)
+            : (view.usedPercent ?? null),
+          detail: view.unavailable && view.total === 0
+            ? `no free-tier allowance across ${providerWord(providers)}`
+            : view.percentOnly
+              ? `highest use across ${view.contributors} ${view.contributors === 1 ? 'allowance' : 'allowances'}`
+                + (view.rows > view.contributors ? ` shared by ${view.rows} rows` : '')
+                + ` · ${providerWord(providers)} in this heading`
+              : `gross across ${view.contributors} ${view.contributors === 1 ? 'allowance' : 'allowances'}`
+                + (view.rows > view.contributors ? ` shared by ${view.rows} rows` : '')
+                + ` · ${providerWord(providers)} in this heading`,
+          scope: null,
+          source: 'group',
+        }))
+        .sort((a, b) =>
+          (QUOTA_ROW_PERIOD_ORDER[a.period] ?? 9) - (QUOTA_ROW_PERIOD_ORDER[b.period] ?? 9)
+          || (QUOTA_ROW_METRIC_ORDER[a.metric] ?? 9) - (QUOTA_ROW_METRIC_ORDER[b.metric] ?? 9));
+    }
+
+    function quotaRowCell(m) {
+      return `<td class="quota-cell">${quotaRowCellInnerHTML(m)}</td>`;
+    }
+
+    function quotaGroupCell(g) {
+      const members = g?.members || [];
+      if (members.length === 0) return '<td class="quota-cell"><div class="quota-row-empty">—</div></td>';
+      if (members.length === 1) {
+        return `<td class="quota-cell">${quotaRowCellInnerHTML(members[0])}</td>`;
+      }
+      const windows = quotaGroupViews(members);
+      // Percent-only allowances have no total to gross, so the heading reports the tightest of
+      // them and says so, rather than labelling summed capacity it does not have.
+      const basis =
+        windows.length > 0 && windows.every((window) => window.percentOnly)
+          ? 'least left'
+          : 'gross';
+      if (windows.length === 0) {
+        const note = members.map((member) => quotaProviderNote(member)).find(Boolean);
+        if (note) {
+          return `<td class="quota-cell">${quotaProviderNoteHtml({ ...note, label: 'Google AI' })}</td>`;
+        }
+      }
+      const providers = quotaGroupProviderCount(members);
+      return `<td class="quota-cell">${quotaRowWindowsHtml(windows, {
+        providerLabel: `${providers} provider${providers === 1 ? '' : 's'} · ${basis}`,
+        providerTitle: `Gross quota across the ${providers} provider${providers === 1 ? '' : 's'} serving this model. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row.`,
+        emptyTitle: 'No quota is reported for these providers yet.',
+      })}</td>`;
+    }
+
     function groupRowInnerHTML(g) {
       const members = g.members;
-      const s = getGroupSummary(g);
+      const s = getGroupSummary(g, { onlyUsable: false });
       const first = members[0];
       const isPinned = isFamilyPinnedGroup(members);
       // The heading answers one question — can this model be used at all? — in the same
@@ -4347,6 +5063,7 @@
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
+          <td class="model-logo-cell">${modelLogoHTML(first)}</td>
           <td>
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${emoji}${escapeHtml(cleanHeadingModelName(g.label))}</span>
@@ -4372,6 +5089,7 @@
                sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
                since the id does not resolve until then. -->
           <td id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></td>
+          ${quotaGroupCell(g)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -4424,6 +5142,7 @@
       tr.dataset.rowType = 'group';
       tr.dataset.rowKey = 'g:' + g.key;
       tr.classList.toggle('row-best', isCurrentBestGroup(g));
+      tr.classList.toggle('row-not-up', bestGroupVerdict(g.members) !== 'up');
       tr.innerHTML = groupRowInnerHTML(g);
       applyGroupRowClick(tr, g);
       const pinButton = tr.querySelector('.pin-row-btn');
@@ -4440,6 +5159,7 @@
     function updateGroupRow(row, g) {
       row.innerHTML = groupRowInnerHTML(g);
       row.classList.toggle('row-best', isCurrentBestGroup(g));
+      row.classList.toggle('row-not-up', bestGroupVerdict(g.members) !== 'up');
       // Rebind so the handler closes over the freshly rendered member data.
       applyGroupRowClick(row, g);
       const pinButton = row.querySelector('.pin-row-btn');
@@ -4573,9 +5293,12 @@
 
       // Paid / dead rows stay struck through even as other values refresh
       row.classList.toggle('row-struck', isRowStruck(m));
+      // Dimming follows the verdict, not the sort: a row goes grey the moment its own status
+      // stops reading Up, and comes back the moment a test or live traffic says it is serving.
+      row.classList.toggle('row-not-up', !isRowUp(m));
 
       // Update provider name + pin button (ban status can change)
-      const modelCell = row.cells[0];
+      const modelCell = row.cells[1];
       const isBannedRow = m.status === 'banned';
       const isExcludedRow = m.status === 'excluded';
       row.style.opacity = isExcludedRow || isBannedRow ? '0.5' : '1';
@@ -4600,31 +5323,35 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds) — col 5 after the usage sparkline (col 4)
-      const ctxCell = row.cells[5];
+      // Update context window (known limit or observed bounds) — col 7, after quota (col 6);
+      // the logo column leads the row.
+      const ctxCell = row.cells[7];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
 
       // Intelligence lives only in the model header row — it's identical across a
       // model's providers, so provider rows show a placeholder instead.
-      const intellCell = row.cells[1];
+      const intellCell = row.cells[2];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // Usage sparkline (col 4), status cell (col 6) and response cell (col 7);
-      // never clobber an in-flight test
-      const usageCell = row.cells[4];
+      // Usage sparkline (col 5); never clobber an in-flight test.
+      const usageCell = row.cells[5];
       if (usageCell) {
         usageCell.className = 'usage-sparkline-cell';
         usageCell.id = `usage-cell-${getModelRowKey(m)}`;
         drawUsageSparklineInto(usageCell, getModelRowKey(m));
       }
-      // Update status cell (col 6) and response cell (col 7); never clobber an in-flight test
-      const statusCell = row.cells[6];
+      // Quota (col 6) is rebuilt on every refresh: a published window counts down on the
+      // clock, and observed rate-limit windows arrive with new traffic.
+      const quotaCell = row.cells[6];
+      if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
+      // Update status cell (col 8) and response cell (col 9); never clobber an in-flight test
+      const statusCell = row.cells[8];
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[7];
+      const responseCell = row.cells[9];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
       }
@@ -4632,11 +5359,11 @@
       // Update TTFT and tokens/sec (real usage stats)
       const displayTtft = rowTtft(m);
       const displayTps = rowTps(m);
-      const ttftCell = row.cells[2];
+      const ttftCell = row.cells[3];
       ttftCell.innerHTML = displayTtft != null
         ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(displayTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowTtftLabel(m)}</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-      const tpsCell = row.cells[3];
+      const tpsCell = row.cells[4];
       tpsCell.innerHTML = displayTps != null
         ? `<div style="font-size:0.82rem;">${displayTps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
         : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
@@ -4928,8 +5655,9 @@
     // clauses, so a row the server had already struck as Incompatible kept its place in the main
     // table with an empty Status cell: llm7 refuses every Seedance id with "Model
     // 'seedance-2.0-fast' does not support chat endpoints." (live 2026-09-22), which the router
-    // read as incompatible and this file re-read as a generic Down.
-    const INCOMPATIBLE_MODEL_RE = /does not exist or you (?:do not|don't) have access to it|content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support chat|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within|is a realtime model and cannot be used on the text endpoint|is a audio model and cannot be used on the text endpoint|Transcribe|required properties at '\/' are 'model,\s*state,\s*questions'?/i;
+    // read as incompatible and this file re-read as a generic Down. A decision model served only
+    // on /v1/systemone (cloudflare's clef:27b) is the same statement worded differently.
+    const INCOMPATIBLE_MODEL_RE = /does not exist or you (?:do not|don't) have access to it|content cannot be a plain string|model does not support text input|only supports (?:the )?interactions api|only supports (?:real[- ]time )?bidirectional streaming(?: via websocket)?|bidiGenerateContent(?: via websocket)?|gemini live api|chat.completions.*(?:is not supported|not available|unsupported)|route not supported|does not support (?:chat|(?:this|that|the) endpoint)|only available on agentic harnesses|calibration|requires terms acceptance|model_terms_required|terms (?:have|has) not been accepted|requires acceptance of the terms|requested model is not supported|model_not_supported|can only be used from within|is a realtime model and cannot be used on the text endpoint|is a audio model and cannot be used on the text endpoint|Transcribe|required properties at '\/' are 'model,\s*state,\s*questions'?|is a decision model|only supports (?:(?:the )?\/v1\/systemone(?: (?:endpoint|api|surface))?)/i;
     // Kept in step with MICRO_CONTEXT_MAX_TOKENS and isUnusablySmallContextError in
     // lib/utils.js. Only a refusal whose *subject* is the model's own window counts: Cloudflare
     // Workers AI answers "… exceeded this model context window limit (3500)". A comparison
@@ -5029,7 +5757,7 @@
         && (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText))) return 'paid';
       // The access phrasing wins over the generic 'does not exist' tombstone: the provider
       // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
-      const deadText = /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model/i.test(errText)
         && !isIncompatibleModelText(errText);
       if (code === 410 || deadText) return 'dead';
       if (isIncompatibleModelText(errText)) return 'incompatible';
@@ -5131,7 +5859,7 @@
           // row whose stored evidence predates that rule still reads Dead rather than Down.
           // The access phrasing wins over the generic 'does not exist' tombstone: the provider
       // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
-      const deadText = /model is dead|model_not_found|410 Gone|model does not exist/i.test(errText)
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model/i.test(errText)
         && !isIncompatibleModelText(errText);
       if (code === 410 || deadText) return 'dead';
           // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
@@ -5330,8 +6058,8 @@
     function updateVisibleMetrics(model, rowKey = getModelRowKey(model)) {
       const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
       if (!row) return;
-      const ttftCell = row.cells[2];
-      const tpsCell = row.cells[3];
+      const ttftCell = row.cells[3];
+      const tpsCell = row.cells[4];
       const visibleTtft = rowTtft(model);
       const visibleTps = rowTps(model);
       if (ttftCell) ttftCell.innerHTML = visibleTtft != null
@@ -5378,7 +6106,7 @@
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
       const tr = cell.closest('tr');
       tr?.classList.add('row-testing');
-      const statusCell = tr && tr.cells[5];
+      const statusCell = tr && tr.cells[8];
       if (statusCell) {
         statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
       }
@@ -6116,9 +6844,9 @@
       if (event.target.open) renderGraveyard(pendingGraveyardGroups);
     });
 
-    // One unavailable provider row. Like the main model row it keeps the same eight
-    // cells so the two tables stay comparable, but the Status cell names this one
-    // provider's reason instead of counting reasons across a model's providers.
+    // One unavailable provider row. It keeps its own nine cells — the main table has one more,
+    // the logo — and the Status cell names this one provider's reason instead of counting
+    // reasons across a model's providers.
     function graveyardRowHTMLInner(g) {
       const members = g.members;
       const first = members[0];
@@ -6143,6 +6871,7 @@
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td></td>
+          ${quotaRowCell(first)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -6158,11 +6887,15 @@
       tr.dataset.rowKey = getModelRowKey(m);
       tr.style.opacity = m.status === 'excluded' || m.status === 'banned' ? '0.5' : '1';
       tr.classList.toggle('row-struck', isRowStruck(m));
+      tr.classList.toggle('row-not-up', !isRowUp(m));
 
       const isPinnedRow = isExactPinnedRow(m);
       tr.classList.toggle('row-best', isCurrentBestRow(m));
       const rowKey = getModelRowKey(m);
       tr.innerHTML = `
+          <!-- The model's mark belongs to the group heading above; a provider row repeats
+               neither it nor the model's name. -->
+          <td class="model-logo-cell"></td>
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
               <span style="font-weight: 600;" title="${escapeHtml(providerRowLabel(m))}">${escapeHtml(providerRowLabel(m))}</span>
@@ -6174,6 +6907,7 @@
           ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
           ${formatTpsCell(rowTps(m), 'tok/s')}
           <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
+          ${quotaRowCell(m)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -6187,7 +6921,7 @@
       });
       // The usage cell is filled here rather than by id, because the row is not in the
       // document yet: getElementById cannot see it until reconcileTable attaches it.
-      drawUsageSparklineInto(tr.cells[4], rowKey);
+      drawUsageSparklineInto(tr.cells[5], rowKey);
       return tr;
     }
 
@@ -6616,8 +7350,16 @@
       if (!overlay || !modal) return;
       if (title) title.textContent = `${providerName || 'Provider'} setup`;
       if (subtitle) subtitle.textContent = 'Fetching models, testing each one, then sorting them by current status.';
+      setProviderOnboardFooterAction(false);
       overlay.style.display = 'block';
       modal.style.display = 'block';
+    }
+
+    function setProviderOnboardFooterAction(finished) {
+      const button = document.getElementById('provider-onboard-cancel');
+      if (!button) return;
+      button.textContent = finished ? 'Close' : 'Cancel';
+      button.setAttribute('aria-label', finished ? 'Close provider setup' : 'Cancel provider setup');
     }
 
     function closeProviderOnboardModal() {
@@ -6700,6 +7442,7 @@
       stagesEl.innerHTML = onboardStagesHtml(job.stage, job.status);
 
       const finished = ONBOARD_FINISHED.has(job.status);
+      setProviderOnboardFooterAction(finished);
       const total = job.total || 0;
       const completed = job.completed || 0;
       const progress = job.progress || 0;
@@ -6721,13 +7464,12 @@
 
       const progressHtml = finished ? '' : `<div class="onboard-progress"><div class="onboard-progress-bar" style="width:${Math.max(2, progress)}%"></div></div>`;
 
+      // The footer owns Cancel/Close so it stays reachable while the model list scrolls. The body
+      // only carries actions specific to a finished run.
       const actions = [];
-      if (!finished) {
-        actions.push('<button class="onboard-btn ghost" onclick="cancelProviderOnboarding()">Cancel</button>');
-      } else {
+      if (finished) {
         const failedCount = Array.isArray(job.errors) ? job.errors.length : 0;
         if (failedCount > 0) actions.push(`<button class="onboard-btn ghost" onclick="retryFailedOnboarding()">Retry failed (${failedCount})</button>`);
-        actions.push('<button class="onboard-btn" onclick="closeProviderOnboardModal()">Close</button>');
       }
 
       // This body is rebuilt on every 700ms poll. Replacing its children discards the scroll
@@ -6743,7 +7485,7 @@
         <div class="onboard-meter"><span>${escapeHtml(readyText)}</span><span>${total ? `${completed}/${total}` : ''}</span></div>
         ${progressHtml}
         <div class="onboard-list">${onboardRowsHtml(job)}</div>
-        <div class="onboard-actions">${actions.join('')}</div>
+        ${actions.length ? `<div class="onboard-actions">${actions.join('')}</div>` : ''}
       `;
 
       // Restore after the new nodes exist: assigning to the old list would do nothing, since it
@@ -6779,7 +7521,8 @@
         if (session !== onboardSession) return;
         console.error('Failed to start provider onboarding:', err);
         const bodyEl = document.getElementById('provider-onboard-body');
-        if (bodyEl) bodyEl.innerHTML = `<div class="onboard-note error">Could not start setup: ${escapeHtml(err.message || String(err))}</div><div class="onboard-actions"><button class="onboard-btn" onclick="closeProviderOnboardModal()">Close</button></div>`;
+        if (bodyEl) bodyEl.innerHTML = `<div class="onboard-note error">Could not start setup: ${escapeHtml(err.message || String(err))}</div>`;
+        setProviderOnboardFooterAction(true);
         onboardJobId = null;
       } finally {
         onboardStarting = false;
@@ -6853,6 +7596,14 @@
         onboardHighlight = null;
         drawPlots(allModels, currentBestModelId, currentBestProviderKey);
       }, 5000);
+    }
+
+    function cancelProviderOnboardingOrClose() {
+      if (onboardJobId) {
+        cancelProviderOnboarding();
+        return;
+      }
+      closeProviderOnboardModal();
     }
 
     async function cancelProviderOnboarding() {
@@ -7231,7 +7982,7 @@
                   <span style="font-size:0.74rem; color:var(--text-muted);">Polling every ${escapeHtml(String(kiroDeviceAuthState.interval || 5))}s</span>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                  <button data-verify-url="${escapeHtml(kiroDeviceAuthState.verificationUriComplete || '')}" onclick="window.open(this.dataset.verifyUrl || '', 'kiro_builder_id_verify')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
+                  <button data-verify-url="${escapeHtml(kiroDeviceAuthState.verificationUriComplete || '')}" onclick="openExternalAuthUrl(this.dataset.verifyUrl || '')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
                   <button onclick="cancelKiroDeviceAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
                 </div>
               </div>
@@ -7240,7 +7991,7 @@
             const kiroBrowserAuthHtml = kiroBrowserAuthState ? `
               <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
                 <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">Browser OAuth (${kiroBrowserAuthState.provider === 'github' ? 'GitHub' : 'Google'})</div>
-                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">After approval, the popup may end on a blank or unsupported page because Kiro redirects to a <code>kiro://</code> URL. Copy that full URL from the address bar and paste it below.</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">After approval, the browser tab may end on a blank or unsupported page because Kiro redirects to a <code>kiro://</code> URL. Copy that full URL from the browser's address bar and paste it below.</div>
                 <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
                   <input type="text" id="kiro-auth-url" readonly value="${escapeHtml(kiroBrowserAuthState.authUrl)}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
                   <button onclick="copyKiroAuthUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
@@ -7329,7 +8080,7 @@
                   <span style="font-size:0.74rem; color:var(--text-muted);">Polling every ${escapeHtml(String(copilotDeviceAuthState.interval || 5))}s</span>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                  <button data-verify-url="${escapeHtml(copilotDeviceAuthState.verificationUriComplete || copilotDeviceAuthState.verificationUri || '')}" onclick="window.open(this.dataset.verifyUrl || '', 'copilot_device_verify')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
+                  <button data-verify-url="${escapeHtml(copilotDeviceAuthState.verificationUriComplete || copilotDeviceAuthState.verificationUri || '')}" onclick="openExternalAuthUrl(this.dataset.verifyUrl || '')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
                   <button onclick="cancelCopilotDeviceAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
                 </div>
               </div>
@@ -7369,6 +8120,172 @@
               </div>
               ${copilotDeviceAuthHtml}
               ${copilotMessageHtml}
+              ${providerQuotaHtml}
+              ${credentialBarHtml(p)}
+              ${providerErrorHtml}
+              ${rateLimitHtml}
+            `;
+            (providerIsActive ? activeContainer : setupContainer).appendChild(section);
+            return;
+          }
+          if (p.key === 'google-antigravity') {
+            const aaAccounts = Array.isArray(p.accounts) ? p.accounts : [];
+            const aaSignedIn = aaAccounts.length > 0;
+            const aaStatusBg = aaSignedIn ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
+            const aaStatusColor = aaSignedIn ? 'var(--status-success-text)' : 'var(--status-warning-text)';
+            const aaStatusText = aaSignedIn
+              ? `Signed in · ${aaAccounts.length === 1 ? (aaAccounts[0].email || aaAccounts[0].projectId || 'Google account') : `${aaAccounts.length} accounts`}`
+              : 'Not signed in';
+            const aaAccountListHtml = aaAccounts.length === 0 ? '' : `
+              <div style="margin:0 0 12px 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--input-bg-alt);">
+                ${aaAccounts.map(account => {
+                  const identifier = account.email || account.projectId || '';
+                  const removeButton = aaAccounts.length > 1
+                    ? `<button data-aa-account="${escapeHtml(identifier)}" data-aa-index="${Number.isInteger(account.index) ? account.index : ''}" onclick="removeAntigravityAccount(this.dataset.aaAccount, this.dataset.aaIndex)" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:6px 10px; border-radius:6px; font-size:0.74rem; font-weight:600; white-space:nowrap;">Remove</button>`
+                    : '';
+                  return `
+                  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-top:1px solid var(--border-subtle);">
+                    <div style="min-width:0;">
+                      <div style="font-size:0.82rem; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(account.email || account.projectId || 'Google account')}</div>
+                      <div style="font-size:0.74rem; color:var(--text-muted);">${escapeHtml([account.projectId, account.planType].filter(Boolean).join(' · ') || 'Antigravity account')}</div>
+                    </div>
+                    ${removeButton}
+                  </div>`;
+                }).join('')}
+                ${aaAccounts.length > 1 ? '<div style="padding:8px 12px; font-size:0.74rem; color:var(--text-muted); border-top:1px solid var(--border-subtle);">Requests rotate across these accounts, and an account that is out of allowance hands the turn to the next one.</div>' : ''}
+              </div>`;
+            const aaActions = aaSignedIn
+              ? '<button onclick="startAntigravityOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Add another account</button>'
+                + `<button onclick="disconnectAntigravity()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect${aaAccounts.length > 1 ? ' all' : ''}</button>`
+              : '<button onclick="startAntigravityOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with Google</button>';
+            const aaFlowHtml = antigravityAuthState ? `
+              <div style="margin:0 0 12px 0; padding:12px; border:1px solid var(--status-info-border); background:var(--status-info-bg); border-radius:10px;">
+                <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">Antigravity sign-in in progress</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Approve access in the Google tab. Hammer listens on <code>${escapeHtml(antigravityAuthState.redirectUri)}</code> and finishes automatically.</div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                  <input type="text" id="antigravity-auth-url" readonly value="${escapeHtml(antigravityAuthState.authUrl)}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
+                  <button onclick="copyAntigravityAuthUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
+                </div>
+                <button onclick="cancelAntigravityOAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
+              </div>
+            ` : '';
+            const aaMessageHtml = antigravityUiMessage ? `
+              <div id="antigravity-ui-message" style="margin:0 0 12px 0; padding:10px 12px; border-radius:8px; font-size:0.78rem;">${escapeHtml(antigravityUiMessage.text)}</div>
+            ` : '';
+            section.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="background:${aaStatusBg}; color:${aaStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${aaSignedIn ? '✅' : '⚠️'} ${escapeHtml(aaStatusText)}</span>
+                  ${providerTitleHtml(p, 'Connect Google Antigravity')}
+                  ${providerEnabledToggleHtml(p)}
+                  <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
+                    <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
+                  </button>
+                  ${onboardButtonHtml(p)}
+                </div>
+              </div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Gemini and Claude models through Google's Cloud Code Assist backend, authenticated by an OAuth sign-in instead of an API key. This is Antigravity's own OAuth client, so Hammer listens on 127.0.0.1:51121 only while the sign-in runs.</div>
+              ${aaAccountListHtml}
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                ${aaActions}
+              </div>
+              ${aaFlowHtml}
+              ${aaMessageHtml}
+              ${providerQuotaHtml}
+              ${credentialBarHtml(p)}
+              ${providerErrorHtml}
+              ${rateLimitHtml}
+            `;
+            (providerIsActive ? activeContainer : setupContainer).appendChild(section);
+            return;
+          }
+          if (p.key === 'googleai') {
+            const googleAccounts = Array.isArray(p.accounts) ? p.accounts : [];
+            const googleAccountCount = googleAccounts.length;
+            const googleSignedIn = googleAccountCount > 0 || p.authMode === 'google-oauth';
+            const googleConnected = p.hasKey;
+            const googleStatusBg = googleConnected ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
+            const googleStatusColor = googleConnected ? 'var(--status-success-text)' : 'var(--status-warning-text)';
+            let googleStatusText = 'Not signed in';
+            if (googleAccountCount > 1) googleStatusText = `Signed in · ${googleAccountCount} accounts`;
+            else if (googleAccountCount === 1) googleStatusText = `Signed in · ${googleAccounts[0].email || googleAccounts[0].projectId || 'Google account'}`;
+            else if (googleSignedIn) googleStatusText = p.authEmail ? `Signed in · ${p.authEmail}` : 'Google account connected';
+            else if (googleConnected) googleStatusText = 'API key configured · sign in for quota';
+
+            const googleAccountRowsHtml = googleAccounts.map(account => {
+              const identifier = account.email || account.projectId || '';
+              const label = account.email || account.projectId || 'Google account with no reported email';
+              const meta = [account.projectId, account.planType].filter(Boolean).join(' · ');
+              const removeButton = googleAccountCount > 1
+                ? `<button data-google-account="${escapeHtml(identifier)}" data-google-index="${Number.isInteger(account.index) ? account.index : ''}" onclick="disconnectGoogle(this.dataset.googleAccount, this.dataset.googleIndex)" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:6px 10px; border-radius:6px; font-size:0.74rem; font-weight:600; white-space:nowrap;">Remove</button>`
+                : '';
+              return `
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; border-top:1px solid var(--border-subtle);">
+                  <div style="min-width:0;">
+                    <div style="font-size:0.82rem; font-weight:600; color:var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(label)}</div>
+                    <div style="font-size:0.74rem; color:var(--text-muted);">${escapeHtml(meta || 'Quota project discovered at sign-in')}</div>
+                  </div>
+                  ${removeButton}
+                </div>`;
+            }).join('');
+            const googleAccountListHtml = googleAccountCount === 0 ? '' : `
+              <div style="margin:0 0 12px 0; border:1px solid var(--border); border-radius:10px; overflow:hidden; background:var(--input-bg-alt);">
+                ${googleAccountRowsHtml}
+                ${googleAccountCount > 1 ? '<div style="padding:8px 12px; font-size:0.74rem; color:var(--text-muted); border-top:1px solid var(--border-subtle);">Quota is read from every signed-in account; requests use the first account.</div>' : ''}
+              </div>`;
+
+            const googleMessageHtml = googleUiMessage
+              ? `<div id="google-ui-message" style="margin-top:12px; padding:10px 12px; border-radius:8px; font-size:0.8rem; border:1px solid ${googleUiMessage.tone === 'error' ? 'var(--status-error-border)' : googleUiMessage.tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}; background:${googleUiMessage.tone === 'error' ? 'var(--status-error-bg)' : googleUiMessage.tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)'}; color:${googleUiMessage.tone === 'error' ? 'var(--status-error-text)' : googleUiMessage.tone === 'success' ? 'var(--status-success-text)' : 'var(--text)'};">${escapeHtml(googleUiMessage.text)}</div>`
+              : '<div id="google-ui-message" style="display:none;"></div>';
+
+            const googleFlowHtml = googleAuthState ? `
+              <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
+                <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">Google sign-in in progress</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Approve access in the Google tab. Hammer listens on <code>${escapeHtml(googleAuthState.redirectUri)}</code> and finishes automatically.</div>
+                <div style="display:flex; gap:8px; align-items:center; margin-bottom:10px;">
+                  <input type="text" id="google-auth-url" readonly value="${escapeHtml(googleAuthState.authUrl)}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
+                  <button onclick="copyGoogleAuthUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
+                </div>
+                <button onclick="cancelGoogleOAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
+              </div>
+            ` : '';
+
+            const googleActionsHtml = googleSignedIn
+              ? '<button onclick="startGoogleOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Add another account</button>'
+                + `<button onclick="disconnectGoogle()" style="border:1px solid var(--status-error-border); background:var(--status-error-bg); color:var(--status-error-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Disconnect${googleAccountCount > 1 ? ' all' : ''}</button>`
+              : '<button onclick="startGoogleOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with Google</button>';
+
+            section.innerHTML = `
+              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
+                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                  <span style="background:${googleStatusBg}; color:${googleStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${googleConnected ? '✅' : '⚠️'} ${escapeHtml(googleStatusText)}</span>
+                  ${providerTitleHtml(p, 'Connect Google Gemini')}
+                  ${providerEnabledToggleHtml(p)}
+                  <button class="provider-model-refresh-btn ${isRefreshing ? 'is-loading' : ''}" ${isRefreshing ? 'disabled' : ''} onclick='refreshProviderModels(${jsStringAttr(p.key)}, ${jsStringAttr(p.name)})' title="Refresh provider models">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+                      <polyline points="21 3 21 9 15 9"></polyline>
+                    </svg>
+                    <span>${isRefreshing ? 'Refreshing…' : `${modelCount} model${modelCount !== 1 ? 's' : ''}`}</span>
+                  </button>
+                  ${onboardButtonHtml(p)}
+                </div>
+              </div>
+              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the Google account behind Gemini. Hammer uses the resulting OAuth token for Gemini traffic and reads that project's Code Assist quota for the model table. A GOOGLE_API_KEY can still be pasted below as a fallback.</div>
+              <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
+                Quota is provider-reported as a remaining percentage with a reset time. Google does not publish an absolute request count, so Hammer shows the percentage rather than inventing one.
+              </div>
+              ${googleAccountListHtml}
+              <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
+                ${googleActionsHtml}
+              </div>
+              <div class="form-group" style="display:flex; gap:8px; align-items:center;">
+                <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (credential configured)' : 'Or paste a GOOGLE_API_KEY fallback...'}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
+                <button onclick="toggleProviderKeyVisibility(${jsStringAttr(p.key)}, this)" title="Show or hide API key" aria-label="Show or hide API key" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 10px; border-radius:6px; font-size:0.85rem; white-space:nowrap;">👁</button>
+                <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Key</button>
+              </div>
+              ${googleFlowHtml}
+              ${googleMessageHtml}
               ${providerQuotaHtml}
               ${credentialBarHtml(p)}
               ${providerErrorHtml}
@@ -7448,7 +8365,7 @@
                   <span style="font-size:0.74rem; color:var(--text-muted);">Polling every ${escapeHtml(String(codexDeviceAuthState.interval || 5))}s</span>
                 </div>
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-                  <button data-verify-url="${escapeHtml(codexDeviceAuthState.verificationUri || '')}" onclick="window.open(this.dataset.verifyUrl || '', 'codex_device_verify')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
+                  <button data-verify-url="${escapeHtml(codexDeviceAuthState.verificationUri || '')}" onclick="openExternalAuthUrl(this.dataset.verifyUrl || '')" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Open Verification Page</button>
                   <button onclick="cancelCodexDeviceAuth()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Cancel</button>
                 </div>
               </div>
@@ -7512,12 +8429,12 @@
             const devinFlowHtml = devinOAuthState ? `
               <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
                 <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">Devin sign-in in progress</div>
-                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Approve the login in the popup. Hammer listens on <code>${escapeHtml(devinOAuthState.redirectUri)}</code> and finishes automatically — no code to copy.</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Approve the login in the browser tab. Hammer listens on <code>${escapeHtml(devinOAuthState.redirectUri)}</code> and finishes automatically — no code to copy.</div>
                 <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
                   <input type="text" id="devin-auth-url" readonly value="${escapeHtml(devinOAuthState.authUrl)}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
                   <button onclick="copyDevinAuthUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
                 </div>
-                <div style="font-size:0.74rem; color:var(--text-muted); margin-bottom:8px;">If the popup can't reach the local callback (different machine or blocked port), paste the full URL from the popup's address bar below.</div>
+                <div style="font-size:0.74rem; color:var(--text-muted); margin-bottom:8px;">If the browser can't reach the local callback (different machine or blocked port), paste the full URL from the browser's address bar below.</div>
                 <input type="text" id="devin-callback-url" placeholder="${escapeHtml(devinOAuthState.redirectUri)}?code=...&amp;state=..." style="width:100%; box-sizing:border-box; background:var(--input-bg); color:var(--text); font-size:0.76rem; padding:8px 10px; border:1px solid var(--border); border-radius:6px; margin-bottom:10px;">
                 <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
                   <button onclick="completeDevinOAuthManual()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600;">Connect (paste URL)</button>
@@ -8059,10 +8976,13 @@
         await loadSettings();
 
         const verifyUrl = data.verificationUriComplete || data.verificationUri;
-        if (verifyUrl) {
-          window.open(verifyUrl, 'kiro_builder_id_verify');
-        }
-        setKiroUiMessage('Opened the AWS Builder ID verification page. Approve the request there and Hammer will finish the connection automatically.', 'info');
+        const opened = verifyUrl ? await openExternalAuthUrl(verifyUrl) : false;
+        setKiroUiMessage(
+          opened
+            ? 'Opened the AWS Builder ID verification page in your browser. Approve the request there and Hammer will finish the connection automatically.'
+            : 'Use Open Verification Page below and approve the request in your browser; Hammer will finish the connection automatically.',
+          'info',
+        );
         pollKiroBuilderIdAuth().catch(err => {
           setKiroUiMessage(err.message || 'Failed while polling AWS Builder ID authorization.', 'error');
         });
@@ -8074,7 +8994,6 @@
 
     async function startKiroBrowserAuth(provider) {
       const providerLabel = provider === 'github' ? 'GitHub' : 'Google';
-      const popup = window.open('', 'kiro_social_auth');
       clearKiroDevicePollTimer();
       kiroDeviceAuthState = null;
       try {
@@ -8092,15 +9011,14 @@
           state: data.state,
         };
         await loadSettings();
-        setKiroUiMessage(`Opened the ${providerLabel} login. If the popup reports that kiro:// has no registered handler, this machine cannot complete browser OAuth and you should use AWS cache import or a manual refresh token instead.`, 'info');
-        if (popup) {
-          popup.location = data.authUrl;
-        } else {
-          window.open(data.authUrl, 'kiro_social_auth');
-          setKiroUiMessage(`Popup blocked. Open the copied ${providerLabel} auth link manually, then paste the callback URL below.`, 'info');
-        }
+        const opened = await openExternalAuthUrl(data.authUrl);
+        setKiroUiMessage(
+          opened
+            ? `Opened the ${providerLabel} login in your browser. If it reports that kiro:// has no registered handler, this machine cannot complete browser OAuth and you should use AWS cache import or a manual refresh token instead.`
+            : `Could not open your browser. Use Copy Link below to open the ${providerLabel} login, then paste the callback URL below.`,
+          'info',
+        );
       } catch (err) {
-        if (popup && !popup.closed) popup.close();
         setKiroUiMessage(err.message || `Failed to start Kiro ${providerLabel} OAuth.`, 'error');
       }
     }
@@ -8252,10 +9170,13 @@
         await loadSettings();
 
         const verifyUrl = data.verificationUriComplete || data.verificationUri;
-        if (verifyUrl) {
-          window.open(verifyUrl, 'copilot_device_verify');
-        }
-        setCopilotUiMessage('Opened the GitHub verification page. Enter the code there and Hammer will finish the connection automatically.', 'info');
+        const opened = verifyUrl ? await openExternalAuthUrl(verifyUrl) : false;
+        setCopilotUiMessage(
+          opened
+            ? 'Opened the GitHub verification page in your browser. Enter the code there and Hammer will finish the connection automatically.'
+            : 'Use Open Verification Page below, enter the code in your browser, and Hammer will finish the connection automatically.',
+          'info',
+        );
         pollCopilotDeviceAuth().catch(err => {
           setCopilotUiMessage(err.message || 'Failed while polling GitHub device authorization.', 'error');
         });
@@ -8396,6 +9317,288 @@
       loadSettings();
     }
 
+    let antigravityAuthState = null;
+    let antigravityAuthPollTimer = null;
+    let antigravityUiMessage = null;
+
+    function setAntigravityUiMessage(text, tone = 'info') {
+      antigravityUiMessage = text ? { text, tone } : null;
+      const el = document.getElementById('antigravity-ui-message');
+      if (!el) return;
+      el.style.display = antigravityUiMessage ? 'block' : 'none';
+      el.textContent = antigravityUiMessage ? text : '';
+      if (!antigravityUiMessage) return;
+      el.dataset.tone = tone;
+      el.style.border = `1px solid ${tone === 'error' ? 'var(--status-error-border)' : tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}`;
+      el.style.background = tone === 'error' ? 'var(--status-error-bg)' : tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)';
+      el.style.color = tone === 'error' ? 'var(--status-error-text)' : tone === 'success' ? 'var(--status-success-text)' : 'var(--text)';
+    }
+
+    function clearAntigravityAuthPollTimer() {
+      if (antigravityAuthPollTimer) {
+        clearTimeout(antigravityAuthPollTimer);
+        antigravityAuthPollTimer = null;
+      }
+    }
+
+    async function startAntigravityOAuth() {
+      clearAntigravityAuthPollTimer();
+      try {
+        setAntigravityUiMessage('Preparing Antigravity sign-in…', 'info');
+        const res = await fetch('/api/oauth/antigravity/authorize');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not start the Antigravity sign-in.');
+        antigravityAuthState = {
+          flowId: data.flowId,
+          authUrl: data.authUrl,
+          redirectUri: data.redirectUri,
+          expiresAt: data.expiresAt,
+        };
+        await loadSettings();
+        const opened = await openExternalAuthUrl(data.authUrl);
+        if (!opened) {
+          setAntigravityUiMessage('Could not open your browser. Copy the consent link below instead.', 'info');
+        }
+        antigravityAuthPollTimer = setTimeout(pollAntigravityOAuth, 1500);
+      } catch (err) {
+        setAntigravityUiMessage(err.message || 'Could not start the Antigravity sign-in.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function pollAntigravityOAuth() {
+      antigravityAuthPollTimer = null;
+      if (!antigravityAuthState) return;
+      if (antigravityAuthState.expiresAt && Date.now() >= antigravityAuthState.expiresAt) {
+        antigravityAuthState = null;
+        setAntigravityUiMessage('Antigravity sign-in expired. Start it again for a fresh link.', 'error');
+        await loadSettings();
+        return;
+      }
+      try {
+        const res = await fetch(`/api/oauth/antigravity/status?flowId=${encodeURIComponent(antigravityAuthState.flowId)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not check the Antigravity sign-in status.');
+        if (data.status === 'success') {
+          antigravityAuthState = null;
+          setAntigravityUiMessage(
+            data.email
+              ? `Connected ${data.email}${data.projectId ? ` · project ${data.projectId}` : ''}. The model table will refill from the catalog.`
+              : 'Connected Google Antigravity.',
+            'success',
+          );
+          await loadSettings();
+          await fetchData();
+          return;
+        }
+        if (data.status === 'error' || data.status === 'missing' || data.status === 'expired') {
+          antigravityAuthState = null;
+          setAntigravityUiMessage(data.error || 'Antigravity sign-in failed.', 'error');
+          await loadSettings();
+          return;
+        }
+        antigravityAuthPollTimer = setTimeout(pollAntigravityOAuth, 2000);
+      } catch (err) {
+        antigravityAuthState = null;
+        setAntigravityUiMessage(err.message || 'Could not check the Antigravity sign-in status.', 'error');
+        await loadSettings();
+      }
+    }
+
+    function cancelAntigravityOAuth() {
+      clearAntigravityAuthPollTimer();
+      antigravityAuthState = null;
+      setAntigravityUiMessage('Cancelled Antigravity sign-in.', 'info');
+      loadSettings();
+    }
+
+    async function copyAntigravityAuthUrl() {
+      const input = document.getElementById('antigravity-auth-url');
+      if (!input || !input.value) return;
+      try {
+        await copyText(input.value);
+        setAntigravityUiMessage('Consent link copied.', 'success');
+      } catch (err) {
+        setAntigravityUiMessage(err.message || 'Could not copy the link.', 'error');
+      }
+    }
+
+    async function disconnectAntigravity() {
+      try {
+        const res = await fetch('/api/oauth/antigravity/disconnect', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not disconnect Google Antigravity.');
+        antigravityAuthState = null;
+        setAntigravityUiMessage('Disconnected Google Antigravity.', 'success');
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        setAntigravityUiMessage(err.message || 'Could not disconnect Google Antigravity.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function removeAntigravityAccount(account, index) {
+      const identifier = typeof account === 'string' ? account.trim() : '';
+      const position = Number.parseInt(index, 10);
+      const body = identifier
+        ? { account: identifier }
+        : Number.isInteger(position)
+          ? { index: position }
+          : {};
+      try {
+        const res = await fetch('/api/oauth/antigravity/accounts/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not remove the Antigravity account.');
+        setAntigravityUiMessage('Removed the Antigravity account.', 'success');
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        setAntigravityUiMessage(err.message || 'Could not remove the Antigravity account.', 'error');
+        await loadSettings();
+      }
+    }
+
+    function setGoogleUiMessage(text, tone = 'info') {
+      googleUiMessage = text ? { text, tone } : null;
+      const el = document.getElementById('google-ui-message');
+      if (!el) return;
+      if (!googleUiMessage) {
+        el.style.display = 'none';
+        el.textContent = '';
+        return;
+      }
+      el.style.display = 'block';
+      el.textContent = text;
+      el.dataset.tone = tone;
+      el.style.border = `1px solid ${tone === 'error' ? 'var(--status-error-border)' : tone === 'success' ? 'var(--status-success-border)' : 'var(--border)'}`;
+      el.style.background = tone === 'error' ? 'var(--status-error-bg)' : tone === 'success' ? 'var(--status-success-bg)' : 'var(--input-bg-alt)';
+      el.style.color = tone === 'error' ? 'var(--status-error-text)' : tone === 'success' ? 'var(--status-success-text)' : 'var(--text)';
+    }
+
+    function clearGoogleAuthPollTimer() {
+      if (googleAuthPollTimer) {
+        clearTimeout(googleAuthPollTimer);
+        googleAuthPollTimer = null;
+      }
+    }
+
+    async function startGoogleOAuth() {
+      clearGoogleAuthPollTimer();
+      try {
+        setGoogleUiMessage('Preparing Google sign-in…', 'info');
+        const res = await fetch('/api/oauth/google/authorize');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not start Google sign-in.');
+        googleAuthState = {
+          flowId: data.flowId,
+          authUrl: data.authUrl,
+          redirectUri: data.redirectUri,
+          expiresAt: data.expiresAt,
+        };
+        await loadSettings();
+        const opened = await openExternalAuthUrl(data.authUrl);
+        if (!opened) {
+          setGoogleUiMessage('Could not open your browser. Use Copy Link below to open the consent page.', 'info');
+        }
+        googleAuthPollTimer = setTimeout(pollGoogleOAuth, 1500);
+      } catch (err) {
+        setGoogleUiMessage(err.message || 'Could not start Google sign-in.', 'error');
+        await loadSettings();
+      }
+    }
+
+    async function pollGoogleOAuth() {
+      googleAuthPollTimer = null;
+      if (!googleAuthState) return;
+      if (googleAuthState.expiresAt && Date.now() >= googleAuthState.expiresAt) {
+        googleAuthState = null;
+        setGoogleUiMessage('Google sign-in expired. Start it again to get a fresh link.', 'error');
+        await loadSettings();
+        return;
+      }
+      try {
+        const res = await fetch(`/api/oauth/google/status?flowId=${encodeURIComponent(googleAuthState.flowId)}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not check the Google sign-in status.');
+        if (data.status === 'success') {
+          googleAuthState = null;
+          setGoogleUiMessage(
+            data.email
+              ? `Connected ${data.email}${data.projectId ? ` · quota project ${data.projectId}` : ''}. Quota will refresh with the model table.`
+              : 'Connected Google. Quota will refresh with the model table.',
+            'success',
+          );
+          await loadSettings();
+          await fetchData();
+          return;
+        }
+        if (data.status === 'error') {
+          googleAuthState = null;
+          setGoogleUiMessage(data.error || 'Google sign-in failed.', 'error');
+          await loadSettings();
+          return;
+        }
+        if (data.status === 'missing' || data.status === 'expired') {
+          googleAuthState = null;
+          setGoogleUiMessage('Google sign-in session was lost. Start it again.', 'error');
+          await loadSettings();
+          return;
+        }
+        googleAuthPollTimer = setTimeout(pollGoogleOAuth, 2000);
+      } catch (err) {
+        googleAuthState = null;
+        setGoogleUiMessage(err.message || 'Could not check the Google sign-in status.', 'error');
+        await loadSettings();
+      }
+    }
+
+    function cancelGoogleOAuth() {
+      clearGoogleAuthPollTimer();
+      googleAuthState = null;
+      setGoogleUiMessage('Cancelled Google sign-in.', 'info');
+      loadSettings();
+    }
+
+    async function copyGoogleAuthUrl() {
+      const input = document.getElementById('google-auth-url');
+      if (!input || !input.value) return;
+      try {
+        await copyText(input.value);
+        setGoogleUiMessage('Consent link copied.', 'success');
+      } catch (err) {
+        setGoogleUiMessage(err.message || 'Could not copy the link.', 'error');
+      }
+    }
+
+    async function disconnectGoogle(account, index) {
+      const identifier = typeof account === 'string' ? account.trim() : '';
+      const position = Number.parseInt(index, 10);
+      const body = identifier
+        ? { account: identifier }
+        : (Number.isInteger(position) ? { index: position } : {});
+      try {
+        const res = await fetch('/api/oauth/google/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Could not disconnect the Google account.');
+        googleAuthState = null;
+        setGoogleUiMessage('Disconnected Google. The API-key fallback, if any, is active again.', 'success');
+        await loadSettings();
+        await fetchData();
+      } catch (err) {
+        setGoogleUiMessage(err.message || 'Could not disconnect the Google account.', 'error');
+        await loadSettings();
+      }
+    }
+
     async function startCodexDeviceAuth() {
       clearCodexDevicePollTimer();
       try {
@@ -8415,10 +9618,13 @@
         };
         await loadSettings();
 
-        if (data.verificationUri) {
-          window.open(data.verificationUri, 'codex_device_verify');
-        }
-        setCodexUiMessage('Opened the ChatGPT verification page. Enter the code there and Hammer will finish the connection automatically.', 'info');
+        const opened = data.verificationUri ? await openExternalAuthUrl(data.verificationUri) : false;
+        setCodexUiMessage(
+          opened
+            ? 'Opened the ChatGPT verification page in your browser. Enter the code there and Hammer will finish the connection automatically.'
+            : 'Use Open Verification Page below, enter the code in your browser, and Hammer will finish the connection automatically.',
+          'info',
+        );
         pollCodexDeviceAuth().catch(err => {
           setCodexUiMessage(err.message || 'Failed while polling ChatGPT device authorization.', 'error');
         });
@@ -8669,12 +9875,13 @@
         };
         await loadSettings();
 
-        const popup = window.open(data.authUrl, 'devin_oauth');
-        if (!popup) {
-          setDevinUiMessage('Popup blocked. Open the copied sign-in link manually, then paste the callback URL into the field below after approving.', 'info');
-        } else {
-          setDevinUiMessage('Opened the Devin sign-in page. Approve the login there and Hammer will finish automatically.', 'info');
-        }
+        const opened = await openExternalAuthUrl(data.authUrl);
+        setDevinUiMessage(
+          opened
+            ? 'Opened the Devin sign-in page in your browser. Approve the login there and Hammer will finish automatically.'
+            : 'Could not open your browser. Use Copy Link below, then paste the callback URL into the field below after approving.',
+          'info',
+        );
         pollDevinOAuth().catch(err => {
           setDevinUiMessage(err.message || 'Failed while checking the Devin sign-in status.', 'error');
         });
@@ -8690,7 +9897,7 @@
       const input = document.getElementById('devin-callback-url');
       const raw = input ? input.value.trim() : '';
       if (!raw) {
-        setDevinUiMessage('Paste the full callback URL from the popup address bar first.', 'error');
+        setDevinUiMessage("Paste the full callback URL from the browser's address bar first.", 'error');
         return;
       }
 
@@ -9178,12 +10385,14 @@
     // a lifetime window is treated like a month.
     const RECORDED_BY_PERIOD = {
       tokens: {
+        hour: ['tokensLastHour', 'in the last hour', 'Nothing recorded in the last hour'],
         day: ['tokensToday', 'today', 'Nothing recorded today yet'],
         week: ['tokensThisWeek', 'this week', 'Nothing recorded this week yet'],
         month: ['tokensThisMonth', 'this month', 'Nothing recorded this month yet'],
         lifetime: ['tokensLifetime', 'so far', 'Nothing recorded yet'],
       },
       requests: {
+        hour: ['requestsLastHour', 'in the last hour', 'Nothing recorded in the last hour'],
         day: ['requestsToday', 'today', 'Nothing recorded today yet'],
         week: ['requestsThisWeek', 'this week', 'Nothing recorded this week yet'],
         month: ['requestsThisMonth', 'this month', 'Nothing recorded this month yet'],
@@ -9243,7 +10452,7 @@
         </div>`;
     }
 
-    function publishedQuotaHtml(known, extraClass = '', recorded = null) {
+    function publishedQuotaHtml(known, extraClass = '', recorded = null, title = 'Published limits') {
       if (!hasPublishedQuota(known)) return '';
       const meta = [];
       if (known.window || known.limitScope) meta.push([known.window, known.limitScope].filter(Boolean).join(' · '));
@@ -9256,7 +10465,7 @@
       const source = escapeHtml(known.source || 'Published provider limits');
       return `
         <div class="quota-published${extraClass ? ` ${extraClass}` : ''}">
-          <div class="quota-published-title">Published limits</div>
+          <div class="quota-published-title">${escapeHtml(title)}</div>
           ${bars}
           <div class="quota-published-source">${href ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${source}</a>` : source}</div>
           ${meta.length > 0 ? `<div class="quota-published-meta">${escapeHtml(meta.join(' · '))}</div>` : ''}
@@ -9311,6 +10520,9 @@
       }
 
       const known = hasPublishedQuota(provider?.knownQuota) ? provider.knownQuota : null;
+      const knownHasNumericLimits = Boolean(
+        known && Array.isArray(known.limits) && known.limits.some(limit => limit && Number(limit.limit) > 0),
+      );
       const notes = observedQuotaNotesHtml(provider);
       // The real error, not a generic one: "No credentials configured" and "Usage endpoint
       // unavailable" are different facts about different problems.
@@ -9339,12 +10551,12 @@
               <div class="quota-unavailable">This provider publishes no usage or quota endpoint, and hammer has not observed a limit yet.</div>
             </div>`;
         }
-        provenance = known ? 'published' : (notes ? 'observed' : 'none');
-        provenanceLabel = known ? 'Published limits' : (notes ? 'Observed' : 'Not reported');
+        provenance = knownHasNumericLimits ? 'published' : (notes ? 'observed' : known ? 'reference' : 'none');
+        provenanceLabel = knownHasNumericLimits ? 'Published limits' : (notes ? 'Observed' : known ? 'Provider note' : 'Not reported');
         return `
           <div class="quota-bars-section quota-bars-${provenance}" aria-label="Provider quota">
             <div class="quota-bars-heading">Quota <span class="quota-provenance">${escapeHtml(provenanceLabel)}</span></div>
-            ${known ? publishedQuotaHtml(known, '', provider?.recordedUsage) : ''}
+            ${known ? publishedQuotaHtml(known, '', provider?.recordedUsage, knownHasNumericLimits ? 'Published limits' : 'Provider note') : ''}
             ${!known && !error && !notes ? '<div class="quota-unavailable">This provider publishes no usage or quota endpoint, and hammer has not observed a limit yet.</div>' : ''}
             ${notes}
             ${error}
@@ -9381,7 +10593,7 @@
                 <div class="quota-reports">${group.reports.map(quotaReportBarHtml).join('')}</div>
               </div>`).join('')}
           </div>
-          ${known ? publishedQuotaHtml(known, 'quota-published-footnote', provider?.recordedUsage) : ''}
+          ${known ? publishedQuotaHtml(known, 'quota-published-footnote', provider?.recordedUsage, knownHasNumericLimits ? 'Published limits' : 'Provider note') : ''}
           ${notes}
           ${error}
         </div>`;
@@ -9396,15 +10608,15 @@
     // segment), because once the first credential is spent the traffic has moved rightwards and
     // the spent one keeps its width.
     //
-    // Nothing here invents a percentage of an allowance. The server knows how many requests a
-    // credential has served and whether it is currently exhausted; it does not know how much of
-    // a provider's free tier remains, and a bar that guessed at that would be a lie that looks
-    // like data. So the fill is the *share of this provider's traffic* each credential has
-    // carried, and exhaustion is stated outright, with the reset counted down when the provider
-    // said when it lifts.
+    // Nothing here invents a percentage of an allowance. The server captures the remaining
+    // quota a provider reports for the credential that answered, and a bar only draws a
+    // percentage when both remaining and limit are known. Google often reports neither for a
+    // healthy free-tier key; those accounts say "Quota not reported" instead of substituting
+    // traffic share, which is not an allowance.
     //
-    // A provider with a single credential gets a single bar, because "is there anything left in
-    // this account?" is the same question whether the pool holds one or five.
+    // Google scopes quota per model, so the server sends the lowest known model window for an
+    // account; the model is named beside the bar. An exhausted account still reports zero
+    // because the bench itself is evidence that nothing is left in that account's window.
     function credentialBarHtml(provider) {
       const pool = provider ? provider.credentialPool : null;
       if (!pool || !Array.isArray(pool.accounts) || pool.accounts.length === 0) return '';
@@ -9412,52 +10624,96 @@
       const totalRequests = accounts.reduce((sum, account) => sum + (Number(account.requests) || 0), 0);
       const serving = accounts[pool.servingIndex] || null;
 
-      const segments = accounts.map((account, i) => {
+      const cards = accounts.map((account, i) => {
         const requests = Number(account.requests) || 0;
-        // Equal widths before anything has been served: with no traffic yet the pool is a plan,
-        // not a measurement, and drawing one credential as "100%" would assert otherwise.
-        const share = totalRequests > 0 ? (requests / totalRequests) * 100 : 100 / accounts.length;
-        const isServing = i === pool.servingIndex && !account.exhausted;
+        const quota = account.quota && typeof account.quota === 'object' ? account.quota : null;
+        const remaining = quota?.remaining == null ? null : Number(quota.remaining);
+        const limit = quota?.limit == null ? null : Number(quota.limit);
+        const hasLimit = Number.isFinite(limit) && limit > 0;
+        const accountExhausted = Boolean(account.exhausted);
+        const displayedRemaining = accountExhausted
+          ? 0
+          : Number.isFinite(remaining) ? remaining : null;
+        const limited = !accountExhausted && displayedRemaining != null && displayedRemaining <= 0;
+        const isServing = i === pool.servingIndex && !accountExhausted;
+        const state = accountExhausted ? 'exhausted' : limited ? 'limited' : isServing ? 'serving' : 'waiting';
         const label = account.label || `Account ${i + 1}`;
-        const title = `${label} \u2014 ${requests} request${requests === 1 ? '' : 's'}`
-          + (account.exhausted ? ' \u00b7 exhausted' : isServing ? ' \u00b7 serving' : ' \u00b7 waiting its turn');
-        const fill = account.exhausted
-          ? 'var(--status-error-bg)'
-          : isServing ? 'var(--accent)' : 'var(--border)';
-        // The exhausted segment is hatched rather than merely red, so it reads as spent at a
-        // glance without relying on colour alone.
-        const hatch = account.exhausted
-          ? 'background-image:repeating-linear-gradient(45deg, transparent, transparent 3px, var(--status-error-border) 3px, var(--status-error-border) 6px);'
+        const model = quota?.modelId ? String(quota.modelId).replace(/^models\//, '') : '';
+        // A zero quota for one model is not account exhaustion: Google scopes free-tier
+        // allowances per model, and the account may still serve its other models.
+        const stateLabel = accountExhausted
+          ? 'Exhausted'
+          : limited
+            ? (model ? 'Model limited' : 'Limited')
+            : isServing ? 'Serving' : 'Waiting';
+        // A percentage window has no unit to count: "98 of 100 left" would read as 98
+        // requests. Google reports a remaining fraction per model, not an allowance.
+        const percentOnly = Boolean(quota?.percentOnly);
+        const quotaText = displayedRemaining != null
+          ? (percentOnly
+            ? `${Math.round(displayedRemaining * 10) / 10}% left`
+            : hasLimit
+              ? `${displayedRemaining.toLocaleString()} of ${limit.toLocaleString()} left`
+              : `${displayedRemaining.toLocaleString()} left`)
+          : hasLimit
+            ? `Limit ${limit.toLocaleString()} \u00b7 remaining not reported`
+            : 'Quota not reported';
+        let percent = null;
+        if (displayedRemaining != null) {
+          if (hasLimit) {
+            percent = Math.max(0, Math.min(100, (displayedRemaining / limit) * 100));
+          } else if (displayedRemaining === 0) {
+            percent = 0;
+          }
+        }
+        const resetMs = Number(quota?.resetsInMs) || Number(account.resetsInMs);
+        const reset = Number.isFinite(resetMs) && resetMs > 0
+          ? `<span class="credential-pool-reset" data-pool-reset-at="${Date.now() + resetMs}">resets in ${escapeHtml(formatCountdown(resetMs))}</span>`
           : '';
-        return `<div title="${escapeHtml(title)}" data-pool-segment="${i}" style="width:${share.toFixed(3)}%; height:100%; background:${fill}; ${hatch}${i > 0 ? ' border-left:1px solid var(--border);' : ''}"></div>`;
+        const requestText = `${requests.toLocaleString()} request${requests === 1 ? '' : 's'}`;
+        const scope = model ? `${model} \u00b7 ` : '';
+        const title = `${label} \u2014 ${quotaText}${model ? ` (${model})` : ''} \u00b7 ${requestText}`
+          + (accountExhausted ? ' \u00b7 exhausted' : limited ? (model ? ' \u00b7 model at quota' : ' \u00b7 at quota') : isServing ? ' \u00b7 serving' : ' \u00b7 waiting its turn');
+        const bar = percent == null
+          ? `<div class="quota-track credential-pool-track credential-pool-track-unknown" role="progressbar" aria-label="${escapeHtml(`${label} quota remaining`)}" aria-valuetext="${escapeHtml(`${quotaText}, ${stateLabel.toLowerCase()}`)}"><div class="quota-fill credential-pool-fill credential-pool-fill-unknown"></div></div>`
+          : `<div class="quota-track credential-pool-track credential-pool-track-${state}" role="progressbar" aria-label="${escapeHtml(`${label} quota remaining`)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent.toFixed(1)}" aria-valuetext="${escapeHtml(`${quotaText}, ${stateLabel.toLowerCase()}`)}"><div class="quota-fill credential-pool-fill credential-pool-fill-${state}" style="width:${percent.toFixed(3)}%;"></div></div>`;
+        return `
+          <div class="credential-pool-account" data-pool-account="${i}" data-pool-quota-remaining="${displayedRemaining == null ? '' : displayedRemaining}" data-pool-quota-limit="${hasLimit ? limit : ''}" title="${escapeHtml(title)}">
+            <div class="credential-pool-account-head">
+              <span class="credential-pool-label" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+              <span class="credential-pool-state credential-pool-state-${state}">${stateLabel}</span>
+            </div>
+            ${bar}
+            <div class="credential-pool-meta">${escapeHtml(`${scope}${quotaText} \u00b7 ${requestText}`)}${reset ? ` \u00b7 ${reset}` : ''}</div>
+          </div>`;
       }).join('');
 
-      const spent = accounts.filter(account => account.exhausted);
-      const soonestResetMs = spent.reduce((soonest, account) => {
-        const ms = Number(account.resetsInMs);
-        if (!Number.isFinite(ms) || ms <= 0) return soonest;
-        return soonest === null || ms < soonest ? ms : soonest;
-      }, null);
-
+      const exhaustedAccounts = accounts.filter(account => account.exhausted);
+      const modelLimitedAccounts = accounts.filter(account => !account.exhausted
+        && account.quota && account.quota.remaining != null && Number(account.quota.remaining) === 0);
       const summary = [`${accounts.length} account${accounts.length === 1 ? '' : 's'}`];
       if (totalRequests > 0) summary.push(`${totalRequests.toLocaleString()} request${totalRequests === 1 ? '' : 's'}`);
       if (serving && !serving.exhausted && accounts.length > 1) summary.push(`${serving.label || 'first account'} serving`);
-      if (spent.length > 0) {
-        summary.push(spent.length === accounts.length
-          ? 'all accounts exhausted'
-          : `${spent.length} exhausted`);
+      // "All accounts at quota" is an account-wide claim. A model-scoped zero gets its own
+      // sentence, because the account can still answer on models with quota left.
+      if (exhaustedAccounts.length > 0) {
+        summary.push(exhaustedAccounts.length === accounts.length
+          ? 'all accounts at quota'
+          : `${exhaustedAccounts.length} at quota`);
       }
-
-      const resetHtml = soonestResetMs === null
-        ? ''
-        : `<span data-pool-reset-at="${Date.now() + soonestResetMs}" style="margin-left:6px;">resets in ${escapeHtml(formatCountdown(soonestResetMs))}</span>`;
+      if (modelLimitedAccounts.length > 0) {
+        summary.push(modelLimitedAccounts.length === accounts.length
+          ? 'a model is at quota on every account'
+          : `a model is at quota on ${modelLimitedAccounts.length} account${modelLimitedAccounts.length === 1 ? '' : 's'}`);
+      }
+      const perModel = accounts.some(account => account.quota && account.quota.modelId);
 
       return `
-        <div style="margin-top:12px;">
-          <div style="display:flex; height:8px; border-radius:999px; overflow:hidden; border:1px solid var(--border); background:var(--input-bg);">
-            ${segments}
-          </div>
-          <div style="margin-top:6px; font-size:0.72rem; color:var(--text-muted);">${escapeHtml(summary.join(' \u00b7 '))}${resetHtml}</div>
+        <div class="quota-bars-section credential-pool-section" aria-label="Provider accounts">
+          <div class="quota-bars-heading">Accounts <span class="quota-provenance">Quota</span></div>
+          <div class="credential-pool-grid${accounts.length === 1 ? ' credential-pool-grid-single' : ''}">${cards}</div>
+          <div class="credential-pool-summary">${escapeHtml(summary.join(' \u00b7 '))}</div>
+          ${perModel ? '<div class="credential-pool-note">Quota is per model; each account shows its lowest reported model quota. A model at 0 does not mean the account is exhausted.</div>' : ''}
         </div>`;
     }
 
@@ -9808,3 +11064,13 @@
     // Safety net for the `?perf` report: if a stage never completes (a panel build that threw),
     // whatever was measured is still worth printing.
     if (PERF_ENABLED) setTimeout(perfReport, 15000);
+
+    // ── The session usage plot's published API ─────────────────────────────────────────
+    //
+    // dashboard.js runs in its own script scope, so harness.js cannot call these by name. The
+    // one thing it needs to hand over is a conversation's usage history (see
+    // publishSessionUsage): the rail's plot is drawn by this file, but the page that knows
+    // which conversation is open is the agent's. Exposing the publisher, and the repaint that
+    // goes with it, is the whole contract — everything else stays private.
+    window.publishSessionUsage = publishSessionUsage;
+    window.requestSessionPlotRedraw = requestSessionPlotRedraw;

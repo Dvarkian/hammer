@@ -28,6 +28,7 @@ import {
   isPaymentRequiredError,
   isRateLimitedErrorText,
   isRequestTooLargeErrorText,
+  isZeroFreeTierQuota,
   parseContextLimitFromError,
   parseMaxTokensCapFromError,
   permanentTestVerdict,
@@ -55,6 +56,19 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
     'vendor/calibration-suite',
     'vendor/saudi-chat',
     'vendor/whisper-audio-large',
+    // Speech-to-text rows answer with a transcript, not a chat completion, and their ids need not
+    // contain "audio" or "whisper": live OpenAI catalog ids are `gpt-4o-transcribe` and friends.
+    'openai/gpt-4o-transcribe',
+    'openai/gpt-4o-mini-transcribe-2025-03-20',
+    'openai/whisper-transcribe',
+    // OCR rows (Mistral's live roster spells them `mistral-ocr-2512` and `mistral-ocr-4-1`)
+    // extract page text rather than answering as a chat model.
+    'mistral-ocr-2512',
+    'mistral-ocr-3',
+    'mistral-ocr-4',
+    'mistral-ocr-4-1',
+    'mistral/mistral-ocr-latest',
+    'vendor/OCR-model',
     'vendor/search-preview',
     'github/copilot-search-c',
     'openai/gpt-4-search-preview',
@@ -69,6 +83,8 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
     'moonshotai/kimi-k2.7-code',
     'nvidia/nemotron-3-ultra-550b-a55b',
     'qwen/qwen3.8-27b',
+    'mistral-large-2512',
+    'mistral-medium-3.1',
     '',
     null,
   ]) {
@@ -236,6 +252,20 @@ test('a model retired by the provider is dead', () => {
   assert.equal(isDeadModelError('The model is archived and unavailable.', 400), true)
 })
 
+test('a model id the provider does not recognise is dead', () => {
+  // Mistral's platform refuses a chat call for an id it never published with HTTP 400 and
+  // "Invalid model: Mistral OCR 4.1" (type invalid_model); relays that pass a display name
+  // through say the same thing. No window can make that id servable, so the row belongs in the
+  // graveyard instead of being re-probed as a generic Down.
+  assert.equal(isDeadModelError('Invalid model: Mistral OCR 4.1', 400), true)
+  assert.equal(isDeadModelError('Unknown model: mistral-ocr-latest.', 404), true)
+  // A malformed request body says nothing about the catalog, so it stays a failover.
+  assert.equal(
+    isDeadModelError('Invalid model parameters: temperature must be a number.', 400),
+    false,
+  )
+})
+
 test('a provider that says the row does not serve chat is incompatible', () => {
   // llm7 keeps listing its image/video ids (Seedance and friends) among the chat models it
   // serves, and answers every one of them with HTTP 400: "Model 'seedance-2.0-fast' does not
@@ -296,6 +326,34 @@ test('a provider that says the row does not serve chat is incompatible', () => {
   )
 })
 
+test('a model refused on this endpoint is incompatible, not down', () => {
+  // Mistral's audio-only Voxtral rows are listed alongside its chat models, then refused by the
+  // chat-completions surface with this exact wording. The model is not broken and no retry will
+  // teach it text chat, so it belongs in the unavailable table as Incompatible.
+  const message = "Model 'Voxtral-Mini-3B-2507' does not support this endpoint."
+  assert.equal(isIncompatibleModelError(message, 400), true)
+  // The status is not what decides it: the same words on a 200 are the same statement.
+  assert.equal(isIncompatibleModelError(message, 200), true)
+  assert.equal(resolveRefusalVerdict(message, 400), 'incompatible')
+
+  const now = Date.now()
+  assert.equal(
+    resolveModelStatus(
+      {
+        modelId: 'Voxtral-Mini-3B-2507',
+        providerKey: 'mistral',
+        status: 'up',
+        lastResponse: { ok: false, text: null, status: 400, error: message, at: now },
+      },
+      now,
+    ),
+    'incompatible',
+  )
+
+  // A refusal about one request parameter is still about this payload, not the endpoint.
+  assert.equal(isIncompatibleModelError('Model does not support the temperature parameter.'), false)
+})
+
 test('a verdict no window can reopen retires the clock it was sitting on', () => {
   // api-airforce answers every paid model with HTTP 402 and "Model 'pixverse-modify' requires an
   // active subscription or a positive Pay-As-You-Go balance …" (live 2026-09-23). Rows it had
@@ -335,6 +393,26 @@ test('a verdict no window can reopen retires the clock it was sitting on', () =>
     lastResponse: { ...benched.lastResponse, paymentRequired: undefined },
   }
   assert.equal(resolveModelStatus(textOnly, now), 'paid')
+
+  // A row the provider's own catalog prices above zero is Paid before any traffic evidence is
+  // read (BazaarLink lists its paid models beside the free ones). Even a successful live
+  // request does not promote it: the free grant never covers that model, so serving it means
+  // the account was billed, not that it is free.
+  assert.equal(resolveModelStatus({ ...benched, catalogPaid: true }, now), 'paid')
+  assert.equal(
+    resolveModelStatus(
+      {
+        modelId: 'deepseek-v4.1-flash-1017',
+        providerKey: 'bazaarlink',
+        status: 'up',
+        catalogPaid: true,
+        lastProxiedAt: now,
+        lastResponse: { ok: true, text: 'hi', status: 200, at: now },
+      },
+      now,
+    ),
+    'paid',
+  )
 
   // Ordering is what keeps this honest. A bench captured *after* the response is the newer
   // observation and keeps its clock, and a live success newer than both still wins outright.
@@ -630,6 +708,87 @@ test('a generic "reached the limit" is rate-limited, not paid', () => {
   assert.equal(resolveRefusalVerdict('Upstream refused the request.', 402), 'paid')
 })
 
+// --- A free tier that grants nothing ---------------------------------------------------------
+//
+// Gemini's 429 for a model the free tier does not include: the QuotaFailure's `quotaValue` is
+// the metric's *allowance*, so 0 says the project was never granted the model. The daily reset
+// clock in the same body is generic refusal text and describes a window that does not exist.
+
+const GOOGLE_ZERO_FREE_TIER_BODY = JSON.stringify({
+  error: {
+    code: 429,
+    status: 'RESOURCE_EXHAUSTED',
+    message:
+      'You exceeded your current quota, please check your plan and billing details. ' +
+      'Please retry in 80928.8s.',
+    details: [
+      {
+        '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+        violations: [
+          {
+            quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+            quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+            quotaValue: '0',
+            quotaDimensions: { model: 'gemini-3.1-pro', location: 'global' },
+          },
+        ],
+      },
+    ],
+  },
+})
+
+test('a free-tier allowance stated as zero is Paid, not a quota to wait out', () => {
+  assert.equal(isZeroFreeTierQuota(GOOGLE_ZERO_FREE_TIER_BODY), true)
+  assert.equal(isPaymentRequiredError(GOOGLE_ZERO_FREE_TIER_BODY, 429), true)
+  assert.equal(resolveRefusalVerdict(GOOGLE_ZERO_FREE_TIER_BODY, 429), 'paid')
+
+  // The same refusal as the text-only form a relay forwards.
+  const text =
+    '* Quota exceeded for metric: ' +
+    'generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, ' +
+    'model: gemini-3.1-pro'
+  assert.equal(isZeroFreeTierQuota(text), true)
+  assert.equal(resolveRefusalVerdict(text, 429), 'paid')
+})
+
+test('a free-tier allowance that was actually spent keeps its clock', () => {
+  // 100 requests a day, all used: that is a window, and the countdown is the truth about it.
+  const spent = GOOGLE_ZERO_FREE_TIER_BODY.replace('"quotaValue":"0"', '"quotaValue":"100"')
+  assert.equal(isZeroFreeTierQuota(spent), false)
+  assert.equal(isPaymentRequiredError(spent, 429), false)
+  assert.equal(resolveRefusalVerdict(spent, 429), 'rate-limited')
+
+  // A zero that names no free-tier metric is somebody else's number, not this statement.
+  assert.equal(isZeroFreeTierQuota('upstream error: limit: 0', 429), false)
+  assert.equal(isZeroFreeTierQuota(null), false)
+})
+
+test('a bench captured from a zero free tier does not outrank the Paid verdict', () => {
+  const now = Date.now()
+  const quota = {
+    code: null,
+    quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+    quotaMetric: 'generativelanguage.googleapis.com/generate_content_free_tier_requests',
+    quotaValue: '0',
+  }
+  const row = {
+    modelId: 'gemini-3.1-pro',
+    providerKey: 'googleai',
+    status: 'paid',
+    rateLimit: { wasRateLimited: true, capturedAt: now, quota },
+  }
+  // The row stays Paid: the bench promised a reset that never comes.
+  assert.equal(resolveModelStatus(row, now), 'paid')
+
+  // The same bench over an allowance that was really spent is still a rate limit.
+  const spentRow = {
+    ...row,
+    status: 'rate-limited',
+    rateLimit: { ...row.rateLimit, quota: { ...quota, quotaValue: '100' } },
+  }
+  assert.equal(resolveModelStatus(spentRow, now), 'rate-limited')
+})
+
 // --- The output ceilings providers actually state -------------------------------------------
 //
 // Every body below is one Hammer has really been handed. Each one used to be delivered to the
@@ -882,4 +1041,44 @@ test('a model whose own window is micro is incompatible; one oversized prompt is
   // A model that *states* a micro window as its own ceiling is still incompatible by this rule,
   // even without Cloudflare's "exceeded ... " framing.
   assert.equal(isIncompatibleModelError("this model's context window is 4096", 400), true)
+})
+
+test('a model served only on the decision API is incompatible, not Down forever', () => {
+  // Cloudflare's clef:27b (live 2026-11-08) is a decision model, not a chat model: the only
+  // surface it answers on is /v1/systemone, so a chat-completions call is refused before any
+  // token is generated with
+  //   clef:27b is a decision model and only supports /v1/systemone (ref: 40447571-46bb-…)
+  // The schema-layer refusal was already covered (the `required properties` clause above); this
+  // sentence arrives instead of it whenever the surface is checked first, and without it the row
+  // stayed a retryable Down that every probe and every turn picked again.
+  const refusal =
+    'clef:27b is a decision model and only supports /v1/systemone (ref: 40447571-46bb-4a9b-82fe-280d2d471b36)'
+  assert.equal(isIncompatibleModelError(refusal, 400), true)
+  assert.equal(
+    permanentTestVerdict({ ok: false, text: null, status: 400, error: refusal, at: Date.now() }),
+    'incompatible',
+  )
+  // A request the router made that came back this way records the same verdict, so a row the
+  // router has just met is not selected for the next turn.
+  assert.equal(resolveRefusalVerdict(refusal, 400), 'incompatible')
+  const now = Date.now()
+  assert.equal(
+    resolveModelStatus(
+      {
+        modelId: 'clef:27b',
+        providerKey: 'cloudflare-ai',
+        status: 'up',
+        lastResponse: { ok: false, text: null, status: 400, error: refusal, at: now },
+      },
+      now,
+    ),
+    'incompatible',
+  )
+  // The surface phrase stands on its own for a model the sentence never names.
+  assert.equal(isIncompatibleModelError('This model only supports /v1/systemone.', 400), true)
+
+  // Negative controls: prose that merely mentions a decision, and an ordinary malformed body,
+  // are statements about this request rather than about the model.
+  assert.equal(isIncompatibleModelError('The decision was rejected by the model.', 400), false)
+  assert.equal(isIncompatibleModelError('Bad input: Error: body must be an object', 400), false)
 })

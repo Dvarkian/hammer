@@ -119,6 +119,7 @@ const ACCESS_BY_FREE_TYPE = {
  * hammer's own descriptor is deleted — the exclusion is what makes the removal stick.
  */
 export const EXCLUDED_PROVIDER_KEYS = new Set([
+  'nlpcloud',
   'nebius',
   'liquid',
   'novita',
@@ -126,6 +127,35 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // A duplicate of hammer's own `googleai`: same endpoint, same GOOGLE_API_KEY (see the
   // exclusion rationale above).
   'gemini',
+  // Dead endpoint (`blackbox`, 2026-11-08): every path on `api.blackbox.ai` — `/`, `/models`,
+  // `/chat/completions`, `/v1/models`, `/v1/chat/completions` — answers HTTP 404 to GET and
+  // POST alike, with and without a bearer, from a Google Frontend with no error body. The
+  // roster's own row was already ToS `avoid` ("prohibits sublicensing and derivative
+  // services") and hammer's verification pass had refused it for terms, so there is no
+  // free access here to preserve: the endpoint the row described is gone.
+  'blackbox',
+  // `coze` (2026-11-08): Coze's Free plan does issue credits every day, but they never cover
+  // the API — its billing FAQ says API/SDK calls "do not consume credits, only tokens" — and
+  // the API's only free allowance is a one-time 30 calls per account, so there is no recurring
+  // free usage to hold a row for. It also needs a personal access token hammer does not have,
+  // its configured `/v1/chat/completions` path answers 404 `code 4000` (the live path is
+  // `/v3/chat`, which wants a `bot_id` and answers with Coze's own chat object), and the roster
+  // row was ToS `avoid` (personal use; no resale or sublicensing).
+  'coze',
+  'bytez',
+  // `bytez` (2026-11-08): the API answers, the catalogue does not. `/models/v2/list/models`
+  // returns HTTP 500 `Expected parameter(s): modelId` (and `{ output: [] }` when a `modelId` is
+  // supplied), every model id tried — including the documented `Qwen/Qwen3-4B` and
+  // `openai-community/gpt2` — 404s "has yet to be added to the Bytez catalog", and the
+  // OpenAI-compatible layer inherits that 404. Bytez's own tracker carries the same report
+  // (issues #58 and #59, 2026-08-04/05), so no key can make it serve. Removed on request.
+  // `ollama-cloud` (2026-11-08): not dead — duplicate. The roster lists the hosted half of
+  // Ollama: `https://ollama.com/v1/chat/completions`, the same `OLLAMA_API_KEY`, and a
+  // 20M/month figure hammer already publishes. Hammer registers that service once as `ollama`,
+  // which serves the hosted endpoint by default and also carries per-model context discovery
+  // and a configurable base URL, so the import only put a second card for one account on the
+  // page. Local-model use is out of scope, but the duplicate is the row that goes either way.
+  'ollama-cloud',
   // Bucket C of the free-tier audit: no recurring free usage.
   'scaleway',
   'vertex',

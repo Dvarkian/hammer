@@ -45,13 +45,6 @@
       "modelCount": 7
     },
     {
-      "key": "ollama-cloud",
-      "access": "recurring",
-      "steadyTokensPerMonth": 20000000,
-      "tos": "ambiguous",
-      "modelCount": 8
-    },
-    {
       "key": "groq",
       "access": "recurring",
       "steadyTokensPerMonth": 15000000,
@@ -123,7 +116,6 @@
       "modelCount": 12,
       "note": "Kiro FAQ explicitly prohibits use with third-party harnesses, which is what a self-hosted proxy is."
     },
-
     {
       "key": "glm-cn",
       "access": "permanent",
@@ -139,14 +131,11 @@
       "modelCount": 1,
       "note": "ERNIE Speed/Lite/Tiny free; platform requires real-name authentication."
     },
-    { "key": "siliconflow", "access": "permanent", "tos": "caution", "modelCount": 10 },
-
     {
-      "key": "bytez",
-      "access": "signup-credit",
-      "signupCreditTokens": 1000000,
-      "tos": "ambiguous",
-      "modelCount": 3
+      "key": "siliconflow",
+      "access": "permanent",
+      "tos": "caution",
+      "modelCount": 10
     },
     {
       "key": "qoder",
@@ -155,27 +144,12 @@
       "tos": "caution",
       "modelCount": 14
     },
-
     {
       "key": "agy",
       "access": "keyless",
       "tos": "avoid",
       "modelCount": 16,
       "note": "Google Antigravity terms explicitly prohibit accessing the service through third-party proxies via OAuth."
-    },
-    {
-      "key": "blackbox",
-      "access": "keyless",
-      "tos": "avoid",
-      "modelCount": 6,
-      "note": "Terms prohibit sublicensing and building derivative services."
-    },
-    {
-      "key": "coze",
-      "access": "keyless",
-      "tos": "avoid",
-      "modelCount": 1,
-      "note": "Restricted to personal, non-commercial use; prohibits resale and sublicensing."
     },
     {
       "key": "duckduckgo-web",
@@ -206,13 +180,11 @@
       "note": "Meta terms prohibit automated access without prior permission."
     },
     {
-      "key": "nlpcloud",
-      "access": "permanent",
-      "tos": "caution",
-      "modelCount": 5,
-      "note": "The recurring free plan is limited to development and testing; NLP Cloud publishes no numeric monthly token allowance."
+      "key": "nous-research",
+      "access": "keyless",
+      "tos": "ambiguous",
+      "modelCount": 2
     },
-    { "key": "nous-research", "access": "keyless", "tos": "ambiguous", "modelCount": 2 },
     {
       "key": "nvidia",
       "access": "keyless",
@@ -227,8 +199,18 @@
       "modelCount": 3,
       "note": "No terms permit a self-hosted proxy using session tokens against the web chat."
     },
-    { "key": "reka", "access": "keyless", "tos": "caution", "modelCount": 2 },
-    { "key": "sparkdesk", "access": "keyless", "tos": "caution", "modelCount": 1 },
+    {
+      "key": "reka",
+      "access": "keyless",
+      "tos": "caution",
+      "modelCount": 2
+    },
+    {
+      "key": "sparkdesk",
+      "access": "keyless",
+      "tos": "caution",
+      "modelCount": 1
+    },
     {
       "key": "t3-web",
       "access": "keyless",

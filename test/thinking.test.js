@@ -168,7 +168,7 @@ test('off removes the field rather than sending the word', () => {
 })
 
 test('a wire hammer builds itself is never handed an OpenAI parameter', () => {
-  for (const providerKey of ['kiro', 'devin', 'gptfree', 'nlpcloud', 'openai-codex']) {
+  for (const providerKey of ['kiro', 'devin', 'gptfree', 'openai-codex']) {
     assert.equal(thinkingStyleFor(providerKey), 'none', providerKey)
     const applied = applyThinkingLevel(
       providerKey,

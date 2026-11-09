@@ -170,15 +170,39 @@
           <div class="hx-panel-head"><span class="hx-panel-title">Usage</span></div>
           <div class="hx-kv"><dt>Tokens</dt><dd id="hx-usage-text">No tokens reported yet</dd></div>
           <div class="hx-usage-bar"><span id="hx-usage-fill" style="width:0%"></span></div>
+          <!-- How much of the model's context window this conversation fills. It is the only
+               figure that decides compaction, so it is named rather than left as a bare bar:
+               the meter above is the old turn-share bar and this says which one is which. -->
+          <div class="hx-context-note" id="hx-context-note" hidden></div>
           <!-- This session's tokens/s over time. It sits under the turn total because the
                two answer the same question at two scales: what the agent has spent, and how
                fast it is being served. The plot is drawn by dashboard.js (drawUsagePlots). -->
           <div class="usage-plot-card usage-plot-card-rail">
-            <div class="usage-plot-title">This session — tokens/s</div>
+            <div class="usage-plot-title">This session — tokens/s · area = tokens</div>
             <svg id="usage-session-svg" class="usage-plot-svg usage-plot-svg-rail" preserveAspectRatio="xMidYMid meet"></svg>
             <div class="usage-plot-empty" id="usage-session-empty" style="display:none;">No session usage yet.</div>
           </div>
           <div class="hx-empty-note">Reported per turn by the agent, not estimated by this page.</div>
+        </section>
+
+        <!-- Compaction: what it did, whether Pi will do it again on its own, and how to make it
+             happen now. It is a panel rather than a button in the head because a compaction
+             cannot be undone, and the figures are what make the button safe to press. -->
+        <section class="hx-panel" id="hx-compaction-panel">
+          <div class="hx-panel-head">
+            <span class="hx-panel-title">Context</span>
+            <span class="hx-compaction-badge" data-compaction-count hidden></span>
+          </div>
+          <div class="hx-notice" data-compaction-note hidden></div>
+          <div class="hx-kv">
+            <dt>Auto-compaction</dt>
+            <dd><button class="hx-btn" type="button" data-compaction-toggle hidden
+              aria-pressed="true" title="Let Pi compact when the context is nearly full">
+              <span data-compaction-state>on</span></button></dd>
+          </div>
+          <button class="hx-btn" type="button" data-compaction-now
+            title="Summarise the older turns now. Pi stops the current turn to do it.">
+            Compact now</button>
         </section>
 
       </aside>
@@ -257,11 +281,11 @@
       <section class="usage-plots" id="usage-plots-section" style="margin-bottom: 24px;">
         <div class="usage-plots-header">
           <h2 style="margin: 0 0 0.35rem; font-size: 1.25rem;">Usage</h2>
-          <p style="color: var(--text-muted); margin: 0; font-size: 0.875rem;">Tokens per second over time, measured from real proxy requests.</p>
+          <p style="color: var(--text-muted); margin: 0; font-size: 0.875rem;">Tokens per second over time, measured from real proxy requests. Each column's area is the tokens it accounts for, and idle gaps are collapsed so a model that waits between turns stays readable.</p>
         </div>
         <div class="usage-plot-grid">
           <div class="usage-plot-card global-plot-card">
-            <div class="usage-plot-title">All usage by Hammer — tokens/s</div>
+            <div class="usage-plot-title">All usage by Hammer — tokens/s · area = tokens</div>
             <svg id="usage-global-svg" class="usage-plot-svg" preserveAspectRatio="xMidYMid meet"></svg>
             <div class="usage-plot-empty" id="usage-global-empty" style="display:none;">No usage data yet.</div>
           </div>
@@ -299,12 +323,14 @@
           onmouseleave="isTableHovered=false; document.getElementById('hover-pause-badge').style.display='none';">
           <thead>
             <tr>
+              <th>Logo</th>
               <th>Model</th>
               <th class="sort-active" id="th-intell" title="Artificial Analysis Intelligence Index — AA's own rating, or an estimate from fetched benchmark evidence. Hover a value for its source. The table is always ordered by this column, strongest first.">Intelligence <i class="sort-arrow"
                   id="arrow-intell">↓</i></th>
               <th class="text-right" title="Average time to first token across real requests (seconds)">TTFT</th>
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
-              <th id="th-usage" title="Tokens/s over time for this model+provider row (sparkline from real requests)">Usage</th>
+              <th id="th-usage" title="Tokens over time for this model+provider row; each column's area is the tokens it accounts for, and idle gaps are collapsed">Usage</th>
+              <th id="th-quota" title="Requests and token quota windows for this endpoint: usage against each published or observed limit, the total allowance per window, the remainder, and when the window resets. Every known minute/day/week/month window is shown.">Quota</th>
               <th id="th-ctx"
                 title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
               <th id="th-status" title="Model health from pings and tests">Status</th>
@@ -328,6 +354,7 @@
                   <th class="text-right">TTFT</th>
                   <th class="text-right">Tok/s</th>
                   <th>Usage</th>
+                  <th id="th-graveyard-quota" title="Requests and token quota windows observed for this unavailable endpoint. Rows with no observed refusal link to the provider's live project limits.">Quota</th>
                   <th>Context</th>
                   <th>Status</th>
                   <th>Response</th>
@@ -436,6 +463,9 @@
     </div>
     <div class="onboard-stages" id="provider-onboard-stages"></div>
     <div class="onboard-body" id="provider-onboard-body"></div>
+    <div class="onboard-footer">
+      <button class="onboard-btn ghost" id="provider-onboard-cancel" type="button" onclick="cancelProviderOnboardingOrClose()">Cancel</button>
+    </div>
   </div>
 
   <!-- The loading shell's shapes, so the table and the provider grid keep their layout while the
@@ -443,11 +473,14 @@
        (not markup) because the dashboard's own renderer owns these containers: a real row left
        behind by a slow load would be reconciled as if it were data. -->
   <template id="skeleton-row-template"><tr class="skeleton-row" aria-hidden="true">
+      <td><span class="skeleton skeleton-text" style="width:20px; height:20px; border-radius:50%"></span></td>
       <td><span class="skeleton skeleton-text" style="width:min(220px, 80%)"></span><span class="skeleton skeleton-text skeleton-sub" style="width:110px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:38px"></span></td>
       <td class="text-right"><span class="skeleton skeleton-text" style="width:46px"></span></td>
       <td class="text-right"><span class="skeleton skeleton-text" style="width:46px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:52px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:120px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:min(180px, 60%)"></span></td>
     </tr></template>

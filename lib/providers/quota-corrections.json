@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Hand-checked corrections to the free-tier figures in the vendored OmniRoute roster.",
+    "The roster is a second-hand source and one of its numbers is wrong: for `llm7` it records",
+    "150M tokens/month where LLM7 publishes 100,000 tokens per rolling 24 hours — a bar drawn",
+    "against the roster's figure tells an account that has spent its whole allowance that it",
+    "still has room. Entries here are read by `lib/providers/omniroute.js` at registration and",
+    "replace only the fields they name, so the roster's attribution stays wherever no correction",
+    "exists. Every entry carries the URL and date it was checked against, because a correction",
+    "without evidence is just a second guess."
+  ],
+  "providers": {
+    "llm7": {
+      "verifiedAt": "2026-11-08",
+      "steadyTokensPerMonth": null,
+      "window": "day",
+      "limitScope": "account",
+      "limits": [
+        {
+          "metric": "tokens",
+          "limit": 100000,
+          "period": "day",
+          "label": "free-token allowance (turbo models only)"
+        }
+      ],
+      "source": "LLM7 publishes 100,000 tokens per rolling 24 hours for a free token, at 1 request/s, 60/min and 250/hour, and the allowance covers only the `turbo` models — 4 of the 68 ids its /v1/models lists; the other 64 are pro or usage-billed. Anonymous calls with no key still answered on 2026-11-08, but LLM7 publishes no budget for them.",
+      "sourceUrl": "https://docs.llm7.io/limits",
+      "numericSource": "LLM7 limits doc (read 2026-11-08); replaces the roster's 150M tokens/month, which is ~50x the published cap"
+    }
+  }
+}

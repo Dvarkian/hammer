@@ -4,7 +4,6 @@
  */
 
 import { lazyProviderSourceEntries } from './lib/providers/resolutions.js'
-import { NLPCLOUD_DEFAULT_CHAT_URL } from './lib/providers/nlpcloud.js'
 
 export const MODEL_ID_ALIASES = {
   // Api.Airforce exposes this as `unmoderated-gpt`, but its live catalog identifies
@@ -620,17 +619,38 @@ export const sources = {
   },
   googleai: {
     name: 'Google AI',
-    // Google's OpenAI-compatible layer on the Gemini Developer API. It serves the Gemini
-    // family (discovered from /v1/models — see the omniroute `gemini` resolution that was
-    // retired 2026-11-08 as a duplicate of this provider) as well as the Gemma open models
-    // curated below, all under the one GOOGLE_API_KEY the user already holds.
+    // Google's OpenAI-compatible layer on the Gemini Developer API. Its roster is read from
+    // the credential's own model list and nothing is declared here on purpose: a curated
+    // fallback showed three Gemma rows beside an account that could not list anything, which
+    // read as a working provider serving three models instead of a credential that was being
+    // refused. An empty roster is the honest answer until discovery succeeds.
     url: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     contextUrl: 'https://ai.google.dev/gemini-api/docs/models',
     discoverable: true,
+    models: [],
+  },
+  // --- Google Antigravity -----------------------------------------------------
+  // Gemini through Cloud Code Assist, authenticated by an OAuth sign-in instead of an API key.
+  // This is a different product surface from `googleai`: the backend wraps each request as
+  // `{project, model, request}` on `daily-cloudcode-pa`, and its roster is the Antigravity wire
+  // ids rather than the Generative Language list. `fetchAvailableModels` refuses an entitled
+  // account with 403, so the catalog below is curated (mirrors oh-my-pi's `google-antigravity`)
+  // and is only seeded once an account exists. lib/google-antigravity.js serves the wire.
+  'google-antigravity': {
+    name: 'Google Antigravity',
+    url: 'https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent',
+    contextUrl: 'https://antigravity.google',
+    // Only ids that answered on this backend (probed 2026-11-09). The retired 3.5 ids return a
+    // 200 whose body is "no longer available, switch to Gemini 3.7 Flash" — listing one would
+    // present that notice as a model answer — and the 3.6/3.7/3.1-pro ids 404 for the project.
     models: [
-      ['gemma-3-27b-it', 'Gemma 3 27B', '128k'],
-      ['gemma-3-12b-it', 'Gemma 3 12B', '128k'],
-      ['gemma-3-4b-it', 'Gemma 3 4B', '128k'],
+      // The `-low` tier answered with empty content at a small output budget and could not be
+      // re-probed before the app went down, so it is not offered rather than offered broken.
+      ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)'],
+      ['gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)'],
+      ['claude-sonnet-4-6', 'Claude Sonnet 4.6'],
+      ['claude-opus-4-6-thinking', 'Claude Opus 4.6 (Thinking)'],
+      ['gpt-oss-120b-medium', 'GPT-OSS 120B (Medium)'],
     ],
   },
   // --- GitHub Copilot ---------------------------------------------------------
@@ -700,23 +720,6 @@ export const sources = {
     contextUrl: 'https://g4f.dev/members.html',
     discoverable: true,
     models: [['auto', 'Auto (G4F)', '128k']],
-  },
-  // --- NLP Cloud ------------------------------------------------------------
-  // NLP Cloud's chatbot API is model/task-specific and does not publish an
-  // OpenAI-style model-list endpoint. These are the current generative models
-  // from its official model list; the adapter builds `/v1/gpu/{model}/chatbot`
-  // and translates the request/response around it.
-  nlpcloud: {
-    name: 'NLP Cloud',
-    url: NLPCLOUD_DEFAULT_CHAT_URL,
-    contextUrl: 'https://docs.nlpcloud.com/#chatbot-and-conversational-ai',
-    models: [
-      ['gpt-oss-120b', 'GPT-OSS 120B', '128k'],
-      ['llama-3-1-405b', 'LLaMA 3.1 405B', '128k'],
-      ['finetuned-llama-3-70b', 'Fine-tuned LLaMA 3.3 70B', '128k'],
-      ['dolphin-yi-34b', 'Dolphin Yi 34B'],
-      ['dolphin-mixtral-8x7b', 'Dolphin Mixtral 8x7B'],
-    ],
   },
   // --- gptfree.com -----------------------------------------------------------
   // A consumer chat site, not a platform: no published API, no keys, no /v1

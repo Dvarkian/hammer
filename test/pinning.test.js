@@ -187,6 +187,51 @@ test('the dashboard consumes server model groups instead of rebuilding model ide
   assert.match(dashboard, /m\.modelGroupLabel/)
 })
 
+test('a relay alias that resolved to a model is grouped under that model', () => {
+  const rows = [
+    {
+      providerKey: 'bazaarlink',
+      modelId: 'auto:free',
+      label: 'Auto Router',
+      realModelId: 'deepseek/deepseek-v4-flash-0731free',
+    },
+    { providerKey: 'gptfree', modelId: 'auto', label: 'Auto (GPTFree)' },
+    {
+      providerKey: 'bazaarlink',
+      modelId: 'deepseek/deepseek-v4-flash-0731free:free',
+      label: 'DeepSeek V4 Flash 0731',
+    },
+  ]
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const served = groups.find((group) => group.models.some((model) => model.modelId === 'auto:free'))
+  assert.ok(served, 'the resolving row keeps a heading')
+  assert.ok(
+    served.models.some((model) => model.modelId === 'deepseek/deepseek-v4-flash-0731free:free'),
+    'it sits with the model that served it',
+  )
+  assert.equal(
+    served.models.some((model) => model.modelId === 'auto'),
+    false,
+    'the router heading keeps only rows that never resolved',
+  )
+  assert.match(served.label, /DeepSeek/i)
+
+  // An alias whose backend has no group of its own stays under the router heading.
+  const lone = buildModelGroups(
+    [
+      {
+        providerKey: 'bazaarlink',
+        modelId: 'auto:free',
+        label: 'Auto Router',
+        realModelId: 'stealth/secret-model',
+      },
+      { providerKey: 'gptfree', modelId: 'auto', label: 'Auto (GPTFree)' },
+    ],
+    canonicalizeModelId,
+  )
+  assert.ok(lone.some((group) => group.models.some((model) => model.modelId === 'auto:free')))
+})
+
 test('a family pin includes provider-qualified rows that share one raw model id', () => {
   const rows = [
     row('openai-compatible:first', 'same-id', 'Same ID', 80),

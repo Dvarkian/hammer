@@ -37,12 +37,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "ollama-cloud": {
-      "url": "https://ollama.com/settings/keys",
-      "evidence": "Ollama account settings; API keys",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "bluesminds": {
       "url": "https://www.bluesminds.com/",
       "evidence": "project homepage; signup lives here",
@@ -101,30 +95,12 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "bytez": {
-      "url": "https://bytez.com/",
-      "evidence": "Bytez homepage; the dashboard behind signup issues the key",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "qoder": {
       "url": "https://qoder.com/",
       "evidence": "Qoder homepage; the account behind signup issues the API key",
       "verifiedAt": null,
       "httpStatus": null,
       "note": "Timed out from this environment."
-    },
-    "blackbox": {
-      "url": "https://www.blackbox.ai/api",
-      "evidence": "Blackbox router page; one API key covers its models",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
-    "coze": {
-      "url": "https://www.coze.com/open/oauth/apps",
-      "evidence": "Coze open platform; the page behind this issues personal access tokens",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
     },
     "friendliai": {
       "url": "https://suite.friendli.ai/",
@@ -138,12 +114,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200,
       "note": "Timed out from this environment."
-    },
-    "nlpcloud": {
-      "url": "https://nlpcloud.com/home/token",
-      "evidence": "NLP Cloud dashboard; API token page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
     },
     "nous-research": {
       "url": "https://portal.nousresearch.com/",

@@ -13,10 +13,11 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inspect } from 'node:util'
-import { app, BrowserWindow, Menu, Tray, dialog, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, shell } from 'electron'
 import {
   LOOPBACK_HOST,
   dashboardUrl,
+  isBrowserOpenableUrl,
   isPortInUse,
   parseDesktopArgs,
   probeRouter,
@@ -32,6 +33,7 @@ const ISSUES_URL = 'https://github.com/Dvarkian/hammer/issues'
 const desktopArgs = parseDesktopArgs(process.argv, process.env)
 const baseUrl = dashboardUrl(desktopArgs.port)
 const splashPath = fileURLToPath(new URL('./splash.html', import.meta.url))
+const preloadPath = fileURLToPath(new URL('./preload.cjs', import.meta.url))
 const iconPath = fileURLToPath(new URL('./assets/icon.png', import.meta.url))
 const trayIconPath = fileURLToPath(new URL('./assets/tray.png', import.meta.url))
 
@@ -82,6 +84,50 @@ function showLogFile() {
 function quitApp() {
   quitting = true
   app.quit()
+}
+
+/**
+ * OAuth consent, device verification and ordinary external links belong in the user's browser,
+ * not in a child Electron window with no address bar. The URL is checked here as well as in the
+ * renderer so a compromised page cannot turn the bridge into a `file:` or `javascript:` launcher.
+ */
+async function openInSystemBrowser(url) {
+  if (!isBrowserOpenableUrl(url)) return false
+  try {
+    await shell.openExternal(String(url))
+    return true
+  } catch (err) {
+    // Do not log the URL: an OAuth authorize link carries a state and PKCE challenge.
+    console.warn(`Could not open the system browser: ${err?.message || err}`)
+    return false
+  }
+}
+
+/** Only the dashboard in this process's main window may ask the shell to open a URL. */
+function registerExternalOpenHandler() {
+  ipcMain.handle('hammer:open-external', (event, url) => {
+    if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents) {
+      return false
+    }
+    return openInSystemBrowser(url)
+  })
+}
+
+/**
+ * A normal link click must not replace the dashboard with an external page. `window.open` is
+ * handled by `setWindowOpenHandler`; this covers `location.href` and plain anchors without
+ * `target="_blank"` once the window is showing the dashboard.
+ */
+function guardExternalNavigation(window) {
+  window.webContents.on('will-navigate', (event, url) => {
+    try {
+      if (new URL(url).origin === new URL(baseUrl).origin) return
+    } catch {
+      // An unparseable URL is not the dashboard; keep it out of this window.
+    }
+    event.preventDefault()
+    void openInSystemBrowser(url)
+  })
 }
 
 function showWindow() {
@@ -165,16 +211,23 @@ function createWindow() {
     icon: iconPath,
     webPreferences: {
       // The page is ordinary web content served over loopback. It needs no Node access, so the
-      // renderer stays sandboxed with no preload bridge and no IPC surface to abuse.
+      // renderer stays sandboxed; its preload exposes only the validated external-open bridge.
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: preloadPath,
       spellcheck: false,
     },
   })
 
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
+  })
+
+  // Any target="_blank" or window.open from the dashboard leaves Electron for the system browser.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    void openInSystemBrowser(url)
+    return { action: 'deny' }
   })
 
   // Closing the window parks Hammer in the tray instead of killing the router that /v1 clients are
@@ -330,6 +383,7 @@ async function bootstrap() {
   installFileLog()
   console.log(`  ${APP_TITLE} desktop starting (port ${desktopArgs.port}, log ${LOG_PATH}).`)
 
+  registerExternalOpenHandler()
   const window = createWindow()
   await window.loadFile(splashPath)
   Menu.setApplicationMenu(buildMenu())
@@ -342,6 +396,7 @@ async function bootstrap() {
       meta?.version ? `${APP_TITLE} v${meta.version}` : '',
     )
     await window.loadURL(baseUrl)
+    guardExternalNavigation(window)
     console.log(`  Dashboard loaded from ${baseUrl}.`)
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setTitle(`${APP_TITLE} — ${baseUrl}`)
   } catch (err) {

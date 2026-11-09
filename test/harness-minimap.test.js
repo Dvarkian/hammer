@@ -47,7 +47,7 @@ test('the rail repaints with the transcript, on every path that rebuilds it', ()
   assert.match(harness, /minimapFrame = requestAnimationFrame\(/)
   assert.match(
     harness,
-    /item\.node\.innerHTML = assistantMarkup\(item, item\.showRole !== false\)[\s\S]{0,250}scheduleMinimap\(\)/,
+    /item\.node\.innerHTML = assistantMarkup\(item\)[\s\S]{0,250}scheduleMinimap\(\)/,
   )
 })
 

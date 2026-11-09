@@ -7,7 +7,10 @@ import { quotaAppliesToHost } from '../lib/providers/schema.js'
 import { getDefaultProviderBaseUrl } from '../lib/providers/discovery.js'
 
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+const dashboardCss = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+const indexHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
 const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+const modelsRoute = readFileSync(new URL('../lib/http/routes/models.js', import.meta.url), 'utf8')
 
 test('the UI opens only after imported-provider startup discovery is awaited', () => {
   const discovery = server.indexOf('const discoverySettled = await Promise.allSettled')
@@ -36,6 +39,153 @@ test('the quota box renders for every provider, with its provenance', () => {
   assert.match(dashboard, /quota-provenance/)
   assert.match(dashboard, /Published limits/)
   assert.match(dashboard, /Not reported/)
+})
+
+test('a quota record with no numeric limit is a provider note, not a published bar', () => {
+  assert.match(dashboard, /knownHasNumericLimits/)
+  assert.match(dashboard, /knownHasNumericLimits \? 'Published limits' : 'Provider note'/)
+  assert.doesNotMatch(dashboard, /provenanceLabel = known \? 'Published limits'/)
+})
+
+test('a pooled provider draws one remaining-quota bar per account, side by side', () => {
+  assert.match(dashboard, /credential-pool-grid/)
+  assert.match(dashboard, /data-pool-account=/)
+  assert.match(dashboard, /data-pool-quota-remaining=/)
+  assert.match(dashboard, /credential-pool-fill-\$\{state\}/)
+  assert.doesNotMatch(dashboard, /data-pool-segment=/)
+  assert.doesNotMatch(dashboard, /% of traffic/)
+  assert.doesNotMatch(dashboard, /requests \/ totalRequests/)
+  assert.match(dashboard, /Quota not reported/)
+  assert.match(dashboard, /account\.quota/)
+  assert.match(
+    dashboard,
+    /const exhaustedAccounts = accounts\.filter\(account => account\.exhausted\)/,
+  )
+  assert.match(dashboard, /a model is at quota on every account/)
+  assert.match(dashboard, /A model at 0 does not mean the account is exhausted/)
+  assert.match(dashboard, /'Model limited'/)
+  assert.match(dashboardCss, /credential-pool-fill-unknown/)
+  assert.match(dashboardCss, /credential-pool-state-limited/)
+  assert.match(
+    dashboardCss,
+    /\.credential-pool-grid \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
+  )
+})
+
+test('the account bars are fed by quota captured per credential', () => {
+  assert.match(server, /function recordCredentialQuota/)
+  assert.match(server, /function credentialQuotaView/)
+  assert.match(
+    server,
+    /recordCredentialQuota\(model\.providerKey, options\.credential \|\| providerApiKey/,
+  )
+  assert.match(
+    server,
+    /quota: credentialQuotaView\(state, entry, idx, now, exhausted\) \|\| codeAssistQuota\(idx\)/,
+  )
+  assert.match(server, /x-ratelimit-limit'/)
+  assert.match(server, /x-ratelimit-remaining'/)
+  // Every 429 belongs to the account that answered it, including the one that triggers a
+  // retry with the next account, and the zero-free-tier 429 that is read as a payment wall.
+  assert.match(
+    server,
+    /Number\(response\.status\) === 429 && attempt \+ 1 < MAX_TEST_ATTEMPTS\)[\s\S]{0,900}?recordCredentialQuota\(/,
+  )
+  assert.match(
+    server,
+    /Number\(response\.status\) === 429 && permanentVerdict\)[\s\S]{0,900}?recordCredentialQuota\(/,
+  )
+})
+
+test('Google quota reaches the antigravity card from the Code Assist cache', () => {
+  // Google has no usage endpoint: its allowance is read from Code Assist, which is what the
+  // model table already draws. The card is the only place an account-wide view belongs, and
+  // without this it said "Quota not reported" beside a table showing the very buckets Google
+  // had just sent.
+  assert.match(server, /const cardQuotaReports = \(key\) =>/)
+  assert.match(server, /quotaReports: serializeProviderUsage\(cardQuotaReports\(key\)\)/)
+  assert.match(server, /getGoogleQuotaCardReports\(key\)/)
+  assert.match(server, /getGoogleQuotaCardReports\(providerKey\)/)
+  // A percentage window is not a count of anything: the account bar must say "98% left"
+  // rather than "98 of 100 left".
+  assert.match(dashboard, /const percentOnly = Boolean\(quota\?\.percentOnly\)/)
+  assert.match(dashboard, /% left/)
+  // One account's failed read costs that account's bar, so the card names the failure rather
+  // than silently showing fewer accounts than the pool has.
+  assert.match(server, /quotaError: providerUsageErrors\.get\(key\) \|\| cardQuotaError\(key\)/)
+  assert.match(server, /getGoogleQuotaError\(key\)/)
+  // The pool's reset countdown sits after the request count: "…0 requestsresets in 6d" read as
+  // one word.
+  assert.match(dashboard, /reset \? ` \\u00b7 \$\{reset\}` : ''/)
+})
+
+test('the model table shows a quota window for every endpoint', () => {
+  assert.match(indexHtml, /<th id="th-quota"/)
+  assert.match(indexHtml, /<tbody id="table-body"/)
+  assert.match(dashboard, /function quotaRowViews\(m\)/)
+  assert.match(dashboard, /function quotaRowWindowHtml\(w\)/)
+  // A multi-provider model heading grosses every provider's windows; its provider rows
+  // each carry their own stack.
+  assert.match(dashboard, /\$\{quotaGroupCell\(g\)\}/)
+  assert.match(dashboard, /\$\{quotaRowCell\(m\)\}/)
+  assert.match(dashboard, /function quotaGroupViews\(members\)/)
+  assert.match(dashboard, /Gross quota across/)
+  assert.match(dashboard, /provider\$\{providers === 1 \? '' : 's'\} · \$\{basis\}/)
+  assert.match(
+    dashboard,
+    /const basis =\s*\n\s*windows\.length > 0 && windows\.every\(\(window\) => window\.percentOnly\)/,
+  )
+  assert.match(dashboard, /\? 'least left'/)
+  // A heading totals allowances, not rows: an account-scoped limit (KiloCode's 200 requests/hour
+  // pool, whose recorded usage is already provider-wide) must count once however many of that
+  // provider's models sit under the heading, while a model-scoped limit adds up per model.
+  assert.match(dashboard, /const perModel = view\.scope === 'model'/)
+  assert.match(dashboard, /account:\$\{providerKey\}/)
+  assert.match(dashboard, /quotaGroupProviderCount\(members\)/)
+  assert.match(dashboard, /shared by \$\{view\.rows\} rows/)
+  // Google publishes only a remaining fraction, which cannot be added up: a heading over
+  // those windows reports the tightest allowance instead of blanking back to "usage not
+  // reported" while every row beneath it shows a number.
+  assert.match(dashboard, /Math\.max\(current\.usedPercent, view\.usedPercent\)/)
+  assert.match(dashboard, /highest use across/)
+  assert.match(dashboard, /: \(view\.usedPercent \?\? null\)/)
+  assert.match(dashboard, /m\?\.quotaWindows/)
+  assert.match(modelsRoute, /quotaWindows: \[[\s\S]{0,200}?extractQuotaWindows\(/)
+  assert.match(dashboard, /quotaRowCellInnerHTML\(m\)/)
+  // Percent used, the per-window total, remaining tokens and the reset countdown are all in
+  // the same cell. Multiple published periods survive the merge.
+  assert.match(dashboard, /QUOTA_ROW_PERIOD_LABEL/)
+  assert.match(dashboard, /resets in \$\{formatQuotaReset/)
+  assert.match(dashboard, /\$\{unit\} \/ \$\{periodLabel\.toLowerCase\(\)\}/)
+  assert.match(dashboard, /QUOTA_ROW_METRIC_ORDER/)
+  assert.match(dashboard, /data-quota-metric/)
+  assert.match(dashboard, /no free-tier allowance/)
+  assert.match(dashboard, /const available = sorted\.filter/)
+  assert.match(
+    dashboard,
+    /const noFreeTier = w\.unavailable && !w\.percentOnly && w\.period === 'window'/,
+  )
+  assert.match(dashboard, /allowance not published/)
+  assert.match(dashboard, /no free-tier allowance across/)
+  assert.match(dashboard, /% used/)
+  assert.match(dashboard, /left/)
+  assert.match(dashboardCss, /\.quota-cell \{/)
+  assert.match(dashboardCss, /\.quota-row-fill-success/)
+  assert.match(dashboardCss, /\.quota-row-fill-warning/)
+  assert.match(dashboardCss, /\.quota-row-fill-error/)
+  // The server sends both numerators: the row's own tokens for model-scoped limits and the
+  // provider total for account-scoped limits.
+  assert.match(modelsRoute, /recordedUsage: buildRecordedUsageForEntry\(usageEntry\)/)
+  assert.match(modelsRoute, /providerRecordedUsage:/)
+  assert.match(modelsRoute, /buildRecordedUsage\(ctx\.usageStats, r\.providerKey\)/)
+})
+
+test('the graveyard carries the quota column and Google rows link to live project limits', () => {
+  assert.match(indexHtml, /<th id="th-graveyard-quota"/)
+  assert.match(dashboard, /\$\{quotaRowCell\(first\)\}/)
+  assert.match(dashboard, /function quotaProviderNote\(m\)/)
+  assert.match(dashboard, /aistudio\.google\.com\/rate-limit/)
+  assert.match(dashboardCss, /\.quota-row-note \{/)
 })
 
 test('the card reads the published and observed quota the server sends', () => {
@@ -68,8 +218,49 @@ test("hammer's own rows carry the roster's published allowance", () => {
   assert.equal(table.openrouter.steadyTokensPerMonth, 1_000_000)
   assert.equal(table.kiro.steadyTokensPerMonth, 25_000)
   // Providers the roster owns outright keep their own figures.
-  assert.equal(table.llm7.steadyTokensPerMonth, 150_000_000)
-  assert.equal(table['ollama-cloud'].steadyTokensPerMonth, 20_000_000)
+  assert.equal(table['api-airforce'].steadyTokensPerMonth, 24_000_000)
+})
+
+// The roster is a second-hand source and one row is demonstrably wrong: it records 150M
+// tokens/month for llm7 where the vendor publishes 100,000 tokens per rolling 24 hours. A
+// bar drawn against a figure ~50x the real cap reports a spent allowance as unspent, so the
+// corrected record replaces the number, names the vendor doc it came from, and keeps the
+// window the vendor publishes rather than restating a daily cap as a monthly grant.
+test("a vendor-corrected allowance replaces the roster's figure", () => {
+  const llm7 = providerQuotaTable().llm7
+  assert.equal(llm7.steadyTokensPerMonth, null)
+  assert.equal(llm7.limits.length, 1)
+  assert.deepEqual(
+    { metric: llm7.limits[0].metric, limit: llm7.limits[0].limit, period: llm7.limits[0].period },
+    { metric: 'tokens', limit: 100_000, period: 'day' },
+  )
+  assert.match(llm7.numericSource, /LLM7 limits doc/)
+  assert.equal(llm7.sourceUrl, 'https://docs.llm7.io/limits')
+  // A provider with no correction keeps both the roster's figure and its attribution.
+  assert.equal(providerQuotaTable().groq.steadyTokensPerMonth, 15_000_000)
+  assert.match(providerQuotaTable().groq.numericSource, /OmniRoute free-tier roster/)
+})
+
+// KiloCode's free pool is published as 200 requests/hour per IP, which is a rolling window:
+// hammer keeps sixty one-minute buckets so the row can draw against the traffic it actually
+// carried in the last hour, and a fixed hour bucket that reset at the top of the hour would
+// report zero for calls still inside the provider's window.
+test('a per-hour limit draws against the rolling hour hammer records', () => {
+  const kilocode = providerQuotaTable().kilocode
+  assert.deepEqual(
+    kilocode.limits.map(({ metric, limit, period }) => ({ metric, limit, period })),
+    [{ metric: 'requests', limit: 200, period: 'hour' }],
+  )
+  assert.equal(kilocode.window, 'hour')
+  assert.match(kilocode.source, /200 requests\/hour per IP/)
+  assert.match(dashboard, /hour: 'HOUR'/)
+  assert.match(dashboard, /hour: 'requestsLastHour'/)
+  assert.match(dashboard, /hour: \['requestsLastHour', 'in the last hour'/)
+  // The hourly window is recognised, and a window with no recorded counter keeps its total and
+  // gets no bar instead of being dropped.
+  assert.match(dashboard, /if \(\/\\bhour\\b\|hourly\|per\\s\*hour\/\.test\(text\)\) return 'hour'/)
+  assert.match(dashboard, /const used = field \?/)
+  assert.match(dashboard, /remaining: used == null \? null : Math\.max\(0, total - used\)/)
 })
 
 test("a published figure is attributed without displacing the provider's own citation", () => {
@@ -155,18 +346,38 @@ test('every published numeric limit renders a bar, and none without a number doe
   const numeric = Object.values(table).filter(
     (quota) => Array.isArray(quota.limits) && quota.limits.length > 0,
   )
-  // 18, not 19: the vendored `gemini` row carried a 60M tokens/month figure that was retired
-  // with the row (2026-11-08) — Google no longer publishes free-tier numbers, quotas are per
-  // project in AI Studio (see docs/PROVIDER-FREE-TIER-AUDIT.md). A figure nobody can source
-  // must not render a bar.
+  // 17, down from 19: the vendored `gemini` row carried a 60M tokens/month figure that was
+  // retired with the row (2026-11-08) — Google no longer publishes free-tier numbers, quotas
+  // are per project in AI Studio (see docs/PROVIDER-FREE-TIER-AUDIT.md) — and the duplicate
+  // `ollama-cloud` row went the same day, its 20M/month figure staying on `ollama`. A figure
+  // nobody can source must not render a bar.
   assert.ok(
-    numeric.length >= 18,
+    numeric.length >= 17,
     `expected a wide spread of published limits, saw ${numeric.length}`,
   )
   for (const quota of numeric) {
     for (const limit of quota.limits) {
       assert.ok(limit.limit > 0, `${quota.source} limit must be positive`)
-      assert.ok(['day', 'week', 'month', 'lifetime'].includes(limit.period))
+      // Every period here has a recorded counter to draw against, the hourly one included:
+      // KiloCode's 200 requests/hour free pool is measured against the trailing hour.
+      assert.ok(['hour', 'day', 'week', 'month', 'lifetime'].includes(limit.period))
     }
   }
+})
+
+// A stated reset that has already passed means the window it described no longer exists: the
+// counter's "18 left" is history, and a countdown has nothing to count. Hammer used to render
+// both, which is how a BazaarLink row read "20 requests / window · 18 left · resets in now"
+// while every one of its nine stated resets sat ~43 minutes in the past.
+test('an elapsed reset drops the window instead of counting down to "now"', () => {
+  assert.doesNotMatch(dashboard, /return 'now'/)
+  assert.match(
+    dashboard,
+    /if \(window\.total != null && window\.total > 0\s*\n\s*&& window\.resetAt != null && window\.resetAt <= Date\.now\(\)\) return/,
+  )
+  assert.match(dashboard, /const resetMs = w\.resetAt == null \? null : w\.resetAt - Date\.now\(\)/)
+  assert.match(dashboard, /resetMs <= 0 \? '' : `resets in \$\{formatQuotaReset\(resetMs\)\}`/)
+  // Under a minute the countdown counts seconds; rounding used to print "resets in 0m".
+  assert.match(dashboard, /if \(minutes > 0\) return `\$\{minutes\}m`/)
+  assert.match(dashboard, /return `\$\{total\}s`/)
 })
