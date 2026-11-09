@@ -914,8 +914,9 @@ body.hx-details-collapsed .hx-side-details {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  /* The line art sits in the gutter to the left of the row; the text starts after it. */
-  padding-left: 20px;
+  /* The line art sits in the gutter to the left of the row; the text starts after it at the
+     same indent a thought's label uses, so the two kinds of station share a text edge. */
+  padding-left: 8px;
   padding-right: 0;
   padding-top: 2px;
   padding-bottom: 2px;
@@ -969,6 +970,13 @@ body.hx-details-collapsed .hx-side-details {
    through the station. */
 .hx-tool.running .hx-tool-icon {
   color: var(--accent);
+  animation: hx-pulse 1.1s ease-in-out infinite;
+}
+
+/* An open run's spine pulses with its mark: the rail under the icon is the same work still in
+   flight, so it moves rather than standing still beside a pulsing station. Only an expanded
+   row needs this — a closed row's rail is a single line behind the head, not the run's body. */
+.hx-row-tool:has(.hx-tool.running[open])::before {
   animation: hx-pulse 1.1s ease-in-out infinite;
 }
 
@@ -1046,10 +1054,10 @@ body.hx-details-collapsed .hx-side-details {
   font-style: italic;
 }
 
-/* Output hangs under the line it belongs to, indented past the icon. */
+/* Output hangs under the line it belongs to, indented to the head's text edge. */
 .hx-tool-out {
   margin: 0;
-  padding: 4px 0 6px;
+  padding: 4px 0 6px 8px;
   max-height: 340px;
   overflow: auto;
   font-size: 0.735rem;
@@ -1057,6 +1065,76 @@ body.hx-details-collapsed .hx-side-details {
   color: var(--text-dim);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── Edit diffs ────────────────────────────────────────────────────────────────────── */
+
+/* An edit's body is the change itself, not the tool's sentence about it: removed lines wear
+   the error tint, added lines the success tint, and unchanged lines sit quiet between them. */
+.hx-diff {
+  margin: 2px 0 6px;
+  padding: 4px 0 4px 8px;
+  max-height: 340px;
+  overflow: auto;
+  font-family: var(--hx-mono);
+  font-size: 0.735rem;
+  line-height: 1.5;
+}
+
+.hx-diff + .hx-diff {
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+  padding-top: 6px;
+}
+
+.hx-diff-row {
+  display: flex;
+  gap: 8px;
+  min-height: 1.5em;
+  padding: 0 4px;
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hx-diff-mark {
+  flex: none;
+  width: 1ch;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.hx-diff-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.hx-diff-row.add {
+  color: var(--status-success-text);
+  background: color-mix(in srgb, var(--status-success-bg) 70%, transparent);
+}
+
+.hx-diff-row.del {
+  color: var(--status-error-text);
+  background: color-mix(in srgb, var(--status-error-bg) 70%, transparent);
+}
+
+.hx-diff-row.add .hx-diff-mark {
+  color: var(--status-success-text);
+}
+
+.hx-diff-row.del .hx-diff-mark {
+  color: var(--status-error-text);
+}
+
+.hx-diff-row.context {
+  color: var(--text-dim);
+}
+
+.hx-diff-more {
+  padding: 2px 4px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ── Notices ───────────────────────────────────────────────────────────────────────── */

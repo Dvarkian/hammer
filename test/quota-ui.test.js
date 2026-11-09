@@ -390,3 +390,24 @@ test("a clock's countdown also follows a reset the body states in words", () => 
   assert.ok(dashboard.includes('durationFromText(statedDelay[1])'))
   assert.ok(dashboard.includes("name.startsWith('ms') || name.startsWith('millisecond')"))
 })
+
+test('plot colours come from the model mark, not the provider', () => {
+  // Both plots used to hue by provider, so every model of one provider shared a colour and a
+  // usage plot could not tell two families apart. The accent is the mark's most common
+  // colour, greys skipped; a greyscale mark falls back to its second most common bucket,
+  // because the first is the ground.
+  assert.ok(dashboard.includes('function accentFromImage('))
+  assert.ok(dashboard.includes('function modelAccent('))
+  assert.ok(dashboard.includes('function modelMarkHrefs('))
+  assert.ok(dashboard.includes('Math.max(r, g, b) - Math.min(r, g, b) <= 24'))
+  assert.ok(
+    dashboard.includes(
+      'ranked.find((bucket) => !bucket.grey) || (ranked.length > 1 ? ranked[1] : ranked[0])',
+    ),
+  )
+  assert.ok(dashboard.includes('bucket.n >= total * 0.02'))
+  // Every plot that used to paint a provider hue now prefers the model's own colour.
+  assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 72% 55%)`'))
+  assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 65% 55%)`'))
+  assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 70% 55%)`'))
+})

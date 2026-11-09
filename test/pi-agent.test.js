@@ -559,6 +559,18 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // calls are not: a command, an argument blob or a result that was cut changed what it says.
   assert.match(harness, /const MAX_TEXT = 120000/)
   assert.doesNotMatch(harness, /MAX_TOOL/)
+  // An edit shows its change as a colour-coded diff built from the call's own oldText/newText,
+  // not the tool's "edited" sentence.
+  assert.match(harness, /function diffMarkup\(item\)/)
+  assert.match(harness, /hx-diff-row \$\{row\.op\}/)
+  assert.match(harness, /const isEdit = \/\^edit\$\/i\.test\(String\(item\.name \|\| ''\)\)/)
+  // Collapsed by default: an edit never opens itself, even while it runs. Only the reader's
+  // own toggle (item.open) expands it.
+  assert.match(
+    harness,
+    /const open = body && \(item\.open \|\| \(item\.status !== 'ok' && !isEdit\)\)/,
+  )
+
   // A bash call is shown as RUN in the transcript; the tool's own name stays in the icon table.
   assert.match(harness, /function toolLabel\(name\)/)
   assert.match(harness, /=== 'bash' \? 'run'/)
@@ -617,6 +629,14 @@ test('a tool whose end never arrived is not left saying running', () => {
   assert.match(harness, /if \(item\.status === 'interrupted'\) return 'interrupted'/)
   assert.match(css, /\.hx-tool\.interrupted \.hx-tool-icon \{/)
   assert.match(css, /\.hx-tool\.interrupted \.hx-tool-state \{/)
+  assert.match(css, /\.hx-diff-row\.add \{[^}]*status-success/)
+  assert.match(css, /\.hx-diff-row\.del \{[^}]*status-error/)
+  // An expanded running tool pulses the rail below its icon with the same animation, so the
+  // spine and the mark move as one piece of work.
+  assert.match(
+    css,
+    /\.hx-row-tool:has\(\.hx-tool\.running\[open\]\)::before \{[^}]*animation: hx-pulse/,
+  )
 })
 
 test('the stop button exists only while the agent is running', () => {
@@ -1921,6 +1941,76 @@ test('the Compact now button says what it is doing while a compaction runs', () 
   assert.match(css, /data-compaction-now\]\[data-working='true'\]/)
 })
 
+test('the rail usage plot describes the conversation, not the router process', () => {
+  // The plot used to draw /api/usage-series' `session` view, which the server filters to its
+  // own process start: a conversation resumed after a restart drew as an empty plot with a
+  // title that claimed a history it was not showing. The session file is the authority — it
+  // holds every turn the conversation ever had — so harness.js publishes it and the plot
+  // draws that. Each half is pinned: the read, the publish, and the moments it happens.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+
+  // The conversation's history is read from its file, through a route the server answers.
+  assert.match(harness, /\$\{API\}\/sessions\/usage\?session=\$\{encodeURIComponent\(file\)\}/)
+  assert.match(
+    dashboard,
+    /window\.publishSessionUsage = publishSessionUsage/,
+    'dashboard.js owns the plot, and harness.js is a separate classic script, so the\n' +
+      ' publisher has to be exposed on window for the agent page to call it',
+  )
+  assert.match(
+    dashboard,
+    /window\.requestSessionPlotRedraw = requestSessionPlotRedraw/,
+    'the repaint is exposed with it: the rail is usually hidden when a publish happens',
+  )
+
+  // The three moments the plot must be re-published, and the two it must be released.
+  const publish = harness.match(/async function publishSessionUsage\(ctx\) \{[\s\S]*?\n[ ]{2}\}\n/)
+  assert.ok(publish, 'publishSessionUsage exists, so the assertions below test the real function')
+  const body = publish[0]
+  assert.match(
+    body,
+    /window\.publishSessionUsage\?\.\(null, \[\]\)/,
+    'a conversation with no file publishes nothing rather than an empty plot',
+  )
+  assert.match(
+    body,
+    /if \(ctx\.sessionFile !== file\) return/,
+    'a console that switched conversations mid-read must not be handed the earlier one',
+  )
+  // A switch of console, and a reopened transcript, are what the rail describes.
+  assert.match(
+    harness,
+    /void publishSessionUsage\(console\)\n[ ]{2}\}/,
+    'switching tabs republishes: the plot is the conversation now on screen',
+  )
+  assert.match(
+    harness,
+    /void publishSessionUsage\(ctx\)/,
+    'a rebuilt transcript publishes its own history',
+  )
+  assert.match(
+    harness,
+    /if \(ctx\.sessionFile === active\(\)\?\.sessionFile\) void publishSessionUsage\(ctx\)/,
+    'the live update: a turn that just settled in the file the plot reads',
+  )
+  // And the release: a reset, a delete, a detached console.
+  assert.match(
+    harness,
+    /The reset clears the transcript, so the plot has no history to describe either\.\n[ ]{6}void publishSessionUsage\(console\)/,
+  )
+
+  // The copy names what the plot is: the title said "tokens/s", which is the rate the plot
+  // deliberately does not draw (see drawUsagePlot's binned columns).
+  assert.match(html, /This conversation — tokens over time/)
+  assert.doesNotMatch(html, /This session — tokens\/s/)
+  assert.match(html, /No tokens in this conversation yet\./)
+})
+
+/**
+ * the compaction panel says why a compaction is running, from either cause
+ */
 test('the compaction panel says why a compaction is running, from either cause', () => {
   const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
   // The note is what explains a turn that has gone quiet. "You asked for it" and "the

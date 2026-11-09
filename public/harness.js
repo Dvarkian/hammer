@@ -167,6 +167,10 @@
     updateComposer()
     renderSessions()
     saveOpenConversations()
+    // The rail follows the conversation on screen: the plot is this console's history now,
+    // which is the difference between "the last hour" (the router's own view) and "this
+    // conversation, all of it". A console with no file yet publishes the router's view back.
+    void publishSessionUsage(console)
   }
 
   /** Where the open conversations are remembered between page loads (and restarts). */
@@ -700,9 +704,13 @@
       $('hx-input')?.focus()
       // The session usage plot (agent rail) was sized while this view was hidden, so its
       // width measurement was the fallback. Now that the rail has a real box, redraw it.
+      // The republish re-reads the file: a turn that landed in another tab was appended to
+      // this conversation's transcript while the rail was not showing it.
       if (typeof window.drawUsagePlots === 'function') {
         requestAnimationFrame(() => window.drawUsagePlots())
       }
+      const ctx = active()
+      if (ctx?.sessionFile) void publishSessionUsage(ctx)
     }
   }
 
@@ -922,17 +930,117 @@
     return raw.toLowerCase() === 'bash' ? 'run' : raw
   }
 
+  /** The before/after pairs an edit call asked for, one per replacement. */
+  function editPairs(item) {
+    const edits = item.args && Array.isArray(item.args.edits) ? item.args.edits : []
+    return edits
+      .map((edit) => ({
+        before: typeof edit?.oldText === 'string' ? edit.oldText : '',
+        after: typeof edit?.newText === 'string' ? edit.newText : '',
+      }))
+      .filter((pair) => pair.before || pair.after)
+  }
+
+  /**
+   * Line rows for one replacement: `context` lines are unchanged, `del` lines only existed
+   * before and `add` lines only exist after. Common head and tail lines are not drawn — the
+   * edit's own oldText/newText are the region that changed — but they are trimmed before the
+   * table so a one-word change in a long block stays cheap.
+   */
+  function diffRows(before, after) {
+    const a = before.split('\n')
+    const b = after.split('\n')
+    let head = 0
+    while (head < a.length && head < b.length && a[head] === b[head]) head += 1
+    let tailA = a.length
+    let tailB = b.length
+    while (tailA > head && tailB > head && a[tailA - 1] === b[tailB - 1]) {
+      tailA -= 1
+      tailB -= 1
+    }
+    const midA = a.slice(head, tailA)
+    const midB = b.slice(head, tailB)
+    const rows = []
+    if (midA.length * midB.length > 250000) {
+      // A wall of changed lines is not worth a quadratic table: the old block, then the new.
+      for (const text of midA) rows.push({ op: 'del', text })
+      for (const text of midB) rows.push({ op: 'add', text })
+      return rows
+    }
+    const table = Array.from({ length: midA.length + 1 }, () => new Uint32Array(midB.length + 1))
+    for (let i = midA.length - 1; i >= 0; i -= 1) {
+      for (let j = midB.length - 1; j >= 0; j -= 1) {
+        table[i][j] =
+          midA[i] === midB[j]
+            ? table[i + 1][j + 1] + 1
+            : Math.max(table[i + 1][j], table[i][j + 1])
+      }
+    }
+    let i = 0
+    let j = 0
+    while (i < midA.length && j < midB.length) {
+      if (midA[i] === midB[j]) {
+        rows.push({ op: 'context', text: midA[i] })
+        i += 1
+        j += 1
+      } else if (table[i + 1][j] >= table[i][j + 1]) {
+        rows.push({ op: 'del', text: midA[i] })
+        i += 1
+      } else {
+        rows.push({ op: 'add', text: midB[j] })
+        j += 1
+      }
+    }
+    while (i < midA.length) rows.push({ op: 'del', text: midA[i++] })
+    while (j < midB.length) rows.push({ op: 'add', text: midB[j++] })
+    return rows
+  }
+
+  /** How many diff rows an opened edit draws before it summarises the rest. */
+  const DIFF_MAX_ROWS = 400
+
+  /**
+   * An edit's body is the change itself: removed lines on the error tint, added lines on the
+   * success tint, unchanged lines quiet between them, each with its own mark. The tool's
+   * result sentence ("Edited …") says less than the diff and is not shown in its place.
+   */
+  function diffMarkup(item) {
+    const pairs = editPairs(item)
+    if (!pairs.length) return ''
+    return pairs
+      .map((pair) => {
+        const rows = diffRows(pair.before, pair.after)
+        const shown = rows.slice(0, DIFF_MAX_ROWS)
+        const body = shown
+          .map((row) => {
+            const mark = row.op === 'add' ? '+' : row.op === 'del' ? '−' : ' '
+            return `<div class="hx-diff-row ${row.op}"><span class="hx-diff-mark">${mark}</span><span class="hx-diff-text">${escapeHtml(row.text)}</span></div>`
+          })
+          .join('')
+        const more =
+          rows.length > shown.length
+            ? `<div class="hx-diff-more">… ${rows.length - shown.length} more lines</div>`
+            : ''
+        return `<div class="hx-diff">${body}${more}</div>`
+      })
+      .join('')
+  }
+
   function toolMarkup(item) {
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
     const meta = [toolStateLabel(item), took].filter(Boolean).join(' · ')
     // Anything but a finished call shows its output: a running command is what you want to
-    // read, and a failed one is what you need to read.
-    const open = output && (item.open || item.status !== 'ok') ? ' open' : ''
-    const body = output
-      ? `<pre class="hx-tool-out">${escapeHtml(output)}</pre>`
-      : ''
-    return `<details class="hx-tool ${item.status}${output ? '' : ' hx-tool-empty'}"${open}>
+    // read, and a failed one is what you need to read. An edit shows its diff instead — the
+    // change is the output — unless it failed, where the error is what needs reading.
+    const isEdit = /^edit$/i.test(String(item.name || ''))
+    const diff =
+      isEdit && item.status !== 'error' && item.status !== 'interrupted' ? diffMarkup(item) : ''
+    const body = diff || (output ? `<pre class="hx-tool-out">${escapeHtml(output)}</pre>` : '')
+    // An edit is collapsed until the reader asks for it, even while it runs: the change is
+    // there to inspect, not something to push the rest of the transcript aside on arrival.
+    const open = body && (item.open || (item.status !== 'ok' && !isEdit)) ? ' open' : ''
+    return `<details class="hx-tool ${item.status}${body ? '' : ' hx-tool-empty'}"${open}>
           <summary class="hx-tool-head">
             ${toolIcon(item.name || 'tool')}
             <span class="hx-tool-name">${escapeHtml(toolLabel(item.name))}</span>
@@ -1715,6 +1823,11 @@
       case 'message_end': {
         const message = record.message || {}
         if (message.role === 'assistant') {
+          // The turn just settled in the file the plot reads, so a console that is on screen
+          // republishes its history — this is the only live update the plot gets, and it is
+          // the one that keeps the rail's newest bar level with the newest answer. A console
+          // in the background waits for the switch (see activate).
+          if (ctx.sessionFile === active()?.sessionFile) void publishSessionUsage(ctx)
           const item = lastAssistant(ctx)
           if (item) {
             // The message is complete: its thoughts stop being live and fold away with it.
@@ -2372,6 +2485,10 @@
       }
     }
     applyStatusFrame(ctx, entry.status)
+    // The file this console is attached to is settled on the hello frame, so the rail is
+    // published from here too: a tab restored from storage knows its file, but the plot
+    // only describes the conversation once the agent has confirmed the name.
+    if (ctx === active() && ctx.sessionFile) void publishSessionUsage(ctx)
     // A replay log that ends on a tool start — the usual tail after a crash or a replaced
     // child — would otherwise restore a spinner with nothing behind it.
     if (!ctx.running) settleOpenTools(ctx)
@@ -2740,6 +2857,8 @@
       // that belonged to the one just left behind.
       saveDraft(console, '')
       restoreDraft(console)
+      // The reset clears the transcript, so the plot has no history to describe either.
+      void publishSessionUsage(console)
       if (console === active()) {
         state.items = console.items
         state.tools = console.tools
@@ -2944,6 +3063,9 @@
     if (!file) {
       // A detached console (deleted session, or fresh reset) has no file.
       ctx.sessionFile = null
+      // Nothing to describe, so the rail goes back to the router's own view rather than
+      // holding a conversation that is no longer attached to this console.
+      if (ctx === active()) void publishSessionUsage(ctx)
       return
     }
     const previousKey = draftKey(ctx)
@@ -3199,6 +3321,10 @@
       for (const ctx of state.consoles.values()) {
         if (ctx.sessionFile === file) {
           ctx.sessionFile = null
+          // The file is gone, so it has no history to publish. A console that was on screen
+          // hands the plot straight back to the router's own view rather than leaving the
+          // deleted conversation drawn there.
+          if (ctx === active()) void publishSessionUsage(ctx)
         }
       }
       await loadSessions()

@@ -174,13 +174,16 @@
                figure that decides compaction, so it is named rather than left as a bare bar:
                the meter above is the old turn-share bar and this says which one is which. -->
           <div class="hx-context-note" id="hx-context-note" hidden></div>
-          <!-- This session's tokens/s over time. It sits under the turn total because the
-               two answer the same question at two scales: what the agent has spent, and how
-               fast it is being served. The plot is drawn by dashboard.js (drawUsagePlots). -->
+          <!-- This conversation's tokens over time, from its own transcript. It sits under
+               the turn total because the two answer the same question at two scales: what the
+               agent has spent, and when. It is the whole conversation rather than this
+               process's slice of it, so a chat resumed after a restart still draws its earlier
+               turns — the plot is drawn by dashboard.js (drawUsagePlots) and points where
+               harness.js publishes them. -->
           <div class="usage-plot-card usage-plot-card-rail">
-            <div class="usage-plot-title">This session — tokens/s · area = tokens</div>
+            <div class="usage-plot-title">This conversation — tokens over time</div>
             <svg id="usage-session-svg" class="usage-plot-svg usage-plot-svg-rail" preserveAspectRatio="xMidYMid meet"></svg>
-            <div class="usage-plot-empty" id="usage-session-empty" style="display:none;">No session usage yet.</div>
+            <div class="usage-plot-empty" id="usage-session-empty" style="display:none;">No tokens in this conversation yet.</div>
           </div>
           <div class="hx-empty-note">Reported per turn by the agent, not estimated by this page.</div>
         </section>

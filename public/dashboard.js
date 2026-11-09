@@ -589,7 +589,149 @@
     // map cannot name resolves to '' and keeps its monogram, and before the plots have drawn once
     // there is nothing to ask — which costs nothing, because the first table paint is monograms by
     // design and the brand marks arrive with decorationsReady (see the idle pass).
-    let modelDomainFor = () => '';
+    let modelDomainFor = () => ''
+
+    // ── A model's colour comes from its mark ───────────────────────────────────────────
+    //
+    // Both plots used to colour by provider: every Anthropic row shared one hue, so a scatter
+    // of eight Claude models read as a single colour and a usage plot could not tell two
+    // families apart. A model's brand mark already carries the colour people recognise, so the
+    // accent is read from that icon: the most common colour in it, skipping the greys that make
+    // up most marks' grounds, and the second most common when the mark is greyscale (its most
+    // common bucket is the ground, which would paint every row the same grey). Shades are
+    // quantised and rare buckets ignored, so anti-aliasing and a stray pixel cannot name a
+    // model's colour.
+    const modelAccentCache = new Map()   // rowKey -> '#rrggbb' | null
+    const modelAccentPending = new Set() // rowKeys whose mark is queued or loading
+    const accentQueue = []
+    let accentActive = 0
+    const ACCENT_PARALLEL = 6
+
+    /**
+     * The accent of an icon already loaded into `img`, or null when it cannot be read.
+     * @param {HTMLImageElement} img
+     * @returns {string|null}
+     */
+    function accentFromImage(img) {
+      const size = 32
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      if (!ctx) return null
+      ctx.drawImage(img, 0, 0, size, size)
+      let pixels
+      try {
+        pixels = ctx.getImageData(0, 0, size, size).data
+      } catch {
+        // A cross-origin fallback favicon taints the canvas. No colour can be read without
+        // CORS, so the provider hue stands in rather than an exception escaping the draw.
+        return null
+      }
+      // Four bits per channel: close shades collapse into one colour, which is the "ignore
+      // small variations" rule — an anti-aliased edge is not its own brand.
+      const buckets = new Map()
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i + 3] < 160) continue
+        const r = pixels[i]
+        const g = pixels[i + 1]
+        const b = pixels[i + 2]
+        const key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)
+        const bucket = buckets.get(key) || { n: 0, r: 0, g: 0, b: 0, grey: false }
+        bucket.n += 1
+        bucket.r += r
+        bucket.g += g
+        bucket.b += b
+        // Within a few steps of equal is grey: a white page, a black glyph, a silver ring.
+        bucket.grey = bucket.grey || Math.max(r, g, b) - Math.min(r, g, b) <= 24
+        buckets.set(key, bucket)
+      }
+      const total = [...buckets.values()].reduce((sum, bucket) => sum + bucket.n, 0)
+      if (total === 0) return null
+      const ranked = [...buckets.values()]
+        .filter((bucket) => bucket.n >= total * 0.02)
+        .sort((a, b) => b.n - a.n)
+      if (ranked.length === 0) return null
+      const pick = ranked.find((bucket) => !bucket.grey) || (ranked.length > 1 ? ranked[1] : ranked[0])
+      return '#' + [pick.r, pick.g, pick.b]
+        .map((sum) => Math.round(sum / pick.n).toString(16).padStart(2, '0'))
+        .join('')
+    }
+
+    /** Repaint the plots once a colour lands; many marks arrive per page, one repaint. */
+    let accentRepaintQueued = false
+    function scheduleAccentRepaint() {
+      if (accentRepaintQueued) return
+      accentRepaintQueued = true
+      setTimeout(() => {
+        accentRepaintQueued = false
+        requestScatterRedraw()
+        drawUsagePlots()
+      }, 150)
+    }
+
+    function pumpAccentQueue() {
+      while (accentActive < ACCENT_PARALLEL && accentQueue.length > 0) {
+        const job = accentQueue.shift()
+        accentActive += 1
+        const img = new Image()
+        // Same-origin through the router's proxy; the attribute keeps the read honest when
+        // the Google fallback is in use, where the canvas is tainted and the read returns null.
+        img.crossOrigin = 'anonymous'
+        const done = (colour) => {
+          modelAccentPending.delete(job.key)
+          modelAccentCache.set(job.key, colour)
+          accentActive -= 1
+          scheduleAccentRepaint()
+          pumpAccentQueue()
+        }
+        img.onload = () => done(accentFromImage(img))
+        img.onerror = () => done(null)
+        img.src = job.href
+      }
+    }
+
+    /**
+     * The hrefs for one model's own mark — its vendor's, never its provider's, the same rule
+     * the topology's model node draws by. One composition, so the colour a row wears and the
+     * icon the plot draws cannot disagree.
+     */
+    function modelMarkHrefs(m) {
+      return faviconHrefs([modelDomainFor(m)])
+    }
+
+    /**
+     * The colour of one model's mark, reading it the first time it is asked for.
+     *
+     * Returns null until that read finishes (or when the model has no mark), so callers draw
+     * with the provider hue in the meantime and the repaint swaps in the real colour.
+     * @param {any} m
+     * @returns {string|null}
+     */
+    function modelAccent(m) {
+      if (!m) return null
+      const key = getModelRowKey(m)
+      if (modelAccentCache.has(key)) return modelAccentCache.get(key)
+      if (modelAccentPending.has(key)) return null
+      const href = modelMarkHrefs(m)[0]
+      // Before the idle pass there are no marks by design; the next draw asks again.
+      if (!href) return null
+      modelAccentPending.add(key)
+      accentQueue.push({ key, href })
+      pumpAccentQueue()
+      return null
+    }
+
+    /** The accent for a usage-series key ('provider::model'), reading that row's mark. */
+    function modelAccentForKey(key) {
+      const id = String(key || '')
+      if (modelAccentCache.has(id)) return modelAccentCache.get(id)
+      const split = id.indexOf('::')
+      const providerKey = split < 0 ? '' : id.slice(0, split)
+      const modelId = split < 0 ? id : id.slice(split + 2)
+      const m = allModels.find((row) => row && row.providerKey === providerKey && String(row.modelId) === modelId)
+      return m ? modelAccent(m) : null
+    };
 
     // Named when it is the exception, silent when it is not: a stale router is worth one line on
     // the plot, and a healthy one is worth none.
@@ -1419,13 +1561,16 @@
       };
       for (const r of rows) {
         const hue = scatterProviderHue(r.m.providerKey);
+        // The model's own colour, read from its mark; the provider hue is the stand-in until
+        // that read finishes, or the colour when the model has no mark at all.
+        const accent = modelAccent(r.m);
         const routable = isRoutableRow(r);
         const verdictColor = verdictColorFor(r);
         const cx = scales.xOf(r.speed);
         const cy = scales.yOf(r.intell);
         const c = svgEl('circle', routable ? {
           cx, cy, r: rSize,
-          fill: `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
+          fill: accent || `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
           stroke: verdictColor, 'stroke-width': 1,
         } : {
           // A point, not an outline: a dashed ring has no centre, so an exhausted row read as a
@@ -2380,6 +2525,7 @@
         // `seconds` is exactly the tokens that landed in the slice.
         const rate = b.tokens / seconds;
         const hue = usageProviderHue((b.key || '').split('::')[0]);
+        const accent = modelAccentForKey(b.key || '');
         const x = pad.left + i * binW + (binW - barW) / 2;
         const y = yOf(rate);
         svg.appendChild(usageSvgEl('rect', {
@@ -2387,7 +2533,7 @@
           y: y.toFixed(2),
           width: barW.toFixed(2),
           height: (pad.top + plotH - y).toFixed(2),
-          fill: `hsl(${hue} 65% 55%)`,
+          fill: accent || `hsl(${hue} 65% 55%)`,
           'fill-opacity': 0.8,
           rx: Math.min(2, barW / 3).toFixed(2),
           'class': 'usage-bar',
@@ -2600,7 +2746,7 @@
       }
       // Reuse the single-series renderer: it takes the series directly, so the combined
       // series does not have to be stuffed into usageSeriesByKey to be plotted.
-      drawUsageSparklineSeries(container, combined, members[0].providerKey);
+      drawUsageSparklineSeries(container, combined, members[0].providerKey, modelAccent(members[0]));
     }
 
     // Per-model sparkline: tiny tokens/s sparkline for one row's series.
@@ -2618,10 +2764,10 @@
         container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>';
         return;
       }
-      drawUsageSparklineSeries(container, pts, key.split('::')[0]);
+      drawUsageSparklineSeries(container, pts, key.split('::')[0], modelAccentForKey(key));
     }
 
-    function drawUsageSparklineSeries(container, pts, providerKey) {
+    function drawUsageSparklineSeries(container, pts, providerKey, accent = null) {
       // Replace, never accumulate: the create/update passes and every 'usage' event each
       // re-enter here for a cell that already holds its sparkline, so without this the row
       // grew a stack of them. One row, one plot.
@@ -2662,7 +2808,7 @@
           y: (pad.top + plotH - h).toFixed(2),
           width: barW.toFixed(2),
           height: Math.max(0.6, h).toFixed(2),
-          fill: `hsl(${hue} 70% 55%)`,
+          fill: accent || `hsl(${hue} 70% 55%)`,
           'class': 'usage-bar',
         }));
       }
@@ -3181,7 +3327,7 @@
             // A model node's mark is its vendor's, never its provider's: the node stands for the
             // model, and a gateway's logo on it would name the wrong thing. No vendor domain, or
             // a vendor with no icon, leaves the model's monogram showing.
-            img.setAttribute('href', faviconHrefs([modelDom])[0] || '');
+            img.setAttribute('href', modelMarkHrefs(m)[0] || '');
             img.setAttribute('clip-path', `url(#${mcId})`);
             img.setAttribute('class', 'topo-model-img');
             img.dataset.midx = ni; img.dataset.uidx = node.umIdx;
