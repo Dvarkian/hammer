@@ -559,6 +559,10 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // calls are not: a command, an argument blob or a result that was cut changed what it says.
   assert.match(harness, /const MAX_TEXT = 120000/)
   assert.doesNotMatch(harness, /MAX_TOOL/)
+  // A bash call is shown as RUN in the transcript; the tool's own name stays in the icon table.
+  assert.match(harness, /function toolLabel\(name\)/)
+  assert.match(harness, /=== 'bash' \? 'run'/)
+
   // A multi-line command must survive: toolSummary is what the head of the row shows, and it
   // must not flatten the whitespace or cap the length of what the model actually wrote. The
   // rail's accessible label still folds to one line, but that is the label's own choice.

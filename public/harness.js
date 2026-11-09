@@ -378,8 +378,44 @@
     try {
       await loadMessages(ctx)
       if (ctx) ctx.pendingFullRestore = false
+      // The transcript that was just rebuilt is the conversation the rail describes, so the
+      // plot is published here rather than only when its file is first named — a reopened
+      // conversation has a file before it has a turn in this page's life.
+      void publishSessionUsage(ctx)
     } catch {
       // The agent may still be starting; the stream will fill the transcript instead.
+    }
+  }
+
+  /**
+   * Points the rail's plot at a conversation's usage history, read from its session file.
+   *
+   * The plot is drawn by dashboard.js, in another script scope, so this only publishes the
+   * points it should describe (window.publishSessionUsage) and asks for the repaint. A
+   * conversation with no file yet — one that has never answered — publishes nothing rather
+   * than an empty plot, which is read as "this history is gone".
+   *
+   * Failures are silent: the plot is decoration, and a conversation that opens while the
+   * store is unreadable must not also fail its transcript.
+   */
+  async function publishSessionUsage(ctx) {
+    const file = ctx?.sessionFile
+    if (!file) {
+      window.publishSessionUsage?.(null, [])
+      return
+    }
+    try {
+      const res = await fetch(`${API}/sessions/usage?session=${encodeURIComponent(file)}`)
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `usage ${res.status}`)
+      // A console that switched conversations while this read was in flight must not have its
+      // plot handed the earlier conversation's history.
+      if (ctx.sessionFile !== file) return
+      window.publishSessionUsage?.(file, data.points || [])
+    } catch {
+      // The router view is the better answer than a plot stuck on the last conversation, and
+      // it is what the rail already showed before the agent published anything.
+      window.publishSessionUsage?.(null, [])
     }
   }
 
@@ -877,6 +913,15 @@
     return `<span class="hx-tool-icon" aria-hidden="true"><svg viewBox="0 0 24 24">${body}</svg></span>`
   }
 
+  /**
+   * The transcript's name for a tool. A `bash` call is the shell running a command, so its row
+   * reads RUN; the icon table still keys on `bash`, which is the tool's own name.
+   */
+  function toolLabel(name) {
+    const raw = String(name || 'tool')
+    return raw.toLowerCase() === 'bash' ? 'run' : raw
+  }
+
   function toolMarkup(item) {
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
@@ -890,7 +935,7 @@
     return `<details class="hx-tool ${item.status}${output ? '' : ' hx-tool-empty'}"${open}>
           <summary class="hx-tool-head">
             ${toolIcon(item.name || 'tool')}
-            <span class="hx-tool-name">${escapeHtml(item.name || 'tool')}</span>
+            <span class="hx-tool-name">${escapeHtml(toolLabel(item.name))}</span>
             <span class="hx-tool-cmd">${escapeHtml(toolSummary(item))}</span>
             <span class="hx-tool-state">${escapeHtml(meta)}</span>
           </summary>
