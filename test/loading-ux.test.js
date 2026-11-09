@@ -330,3 +330,26 @@ test('boot timing is available on request and never changes what is drawn', () =
   // A stage that never completes still leaves the marks that did.
   assert.match(dashboard, /if \(PERF_ENABLED\) setTimeout\(perfReport, 15000\);/)
 })
+// ── Waiting for the first token ──────────────────────────────────────────────────────────
+
+test('a live wait below the spine runs on the model’s own TTFT', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const harnessCss = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  // A tool row that says done is not the agent working: the gap before the next message is the
+  // model composing, and a log that simply stops there is indistinguishable from a hang. The
+  // ring's period is the router's measurement for the model it picked, not a guess.
+  assert.match(harness, /function awaitingFirstToken\(ctx\)/)
+  assert.match(harness, /if \(last\.kind === 'tool'\) return last\.status !== 'running'/)
+  assert.match(harness, /function knownTtftMs\(ctx\)/)
+  assert.match(harness, /fetch\('\/api\/models', \{ cache: 'no-store' \}\)/)
+  assert.match(harness, /badge\.style\.setProperty\('--hx-ttft-ms'/)
+  // It is the transcript's last child, so it hangs under the spine's end rather than mid-log.
+  assert.match(harness, /transcript\.appendChild\(badge\)/)
+  // It comes and goes with the wait, and restarts for each new one.
+  assert.match(harness, /if \(badge\) badge\.remove\(\)/)
+  assert.match(harness, /badge\.classList\.add\('hx-ttft-running'\)/)
+  // One turn of the arc per expected wait; the ring sits on the spine's own 2px column.
+  assert.match(harnessCss, /animation: hx-ttft-run var\(--hx-ttft-ms, 2000ms\) linear infinite;/)
+  assert.match(harnessCss, /\.hx-ttft-ring \{[\s\S]{0,220}margin-left: -11px;/)
+  assert.match(harnessCss, /@media \(prefers-reduced-motion: reduce\)/)
+})

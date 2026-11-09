@@ -162,6 +162,10 @@
     renderQueue(console)
     if (console.status) renderRouting(console.status, console)
     renderUsage(console)
+    // The details rail belongs to the conversation on screen. Repaint it here as well as on
+    // status frames: a tab switch must not leave the previous conversation's compaction state
+    // (or its disabled button) sitting beside the newly active transcript.
+    renderCompactionPanel(console)
     syncTranscript({ reset: true }, console)
     paintHint(console)
     updateComposer()
@@ -872,6 +876,124 @@
     return `<div class="hx-assistant">${body}</div>`
   }
 
+  // ── Waiting for the first token ────────────────────────────────────────────────
+  //
+  // A tool row that reads "done" is not the agent still working: what the reader is
+  // watching at the bottom of the log is the model, which has been handed the tool's result
+  // and has not written anything yet. There is no row to stream into during that gap, so the
+  // log simply stopped — and a stop is indistinguishable from a hang. The router measures
+  // every model's time to first token, so the gap gets a mark of its own: a ring under the
+  // spine that turns once per that model's known TTFT. One turn is the wait this model
+  // usually needs; a second says the wait has outlasted what it normally does.
+  const DEFAULT_TTFT_MS = 2000
+
+  /** modelId -> the router's measured time to first token, in ms. */
+  const ttftByModel = new Map()
+  /** When the table must be read again; a failed read ages out like a successful one. */
+  let ttftFreshUntil = 0
+  let ttftLoad = null
+
+  /**
+   * Reads the router's per-model TTFT table.
+   *
+   * The harness is a second client of the same router, so it asks the route the dashboard
+   * asks rather than inventing a number: a ring running on a guessed period would call a
+   * model nobody has measured as normal.
+   */
+  async function loadKnownTtfts() {
+    if (ttftLoad) return ttftLoad
+    if (Date.now() < ttftFreshUntil) return
+    ttftLoad = (async () => {
+      try {
+        const res = await fetch('/api/models', { cache: 'no-store' })
+        if (res.ok) {
+          const data = await res.json()
+          ttftByModel.clear()
+          for (const row of Array.isArray(data.models) ? data.models : []) {
+            const id = row && (row.modelId || row.id)
+            const ms = row && row.ttft != null ? Number(row.ttft) : NaN
+            if (id && Number.isFinite(ms) && ms > 0) ttftByModel.set(String(id), ms)
+          }
+        }
+      } catch {
+        // No measurement, no table: the ring keeps its default period rather than vanishing.
+      } finally {
+        ttftFreshUntil = Date.now() + 60_000
+        ttftLoad = null
+      }
+    })()
+    return ttftLoad
+  }
+
+  /** The current model's own time to first token: what the router measured, or a plain period. */
+  function knownTtftMs(ctx) {
+    const routed = ctx && ctx.routedModel
+    const id = routed && (routed.modelId || routed.id)
+    const measured = id ? ttftByModel.get(String(id)) : null
+    return measured && measured > 0 ? measured : DEFAULT_TTFT_MS
+  }
+
+  /**
+   * Whether the run is live but nothing has been written yet — the model composing, or a turn
+   * just handed the result of a tool. A tool that is actually executing is work, not a wait.
+   */
+  function awaitingFirstToken(ctx) {
+    if (!ctx || !ctx.running) return false
+    const last = ctx.items[ctx.items.length - 1]
+    if (!last) return false
+    if (last.kind === 'tool') return last.status !== 'running'
+    if (last.kind === 'assistant')
+      return !(last.blocks || []).some((block) => String(block.text || '').trim())
+    return true
+  }
+
+  /** The wait's identity: a new last row, or a new state on it, starts the ring over. */
+  function waitKeyFor(ctx) {
+    const last = ctx.items[ctx.items.length - 1]
+    return last ? `${ctx.items.length}:${last.kind}:${last.status || ''}` : ''
+  }
+
+  /**
+   * Draws, moves or removes the wait badge.
+   *
+   * It lives in the transcript rather than in a row because it belongs to no item — it marks
+   * the space after the last one — and it is re-appended on every sync so rows arriving above
+   * it cannot leave it stranded mid-log.
+   */
+  function syncWaitBadge(ctx = active()) {
+    const transcript = $('hx-transcript')
+    if (!transcript || !ctx || ctx !== active()) return
+    let badge = transcript.querySelector('.hx-ttft')
+    if (!awaitingFirstToken(ctx)) {
+      if (badge) badge.remove()
+      return
+    }
+    if (!badge) {
+      badge = document.createElement('div')
+      badge.className = 'hx-ttft'
+      badge.setAttribute('role', 'status')
+      badge.setAttribute('aria-live', 'polite')
+      badge.setAttribute('aria-label', 'Waiting for the model’s first token')
+      badge.innerHTML =
+        '<span class="hx-ttft-ring" aria-hidden="true">' +
+        '<svg viewBox="0 0 24 24"><circle class="hx-ttft-track" cx="12" cy="12" r="9"/>' +
+        '<circle class="hx-ttft-arc" cx="12" cy="12" r="9"/></svg></span>'
+    }
+    const ms = knownTtftMs(ctx)
+    badge.style.setProperty('--hx-ttft-ms', `${ms}ms`)
+    badge.title = `Waiting for the first token — this model usually takes ${(ms / 1000).toFixed(1)}s`
+    const waitKey = waitKeyFor(ctx)
+    if (badge.dataset.waitKey !== waitKey) {
+      badge.dataset.waitKey = waitKey
+      // Restart the turn: the ring must report this wait, not carry on from the last one.
+      badge.classList.remove('hx-ttft-running')
+      void badge.offsetWidth
+      badge.classList.add('hx-ttft-running')
+    }
+    transcript.appendChild(badge)
+    if (Date.now() > ttftFreshUntil) void loadKnownTtfts().then(() => syncWaitBadge(ctx))
+  }
+
   function toolStateLabel(item) {
     if (item.status === 'preparing') return 'preparing'
     if (item.status === 'running') return 'running'
@@ -1205,6 +1327,9 @@
     if (!state.items.length) {
       transcript.innerHTML = EMPTY_MARKUP
       state.mounted = 0
+      // Nothing can be waiting when there is no log to wait at the end of: the badge a reset
+      // left behind would sit under the empty state claiming a run had not started.
+      syncWaitBadge(ctx)
       return
     }
     if (transcript.querySelector('.hx-empty')) transcript.innerHTML = ''
@@ -1230,6 +1355,7 @@
     const jump = $('hx-jump')
     if (jump) jump.style.display = atBottom(transcript) ? 'none' : ''
     scheduleMinimap()
+    syncWaitBadge(ctx)
   }
 
   // ── Outline rail ────────────────────────────────────────────────────────────────────
@@ -1673,6 +1799,8 @@
     block.text = clip(block.text + (delta || ''), MAX_TEXT)
     if (kind === 'thinking') block.lastDeltaAt = Date.now()
     patchStreamingItem(ctx)
+    // The first token is the wait ending; the badge goes on the frame it becomes false.
+    syncWaitBadge(ctx)
   }
 
   function ensureTool(id, name, ctx = active()) {
@@ -2057,6 +2185,8 @@
   function setRunning(running, ctx = active()) {
     const changed = ctx.running !== Boolean(running)
     ctx.running = Boolean(running)
+    // The gap the badge marks exists only while a run is live, so it turns with the run.
+    syncWaitBadge(ctx)
     if (ctx === active()) {
       state.running = ctx.running
       updateComposer()
@@ -2385,7 +2515,9 @@
       }
       if (console === active()) updateComposer()
       renderSessions()
-      renderCompactionPanel(console)
+      // A background console's status must not repaint the rail: the panel is one element, and
+      // a running inactive tab would otherwise disable the button while the active tab is idle.
+      if (console === active()) renderCompactionPanel(console)
     } catch (err) {
       setHint(`Could not reach the agent: ${err?.message || err}`, 'error', console)
       setPhase('dead', console)
@@ -2521,8 +2653,9 @@
     // on the frame the event stream delivers, and this panel is the only thing on screen that
     // can explain why a turn is taking longer than it should. Without it the "Pi is
     // compacting" note stayed hidden until the next refresh, and a compaction nobody asked
-    // for looked exactly like a hang.
-    renderCompactionPanel(ctx)
+    // for looked exactly like a hang. Only the active console owns this panel; a background
+    // conversation keeps its status on its own ctx and paints when it comes on screen.
+    if (ctx === active()) renderCompactionPanel(ctx)
     // The status frame carries the session's rehydrated totals, so a page opened after the
     // tokens were spent still shows them without waiting for a fresh turn.
     if (status.usage) {
@@ -2977,7 +3110,9 @@
   function renderCompactionPanel(console = active()) {
     const panel = $('hx-compaction-panel')
     if (!panel) return
-    const status = console?.status || state.status || {}
+    // `state.status` is the active console's, so it is a fallback only when this *is* that
+    // console. An inactive one must not borrow another conversation's availability.
+    const status = console?.status || (console === active() ? state.status : null) || {}
     const auto = status.autoCompactionEnabled
     const toggle = panel.querySelector('[data-compaction-toggle]')
     if (toggle) {

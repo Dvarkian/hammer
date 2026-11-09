@@ -2724,3 +2724,76 @@ body.hx-details-collapsed .hx-side-details {
     background: color-mix(in srgb, var(--accent) 18%, transparent);
   }
 }
+/* ── Waiting for the first token ───────────────────────────────────────────────────── */
+
+/*
+ * Between a tool's result and the next message there is no row to stream into: the model has
+ * the result and is composing. The log used to just stop there, which reads exactly like a
+ * hang. This is the mark for that gap, hung under the end of the spine.
+ *
+ * It runs on the model's own time to first token (--hx-ttft-ms, set from the router's
+ * measurement): one turn of the arc is one expected wait, so a second turn is the signal that
+ * this wait is longer than the model usually needs. It sits in the spine's own column — the
+ * 24px box centred on the 2px rail, exactly as the station icons are — so the line appears to
+ * end in the ring rather than beside it.
+ */
+.hx-ttft {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  /* Room under the last row, so the ring reads as the log's own tail and not a row's chrome. */
+  padding: 2px 0 10px;
+}
+
+.hx-ttft-ring {
+  position: relative;
+  display: block;
+  /* Centred on the spine: the rail is x 0-2 of the row, so a 24px box centred on it starts at
+     -11px. The same offset the tool station's icon uses to sit on this line. */
+  margin-left: -11px;
+  width: 24px;
+  height: 24px;
+}
+
+.hx-ttft-ring svg {
+  width: 24px;
+  height: 24px;
+  display: block;
+  overflow: visible;
+}
+
+/* The track is the whole wait; the arc is the part of it the model has taken so far. */
+.hx-ttft-track {
+  fill: none;
+  stroke: color-mix(in srgb, var(--accent) 22%, transparent);
+  stroke-width: 2;
+}
+
+.hx-ttft-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  /* r = 9, so the circumference is 56.5; keeping 14.1 of it draws a quarter-turn arc. */
+  stroke-dasharray: 56.5;
+  stroke-dashoffset: 42.4;
+  transform-origin: 12px 12px;
+}
+
+.hx-ttft-running .hx-ttft-arc {
+  animation: hx-ttft-run var(--hx-ttft-ms, 2000ms) linear infinite;
+}
+
+@keyframes hx-ttft-run {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A ring that never stops is motion for its own sake: the static arc still says "waiting", and
+   the title says how long this model usually takes. */
+@media (prefers-reduced-motion: reduce) {
+  .hx-ttft-running .hx-ttft-arc {
+    animation: none;
+  }
+}
