@@ -546,10 +546,20 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 /* Prose starts a step left of the tool line: the prompt and the answer read as the words of
-   the log, the tool rows as its mechanics. */
+   the log, the tool rows as its mechanics. It sits two characters closer to the pane edge
+   than the spine does — the tool line keeps the transcript's gutter, the words use it — and
+   the row grows by the same 14px so its right edge stays where the transcript put it. */
 .hx-row-user,
 .hx-row-assistant {
   padding-left: 0;
+  margin-left: -14px;
+  width: calc(100% + 14px);
+}
+
+/* Thinking is a station on the spine, not prose, so it does not follow the words into the
+   gutter: the counter-shift keeps its mark and rail on the tool line. */
+.hx-row-assistant .hx-thinking {
+  margin-left: 14px;
 }
 
 /*
@@ -582,14 +592,15 @@ body.hx-details-collapsed .hx-side-details {
   padding-left: 12px;
 }
 
-/* The vertical spine line runs ONLY below the 24px tool icon header (from top: 24px down),
-   so it never cuts straight through the icon graphics. The icon's line art itself enters
-   at (12,0) and exits at (12,24), serving as the spine for the top 24px. */
+/* The vertical spine line runs ONLY below the icon (from top: 22px down), so it never cuts
+   straight through the drawing. The glyph enters at (12,0) and exits at (12,24) of a box
+   pinned to the row's top edge; the line resumes at 22px, two pixels inside the glyph's foot,
+   so the two overlap rather than meet at a seam. */
 .hx-row-tool::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 24px;
+  top: 22px;
   bottom: 0;
   width: 2px;
   background: var(--accent);
@@ -936,7 +947,11 @@ body.hx-details-collapsed .hx-side-details {
      hangs half outside the row while the spine passes through only its last 2px, which is
      the cross-eyed look this rule exists to avoid. */
   left: -23px;
-  top: 0;
+  /* The row pads its content by 2px at the top (`.hx-row`'s `padding: 2px 0`) and the details
+     starts at that content edge, so a glyph pinned to the details' top began 2px BELOW the
+     row's own edge — a gap between the previous station's line and this drawing. The -2px
+     puts the 24px box back on the row's top edge, exactly where the line above it ends. */
+  top: -2px;
   bottom: auto;
   /* The node is a fixed 24px square, pinned to the row's top edge and NOT stretched by the
      row's height: an open tool row grows to a page of output, and a node sized to the whole
@@ -1085,7 +1100,7 @@ body.hx-details-collapsed .hx-side-details {
   content: "";
   position: absolute;
   left: 0;
-  top: 24px;
+  top: 22px;
   bottom: 0;
   width: 2px;
   background: var(--accent);
@@ -1117,7 +1132,9 @@ body.hx-details-collapsed .hx-side-details {
 .hx-compaction-icon {
   position: absolute;
   left: -23px;
-  top: 0;
+  /* As on the tool glyph: the row's 2px top padding sits between the row's edge and this
+     node's containing block, so -2px pins the box to the edge the spine above it reaches. */
+  top: -2px;
   height: 24px;
   width: 24px;
   display: block;
@@ -1170,7 +1187,7 @@ body.hx-details-collapsed .hx-side-details {
   content: "";
   position: absolute;
   left: 0;
-  top: 24px;
+  top: 22px;
   bottom: 0;
   width: 2px;
   background: var(--accent);
@@ -1196,7 +1213,8 @@ body.hx-details-collapsed .hx-side-details {
 .hx-model-icon {
   position: absolute;
   left: -23px;
-  top: 0;
+  /* Pinned to the row's edge, not to the padded content edge: see .hx-tool-icon. */
+  top: -2px;
   height: 24px;
   width: 24px;
   display: block;
@@ -1213,6 +1231,40 @@ body.hx-details-collapsed .hx-side-details {
   stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/*
+ * The spine is a 2px line and the line art is stroked at 1.6, so where the two join at a row's
+ * edge the line's outer 0.2px on each side was left showing as a notch, and the round cap made
+ * the join look pinched. Every station wears a 2px collar at both ends of its 24px box, in the
+ * drawing's own colour: the joint is then exactly the spine's width, and the thickness tapers
+ * into the glyph instead of stepping.
+ */
+.hx-tool-icon::before,
+.hx-tool-icon::after,
+.hx-compaction-icon::before,
+.hx-compaction-icon::after,
+.hx-model-icon::before,
+.hx-model-icon::after {
+  content: "";
+  position: absolute;
+  /* Centred on x = 12 of the 24px box, which is the centre of the 2px spine. */
+  left: 11px;
+  width: 2px;
+  height: 2px;
+  background: currentColor;
+}
+
+.hx-tool-icon::before,
+.hx-compaction-icon::before,
+.hx-model-icon::before {
+  top: 0;
+}
+
+.hx-tool-icon::after,
+.hx-compaction-icon::after,
+.hx-model-icon::after {
+  bottom: 0;
 }
 
 .hx-model-name {

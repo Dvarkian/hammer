@@ -84,7 +84,7 @@ test('a compaction is a station on the spine, not a card beside it', () => {
 
   // The row carries the same spine and the same 24px station box the tool rows use, so the
   // mark sits on the line instead of beside it.
-  assert.match(harnessCss, /\.hx-row-compaction::before \{[^}]*top: 24px;/)
+  assert.match(harnessCss, /\.hx-row-compaction::before \{[^}]*top: 22px;/)
   assert.match(harnessCss, /\.hx-row-compaction::before \{[^}]*width: 2px;/)
   assert.match(harnessCss, /\.hx-compaction-icon \{[^}]*left: -23px;/)
   assert.match(harnessCss, /\.hx-compaction-icon \{[^}]*height: 24px;/)
@@ -150,7 +150,7 @@ test('a model change is a station on the spine that names both ends', () => {
 
   // The row carries the same spine and 24px station box as a tool row, so the mark is on the
   // line rather than beside it.
-  assert.match(harnessCss, /\.hx-row-model::before \{[^}]*top: 24px;/)
+  assert.match(harnessCss, /\.hx-row-model::before \{[^}]*top: 22px;/)
   assert.match(harnessCss, /\.hx-row-model::before \{[^}]*width: 2px;/)
   assert.match(harnessCss, /\.hx-model-icon \{[^}]*left: -23px;/)
   assert.match(harnessCss, /\.hx-model-icon \{[^}]*height: 24px;/)

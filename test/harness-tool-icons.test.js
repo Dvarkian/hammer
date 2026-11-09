@@ -190,7 +190,9 @@ test('the node is pinned to the row top, and not stretched by an open row', () =
   // The two revisions that failed here: `height: 100%` scaled the viewBox up with an open
   // tool row's output, so the drawing's ends drifted past the row edges and the joins —
   // the only thing that makes it read as the spine — were the first casualty.
-  assert.match(badgeBlock, /top: 0;/)
+  // The row pads its content by 2px, so `top: 0` against the details put the glyph 2px below
+  // the row's own edge, leaving a gap to the line above it. -2px pins the box to the edge.
+  assert.match(badgeBlock, /top: -2px;/)
   assert.doesNotMatch(badgeBlock, /height: 100%/)
   // The SVG is a fixed 24px square, letterboxed at nothing: upscaling or shrinking it would
   // move the ends off the row edges.
@@ -198,6 +200,31 @@ test('the node is pinned to the row top, and not stretched by an open row', () =
   assert.match(svgBlock, /height: 24px;/)
   // Visible overflow so a stroke that overshoots its box is not clipped by the node.
   assert.match(svgBlock, /overflow: visible;/)
+})
+
+test("every join is the spine's own width, with no gap", () => {
+  // The row's 2px top padding sits between the row edge and the details, so a glyph pinned to
+  // the details began 2px below the edge where the previous station's line ended — a gap
+  // between two stations. The icon is pulled onto the edge, and the spine resumes 2px inside
+  // the glyph's foot, so the two overlap instead of meeting at a seam.
+  assert.match(css, /\.hx-row \{[^}]*padding: 2px 0;/)
+  assert.match(badgeBlock, /top: -2px;/)
+  assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}top: 22px;/)
+
+  // 1.6px of stroke against a 2px line leaves a notch at the joint, so each station wears a
+  // 2px collar at both ends of its 24px box, in the drawing's own colour.
+  assert.match(
+    css,
+    /\.hx-tool-icon::before,\s*\.hx-tool-icon::after,\s*\.hx-compaction-icon::before,[\s\S]{0,400}width: 2px;/,
+  )
+  assert.match(
+    css,
+    /\.hx-tool-icon::before,\s*\.hx-compaction-icon::before,\s*\.hx-model-icon::before \{\s*top: 0;/,
+  )
+  assert.match(
+    css,
+    /\.hx-tool-icon::after,\s*\.hx-compaction-icon::after,\s*\.hx-model-icon::after \{\s*bottom: 0;/,
+  )
 })
 
 test('the icon is centred on the spine, measured from the row', () => {
@@ -229,7 +256,7 @@ test('the spine stops short of the icon instead of cutting through it', () => {
   // spine through its own 24px and the line resumes under it.
   assert.match(css, /\.hx-row-tool \{[^}]*position: relative;/)
   assert.doesNotMatch(css, /\.hx-row-tool \{[^}]*border-left:/)
-  assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}top: 24px;/)
+  assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}top: 22px;/)
   assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}bottom: 0;/)
   assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}width: 2px;/)
   assert.match(css, /\.hx-row-tool::before \{[\s\S]{0,200}background: var\(--accent\);/)
