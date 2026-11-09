@@ -1,7 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { extractQuotaWindows, parseQuotaMetric, parseQuotaPeriod } from '../lib/quota-windows.js'
+import {
+  extractQuotaWindows,
+  parseQuotaMetric,
+  parseQuotaPeriod,
+  resetAtFromErrorText,
+} from '../lib/quota-windows.js'
 
 const NOW = 1_800_000_000_000
 
@@ -199,4 +204,26 @@ test('a rate-limit message that names no metric is not guessed into a quota', ()
     ),
     [],
   )
+})
+
+test("Antigravity's 429 names its window in hours, not as a retry", () => {
+  // The real body: "Individual quota reached. Please upgrade your subscription to increase
+  // your limits. Resets in 161h41m31s." There is no "retry" in it, and the delay is in the
+  // compact h/m/s form, so the old parser found no window and the row kept a bare clock.
+  const now = 1_700_000_000_000
+  const body = JSON.stringify({
+    error: {
+      code: 429,
+      message:
+        'Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 161h41m31s.',
+      status: 'RESOURCE_EXHAUSTED',
+    },
+  })
+  assert.equal(resetAtFromErrorText(body, now), now + ((161 * 60 + 41) * 60 + 31) * 1000)
+  // The wordings that already worked still do.
+  assert.equal(resetAtFromErrorText('Retry after 84066 seconds.', now), now + 84_066_000)
+  assert.equal(resetAtFromErrorText('Please retry in 22h2m4.963847456s.', now), now + 79_324_964)
+  // Google also states days: "Resets in 6d 22h" is 166 hours, not 22.
+  assert.equal(resetAtFromErrorText('Resets in 6d 22h.', now), now + 166 * 3_600_000)
+  assert.equal(resetAtFromErrorText('Rate limit exceeded', now), null)
 })

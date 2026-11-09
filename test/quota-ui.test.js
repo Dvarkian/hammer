@@ -381,3 +381,12 @@ test('an elapsed reset drops the window instead of counting down to "now"', () =
   assert.match(dashboard, /if \(minutes > 0\) return `\$\{minutes\}m`/)
   assert.match(dashboard, /return `\$\{total\}s`/)
 })
+
+test("a clock's countdown also follows a reset the body states in words", () => {
+  // A row kept a bare clock unless the response said "retry in Ns" or carried an
+  // X-RateLimit-Reset header. Antigravity's 429 says "Resets in 161h41m31s": the same
+  // promise in different words, which the parser now reads.
+  assert.ok(dashboard.includes('(?:retry|resets?|renews?)'))
+  assert.ok(dashboard.includes('durationFromText(statedDelay[1])'))
+  assert.ok(dashboard.includes("name.startsWith('ms') || name.startsWith('millisecond')"))
+})

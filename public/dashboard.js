@@ -6431,11 +6431,15 @@
         const resetAt = Math.max(...stated);
         return { until: resetAt, resetAt };
       }
-      // Older persisted responses predate rateLimitResetAt but still carry the
-      // provider's own retry delay, which names the window just as well.
-      const retry = errorText.match(/(?:please\s+)?retry\s+in\s+(\d+(?:\.\d+)?)\s*s/i);
-      if (retry) {
-        const until = atMs + Number(retry[1]) * 1000;
+      // Older persisted responses predate rateLimitResetAt but still carry the provider's
+      // own retry delay, which names the window just as well. The delay comes in several
+      // shapes and they all make the same promise: "retry in 22h2m4.9s", "retry after 58
+      // seconds", and Antigravity's "Resets in 161h41m31s" — which states the window without
+      // ever saying "retry", and so used to leave a rate-limited row with a bare clock.
+      const statedDelay = /(?:retry|resets?|renews?)\s+(?:in|after)\s+([0-9][0-9a-z.\s]*)/i.exec(errorText);
+      const delay = statedDelay ? durationFromText(statedDelay[1]) : null;
+      if (delay != null) {
+        const until = atMs + delay;
         return { until, resetAt: until };
       }
       return { until: atMs + RATE_LIMIT_UNSTATED_GRACE_MS, resetAt: null };
@@ -6518,6 +6522,31 @@
         return cleaned ? `${cleaned}${q.quotaValue ? ` (${q.quotaValue})` : ''}` : 'quota exceeded';
       }
       return 'quota exceeded';
+    }
+
+    // A compact duration ("22h2m4.9s", "58 seconds", "161h41m31s") in milliseconds. The
+    // providers all state a wait this way; only the wording in front of it changes.
+    function durationFromText(text) {
+      const unit = /(\d+(?:\.\d+)?)\s*(milliseconds?|ms|days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)(?![a-z])/gi;
+      let total = 0;
+      let matched = false;
+      for (const match of String(text || '').matchAll(unit)) {
+        const amount = Number(match[1]);
+        if (!Number.isFinite(amount) || amount <= 0) continue;
+        const name = match[2].toLowerCase();
+        const factor = name.startsWith('ms') || name.startsWith('millisecond')
+          ? 1
+          : name.startsWith('d')
+            ? 86_400_000
+            : name.startsWith('h')
+            ? 3_600_000
+            : name.startsWith('m')
+              ? 60_000
+              : 1_000;
+        total += amount * factor;
+        matched = true;
+      }
+      return matched ? Math.round(total) : null;
     }
 
     // mm:ss (or h mm) countdown for a remaining ms duration.
