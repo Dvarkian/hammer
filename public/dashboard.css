@@ -2679,3 +2679,31 @@
       flex: 0 0 auto;
       cursor: default;
     }
+
+    /* What each colour in the rail plot means. The big plots borrow their key from the models
+       table; this one sits alone in the inspector, so it carries its own. */
+    .usage-session-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 10px;
+      padding: 0 2px;
+      font-size: 0.68rem;
+      color: var(--text-muted);
+    }
+
+    .usage-session-legend[hidden] {
+      display: none;
+    }
+
+    .usage-session-legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .usage-session-legend-swatch {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+    }

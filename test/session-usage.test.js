@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import express from 'express'
@@ -261,4 +261,30 @@ test('the usage route trims to a point in time, and caps the point count', async
   } finally {
     dropSession(file)
   }
+})
+test('the rail plot colours each slice by the model that answered it', () => {
+  // Every message in a session carries the same hammer::best alias, so one series for the whole
+  // conversation painted a session that switched models in a single colour. The file also names
+  // the model that answered each turn, and that is what the plot splits and colours by.
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+  assert.match(dashboard, /const key = `session::\$\{model\}`/)
+  assert.match(dashboard, /String\(p\?\.responseModel \|\| ''\)\.trim\(\)/)
+  assert.match(dashboard, /usageSessionByKey\.set\(key, series\)/)
+  assert.doesNotMatch(dashboard, /usageSessionByKey\.set\('hammer::best', shaped\)/)
+  // A session key has no provider row, so its hue comes from the model and its mark from the
+  // model's name.
+  assert.match(dashboard, /function usageKeyHue\(key\)/)
+  assert.match(dashboard, /if \(providerKey === 'session'\) return usageProviderHue\(modelId/)
+  assert.match(dashboard, /function sessionModelRow\(name\)/)
+  assert.match(
+    dashboard,
+    /return modelAccent\(sessionModelRow\(modelId\) \|\| \{ providerKey: 'session', modelId \}\)/,
+  )
+  // The key to the colours only appears when there is more than one model to tell apart.
+  assert.match(dashboard, /function renderSessionUsageLegend\(\)/)
+  assert.match(dashboard, /if \(keys\.length <= 1\) \{/)
+  assert.match(html, /id="usage-session-legend"/)
+  assert.match(css, /\.usage-session-legend-swatch \{/)
 })

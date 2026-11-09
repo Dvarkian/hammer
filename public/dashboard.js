@@ -676,6 +676,7 @@
         accentRepaintQueued = false
         requestScatterRedraw()
         drawUsagePlots()
+        renderSessionUsageLegend()
       }, 150)
     }
 
@@ -738,6 +739,11 @@
       const split = id.indexOf('::')
       const providerKey = split < 0 ? '' : id.slice(0, split)
       const modelId = split < 0 ? id : id.slice(split + 2)
+      if (providerKey === 'session') {
+        // No provider row behind it: match the recorded name, and a brand the router has never
+        // catalogued still gets its own mark from its family.
+        return modelAccent(sessionModelRow(modelId) || { providerKey: 'session', modelId })
+      }
       const m = allModels.find((row) => row && row.providerKey === providerKey && String(row.modelId) === modelId)
       return m ? modelAccent(m) : null
     };
@@ -1583,11 +1589,14 @@
           stroke: verdictColor, 'stroke-width': 1,
         } : {
           // A point, not an outline: a dashed ring has no centre, so an exhausted row read as a
-          // hole in the plot rather than as a model that was measured. The opacity is higher
-          // than a live dot's halo would suggest because the mark is this small — at a pixel and
-          // a half across, anything faint enough to match a 9px dot's weight would simply vanish.
+          // hole in the plot rather than as a model that was measured. It wears the model's
+          // mark colour like every live dot; the small radius, not a grey fill, is what says
+          // this row cannot serve. Until the mark's colour has been read, the verdict tint
+          // stands in. The opacity is higher than a live dot's halo would suggest because the
+          // mark is this small — at a pixel and a half across, anything faint enough to match a
+          // 9px dot's weight would simply vanish.
           cx, cy, r: inactiveR,
-          fill: verdictColor, 'fill-opacity': 0.75,
+          fill: accent || verdictColor, 'fill-opacity': 0.75,
         });
         const title = svgEl('title', {});
         const offAxis = r.speed > axisLimit;
@@ -2533,7 +2542,7 @@
         // The slice's tokens per second of its own width — the rate whose area over
         // `seconds` is exactly the tokens that landed in the slice.
         const rate = b.tokens / seconds;
-        const hue = usageProviderHue((b.key || '').split('::')[0]);
+        const hue = usageKeyHue(b.key);
         const accent = modelAccentForKey(b.key || '');
         const x = pad.left + i * binW + (binW - barW) / 2;
         const y = yOf(rate);
@@ -2633,23 +2642,108 @@
       applySessionUsagePoints(points);
     }
 
+    /**
+     * The router's row for a model name a session recorded, or null when it has none.
+     *
+     * A session file records the id the upstream answered with ("claude-sonnet-4-6",
+     * "models/gemini-3.6-flash"), which is not always the catalog id a row is keyed by, so the
+     * comparison is on every name a row answers to, ignoring the "models/" prefix relays add.
+     */
+    function sessionModelRow(name) {
+      const wanted = String(name || '')
+        .toLowerCase()
+        .replace(/^models\//, '')
+      if (!wanted) return null
+      const matches = (value) => {
+        const id = String(value || '')
+          .toLowerCase()
+          .replace(/^models\//, '')
+        return id && (id === wanted || id.endsWith('/' + wanted))
+      }
+      return (
+        allModels.find(
+          (row) =>
+            row && [row.modelId, row.realModelId, row.personaModelId, row.label].some(matches),
+        ) || null
+      )
+    }
+
+    /** The name a legend should print for a series: the model, without the relay's "models/". */
+    function sessionModelLabel(name) {
+      return String(name || 'unknown model').replace(/^models\//, '')
+    }
+
     /** Replaces the plot's data with one conversation's samples, then asks for a repaint. */
     function applySessionUsagePoints(points) {
-      // One row is enough and is the honest one: every message in a session was served by
-      // the same `hammer::best` alias, so a per-model key would be a claim about which
-      // upstream answered — which the file does not record. The provider hue still
-      // distinguishes the columns the way the router's own view does.
-      usageSessionByKey.clear();
-      const shaped = (Array.isArray(points) ? points : [])
-        .map((p) => ({
-          t: Number(p?.t),
-          ttft: null,
-          tps: null,
-          tokens: Number(p?.tokens) || 0,
-        }))
-        .filter((p) => Number.isFinite(p.t));
-      usageSessionByKey.set('hammer::best', shaped);
-      requestSessionPlotRedraw();
+      // One series per answering model, not one row for the whole conversation. Every message
+      // carries the `hammer::best` alias as its key (the routed row cannot be reconstructed
+      // after the fact), but each one also records the model that actually answered it.
+      // Splitting by that name is what lets the rail show where the conversation changed
+      // models — the same picture the transcript's model stations tell.
+      usageSessionByKey.clear()
+      const byModel = new Map()
+      for (const p of Array.isArray(points) ? points : []) {
+        const t = Number(p?.t)
+        if (!Number.isFinite(t)) continue
+        const model = String(p?.responseModel || '').trim() || 'unknown model'
+        const key = `session::${model}`
+        const series = byModel.get(key) || []
+        series.push({ t, ttft: null, tps: null, tokens: Number(p?.tokens) || 0 })
+        byModel.set(key, series)
+      }
+      for (const [key, series] of byModel) {
+        series.sort((a, b) => a.t - b.t)
+        usageSessionByKey.set(key, series)
+      }
+      renderSessionUsageLegend()
+      requestSessionPlotRedraw()
+    }
+
+    /**
+     * The rail plot's key: one swatch per model the conversation used.
+     *
+     * A single-model session needs no key — its plot is one colour and the title already says
+     * what it is — so the legend appears only when there is something to tell apart.
+     */
+    function renderSessionUsageLegend() {
+      const el = document.getElementById('usage-session-legend')
+      if (!el) return
+      const keys = [...usageSessionByKey.keys()]
+      if (keys.length <= 1) {
+        el.textContent = ''
+        el.hidden = true
+        return
+      }
+      el.hidden = false
+      el.innerHTML = keys
+        .map((key) => {
+          const colour = modelAccentForKey(key) || `hsl(${usageKeyHue(key)} 65% 55%)`
+          const name = sessionModelLabel(key.slice('session::'.length))
+          return (
+            '<span class="usage-session-legend-item">' +
+            `<span class="usage-session-legend-swatch" style="background:${colour}"></span>` +
+            `${escapeHtml(name)}</span>`
+          )
+        })
+        .join('')
+    }
+
+    /**
+     * The fallback hue for one series, by the shape of its key.
+     *
+     * A router row's key is `provider::model`, and its provider is what the table already
+     * colours by. A session series is different: it names the answering model and no provider
+     * row, so hashing the provider part would paint every model in the conversation the same
+     * colour — exactly the thing this plot has to show.
+     */
+    function usageKeyHue(key) {
+      const id = String(key || '')
+      const split = id.indexOf('::')
+      if (split < 0) return usageProviderHue(id)
+      const providerKey = id.slice(0, split)
+      const modelId = id.slice(split + 2)
+      if (providerKey === 'session') return usageProviderHue(modelId || 'unknown model')
+      return usageProviderHue(providerKey)
     }
 
     /** The rail is usually hidden; redraw it when it next has a real box. */
@@ -5664,13 +5758,14 @@
       const owner = (opts && opts.owner) || ((opts && opts.rowKey) ? allModels.find(mm => getModelRowKey(mm) === opts.rowKey) : null);
       const ownerVerdict = owner ? rowVerdict(owner) : null;
       const ownerUp = ownerVerdict == null ? null : ownerVerdict === 'up';
-      // Live fallback errors must be visible in the Response column the moment they happen:
-      // the router writes them as this row's own test-like failure (see recordRoutedModelFailure)
-      // and the Response cell shows that error plus the "live request \u2014 fallback" marker below,
-      // even when the row's Status cell is already showing a rate-limit clock for the same window.
-      const clocked = owner ? isRateLimitedRow(owner) && testRateLimitWindow(owner) != null : false;
-      void clocked; // kept for the Status-cell clock logic above; errText no longer gates on it so fallbacks stay visible during the window
-      const errText = !expired && lastResponse.error ? String(lastResponse.error) : '';
+      // The Status cell already carries the refusal when it shows a clock with a countdown:
+      // repeating the provider's 429 body under the Test button adds nothing, and the countdown
+      // is the actionable form of the same statement. A clock without a countdown still leaves
+      // the body here, because then the error is the only thing that says what is wrong.
+      const clockedWithCountdown =
+        owner != null && isRateLimitedRow(owner) && getRateLimitResetAt(owner) != null;
+      const errText =
+        !expired && !clockedWithCountdown && lastResponse.error ? String(lastResponse.error) : '';
       const okText = !errText && !expired && lastResponse.ok !== false && lastResponse.text != null ? String(lastResponse.text) : '';
       const text = stripThoughtTags(errText || okText);
       // A result that outlives the state of the row it came from is history, not a live
