@@ -215,16 +215,29 @@ test("every join is the spine's own width, with no gap", () => {
   // 2px collar at both ends of its 24px box, in the drawing's own colour.
   assert.match(
     css,
-    /\.hx-tool-icon::before,\s*\.hx-tool-icon::after,\s*\.hx-compaction-icon::before,[\s\S]{0,400}width: 2px;/,
+    /\.hx-tool-icon::before,\s*\.hx-tool-icon::after,\s*\.hx-thinking-icon::before,\s*\.hx-thinking-icon::after,\s*\.hx-compaction-icon::before,[\s\S]{0,400}width: 2px;/,
   )
   assert.match(
     css,
-    /\.hx-tool-icon::before,\s*\.hx-compaction-icon::before,\s*\.hx-model-icon::before \{\s*top: 0;/,
+    /\.hx-tool-icon::before,\s*\.hx-thinking-icon::before,\s*\.hx-compaction-icon::before,\s*\.hx-model-icon::before \{\s*top: 0;/,
   )
   assert.match(
     css,
-    /\.hx-tool-icon::after,\s*\.hx-compaction-icon::after,\s*\.hx-model-icon::after \{\s*bottom: 0;/,
+    /\.hx-tool-icon::after,\s*\.hx-thinking-icon::after,\s*\.hx-compaction-icon::after,\s*\.hx-model-icon::after \{\s*bottom: 0;/,
   )
+
+  // A thought is a station too, and its mark had the gap this test is about: 6px of margin
+  // held the icon off the line while the spine stopped dead above and below it. It now follows
+  // the tool glyph's geometry — no margin, the box on the row edge, the spine resuming at the
+  // glyph's foot 22px down.
+  const thinkingBlock = css.match(/^\.hx-thinking \{[^}]*\}/m)
+  assert.ok(thinkingBlock, '.hx-thinking still has a base rule to hold the station geometry')
+  assert.match(thinkingBlock[0], /margin: 0;/)
+  assert.match(css.match(/^\.hx-thinking-icon \{[^}]*\}/m)[0], /top: -2px;/)
+  assert.match(css, /^\.hx-thinking::before \{[\s\S]{0,240}top: 22px;/m)
+  // ... and runs through the row's 2px bottom padding, to the edge the next station starts
+  // from, which is where a tool row's rail ends.
+  assert.match(css, /^\.hx-thinking::before \{[\s\S]{0,240}bottom: -2px;/m)
 })
 
 test('the icon is centred on the spine, measured from the row', () => {

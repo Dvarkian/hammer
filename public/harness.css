@@ -669,19 +669,34 @@ body.hx-details-collapsed .hx-side-details {
    down the page. */
 .hx-thinking {
   position: relative;
-  margin: 6px 0;
+  /* No vertical margin: a station is part of the line, not a paragraph beside it. The 6px the
+     thought used to carry held its mark off the rail, with the maroon stopping dead above and
+     below it while the tool rows next door ran unbroken. The row's own 2px padding is the whole
+     gap now, which is exactly what separates two tool rows. */
+  margin: 0;
 }
 
 /* The spine resumes under the 24px icon, exactly as it does for a tool row: the icon's own line
-   art carries it through the mark, so the glyph is a growth of the rail rather than a badge. */
+   art carries it through the mark, so the glyph is a growth of the rail rather than a badge. It
+   starts 22px down because the icon is pinned 2px above this block (see .hx-thinking-icon), so
+   the two meet at the glyph's foot rather than leaving a seam. The -2px at the other end carries
+   the line through this row's 2px bottom padding to the edge the next station begins at: a tool
+   row's rail reaches its own bottom edge because the row IS the station, while a thought lives
+   inside a prose row and needs the nudge to reach the same edge. */
 .hx-thinking::before {
   content: "";
   position: absolute;
   left: 0;
-  top: 24px;
-  bottom: 0;
+  top: 22px;
+  bottom: -2px;
   width: 2px;
   background: var(--accent);
+}
+
+/* The prose that follows a thought keeps its own air. The station no longer holds the space
+   with a margin (that is what broke the spine), so the answer after it asks for it instead. */
+.hx-thinking + div {
+  margin-top: 8px;
 }
 
 .hx-thinking-head {
@@ -710,11 +725,13 @@ body.hx-details-collapsed .hx-side-details {
 
 /* The tool icon's geometry, one gutter younger: an assistant row has no 12px indent of its own,
    so a 24px node centred on the 2px rail takes 1 - 0 - 12 = -11px rather than -23px. It is
-   pinned to the top of the block and never stretched by an opened thought. */
+   pinned to the top of the block and never stretched by an opened thought. The -2px is the
+   tool glyph's own offset: the row pads its content by 2px, and a mark pinned to this block's
+   top edge would start 2px below the edge the previous station's line reaches. */
 .hx-thinking-icon {
   position: absolute;
   left: -11px;
-  top: 0;
+  top: -2px;
   height: 24px;
   width: 24px;
   display: block;
@@ -1320,6 +1337,8 @@ body.hx-details-collapsed .hx-side-details {
  */
 .hx-tool-icon::before,
 .hx-tool-icon::after,
+.hx-thinking-icon::before,
+.hx-thinking-icon::after,
 .hx-compaction-icon::before,
 .hx-compaction-icon::after,
 .hx-model-icon::before,
@@ -1334,12 +1353,14 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 .hx-tool-icon::before,
+.hx-thinking-icon::before,
 .hx-compaction-icon::before,
 .hx-model-icon::before {
   top: 0;
 }
 
 .hx-tool-icon::after,
+.hx-thinking-icon::after,
 .hx-compaction-icon::after,
 .hx-model-icon::after {
   bottom: 0;
