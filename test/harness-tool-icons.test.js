@@ -336,3 +336,16 @@ test('the old filled-box glyphs are gone', () => {
   }
   assert.doesNotMatch(css, /\.hx-tool-icon \{[^}]*background: var\(--chat-bg\)/)
 })
+test('a failed tool call folds away like a finished one', () => {
+  // A failure used to keep its row open so the error was visible, which meant one broken command
+  // pushed the rest of the turn off screen. \"failed\" is already in the summary, in the error
+  // colour, and the output is one click away — the same deal a successful call gets.
+  const source = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.match(
+    source,
+    /const open =\s*body && \(item\.open \|\| item\.status === 'running' \|\| item\.status === 'preparing'\)/,
+  )
+  assert.doesNotMatch(source, /item\.status !== 'ok' && !isEdit/)
+  // The failure still reads as one: the state label and its colour are untouched.
+  assert.match(source, /if \(item\.status === 'error'\) return 'failed'/)
+})

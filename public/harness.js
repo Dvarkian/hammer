@@ -1152,16 +1152,20 @@
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
     const meta = [toolStateLabel(item), took].filter(Boolean).join(' · ')
-    // Anything but a finished call shows its output: a running command is what you want to
-    // read, and a failed one is what you need to read. An edit shows its diff instead — the
-    // change is the output — unless it failed, where the error is what needs reading.
+    // An edit whose call finished shows its diff instead of its result sentence — the change is
+    // the output. A failed edit keeps the error text, which is the thing worth reading.
     const isEdit = /^edit$/i.test(String(item.name || ''))
     const diff =
       isEdit && item.status !== 'error' && item.status !== 'interrupted' ? diffMarkup(item) : ''
     const body = diff || (output ? `<pre class="hx-tool-out">${escapeHtml(output)}</pre>` : '')
-    // An edit is collapsed until the reader asks for it, even while it runs: the change is
-    // there to inspect, not something to push the rest of the transcript aside on arrival.
-    const open = body && (item.open || (item.status !== 'ok' && !isEdit)) ? ' open' : ''
+    // A finished call folds away, whatever its verdict: failure is a word in the summary ("failed",
+    // in the error colour) and its output is one click away, exactly like a call that succeeded.
+    // Keeping every failure open meant one broken command pushed the rest of the turn off screen,
+    // which is the opposite of what a reader scanning a log needs. Only a call still in flight
+    // stays open, because that output is arriving as you watch; a row the reader opened by hand
+    // (item.open) is theirs and stays as they left it.
+    const open =
+      body && (item.open || item.status === 'running' || item.status === 'preparing') ? ' open' : ''
     return `<details class="hx-tool ${item.status}${body ? '' : ' hx-tool-empty'}"${open}>
           <summary class="hx-tool-head">
             ${toolIcon(item.name || 'tool')}

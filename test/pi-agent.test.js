@@ -568,7 +568,9 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // own toggle (item.open) expands it.
   assert.match(
     harness,
-    /const open = body && \(item\.open \|\| \(item\.status !== 'ok' && !isEdit\)\)/,
+    // A finished call folds away whatever its verdict; only one still in flight stays open,
+    // and a row the reader expanded by hand is theirs. Failures used to force theirs open.
+    /const open =\s*body && \(item\.open \|\| item\.status === 'running' \|\| item\.status === 'preparing'\)/,
   )
 
   // A bash call is shown as RUN in the transcript; the tool's own name stays in the icon table.
@@ -1903,6 +1905,25 @@ test('the compaction panel is repainted by the status frames the page actually r
     frame[0],
     /renderCompactionPanel\(ctx\)/,
     'the panel is repainted from a status frame, not only from a poll',
+  )
+})
+
+test('the compaction panel belongs to the conversation on screen', () => {
+  // The panel is one element shared by every console. A background conversation's status frame
+  // used to repaint it, so a running inactive tab could disable the button while the visible
+  // conversation was idle — the click went nowhere until that tab was switched to. Switching
+  // tabs now repaints the panel for the tab that arrived, and only the active tab's frames may
+  // paint it afterwards.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const activate = harness.match(/function activate\(console\) \{[\s\S]*?\n {2}\}\n/)
+  assert.ok(activate, 'activate exists, so the assertion below tests the real function')
+  assert.match(activate[0], /renderCompactionPanel\(console\)/)
+  assert.match(harness, /if \(ctx === active\(\)\) renderCompactionPanel\(ctx\)/)
+  assert.match(harness, /if \(console === active\(\)\) renderCompactionPanel\(console\)/)
+  // An inactive console with no status of its own must not fall back to the active one's.
+  assert.match(
+    harness,
+    /const status = console\?\.status \|\| \(console === active\(\) \? state\.status : null\) \|\| \{\}/,
   )
 })
 
