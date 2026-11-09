@@ -653,6 +653,15 @@
         .sort((a, b) => b.n - a.n)
       if (ranked.length === 0) return null
       const pick = ranked.find((bucket) => !bucket.grey) || (ranked.length > 1 ? ranked[1] : ranked[0])
+      // A monochrome mark's second bucket is still grey — a black glyph or a white ground — and
+      // either vanishes against the dashboard's own surface: black dots on a dark plot are no
+      // marks at all. Such a brand has no colour to lend its rows, so no accent is returned and
+      // the provider hue paints them instead of an invisible fill.
+      const channels = [pick.r, pick.g, pick.b].map((sum) => sum / pick.n / 255)
+      const linear = (c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)
+      const lum =
+        0.2126 * linear(channels[0]) + 0.7152 * linear(channels[1]) + 0.0722 * linear(channels[2])
+      if (lum < 0.12 || lum > 0.9) return null
       return '#' + [pick.r, pick.g, pick.b]
         .map((sum) => Math.round(sum / pick.n).toString(16).padStart(2, '0'))
         .join('')

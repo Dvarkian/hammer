@@ -406,6 +406,8 @@ test('plot colours come from the model mark, not the provider', () => {
     ),
   )
   assert.ok(dashboard.includes('bucket.n >= total * 0.02'))
+  // A monochrome mark has no colour to lend: black or white would vanish against the plot.
+  assert.ok(dashboard.includes('if (lum < 0.12 || lum > 0.9) return null'))
   // Every plot that used to paint a provider hue now prefers the model's own colour.
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 72% 55%)`'))
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 65% 55%)`'))
