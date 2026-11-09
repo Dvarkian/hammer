@@ -2707,3 +2707,8 @@
       height: 8px;
       border-radius: 999px;
     }
+
+    .usage-session-legend-more {
+      cursor: help;
+      opacity: 0.72;
+    }

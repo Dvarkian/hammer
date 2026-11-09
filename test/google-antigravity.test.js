@@ -381,6 +381,40 @@ test('the shim rotates accounts and fails over inside a request', async () => {
   }
 })
 
+test('an unchecked account does not lend its sibling’s quota clock to the model', async () => {
+  const shim = startAntigravityShim({
+    accountCount: async () => 2,
+    resolveCredential: async (index) => {
+      if (index === 1) throw new Error('refresh token was rejected')
+      return { accessToken: 'token-0', projectId: 'project-0' }
+    },
+    openStream: async () => {
+      const error = new Error(
+        'Antigravity stream failed (HTTP 429): Individual quota reached. Resets in 161h41m31s.',
+      )
+      ;/** @type {any} */ (error).status = 429
+      throw error
+    },
+  })
+  const url = await shim.ensure()
+  try {
+    const res = await fetch(`${url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-6', messages: [], stream: false }),
+    })
+    // Account 2 was not checked, so account 1's 429 is not a verdict that the model is
+    // exhausted. The account error is what the row should carry instead of the reset clock.
+    assert.equal(res.status, 503)
+    const body = await res.json()
+    assert.match(body.error.message, /account 2\/2 could not be checked/)
+    assert.match(body.error.message, /refresh token was rejected/)
+    assert.doesNotMatch(body.error.message, /quota reached/i)
+  } finally {
+    shim.close()
+  }
+})
+
 test('a rejected request is not replayed against every account', async () => {
   const seen = []
   const shim = startAntigravityShim({

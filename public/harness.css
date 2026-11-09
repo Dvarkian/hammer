@@ -1683,6 +1683,16 @@ body.hx-details-collapsed .hx-side-details {
   z-index: 2;
 }
 
+/* A window over a log that fits on screen says "you are looking at all of it" with a
+   full-height grab that cannot be moved — so it is not drawn at all. Written out even though
+   this class sets no `display` of its own, for the same reason .hx-queue[hidden] and
+   .hx-btn.hx-icon[hidden] are: a `[hidden]` rule touching the box's display anywhere in the
+   author layers is what makes the attribute reliable, and this is the cheap place to keep it
+   true. */
+.hx-minimap-window[hidden] {
+  display: none;
+}
+
 /* The window over the part of the log on screen: the rail then also says where you are. */
 .hx-minimap-window {
   position: absolute;
@@ -2753,10 +2763,10 @@ body.hx-details-collapsed .hx-side-details {
  * hang. This is the mark for that gap, hung under the end of the spine.
  *
  * It runs on the model's own time to first token (--hx-ttft-ms, set from the router's
- * measurement): one turn of the arc is one expected wait, so a second turn is the signal that
- * this wait is longer than the model usually needs. It sits in the spine's own column — the
- * 24px box centred on the 2px rail, exactly as the station icons are — so the line appears to
- * end in the ring rather than beside it.
+ * measurement): the arc fills from 0 to 100% over one expected wait, so a full ring is the
+ * signal that this wait has outlasted what the model usually needs. It sits in the spine's own
+ * column — the 24px box centred on the 2px rail, exactly as the station icons are — so the
+ * line appears to end in the ring rather than beside it.
  */
 .hx-ttft {
   width: 100%;
@@ -2795,26 +2805,34 @@ body.hx-details-collapsed .hx-side-details {
   stroke: var(--accent);
   stroke-width: 2;
   stroke-linecap: round;
-  /* r = 9, so the circumference is 56.5; keeping 14.1 of it draws a quarter-turn arc. */
+  /* r = 9, so the circumference is 56.5. Start empty and grow the visible arc to a full ring;
+     the start is rotated to twelve o'clock so the fill reads clockwise from the top. */
   stroke-dasharray: 56.5;
-  stroke-dashoffset: 42.4;
+  stroke-dashoffset: 56.5;
+  transform: rotate(-90deg);
   transform-origin: 12px 12px;
 }
 
 .hx-ttft-running .hx-ttft-arc {
-  animation: hx-ttft-run var(--hx-ttft-ms, 2000ms) linear infinite;
+  /* One pass, not an endless spin: this is a 0-100% bar that finishes at the model's expected
+     TTFT and holds full when the wait runs longer. */
+  animation: hx-ttft-fill var(--hx-ttft-ms, 2000ms) linear forwards;
 }
 
-@keyframes hx-ttft-run {
+@keyframes hx-ttft-fill {
+  from {
+    stroke-dashoffset: 56.5;
+  }
   to {
-    transform: rotate(360deg);
+    stroke-dashoffset: 0;
   }
 }
 
-/* A ring that never stops is motion for its own sake: the static arc still says "waiting", and
-   the title says how long this model usually takes. */
+/* A moving fill is motion for its own sake under reduced motion: keep a static quarter arc,
+   and the title still says how long this model usually takes. */
 @media (prefers-reduced-motion: reduce) {
   .hx-ttft-running .hx-ttft-arc {
     animation: none;
+    stroke-dashoffset: 42.4;
   }
 }

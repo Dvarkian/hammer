@@ -316,6 +316,8 @@
     // router process happened to serve, so it is published per console (see
     // publishSessionUsage) rather than sliced out of the map above.
     const usageSessionByKey = new Map();
+    // A rail legend is a key, not the catalog: keep the newest handful and summarize the rest.
+    const SESSION_USAGE_LEGEND_LIMIT = 8;
     // Which session the plot above is currently showing. The rail's plot describes one
     // conversation (see publishSessionUsage), and it is redrawn whenever that conversation
     // changes — so the label and the data are always about the same transcript.
@@ -1112,7 +1114,11 @@
         if (usageSessionShown == null) {
           usageSessionByKey.clear();
           for (const [key, pts] of Object.entries(session)) {
-            if (Array.isArray(pts)) usageSessionByKey.set(key, pts);
+            // The server publishes a key for every model it knows, with an empty array when
+            // this session has no samples for it. Empty rows are catalog, not history: keeping
+            // them made the rail's legend list the whole catalog before the real session
+            // arrived, then collapse to the models that actually answered.
+            if (Array.isArray(pts) && pts.length > 0) usageSessionByKey.set(key, pts);
           }
         }
         usageSeriesLastFetchedAt = data?.at != null ? Number(data.at) : Date.now();
@@ -2735,24 +2741,41 @@
     function renderSessionUsageLegend() {
       const el = document.getElementById('usage-session-legend')
       if (!el) return
-      const keys = [...usageSessionByKey.keys()]
+      // A key is evidence that a model contributed samples, not just that the router knows the
+      // model. Filtering here also covers a session map populated by an older path.
+      const keys = [...usageSessionByKey.entries()]
+        .filter(([, series]) => Array.isArray(series) && series.length > 0)
+        .map(([key]) => key)
       if (keys.length <= 1) {
         el.textContent = ''
         el.hidden = true
         return
       }
+      // Keep the rail a key rather than a directory: the newest models are the ones a reader
+      // is most likely to be looking for, and an unbounded flex list turns a busy session into
+      // hundreds of lines of layout work.
+      const visible = keys.slice(-SESSION_USAGE_LEGEND_LIMIT)
+      const hidden = keys.slice(0, -SESSION_USAGE_LEGEND_LIMIT)
       el.hidden = false
-      el.innerHTML = keys
-        .map((key) => {
-          const colour = modelAccentForKey(key) || `hsl(${usageKeyHue(key)} 65% 55%)`
-          const name = sessionModelLabel(key.slice('session::'.length))
-          return (
-            '<span class="usage-session-legend-item">' +
-            `<span class="usage-session-legend-swatch" style="background:${colour}"></span>` +
-            `${escapeHtml(name)}</span>`
-          )
-        })
-        .join('')
+      el.innerHTML =
+        visible
+          .map((key) => {
+            const colour = modelAccentForKey(key) || `hsl(${usageKeyHue(key)} 65% 55%)`
+            const name = sessionModelLabel(key.slice('session::'.length))
+            return (
+              '<span class="usage-session-legend-item">' +
+              `<span class="usage-session-legend-swatch" style="background:${colour}"></span>` +
+              `${escapeHtml(name)}</span>`
+            )
+          })
+          .join('') +
+        (hidden.length
+          ? `<span class="usage-session-legend-item usage-session-legend-more" title="${escapeHtml(
+              `${hidden.length} earlier model${hidden.length === 1 ? '' : 's'}: ${hidden
+                .map((key) => sessionModelLabel(key.slice('session::'.length)))
+                .join(', ')}`,
+            )}">+${hidden.length} earlier</span>`
+          : '')
     }
 
     /**

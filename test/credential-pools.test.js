@@ -137,6 +137,14 @@ test('Google per-model quota ids are recognized as model-scoped', () => {
   )
   assert.equal(isModelScopedCredentialQuota({ quotaId: 'requests-per-day' }), false)
   assert.equal(isModelScopedCredentialQuota(null), false)
+  // Antigravity's "Individual quota reached" carries no quota id, but its allowance is
+  // scoped to the model that answered: a Claude window must not bench Gemini or GPT-OSS.
+  assert.equal(isModelScopedCredentialQuota(null, 'google-antigravity'), true)
+  assert.equal(
+    isModelScopedCredentialQuota({ quotaId: 'requests-per-day' }, 'google-antigravity'),
+    true,
+  )
+  assert.equal(isModelScopedCredentialQuota(null, 'openrouter'), false)
 })
 
 test('an exhausted pool still refuses while one credential is merely over its budget', () => {

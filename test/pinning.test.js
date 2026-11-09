@@ -403,6 +403,10 @@ test('the scatter renders a full-size dot only for a currently routable row', ()
   const points = dashboard.slice(pointsStart, pointsEnd)
   assert.match(points, /const routable = isRoutableRow\(r\)/)
   assert.match(points, /svgEl\('circle', routable \? \{/)
+  // The mini dot for an inactive row keeps the model-mark accent; size alone marks it as
+  // unavailable, rather than recolouring it to the verdict tint and losing the model identity.
+  assert.match(points, /fill: accent \|\| verdictColor, 'fill-opacity': 0\.75/)
+  assert.match(points, /const accent = modelAccent\(r\.m\)/)
   assert.doesNotMatch(points, /const up = isRowUp\(r\.m\)/)
   assert.match(dashboard, /if \(!isRoutableRow\(r\)\) p -= 400/)
 

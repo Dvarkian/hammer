@@ -126,6 +126,10 @@
       historyLoaded: false,
       /** The model `best` resolved to, as the router reported it (see renderRouting). */
       routedModel: null,
+      /** The route's identity, so a repeated status does not erase the last answer's label. */
+      routedModelKey: null,
+      /** The concrete model named by the newest assistant message, when one is known. */
+      answeredModel: null,
       createdAt: Date.now(),
     }
     state.consoles.set(id, console)
@@ -1268,6 +1272,38 @@
     return (model && (model.name || model.id)) || 'unknown model'
   }
 
+  /** Hammer's alias for the router's live pick. It is not a model and must not be shown as one. */
+  function isRouterAlias(model) {
+    const names = [modelName(model)]
+    if (model && typeof model === 'object') names.push(modelName(model.id))
+    return names.some(
+      (name) => name === 'best' || name === 'hammer::best' || name === 'hammer/best',
+    )
+  }
+
+  /**
+   * The model a message names.
+   *
+   * Pi records `best` as the request's model; the provider's `responseModel` is the one that
+   * actually answered. Live, an alias can be resolved through the router's current pick so the
+   * transcript and composer never claim a model called `best`. History passes
+   * `resolveAlias: false`: an old alias cannot be resolved after the fact, and painting today's
+   * route over it would invent an answer.
+   */
+  function messageModelName(message, ctx, { resolveAlias = true } = {}) {
+    const candidates = [message?.responseModel, message?.model].filter(Boolean)
+    const concrete = candidates.find((value) => {
+      const name = modelName(value)
+      return name && name !== 'unknown model' && !isRouterAlias(value)
+    })
+    if (concrete) return modelName(concrete)
+    if (!resolveAlias) return null
+    const routed = ctx && ctx.routedModel
+    if (!routed) return null
+    const name = modelName(routed.realModelLabel || routed.label || routed.modelId)
+    return name && name !== 'unknown model' ? name : null
+  }
+
   /**
    * The model that answered the most recent message, as the transcript itself recorded it.
    *
@@ -1675,11 +1711,12 @@
     const track = rail.clientHeight || MINIMAP_TICK
     const scrollable = transcript.scrollHeight - transcript.clientHeight
     if (scrollable <= 0) {
-      // The whole conversation fits on screen: the window is the whole rail.
-      windowEl.style.top = '0px'
-      windowEl.style.height = `${track}px`
+      // The whole conversation fits on screen: there is nowhere to pan, so the pane-window
+      // that says where you are would be a full-height grab that cannot be moved.
+      windowEl.hidden = true
       return
     }
+    windowEl.hidden = false
     const scale = (track - MINIMAP_TICK) / scrollable
     const top = transcript.scrollTop * scale
     const height = Math.max(transcript.clientHeight * scale, MINIMAP_TICK)
@@ -1980,12 +2017,14 @@
           ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
           syncTranscript({}, ctx)
         } else if (message.role === 'assistant') {
-          const model = message.responseModel || message.model || null
+          const model = messageModelName(message, ctx)
           // The mark belongs to the transcript, not to a variable: which model answered is kept
           // on the row, so a restart can rebuild the same stations from the same messages (see
           // loadMessages) instead of remembering a change it never saw arrive. `ctx.routedModel`
           // is the router's *selection* — an object, and the badge's own reading — so a message
-          // never overwrites it with a bare id.
+          // never overwrites it with a bare id. `ctx.answeredModel` is the composer's separate
+          // reading of the newest answer, which is what lets a fallback update the strip at once.
+          if (model) noteAnsweredModel(ctx, model)
           const previous = lastAnsweredModel(ctx)
           if (model && previous && previous !== model) {
             ctx.items.push({ kind: 'model', from: previous, to: model })
@@ -2357,29 +2396,62 @@
     )
   }
 
-  function renderRouting(data, ctx = active()) {
-    if (!data || ctx !== active()) return
-    const model = data.model
+  function routedModelKey(model) {
+    return model
+      ? [model.providerKey, model.realModelId, model.modelId, model.label].join('\u0000')
+      : ''
+  }
+
+  /** Paints the composer's model strip from the newest answer, or the router's current pick. */
+  function paintModelLabel(ctx, statusModel) {
     const nameEl = $('hx-model-name')
     const providerEl = $('hx-model-provider')
     const viaEl = $('hx-model-via')
+    if (!nameEl) return
+    const routed = ctx.routedModel
+    const answered = ctx.answeredModel
+    const routedNames = routed
+      ? [routed.modelId, routed.label, routed.realModelId, routed.realModelLabel].filter(Boolean)
+      : []
+    const shared = answered && routedNames.includes(answered) ? routed : null
+    nameEl.textContent = answered
+      ? [shared ? shared.label || shared.modelId : answered, shared ? shared.providerName : '']
+          .filter(Boolean)
+          .join(' · ')
+      : routed
+        ? [routed.label || routed.modelId, routed.providerName].filter(Boolean).join(' · ')
+        : statusModel && !isRouterAlias(statusModel)
+          ? statusModel.name || statusModel.id || 'unknown'
+          : 'no model yet'
+    // "GLM 5.3 Flash · NVIDIA" already names the provider, so the separate "via" line goes.
+    if (viaEl) viaEl.hidden = Boolean(answered || routed)
+    if (providerEl) providerEl.textContent = statusModel ? statusModel.provider || 'provider' : '—'
+  }
+
+  /** The newest answer is the composer's immediate truth; it outranks a stale status route. */
+  function noteAnsweredModel(ctx, model) {
+    if (!ctx || !model) return
+    ctx.answeredModel = model
+    if (ctx === active()) paintModelLabel(ctx, ctx.status?.model)
+  }
+
+  function renderRouting(data, ctx = active()) {
+    if (!data || ctx !== active()) return
+    const model = data.model
     const badgeEl = $('hx-routed-badge')
     const thinkingEl = $('hx-thinking-level')
     // Pi calls its alias "Hammer's selected model", which names the mechanism rather than the
     // model doing the answering. The router's pick — model and the provider offering it — is what
     // the strip shows; the alias stands in only when nothing is routed at all.
-    if (data.routedModel) ctx.routedModel = data.routedModel
-    const routed = ctx.routedModel
-    if (nameEl) {
-      nameEl.textContent = routed
-        ? [routed.label || routed.modelId, routed.providerName].filter(Boolean).join(' · ')
-        : model
-          ? model.name || model.id || 'unknown'
-          : 'no model yet'
+    // The route's identity, not just its presence: every status frame repeats the same pick,
+    // and only a real change should drop the last answer's label.
+    if (data.routedModel) {
+      const key = routedModelKey(data.routedModel)
+      if (ctx.routedModelKey && key !== ctx.routedModelKey) ctx.answeredModel = null
+      ctx.routedModel = data.routedModel
+      ctx.routedModelKey = key
     }
-    // "GLM 5.3 Flash · NVIDIA" already names the provider, so the separate "via" line goes.
-    if (viaEl) viaEl.hidden = Boolean(routed)
-    if (providerEl) providerEl.textContent = model ? model.provider || 'provider' : '—'
+    paintModelLabel(ctx, model)
     if (badgeEl) {
       // `routed` is the server's answer to "does the agent take its model from this router",
       // which is the whole reason a routing harness has an agent at all.
@@ -3558,10 +3630,11 @@
         ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
       } else if (message.role === 'assistant') {
         const blocks = contentParts(message.content)
-        const model =
-          message.responseModel || (typeof message.model === 'string' ? message.model : null)
+        const model = messageModelName(message, ctx, { resolveAlias: false })
         // Before the answer it changed for, the way the live stream draws it: the reader sees the
-        // reply that is not from the model talking a line earlier.
+        // reply that is not from the model talking a line earlier. A historical message that
+        // only names Hammer's `best` alias has no recoverable model, so it is left unset rather
+        // than having today's route painted over an old turn.
         if (model && previousModel && previousModel !== model) {
           ctx.items.push({ kind: 'model', from: previousModel, to: model })
         }

@@ -382,6 +382,17 @@ test('an elapsed reset drops the window instead of counting down to "now"', () =
   assert.match(dashboard, /return `\$\{total\}s`/)
 })
 
+test('an Antigravity model is not exhausted while another account has allowance', () => {
+  // Antigravity scopes its allowance per model and per account. One account at 100% must
+  // not paint its reset clock across a model when the other signed-in account still has
+  // 61% of the same model's window left.
+  assert.match(dashboard, /function hasAlternativeAntigravityQuota\(m\)/)
+  assert.match(dashboard, /window\.percentOnly && window\.usedPercent != null/)
+  assert.match(dashboard, /100 - Number\(window\.usedPercent\)/)
+  assert.match(dashboard, /Number\.isFinite\(remaining\) && remaining > 0/)
+  assert.ok(dashboard.includes('hasAlternativeAntigravityQuota(m)'))
+})
+
 test("a clock's countdown also follows a reset the body states in words", () => {
   // A row kept a bare clock unless the response said "retry in Ns" or carried an
   // X-RateLimit-Reset header. Antigravity's 429 says "Resets in 161h41m31s": the same
@@ -389,6 +400,20 @@ test("a clock's countdown also follows a reset the body states in words", () => 
   assert.ok(dashboard.includes('(?:retry|resets?|renews?)'))
   assert.ok(dashboard.includes('durationFromText(statedDelay[1])'))
   assert.ok(dashboard.includes("name.startsWith('ms') || name.startsWith('millisecond')"))
+})
+
+test('a clock with a countdown suppresses the refusal under Test', () => {
+  // The status column already names the window and when it ends; the provider's raw 429 body
+  // under the Test button repeats that statement. A bare clock still keeps the body, because
+  // then the text is the only thing that says what the row is waiting for.
+  assert.ok(dashboard.includes('const clockedWithCountdown ='))
+  assert.ok(
+    dashboard.includes(
+      'owner != null && isRateLimitedRow(owner) && getRateLimitResetAt(owner) != null',
+    ),
+  )
+  assert.ok(dashboard.includes('!expired && !clockedWithCountdown && lastResponse.error'))
+  assert.ok(!dashboard.includes('void clocked'))
 })
 
 test('plot colours come from the model mark, not the provider', () => {

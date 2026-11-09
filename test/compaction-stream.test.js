@@ -169,6 +169,37 @@ test('a model change is a station on the spine that names both ends', () => {
   assert.match(harness, /changed from \$\{escapeHtml\(from\)\} to \$\{escapeHtml\(to\)\}/)
 })
 
+test('the router alias never becomes a transcript model name', () => {
+  // Pi records Hammer's routing alias (`best`) on the request. The provider's
+  // `responseModel` is the model that answered; when that is absent the live route resolves
+  // the alias, and history leaves it unset rather than inventing today's pick for an old turn.
+  assert.match(harness, /function isRouterAlias\(/)
+  assert.match(harness, /function messageModelName\(/)
+  assert.match(harness, /const model = messageModelName\(message, ctx\)/)
+  assert.match(harness, /messageModelName\(message, ctx, \{ resolveAlias: false \}\)/)
+  assert.match(harness, /if \(model\) noteAnsweredModel\(ctx, model\)/)
+  assert.doesNotMatch(harness, /const model = message\.responseModel \|\| message\.model \|\| null/)
+})
+
+test('the composer follows the answered model, not only a status frame', () => {
+  // A fallback can change the model that answers without a status frame carrying the new
+  // routedModel. The assistant message is the evidence, so it updates the strip directly.
+  assert.match(harness, /answeredModel: null/)
+  assert.match(harness, /function noteAnsweredModel/)
+  assert.match(harness, /ctx\.answeredModel = model/)
+  assert.match(harness, /if \(ctx === active\(\)\) paintModelLabel\(ctx, ctx\.status\?\.model\)/)
+  assert.match(harness, /function paintModelLabel/)
+  assert.match(
+    harness,
+    /const shared = answered && routedNames\.includes\(answered\) \? routed : null/,
+  )
+  assert.match(harness, /viaEl\.hidden = Boolean\(answered \|\| routed\)/)
+  assert.match(
+    harness,
+    /if \(ctx\.routedModelKey && key !== ctx\.routedModelKey\) ctx\.answeredModel = null/,
+  )
+})
+
 test('a summarization is routed only to a model that can hold it', () => {
   // The observed failure: a 213,516-token summary prompt sent to a model with a 126,798-token
   // window, which answers `length` with no text, and Pi reports that as its own output cap.

@@ -348,8 +348,13 @@ test('a live wait below the spine runs on the model’s own TTFT', () => {
   // It comes and goes with the wait, and restarts for each new one.
   assert.match(harness, /if \(badge\) badge\.remove\(\)/)
   assert.match(harness, /badge\.classList\.add\('hx-ttft-running'\)/)
-  // One turn of the arc per expected wait; the ring sits on the spine's own 2px column.
-  assert.match(harnessCss, /animation: hx-ttft-run var\(--hx-ttft-ms, 2000ms\) linear infinite;/)
+  // A determinate 0-100% fill over the expected wait, not an endless spin: one pass, holding
+  // full at 100%. The ring sits on the spine's own 2px column.
+  assert.match(harnessCss, /animation: hx-ttft-fill var\(--hx-ttft-ms, 2000ms\) linear forwards;/)
+  assert.match(harnessCss, /@keyframes hx-ttft-fill \{/)
+  assert.match(harnessCss, /\.hx-ttft-arc \{[\s\S]{0,320}stroke-dashoffset: 56\.5;/)
+  assert.doesNotMatch(harnessCss, /animation: hx-ttft-run/)
+  assert.doesNotMatch(harnessCss, /@keyframes hx-ttft-run/)
   assert.match(harnessCss, /\.hx-ttft-ring \{[\s\S]{0,220}margin-left: -11px;/)
   assert.match(harnessCss, /@media \(prefers-reduced-motion: reduce\)/)
 })

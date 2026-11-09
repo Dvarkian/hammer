@@ -288,3 +288,24 @@ test('the rail plot colours each slice by the model that answered it', () => {
   assert.match(html, /id="usage-session-legend"/)
   assert.match(css, /\.usage-session-legend-swatch \{/)
 })
+
+test('the rail legend lists models with samples, not the whole catalog', () => {
+  const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+  // /api/usage-series publishes a key for every model it knows, with an empty array when the
+  // current session has no samples for it. Rendering those keys made a fresh page list the
+  // catalog, then collapse to the real session once its history arrived.
+  assert.match(
+    dashboard,
+    /if \(Array\.isArray\(pts\) && pts\.length > 0\) usageSessionByKey\.set\(key, pts\);/,
+  )
+  assert.match(
+    dashboard,
+    /\.filter\(\(\[, series\]\) => Array\.isArray\(series\) && series\.length > 0\)/,
+  )
+  // A busy session still gets a bounded key: the newest models, then a summary of the rest.
+  assert.match(dashboard, /const SESSION_USAGE_LEGEND_LIMIT = 8/)
+  assert.match(dashboard, /const visible = keys\.slice\(-SESSION_USAGE_LEGEND_LIMIT\)/)
+  assert.match(dashboard, /usage-session-legend-more/)
+  assert.match(css, /\.usage-session-legend-more \{/)
+})

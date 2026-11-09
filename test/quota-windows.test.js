@@ -3,10 +3,13 @@ import assert from 'node:assert/strict'
 
 import {
   extractQuotaWindows,
+  googleDailyQuotaResetAt,
+  nextPacificMidnight,
   parseQuotaMetric,
   parseQuotaPeriod,
   resetAtFromErrorText,
 } from '../lib/quota-windows.js'
+import { extractRateLimitResetMs } from '../lib/utils.js'
 
 const NOW = 1_800_000_000_000
 
@@ -226,4 +229,49 @@ test("Antigravity's 429 names its window in hours, not as a retry", () => {
   // Google also states days: "Resets in 6d 22h" is 166 hours, not 22.
   assert.equal(resetAtFromErrorText('Resets in 6d 22h.', now), now + 166 * 3_600_000)
   assert.equal(resetAtFromErrorText('Rate limit exceeded', now), null)
+})
+
+// Google's RPD wall often arrives without RetryInfo, unlike its per-minute refusals. The
+// provider still publishes the boundary — midnight Pacific — so the clock and the quota row
+// count to a real reset instead of leaving a bare clock beside a spent daily allowance.
+test('a Google daily quota with no retry info resets at midnight Pacific', () => {
+  const now = Date.UTC(2026, 10, 9, 12, 0, 0) // 9 Nov 2026, 04:00 PST
+  const expected = Date.UTC(2026, 10, 10, 8, 0, 0) // 10 Nov 2026, 00:00 PST
+  const body =
+    'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, ' +
+    'limit: 20, model: gemini-3.6-flash, description: Generate content requests per day limit exceeded on Free Tier.'
+  assert.equal(nextPacificMidnight(now), expected)
+  assert.equal(googleDailyQuotaResetAt(body, now), expected)
+  assert.equal(extractRateLimitResetMs(body, null, now), expected)
+  // The body-level duration parser only reads what the provider stated; the day window
+  // itself gets the inferred reset below.
+  assert.equal(resetAtFromErrorText(body, now), null)
+  const windows = extractQuotaWindows(
+    { modelId: 'gemini-3.5-flash', lastResponse: { status: 429, at: now, error: body } },
+    now,
+  )
+  const day = windows.find((window) => window.period === 'day' && window.metric === 'requests')
+  assert.equal(day.limit, 20)
+  assert.equal(day.resetAt, expected)
+})
+
+test('the Pacific boundary follows both sides of daylight saving', () => {
+  // 1 July 2026, 05:00 PDT -> 2 July 00:00 PDT.
+  assert.equal(nextPacificMidnight(Date.UTC(2026, 6, 1, 12)), Date.UTC(2026, 6, 2, 7))
+  // 9 November 2026, 04:00 PST -> 10 November 00:00 PST.
+  assert.equal(nextPacificMidnight(Date.UTC(2026, 10, 9, 12)), Date.UTC(2026, 10, 10, 8))
+})
+
+test('per-minute Google refusals and zero grants get no daily reset', () => {
+  const now = Date.UTC(2026, 10, 9, 12, 0, 0)
+  const minute =
+    'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, ' +
+    'limit: 5, model: gemini-3.6-flash, description: Generate content requests per minute limit exceeded on Free Tier.'
+  assert.equal(googleDailyQuotaResetAt(minute, now), null)
+  assert.equal(resetAtFromErrorText(minute, now), null)
+  const zero =
+    'Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, ' +
+    'limit: 0, model: gemini-3.6-pro, description: Generate content requests per day limit exceeded on Free Tier.'
+  assert.equal(googleDailyQuotaResetAt(zero, now), null)
+  assert.equal(extractRateLimitResetMs(zero, null, now), null)
 })
