@@ -1427,11 +1427,20 @@
     }
     if (transcript.querySelector('.hx-empty')) transcript.innerHTML = ''
     const stick = atBottom(transcript)
-    for (let i = state.mounted; i < state.items.length; i += 1) {
+    // Mounted means "has a row in the log", not "has been passed over". The cursor below used
+    // to advance past an assistant row that was skipped for having no text yet — and that is the
+    // row a turn is about to stream into. `message_start` pushes it empty, the sync skips it and
+    // moves the cursor to the end, so every later sync started AFTER it and never built the row:
+    // the answer arrived in one piece at `message_end`, which rebuilds the transcript from
+    // scratch. A tool row, which mounts the moment it exists, streamed normally beside it — which
+    // is why only some turns looked like they were streaming. The node is the honest test.
+    for (let i = 0; i < state.items.length; i += 1) {
       const item = state.items[i]
+      if (item.node && item.node.isConnected) continue
       // An assistant row with no visible text is not a message: the pending "…" belongs to a
       // turn that is still arriving, and a settled one has already been dropped at message_end.
-      // Skipping it here is what keeps a restored or background conversation free of them.
+      // Not mounting it is what keeps a restored or background conversation free of them; it
+      // mounts on the first sync after its first token, because the cursor no longer passes it.
       if (
         item.kind === 'assistant' &&
         !(item.blocks || []).some((block) => String(block.text || '').trim())

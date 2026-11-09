@@ -2728,3 +2728,20 @@ test('prose continuations have no cap', async () => {
     bridge.dispose()
   }
 })
+
+test('a streaming assistant row is mounted on its first token, not at the end of the turn', () => {
+  // `message_start` pushes the assistant row empty, and the sync that follows skips it: a row
+  // with no visible text is not a message, and a restored log must not be full of pending "…".
+  // The cursor used to advance past it anyway, so the row the turn was about to stream into was
+  // never created and every delta painted into nothing — the whole answer appeared at once when
+  // `message_end` rebuilt the transcript. Tool rows, which mount as soon as they exist, streamed
+  // beside it, which is why only some turns looked like they were streaming.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(harness, /for \(let i = state\.mounted; i < state\.items\.length/)
+  assert.match(harness, /if \(item\.node && item\.node\.isConnected\) continue/)
+  assert.match(
+    harness,
+    /item\.kind === 'assistant' &&\s*!\(item\.blocks \|\| \[\]\)\.some\(\(block\) => String\(block\.text \|\| ''\)\.trim\(\)\)/,
+    'the skip stays: an assistant row with no visible text still does not render',
+  )
+})
