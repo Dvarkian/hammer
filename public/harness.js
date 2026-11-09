@@ -883,8 +883,8 @@
   // and has not written anything yet. There is no row to stream into during that gap, so the
   // log simply stopped — and a stop is indistinguishable from a hang. The router measures
   // every model's time to first token, so the gap gets a mark of its own: a ring under the
-  // spine that turns once per that model's known TTFT. One turn is the wait this model
-  // usually needs; a second says the wait has outlasted what it normally does.
+  // spine that fills from 0 to 100% over that model's known TTFT. A full ring is the wait this
+  // model usually needs; a wait that outlasts it leaves the ring full.
   const DEFAULT_TTFT_MS = 2000
 
   /** modelId -> the router's measured time to first token, in ms. */
@@ -1223,6 +1223,20 @@
   function modelName(model) {
     if (typeof model === 'string') return model
     return (model && (model.name || model.id)) || 'unknown model'
+  }
+
+  /**
+   * The model that answered the most recent message, as the transcript itself recorded it.
+   *
+   * Read back from the rows rather than from a field that only the live stream fills: a
+   * conversation rebuilt from its session file has the same rows, so it can answer this too.
+   */
+  function lastAnsweredModel(ctx) {
+    for (let i = ctx.items.length - 1; i >= 0; i -= 1) {
+      const item = ctx.items[i]
+      if (item.kind === 'assistant' && item.model) return item.model
+    }
+    return null
   }
 
   /**
@@ -1923,13 +1937,17 @@
           ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
           syncTranscript({}, ctx)
         } else if (message.role === 'assistant') {
-          const model = message.responseModel || message.model
-          if (ctx.routedModel != null && model && model !== ctx.routedModel) {
-            const previous = ctx.routedModel
-            ctx.routedModel = model
-            ctx.items.push({ kind: 'model', from: modelName(previous), to: modelName(model) })
+          const model = message.responseModel || message.model || null
+          // The mark belongs to the transcript, not to a variable: which model answered is kept
+          // on the row, so a restart can rebuild the same stations from the same messages (see
+          // loadMessages) instead of remembering a change it never saw arrive. `ctx.routedModel`
+          // is the router's *selection* — an object, and the badge's own reading — so a message
+          // never overwrites it with a bare id.
+          const previous = lastAnsweredModel(ctx)
+          if (model && previous && previous !== model) {
+            ctx.items.push({ kind: 'model', from: previous, to: model })
           }
-          ctx.items.push({ kind: 'assistant', blocks: [], settled: false })
+          ctx.items.push({ kind: 'assistant', blocks: [], settled: false, model })
           syncTranscript({}, ctx)
         }
         break
@@ -3487,15 +3505,28 @@
     // holds only the output. Collecting the calls first is what puts the command back on a row
     // after a restart; without it every resumed bash call read as a bare "bash done".
     const calls = new Map()
+    // The model stations are rebuilt from the sequence, never remembered: each assistant message
+    // names the model that answered it, so where that name changes is exactly where a mark
+    // belongs. That is what makes a model change survive a restart — or a conversation opened
+    // for the first time in this page, which never saw the live event at all.
+    let previousModel = null
     for (const message of data.messages || []) {
       if (message.role === 'user') {
         ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
       } else if (message.role === 'assistant') {
         const blocks = contentParts(message.content)
+        const model =
+          message.responseModel || (typeof message.model === 'string' ? message.model : null)
+        // Before the answer it changed for, the way the live stream draws it: the reader sees the
+        // reply that is not from the model talking a line earlier.
+        if (model && previousModel && previousModel !== model) {
+          ctx.items.push({ kind: 'model', from: previousModel, to: model })
+        }
+        if (model) previousModel = model
         // A turn that only called tools wrote no prose. Its tool rows carry that story, and an
         // empty bubble would sit in the transcript as "…" forever after a resume.
         if (blocks.length) {
-          const item = { kind: 'assistant', blocks, settled: true }
+          const item = { kind: 'assistant', blocks, settled: true, model }
           assignThinkingStats(item, message.usage?.reasoning)
           ctx.items.push(item)
         }

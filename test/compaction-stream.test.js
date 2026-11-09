@@ -157,7 +157,15 @@ test('a model change is a station on the spine that names both ends', () => {
 
   // A change is its own row, not a plain notice, and it records where it came from.
   assert.match(harness, /if \(item\.kind === 'model'\) return modelMarkup\(item\)/)
-  assert.match(harness, /kind: 'model', from: modelName\(previous\), to: modelName\(model\)/)
+  assert.match(harness, /ctx\.items\.push\(\{ kind: 'model', from: previous, to: model \}\)/)
+  // The station belongs to the transcript, not to a variable only the live stream fills: the row
+  // records which model answered, so a restart can rebuild the same marks from the session's
+  // messages instead of losing every change it did not watch happen.
+  assert.match(harness, /const previous = lastAnsweredModel\(ctx\)/)
+  assert.match(harness, /item\.kind === 'assistant' && item\.model/)
+  assert.match(harness, /let previousModel = null/)
+  assert.match(harness, /if \(model && previousModel && previousModel !== model\) \{/)
+  assert.match(harness, /kind: 'assistant', blocks: \[\], settled: false, model/)
   assert.match(harness, /changed from \$\{escapeHtml\(from\)\} to \$\{escapeHtml\(to\)\}/)
 })
 
