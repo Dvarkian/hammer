@@ -4842,6 +4842,7 @@
     };
     const QUOTA_ROW_RECORDED_FIELD = {
       tokens: {
+        minute: 'tokensLastMinute',
         hour: 'tokensLastHour',
         day: 'tokensToday',
         week: 'tokensThisWeek',
@@ -4849,6 +4850,7 @@
         lifetime: 'tokensLifetime',
       },
       requests: {
+        minute: 'requestsLastMinute',
         hour: 'requestsLastHour',
         day: 'requestsToday',
         week: 'requestsThisWeek',
@@ -5033,6 +5035,23 @@
         const retryReset = rateLimit.capturedAt && rateLimit.retryAfterMs
           ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
           : null;
+        // Token Harbor's free tier publishes a percentage of a rolling seven-day allowance,
+        // not a token total. Keep it percent-only so the column says "62% used" rather than
+        // inventing a denominator the vendor never published.
+        if (rateLimit.freeUsedPercent != null
+          && (rateLimit.freeResetAt == null || Number(rateLimit.freeResetAt) > Date.now())) {
+          add(quotaRowWindow({
+            period: 'week',
+            metric: 'tokens',
+            rawWindow: 'rolling 7-day free allowance',
+            usedPercent: rateLimit.freeUsedPercent,
+            resetAt: rateLimit.freeResetAt,
+            source: 'headers',
+            scope: 'account',
+            detail: 'Token Harbor free-tier allowance',
+            percentOnly: true,
+          }));
+        }
         if (rateLimit.limitTokens != null || rateLimit.remainingTokens != null) {
           add(quotaRowWindow({
             period: 'window',
@@ -5176,25 +5195,55 @@
       return `${provider}<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`;
     }
 
-    function quotaProviderNote(m) {
-      if (m?.providerKey !== 'googleai') return null;
-      const known = m?.knownQuota;
-      if (!known || (Array.isArray(known.limits) && known.limits.length > 0)) return null;
-      return {
+    // A provider whose quota cannot be measured from here still has something true to say: a
+    // live view to open, or the plain fact that no usage API exists. A bare dash says neither,
+    // and it is exactly what a row with no observed window used to show.
+    const QUOTA_PROVIDER_NOTES = {
+      googleai: {
         label: 'Google AI',
         href: GOOGLE_ACTIVE_QUOTA_URL,
-        source: known.source || 'Google publishes active limits per project in AI Studio.',
-      };
+        meta: 'Project limits',
+        linkText: 'Open AI Studio',
+        fallback: 'Google publishes active limits per project in AI Studio.',
+      },
+      inferx: {
+        label: 'InferX',
+        href: 'https://inferx.net/models',
+        meta: 'No usage API',
+        linkText: 'Model list',
+        fallback:
+          'InferX publishes no usage endpoint; a spent tenant answers every id with 429 "tenant … quota exceeded".',
+      },
+      tokenharbor: {
+        label: 'Token Harbor',
+        href: 'https://tokenharbor.ai/pricing',
+        meta: '7-day free allowance',
+        linkText: 'Pricing',
+        fallback:
+          'Free-tier usage is a percentage of a rolling seven-day allowance; Hammer reads it with a one-token non-streamed check when it is unknown. No token total is published.',
+      },
+    };
+
+    function quotaProviderNote(m) {
+      const note = QUOTA_PROVIDER_NOTES[m?.providerKey];
+      if (!note) return null;
+      // Token Harbor's note describes the free allowance, so it must not appear on the
+      // metered twin rows that bill the wallet instead.
+      if (m?.providerKey === 'tokenharbor' && m?.paymentRequired) return null;
+      // A numeric published limit is the answer already; the note would only repeat it.
+      const known = m?.knownQuota;
+      if (Array.isArray(known?.limits) && known.limits.length > 0) return null;
+      return { ...note, source: known?.source || note.fallback };
     }
 
     function quotaProviderNoteHtml(note) {
       const href = safeExternalHref(note.href);
       const link = href
-        ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Open AI Studio</a>`
+        ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(note.linkText || 'Open')}</a>`
         : '';
       return `<div class="quota-row-note" title="${escapeAttr(note.source)}">
         <span class="quota-row-note-label">${escapeHtml(note.label)}</span>
-        <span class="quota-row-note-meta">Project limits${link ? ` · ${link}` : ''}</span>
+        <span class="quota-row-note-meta">${escapeHtml(note.meta || 'Project limits')}${link ? ` · ${link}` : ''}</span>
       </div>`;
     }
 
@@ -5950,7 +5999,7 @@
     // The other half of the account refusals, kept in step with isRateLimitedErrorText in
     // lib/utils.js: a quota the row waits out. It outranks a bare 402 in the verdicts below,
     // because a provider that labels its rate limit 402 must not earn a Paid badge for it.
-    const RATE_LIMIT_RE = /resource_exhausted|freeusagelimiterror|quota exceeded|rate limit exceeded|too many requests|\b(?:reached|exceeded)\s+(?:the|your)\s+limit\b/i;
+    const RATE_LIMIT_RE = /resource_exhausted|freeusagelimiterror|err_free_rate|free model capacity is limited|rate_limit_error|quota exceeded|rate limit exceeded|too many requests|\b(?:reached|exceeded)\s+(?:the|your)\s+limit\b/i;
     // The incompatible half of the same mirror, kept in step with isIncompatibleModelError in
     // lib/utils.js — the rule the server reads the same stored text with. The narrow
     // `image/video only | not support text` pair this replaces missed most of the canonical
@@ -6017,10 +6066,14 @@
       const lr = m && m.lastResponse;
       if (!lr || lr.ok === true || !lr.error) return null;
       if (!testIsNewestEvidence(m)) return null;
+      // The refusal's own words outrank a stored flag: a free-capacity refusal that says
+      // "add credits" but names `err_free_rate` is a clock, not money, and the old
+      // `paymentRequired` flag used to keep it reading as Paid forever.
+      const text = String(lr.error);
+      if (RATE_LIMIT_RE.test(text)) return 'rate-limited';
       if (lr.paymentRequired === true || lr.dead === true || lr.incompatible === true) return null;
       if (lr.overloaded === true) return 'overloaded';
-      const text = String(lr.error);
-      if (Number(lr.status) === 429 || RATE_LIMIT_RE.test(text)) return 'rate-limited';
+      if (Number(lr.status) === 429) return 'rate-limited';
       if (Number(lr.status) === 503 || Number(lr.status) >= 500) {
         return /overload|high demand|capacity|too busy|temporarily unavailable|service unavailable|try again later/i.test(text)
           ? 'overloaded'
@@ -6047,7 +6100,9 @@
       const lr = m && m.lastResponse;
       if (!lr || !testIsNewestEvidence(m)) return null;
       if (lr.expiresAt != null && Date.now() > Number(lr.expiresAt)) return null;
-      if (lr.paymentRequired === true) return 'paid';
+      // The refusal's words outrank a stored flag: a free-capacity refusal says "add credits"
+      // but names `err_free_rate`, which is a clock, not money.
+      if (lr.paymentRequired === true && !RATE_LIMIT_RE.test(String(lr.error || ''))) return 'paid';
       if (lr.dead === true) return 'dead';
       if (lr.incompatible === true) return 'incompatible';
       const code = Number(lr.status || 0);
@@ -6147,7 +6202,8 @@
           }
 
           // A test failure is classified directly by what the test reported:
-          if (lr.paymentRequired === true) return 'paid';
+          if (lr.paymentRequired === true && !RATE_LIMIT_RE.test(String(lr.error || '')))
+            return 'paid';
           if (lr.dead === true) return 'dead';
           if (lr.incompatible === true) return 'incompatible';
           if (lr.overloaded === true) return 'overloaded';
@@ -10764,6 +10820,7 @@
     // a lifetime window is treated like a month.
     const RECORDED_BY_PERIOD = {
       tokens: {
+        minute: ['tokensLastMinute', 'in the last minute', 'Nothing recorded in the last minute'],
         hour: ['tokensLastHour', 'in the last hour', 'Nothing recorded in the last hour'],
         day: ['tokensToday', 'today', 'Nothing recorded today yet'],
         week: ['tokensThisWeek', 'this week', 'Nothing recorded this week yet'],
@@ -10771,6 +10828,7 @@
         lifetime: ['tokensLifetime', 'so far', 'Nothing recorded yet'],
       },
       requests: {
+        minute: ['requestsLastMinute', 'in the last minute', 'Nothing recorded in the last minute'],
         hour: ['requestsLastHour', 'in the last hour', 'Nothing recorded in the last hour'],
         day: ['requestsToday', 'today', 'Nothing recorded today yet'],
         week: ['requestsThisWeek', 'this week', 'Nothing recorded this week yet'],
@@ -10780,6 +10838,7 @@
       // Credits have no recorded counterpart: hammer counts tokens and requests, never the
       // provider's money, so a credit cap shows as a number without a bar.
       credits: {
+        minute: [null, 'in the last minute', 'Nothing recorded in the last minute'],
         day: [null, 'today', 'Nothing recorded today yet'],
         week: [null, 'this week', 'Nothing recorded this week yet'],
         month: [null, 'this month', 'Nothing recorded this month yet'],
@@ -10787,7 +10846,7 @@
       },
     };
 
-    const QUOTA_PERIOD_LABEL = { day: 'day', week: 'week', month: 'month', lifetime: 'one-off' };
+    const QUOTA_PERIOD_LABEL = { minute: 'minute', hour: 'hour', day: 'day', week: 'week', month: 'month', lifetime: 'one-off' };
 
     function recordedForLimit(limit, recorded) {
       const spec = RECORDED_BY_PERIOD[limit?.metric]?.[limit?.period];
@@ -10891,6 +10950,7 @@
         if (rateLimit.limitRequests != null) headerReports.push({ metric: 'requests', unit: 'requests', limit: rateLimit.limitRequests, remaining: rateLimit.remainingRequests, window: 'provider rate-limit window' });
         if (rateLimit.limitTokens != null) headerReports.push({ metric: 'tokens', unit: 'tokens', limit: rateLimit.limitTokens, remaining: rateLimit.remainingTokens, window: 'provider rate-limit window' });
         if (rateLimit.creditLimit != null) headerReports.push({ metric: 'credits', unit: 'credits', limit: rateLimit.creditLimit, remaining: rateLimit.creditRemaining, window: 'provider credit window', resetAt: rateLimit.creditResetAt });
+        if (rateLimit.freeUsedPercent != null) headerReports.push({ metric: 'percent', unit: 'percent', limit: 100, remaining: Math.max(0, 100 - Number(rateLimit.freeUsedPercent)), window: 'rolling 7-day free allowance', resetAt: rateLimit.freeResetAt });
         if (headerReports.length > 0) {
           reports = headerReports;
           provenance = 'headers';

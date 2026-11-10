@@ -33,7 +33,7 @@ import {
   PI_COMPACTION_DEFAULTS,
   prepareHammerAgentDir,
 } from '../lib/pi/agent-dir.js'
-import { registerPiRoutes } from '../lib/http/routes/pi.js'
+import { registerPiRoutes, shouldCompactBeforePrompt } from '../lib/http/routes/pi.js'
 import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
 import {
   MIN_NODE_MAJOR,
@@ -521,7 +521,7 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta, ctx\)/)
   assert.match(harness, /class="hx-thinking-text"/)
   // Thinking is a disclosure on the spine: a station with its own mark, open while it is being
-  // written and folded as soon as the model moves on.
+  // written and folded as soon as the model moves on — prose, a tool call, or the message's end.
   assert.match(harness, /<details class="hx-thinking \$\{complete \? 'settled' : 'running'\}"/)
   assert.match(harness, /function thinkingIcon\(\)/)
   assert.match(harness, /class="hx-thinking-icon"/)
@@ -535,6 +535,13 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
     /parts\.push\(`Thought for \$\{Math\.max\(1, Math\.round\(ms \/ 1000\)\)\}s`\)/,
   )
   assert.match(harness, /assignThinkingStats\(item, message\.usage\?\.reasoning\)/)
+  // The numbers outlive the page that measured them: the duration and the token figure are
+  // remembered by message timestamp and put back when the transcript is rebuilt.
+  assert.match(harness, /rememberThoughtStats\(ctx, message, item\.blocks\)/)
+  assert.match(harness, /applyRememberedThoughtStats\(ctx, message, blocks\)/)
+  // A provider that reports no reasoning count still gets a figure, marked as an estimate.
+  assert.match(harness, /block\.tokensEstimated = true/)
+  assert.match(harness, /block\.tokensEstimated \? `~\$\{tokens\}` : tokens/)
   assert.match(harness, /k tokens/)
 
   // Blocks are keyed by contentIndex and sorted, because Pi restarts that index for every
@@ -1100,6 +1107,47 @@ test('a prompt is validated and then handed to the agent trimmed', async () => {
     assert.deepEqual(await ok.json(), { success: true, disposition: 'started' })
     assert.deepEqual(bridge.calls, [['prompt', 'fix the tests']])
   })
+})
+
+test('a prompt compacts before sending when the routed model is at its request cap', async () => {
+  const agentDir = join(mkdtempSync(join(tmpdir(), 'hammer-pi-cap-')), 'agent')
+  const bridge = new StubBridge()
+  bridge.status = () => ({
+    ...StubBridge.prototype.status.call(bridge),
+    contextUsage: { tokens: 120000, contextWindow: 131072, percent: 91.6 },
+    autoCompactionEnabled: true,
+  })
+  bridge.runCommand = async (type) => {
+    bridge.calls.push(['command', type])
+    return { data: { tokensBefore: 120000, estimatedTokensAfter: 20000 } }
+  }
+  await withPiApp(
+    {
+      piBridge: bridge,
+      piCommand: process.execPath,
+      piArgs: [FAKE_PI],
+      piCwd: tmpdir(),
+      piBaseUrl: 'http://127.0.0.1:7352/v1',
+      piAgentDir: agentDir,
+      routedSelection: () => ({
+        modelId: 'orcarouter/free',
+        providerKey: 'orcarouter',
+        contextTokens: 122000,
+      }),
+    },
+    async (base) => {
+      const res = await fetch(`${base}/api/pi/prompt`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: 'keep going' }),
+      })
+      assert.equal(res.status, 200)
+      assert.deepEqual(bridge.calls, [
+        ['command', 'compact'],
+        ['prompt', 'keep going'],
+      ])
+    },
+  )
 })
 
 test('stop and new-session reach the agent and report a cancellation', async () => {
@@ -1829,6 +1877,61 @@ test('auto-compaction is read from Pi as three-valued, and a change is echoed ba
   }
 })
 
+test('a prompt is compacted first when the routed model has less room than Pi’s alias', () => {
+  // Pi plans against the alias's declared 131k window. OrcaRouter's free tier refuses a
+  // single prompt above an unpublished cap, which Hammer learns from `err_free_prompt_cap`.
+  // The routed bound has to win before the prompt is sent, or the turn is spent on a refusal
+  // that compaction could have avoided.
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 120000,
+      piWindow: 131072,
+      routedWindow: 122000,
+      reserveTokens: 16384,
+    }),
+    true,
+  )
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 100000,
+      piWindow: 131072,
+      routedWindow: 122000,
+      reserveTokens: 16384,
+    }),
+    false,
+  )
+  // A measured context already past Pi's own window is compacted even without a routed bound.
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 135000,
+      piWindow: 131072,
+      routedWindow: null,
+      reserveTokens: 16384,
+    }),
+    true,
+  )
+  // An explicit off is the user's decision; an unreported switch is not "off".
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 135000,
+      piWindow: 131072,
+      autoCompactionEnabled: false,
+    }),
+    false,
+  )
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 135000,
+      piWindow: 131072,
+      autoCompactionEnabled: null,
+    }),
+    true,
+  )
+  // No measurement or no window is not a reason to compact.
+  assert.equal(shouldCompactBeforePrompt({ usedTokens: null, piWindow: 131072 }), false)
+  assert.equal(shouldCompactBeforePrompt({ usedTokens: 120000 }), false)
+})
+
 test('a bridge that is not allowlisted cannot compact', async () => {
   const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
   try {
@@ -1842,6 +1945,32 @@ test('a bridge that is not allowlisted cannot compact', async () => {
     await assert.rejects(() => bridge.runCommand('unknown_thing', { a: 1 }), /not allowed/)
     await bridge.runCommand('compact')
     assert.equal(called, 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a compaction is not held to the generic command timeout', async () => {
+  // A compaction is a model call that writes a summary of the whole conversation, and a long
+  // session regularly takes a minute or two. The 20s request/response budget made every honest
+  // compaction report "Pi did not answer compact within 20s".
+  const bridge = new PiBridge({ autoContinue: false })
+  try {
+    /** @type {Array<{ command: any, options: any }>} */
+    const calls = []
+    bridge.send = async (command, options) => {
+      calls.push({ command, options })
+      return { success: true, data: {} }
+    }
+    await bridge.runCommand('compact')
+    assert.equal(calls[0].options.timeoutMs, 30 * 60_000)
+    // Switching auto-compaction back on can compact during the same call.
+    await bridge.runCommand('set_auto_compaction', { enabled: true })
+    assert.equal(calls[1].options.timeoutMs, 30 * 60_000)
+    // Everything else still answers on the short budget: no override is passed, so `send`
+    // applies its own 20s default.
+    await bridge.runCommand('get_state')
+    assert.equal(calls[2].options.timeoutMs, undefined)
   } finally {
     bridge.dispose()
   }
@@ -1881,6 +2010,121 @@ test('the harness renders a compaction as a row in the transcript', () => {
 
   for (const selector of ['.hx-compaction', '.hx-compaction-head', '.hx-context-note']) {
     assert.match(css, new RegExp(selector.replace('.', '\\.')))
+  }
+})
+
+test('the context meter is tallied while a message is being written', () => {
+  // Pi reports usage only on `message_end`, so a long answer used to leave the meter frozen
+  // until it was over. The streamed text is tallied as it arrives and marked as an estimate;
+  // the measured figure replaces it when the message ends.
+  const bridge = new PiBridge({ autoContinue: false })
+  try {
+    /** @type {any[]} */
+    const frames = []
+    bridge.on('usage', (usage) => frames.push(usage))
+    bridge.track({ type: 'agent_start' })
+    bridge.track({ type: 'message_start', message: { role: 'assistant', content: [] } })
+    bridge.track({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(400) },
+    })
+    const live = bridge.status().contextUsage
+    assert.equal(live.estimated, true)
+    assert.equal(live.tokens, 100, 'four characters per token, on top of the last measurement')
+    assert.equal(frames.at(-1).contextUsage.tokens, 100)
+
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 900, output: 100, totalTokens: 1000 },
+      },
+    })
+    const measured = bridge.status().contextUsage
+    assert.equal(measured.tokens, 1000)
+    assert.equal(measured.estimated, false)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a turn that fills the routed window between steps compacts mid-turn', () => {
+  // The preflight in the prompt route covers a full context at send time. A long turn reaches
+  // the same boundary between its own steps, where nobody is there to compact for it.
+  const bridge = new PiBridge({
+    autoContinue: false,
+    routedWindowTokens: () => 20_000,
+    compactionReserveTokens: 4_000,
+  })
+  try {
+    /** @type {string[]} */
+    const commands = []
+    bridge.runCommand = async (type) => {
+      commands.push(type)
+      return { data: {} }
+    }
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [],
+        usage: { input: 15_000, output: 1_000, totalTokens: 16_000 },
+      },
+    })
+    assert.deepEqual(commands, ['compact'])
+    assert.ok(bridge.status().notes.some((note) => /mid-turn/.test(note)))
+
+    // An estimate must never cut a turn short: only a measured message can.
+    const estimateOnly = new PiBridge({
+      autoContinue: false,
+      routedWindowTokens: () => 20_000,
+      compactionReserveTokens: 4_000,
+    })
+    try {
+      let asked = 0
+      estimateOnly.runCommand = async () => {
+        asked += 1
+        return { data: {} }
+      }
+      estimateOnly.track({ type: 'agent_start' })
+      estimateOnly.track({ type: 'message_start', message: { role: 'assistant', content: [] } })
+      estimateOnly.track({
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(400_000) },
+      })
+      assert.equal(asked, 0)
+    } finally {
+      estimateOnly.dispose()
+    }
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('mid-turn compaction respects the auto-compaction switch', () => {
+  const bridge = new PiBridge({ autoContinue: false, routedWindowTokens: () => 20_000 })
+  try {
+    let asked = 0
+    bridge.runCommand = async () => {
+      asked += 1
+      return { data: {} }
+    }
+    bridge.state.autoCompactionEnabled = false
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 19_000, output: 1_000, totalTokens: 20_000 },
+      },
+    })
+    assert.equal(asked, 0)
+  } finally {
+    bridge.dispose()
   }
 })
 
@@ -2163,6 +2407,236 @@ function endFailedTurn(bridge, errorMessage) {
   })
   bridge.track({ type: 'agent_settled' })
 }
+
+test('a turn that ended while Hammer was restarting is continued from the replay', async () => {
+  // The keeper hands a replacement router the records the agent wrote while no router was
+  // attached. They are not tracked — the old router already counted their tokens — but a
+  // dropped turn among them still needs its continuation, or a restart silently ends it.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {Array<{ message: string, options: any }>} */
+    const prompts = []
+    bridge.prompt = async (message, options) => {
+      prompts.push({ message, options })
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'message_start', message: { role: 'user', content: [] } }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up' },
+      }),
+      JSON.stringify({
+        type: 'agent_end',
+        willRetry: false,
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'socket hang up' }],
+      }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ])
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0].message, /Repeat your last action/)
+    assert.equal(prompts[0].options.queueMode, 'followUp')
+    assert.equal(bridge.status().usage.totalTokens, 0, 'replay still does not re-count usage')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a replay that already prompted after its settle is not continued again', async () => {
+  // The old router may have sent the continuation before it died. That prompt puts a user
+  // message and a new agent_start after the settle, which is what marks the turn as handled.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'connection reset' }],
+      }),
+      JSON.stringify({ type: 'agent_settled' }),
+      JSON.stringify({ type: 'message_start', message: { role: 'user', content: [] } }),
+      JSON.stringify({ type: 'agent_start' }),
+    ])
+
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a continuation the dead router already queued is not sent twice', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [{ role: 'assistant', stopReason: 'error', errorMessage: 'connection reset' }],
+      }),
+      JSON.stringify({ type: 'agent_settled' }),
+      JSON.stringify({
+        type: 'queue_update',
+        steering: [],
+        followUp: ['Repeat your last action. Do not summarise; continue it.'],
+      }),
+    ])
+
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(prompts, 0, 'the old router got its continuation in before it died')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the console adopts a running agent as soon as its routes are registered', () => {
+  // Waiting for a status request meant a restarted router heard nothing from a live agent, so
+  // a turn that settled in the gap was never continued.
+  const source = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
+  assert.match(source, /typeof main\.bridge\.adoptKeeper === 'function'/)
+  assert.match(source, /void main\.bridge\.adoptKeeper\(\)/)
+})
+
+test('a turn whose tool call never arrived is continued for any model', async () => {
+  // Why a session can stop after one sentence: the provider says `finish_reason: tool_calls`, the
+  // call's payload is lost on the way, so Pi settles a `toolUse` turn with nothing to run. This
+  // used to be continued only for Beam, which left every other model dead until someone typed
+  // Continue.
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    const prompts = []
+    bridge.prompt = async (text, options) => {
+      prompts.push({ text, options })
+      return { data: {} }
+    }
+    bridge.send = async () => ({ data: {} })
+    bridge.syncUsageFromSession = async () => {}
+
+    const assistant = {
+      role: 'assistant',
+      stopReason: 'toolUse',
+      responseModel: 'puter/deepseek-v4.1-flash',
+      content: [{ type: 'thinking', text: 'I should run it.' }],
+    }
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({ type: 'message_end', message: assistant }),
+      JSON.stringify({ type: 'agent_end', messages: [assistant] }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ])
+
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    assert.equal(prompts.length, 1, 'the dropped call is asked for again')
+    assert.equal(prompts[0].options?.queueMode, 'followUp')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('the dropped-call continuation stops after three attempts and says why', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.send = async () => ({ data: {} })
+    bridge.syncUsageFromSession = async () => {}
+
+    for (let index = 0; index < 6; index += 1) {
+      const assistant = { role: 'assistant', stopReason: 'toolUse', content: [] }
+      bridge.track({ type: 'agent_start' })
+      bridge.track({ type: 'agent_end', messages: [assistant] })
+      bridge.track({ type: 'agent_settled' })
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    }
+
+    assert.equal(prompts, 3, 'a provider that keeps dropping calls is not looped on forever')
+    assert.ok(
+      bridge.notes.some((note) => /tool call never arrived/.test(note)),
+      'the stop explains itself',
+    )
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a replay that ends mid-turn arms nothing', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    let prompts = 0
+    bridge.prompt = async () => {
+      prompts += 1
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', stopReason: 'stop', content: [] },
+      }),
+    ])
+
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    assert.equal(prompts, 0)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a length cut that ended while Hammer was restarting is continued from the replay', async () => {
+  const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+  try {
+    /** @type {string[]} */
+    const prompts = []
+    bridge.prompt = async (message) => {
+      prompts.push(message)
+      return { data: {} }
+    }
+    bridge.syncUsageFromSession = async () => {}
+
+    bridge.replayRecords([
+      JSON.stringify({ type: 'agent_start' }),
+      JSON.stringify({
+        type: 'agent_end',
+        messages: [
+          {
+            role: 'assistant',
+            stopReason: 'length',
+            content: [{ type: 'text', text: 'half a thought' }],
+          },
+        ],
+      }),
+      JSON.stringify({ type: 'agent_settled' }),
+    ])
+
+    await waitFor(() => prompts.length === 1)
+    assert.match(prompts[0], /output limit/)
+  } finally {
+    bridge.dispose()
+  }
+})
 
 test('a dropped turn is continued once Pi has settled', async () => {
   const bridge = new PiBridge({ autoContinueBaseMs: 1, autoContinueLimit: 3 })

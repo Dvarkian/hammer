@@ -1,0 +1,31 @@
+import { mkdtempSync, writeFileSync, appendFileSync, readdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import express from 'express'
+import { registerPiRoutes } from '/home/murray/Development/Hammer/lib/http/routes/pi.js'
+
+const store = mkdtempSync(join(tmpdir(), 'hammer-fresh-'))
+
+// A "fresh" pi session: file exists but has only header, no messages yet
+const fresh = join(store, '2026-11-05T06-43-55-300Z_01a1aa73.jsonl')
+
+const app = express()
+app.use(express.json())
+const bridge = registerPiRoutes(app, { piSessionsDir: store })
+const server = app.listen(0, '127.0.0.1')
+await new Promise((r) => server.once('listening', r))
+const base = `http://127.0.0.1:${server.address().port}`
+
+console.log('1. Check file does NOT exist (pi hasn\'t written it yet)')
+console.log('   File exists:', require('fs').existsSync(fresh))
+
+const res = await fetch(`${base}/api/pi/sessions/delete`, {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ session: fresh }),
+})
+console.log('2. Delete status:', res.status, JSON.stringify(await res.json()))
+console.log('3. File exists after delete:', require('fs').existsSync(fresh))
+
+server.closeAllConnections?.()
+await new Promise((r) => server.close(r))
+bridge.dispose()

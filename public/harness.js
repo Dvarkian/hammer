@@ -826,22 +826,38 @@
    * Spreads one message's reported reasoning tokens over the thought blocks it contains.
    *
    * `usage.reasoning` counts the message, not the block: a turn that thought twice reports one
-   * figure, so it is shared out by the length of each thought. A provider that reports no
-   * reasoning figure gets no token count rather than an estimate dressed as one.
+   * figure, so it is shared out by the length of each thought. Most providers do not report
+   * such a figure at all — Pi's usage carries input, output and cache tokens and no reasoning
+   * count — so a figure close to the text is used instead and flagged as an estimate. A head
+   * that says only "Thought" reads as if the reasoning cost nothing, which is the one thing it
+   * must not say.
    */
   function assignThinkingStats(item, reasoningTokens) {
     const blocks = (item.blocks || []).filter(
       (block) => block.kind === 'thinking' && String(block.text || '').trim(),
     )
+    if (!blocks.length) return
     const reported = Number(reasoningTokens)
-    if (!blocks.length || !Number.isFinite(reported) || reported <= 0) return
+    if (!Number.isFinite(reported) || reported <= 0) {
+      for (const block of blocks) {
+        // A rememberd figure is better than a new estimate: it may be the provider's own.
+        if (block.tokens) continue
+        // Four characters per token is what these tokenizers average closely enough for a
+        // sentence or a paragraph of reasoning; the `~` on the head keeps it honest.
+        block.tokens = Math.max(1, Math.round(block.text.trim().length / 4))
+        block.tokensEstimated = true
+      }
+      return
+    }
     if (blocks.length === 1) {
       blocks[0].tokens = Math.round(reported)
+      blocks[0].tokensEstimated = false
       return
     }
     const totalChars = blocks.reduce((sum, block) => sum + block.text.length, 0)
     let assigned = 0
     blocks.forEach((block, index) => {
+      block.tokensEstimated = false
       if (index === blocks.length - 1) {
         block.tokens = Math.max(0, Math.round(reported) - assigned)
         return
@@ -854,12 +870,97 @@
     })
   }
 
+  // ── Thought stats a reload must not forget ─────────────────────────────────────────
+  //
+  // A thought's duration is measured from its own deltas and its token count arrives on
+  // `message_end`, so both live only in the page that watched the turn. A rebuilt transcript —
+  // a restart, a reattach, another tab — came from the session file, which records neither, so
+  // every head fell back to a bare "Thought." The numbers are remembered here, keyed by the
+  // session and the message's own timestamp (which the session file does keep), and put back
+  // on the blocks when the row is rebuilt.
+  const THOUGHT_STATS_KEY = 'hammer.hx.thoughtStats'
+  const THOUGHT_STATS_SESSIONS = 40
+  const THOUGHT_STATS_MESSAGES = 400
+
+  /** @returns {Record<string, Record<string, any[]>>} */
+  function readThoughtStats() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(THOUGHT_STATS_KEY) || '{}')
+      return parsed && typeof parsed === 'object' ? parsed : {}
+    } catch {
+      return {}
+    }
+  }
+
+  /** The key a conversation's stats live under: the file survives a restart, the id may not. */
+  function thoughtStatsKey(ctx) {
+    return String(ctx?.sessionFile || ctx?.sessionId || '')
+  }
+
+  /**
+   * Records what the thoughts of one assistant message cost, so a later rebuild can show it.
+   * `message.timestamp` is the message's own stamp in the session file, which is the only
+   * handle both this event and a later read of that file agree on.
+   */
+  function rememberThoughtStats(ctx, message, blocks) {
+    const key = thoughtStatsKey(ctx)
+    const stamp = typeof message?.timestamp === 'string' ? message.timestamp : ''
+    const thoughts = (blocks || []).filter((block) => block.kind === 'thinking')
+    if (!key || !stamp || !thoughts.length) return
+    const stats = thoughts.map((block) => ({
+      ms: Number.isFinite(Number(block.durationMs)) ? Math.round(Number(block.durationMs)) : null,
+      tokens: Number.isFinite(Number(block.tokens)) ? Math.round(Number(block.tokens)) : null,
+      estimated: block.tokensEstimated === true,
+    }))
+    const all = readThoughtStats()
+    const session = { ...(all[key] || {}), [stamp]: stats }
+    const stamps = Object.keys(session).sort()
+    for (const stale of stamps.slice(0, Math.max(0, stamps.length - THOUGHT_STATS_MESSAGES))) {
+      delete session[stale]
+    }
+    const next = { ...all, [key]: session }
+    const keys = Object.keys(next)
+    for (const stale of keys.slice(0, Math.max(0, keys.length - THOUGHT_STATS_SESSIONS))) {
+      delete next[stale]
+    }
+    try {
+      localStorage.setItem(THOUGHT_STATS_KEY, JSON.stringify(next))
+    } catch {
+      // Storage full or disabled: the live numbers still render, and a rebuild falls back to
+      // whatever the provider itself reports.
+    }
+  }
+
+  /** Puts a message's remembered figures back on the blocks rebuilt from the session file. */
+  function applyRememberedThoughtStats(ctx, message, blocks) {
+    const key = thoughtStatsKey(ctx)
+    const stamp = typeof message?.timestamp === 'string' ? message.timestamp : ''
+    if (!key || !stamp) return
+    const stats = readThoughtStats()[key]?.[stamp]
+    if (!Array.isArray(stats)) return
+    const thoughts = (blocks || []).filter((block) => block.kind === 'thinking')
+    thoughts.forEach((block, index) => {
+      const stat = stats[index]
+      if (!stat) return
+      const ms = Number(stat.ms)
+      if (block.durationMs == null && Number.isFinite(ms) && ms > 0) block.durationMs = ms
+      const tokens = Number(stat.tokens)
+      if (!Number.isFinite(Number(block.tokens)) || Number(block.tokens) <= 0) {
+        if (Number.isFinite(tokens) && tokens > 0) {
+          block.tokens = tokens
+          block.tokensEstimated = stat.estimated === true
+        }
+      }
+    })
+  }
+
   /**
    * The sentence on a thinking head, e.g. "Thought for 10s · 1.5k tokens."
    *
-   * The duration is the span its deltas streamed for, which only exists for a turn this page
-   * watched; a reopened conversation keeps the provider's token figure but not a wall clock it
-   * never saw, so its head reads "Thought · 1.5k tokens." rather than inventing seconds.
+   * The duration is the span its deltas streamed for; a rebuilt row gets it back from the
+   * remembered stats, and only a message this install never watched falls back to a bare
+   * "Thought". The token figure is the provider's own when it reports one, and an estimate —
+   * marked with `~` — when it does not.
    */
   function thinkingLabel(block, settled) {
     if (!settled) return 'Thinking…'
@@ -871,7 +972,9 @@
       parts.push('Thought')
     }
     const tokens = formatThinkingTokens(block.tokens)
-    if (tokens) parts.push(tokens)
+    // An estimate is marked as one: the head states what the thought cost, and a figure this
+    // page derived from the text must not look like a number the provider billed.
+    if (tokens) parts.push(block.tokensEstimated ? `~${tokens}` : tokens)
     return `${parts.join(' · ')}.`
   }
 
@@ -883,6 +986,17 @@
    */
   function thinkingIcon() {
     return `<span class="hx-thinking-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 0v3.2M12 20.8V24"/><path d="M12 3.2C12.7 8 16 11.3 20.8 12C16 12.7 12.7 16 12 20.8C11.3 16 8 12.7 3.2 12C8 11.3 11.3 8 12 3.2Z"/></svg></span>`
+  }
+
+  /**
+   * The thinking blocks of an assistant item, in the order the row renders them.
+   *
+   * `item.blocks` interleaves reasoning with prose, so a DOM node index is not a block index:
+   * everything that walks the rendered thoughts (the toggle handler, the fold pass) needs this
+   * one filtered list to map a `.hx-thinking` node back to the block it was drawn from.
+   */
+  function thinkingBlocks(item) {
+    return (item.blocks || []).filter((block) => block.kind === 'thinking')
   }
 
   /**
@@ -908,7 +1022,6 @@
       }
     }
   }
-
   /**
    * A thought is a station on the spine, so it behaves like a tool call: while the model is
    * still writing it the row is open, and once its message settles it folds away. The answer
@@ -916,6 +1029,12 @@
    *
    * The open state lives on the block, not on the <details>: a streaming repaint replaces the
    * element, and without it every delta would slam an opened thought shut again.
+   *
+   * One line of reasoning is the exception, and it takes the other branch below: a head reading
+   * "Thought for 2s · 40 tokens" is longer than the thought it hides, so the line is shown in
+   * place and the head is dropped. Whether a thought is one line is a question about the pane —
+   * the same sentence wraps at a narrow width — so the answer is measured after the row mounts
+   * and cached on the block (see applyThoughtFolds), never guessed from the string here.
    */
   function thinkingMarkup(block, item) {
     const settled = item.settled === true
@@ -923,11 +1042,19 @@
     // call, or the end of the message — not only when the whole turn settles. Folding at
     // message_end is what kept every finished thought open for the rest of the turn.
     const complete = settled || block.finished === true
+    // Only a settled thought is ever inline: while the model is still writing, the row grows
+    // with every delta and a measurement taken mid-stream would be stale before it was used.
+    if (settled && block.inline) {
+      // The same station, without the disclosure: the mark still names it as the model's work
+      // and the spine still runs through it, but the prose sits where the head's label would
+      // have been, so there is nothing to open and nothing to click.
+      return `<div class="hx-thinking inline">${thinkingIcon()}<div class="hx-thinking-text">${renderText(block.text || '')}</div></div>`
+    }
     const open = block.open ?? !complete
     return `<details class="hx-thinking ${complete ? 'settled' : 'running'}"${open ? ' open' : ''}>
           <summary class="hx-thinking-head">
             ${thinkingIcon()}
-            <span class="hx-thinking-label">${thinkingLabel(block, settled)}</span>
+            <span class="hx-thinking-label">${thinkingLabel(block, complete)}</span>
           </summary>
           <div class="hx-thinking-text">${renderText(block.text || '')}</div>
         </details>`
@@ -947,6 +1074,108 @@
     return `<div class="hx-assistant">${body}</div>`
   }
 
+  // ── Folding the short thoughts ─────────────────────────────────────────────────────
+  //
+  // A thought that fits on one line should not cost a head and a click to read: the line is
+  // the whole of it, and hiding it behind "Thought for 2s" makes the folded row longer than
+  // the reasoning inside it. The catch is that "one line" is a claim about rendered layout —
+  // the same sentence is one line on a wide pane and three on a narrow one — so it cannot be
+  // decided from the text alone. It is decided here instead, once per row per width, after the
+  // row has mounted: measure, record the answer on the block, repaint the row once if it
+  // changed. Every later sync reads the recorded answer for free.
+
+  /** One fold pass queued for the next frame; a drag-resize fires `resize` on every tick. */
+  let thoughtFoldFrame = 0
+
+  /** True for a text node that occupies a single line box at the width it is rendered at. */
+  function thoughtIsOneLine(node) {
+    const text = node.querySelector('.hx-thinking-text')
+    const parent = node.parentNode
+    if (!text || !parent) return false
+    // `clientWidth` is the row's content width, which is what the text is laid out in. A row
+    // that is not mounted (or is hidden behind an inactive conversation) has none, and a
+    // measurement taken at width 0 would call every thought multi-line.
+    const width = node.clientWidth
+    if (!width) return false
+    // A closed <details> does not render its contents at all, so the thought cannot be measured
+    // where it stands — it is copied into a hidden probe of exactly the row's width instead.
+    // `box-sizing: border-box` makes the probe's content box the same 20px-narrower box the
+    // real text sits in (it inherits .hx-thinking-text's spine indent), so the copy wraps at
+    // exactly the column the reader would see.
+    const probe = document.createElement('div')
+    probe.className = 'hx-thinking-text'
+    probe.setAttribute('aria-hidden', 'true')
+    probe.style.cssText = `position: absolute; left: 0; top: 0; visibility: hidden; pointer-events: none; box-sizing: border-box; width: ${width}px`
+    probe.innerHTML = text.innerHTML
+    parent.insertBefore(probe, node.nextSibling)
+    const styles = getComputedStyle(probe)
+    const fontSize = Number.parseFloat(styles.fontSize) || 0
+    // `line-height: 1.55` is what the stylesheet asks for; the fallback only exists for a page
+    // whose stylesheet has not applied yet, where the measurement is meaningless anyway.
+    const lineHeight = Number.parseFloat(styles.lineHeight) || fontSize * 1.55
+    const height = probe.getBoundingClientRect().height
+    probe.remove()
+    if (!lineHeight) return false
+    // A paragraph's own 6px margins are zeroed at first/last child by the stylesheet, so one
+    // line is one line box, two lines are two. The half-line of slack is for the fractional
+    // heights a browser reports once a font's ascent is rounded to whole pixels.
+    return height <= lineHeight * 1.5
+  }
+
+  /**
+   * Decides, per settled thought, whether it is short enough to stand in its own place.
+   *
+   * Runs after a transcript sync and after a resize — the two moments the width a thought wraps
+   * at can change. It is deliberately skipped for a row that is still streaming: its text is
+   * not final, and the row is patched on every delta, so the answer would be re-decided dozens
+   * of times per second to say nothing. The width is cached on the block so a conversation that
+   * did not change shape costs one `clientWidth` read per thought and nothing else.
+   */
+  function applyThoughtFolds(ctx = active()) {
+    if (ctx !== active()) return
+    let repainted = false
+    for (const item of state.items) {
+      if (item.kind !== 'assistant' || item.settled !== true) continue
+      if (!item.node || !item.node.isConnected) continue
+      const blocks = thinkingBlocks(item)
+      // Empty reasoning is left folded: a blank line is not worth showing in place, and its
+      // head ("Thought for 2s") is the only thing that would say the turn thought at all.
+      const nodes = [...item.node.querySelectorAll('.hx-thinking')]
+      if (!nodes.length || nodes.length !== blocks.length) continue
+      let changed = false
+      nodes.forEach((node, index) => {
+        const block = blocks[index]
+        // A reader who opened or closed this thought has stated what they want to see, and a
+        // repaint that silently re-folded it would be the same bug the toggle handler prevents.
+        if (block.open !== undefined) return
+        if (!String(block.text || '').trim()) return
+        const width = node.clientWidth
+        if (!width || block.foldWidth === width) return
+        block.foldWidth = width
+        const inline = thoughtIsOneLine(node)
+        if (block.inline === inline) return
+        block.inline = inline
+        changed = true
+      })
+      if (changed) {
+        // One repaint per row, not per thought: the row is the unit the transcript mounts.
+        item.node.innerHTML = itemMarkup(item)
+        repainted = true
+      }
+    }
+    // The row heights just changed, so the rail's marks are stale; it repaints next frame.
+    if (repainted) scheduleMinimap()
+  }
+
+  /** One fold pass per frame, for the resize path where `resize` fires on every mouse tick. */
+  function scheduleThoughtFolds() {
+    if (thoughtFoldFrame) return
+    thoughtFoldFrame = requestAnimationFrame(() => {
+      thoughtFoldFrame = 0
+      applyThoughtFolds()
+    })
+  }
+
   // ── Waiting for the first token ────────────────────────────────────────────────
   //
   // A tool row that reads "done" is not the agent still working: what the reader is
@@ -960,6 +1189,8 @@
 
   /** modelId -> the router's measured time to first token, in ms. */
   const ttftByModel = new Map()
+  /** providerKey::modelId -> that row's quota fields, from the same table read. */
+  const quotaRowByModel = new Map()
   /** When the table must be read again; a failed read ages out like a successful one. */
   let ttftFreshUntil = 0
   let ttftLoad = null
@@ -980,10 +1211,25 @@
         if (res.ok) {
           const data = await res.json()
           ttftByModel.clear()
+          quotaRowByModel.clear()
           for (const row of Array.isArray(data.models) ? data.models : []) {
             const id = row && (row.modelId || row.id)
             const ms = row && row.ttft != null ? Number(row.ttft) : NaN
             if (id && Number.isFinite(ms) && ms > 0) ttftByModel.set(String(id), ms)
+            const providerKey = String(row?.providerKey || '')
+            if (providerKey && id) {
+              // Keep only what the rail's quota meter reads. The full table is thousands of
+              // rows; holding every row in the page would be a second copy of the router.
+              quotaRowByModel.set(`${providerKey}::${id}`, {
+                context: row.context || null,
+                knownQuota: row.knownQuota || null,
+                quotaWindows: Array.isArray(row.quotaWindows) ? row.quotaWindows : [],
+                providerUsage: row.providerUsage || null,
+                rateLimit: row.rateLimit || null,
+                recordedUsage: row.recordedUsage || null,
+                providerRecordedUsage: row.providerRecordedUsage || null,
+              })
+            }
           }
         }
       } catch {
@@ -1333,17 +1579,55 @@
   }
 
   /**
-   * The model that answered the most recent message, as the transcript itself recorded it.
+   * The message that answered the most recent turn, as the transcript itself recorded it.
    *
    * Read back from the rows rather than from a field that only the live stream fills: a
    * conversation rebuilt from its session file has the same rows, so it can answer this too.
+   * The row is returned whole because a model change also names the provider that served it.
    */
-  function lastAnsweredModel(ctx) {
+  function lastAnsweredRow(ctx) {
     for (let i = ctx.items.length - 1; i >= 0; i -= 1) {
       const item = ctx.items[i]
-      if (item.kind === 'assistant' && item.model) return item.model
+      if (item.kind === 'assistant' && item.model) return item
     }
     return null
+  }
+
+  /** That row's model name. */
+  function lastAnsweredModel(ctx) {
+    return lastAnsweredRow(ctx)?.model || null
+  }
+
+  /**
+   * The provider that served a message, when it can be known.
+   *
+   * Pi records the model that answered but not always who served it. A message that names the
+   * router's current pick can borrow that pick's provider — it is the same answer — and a
+   * message that carries a provider of its own (a session written by a newer Pi, or a tool
+   * result from a sub-model) is read directly.
+   */
+  function messageProviderName(message, ctx) {
+    const direct = [
+      message?.providerName,
+      message?.provider?.name,
+      message?.provider,
+      message?.model?.provider,
+    ].find((value) => typeof value === 'string' && value)
+    if (direct) return direct
+    const routed = ctx && ctx.routedModel
+    if (!routed) return ''
+    const name = modelName(message?.responseModel || message?.model)
+    const names = [routed.modelId, routed.label, routed.realModelId, routed.realModelLabel]
+      .filter(Boolean)
+      .map((value) => modelName(value))
+    return name && names.includes(name) ? routed.providerName || routed.provider || '' : ''
+  }
+
+  /** "Model · Provider", or just the model when the provider would only repeat it. */
+  function modelWithProvider(name, provider) {
+    const label = modelName(name)
+    if (!provider || label.toLowerCase().includes(String(provider).toLowerCase())) return label
+    return `${label} · ${provider}`
   }
 
   /**
@@ -1352,8 +1636,10 @@
    * ends — "changed to X" alone leaves the reader guessing what X replaced.
    */
   function modelMarkup(item) {
-    const from = modelName(item.from)
-    const to = modelName(item.to)
+    // Both ends name their provider: a model id alone rarely says who served the answer, and a
+    // change is exactly the moment the reader asks.
+    const from = modelWithProvider(item.from, item.fromProvider)
+    const to = modelWithProvider(item.to, item.toProvider)
     return `<div class="hx-model">
       <div class="hx-model-head">
         ${modelIcon()}
@@ -1386,15 +1672,17 @@
     const figures = item.figures
       ? `<span class="hx-compaction-figures">${escapeHtml(item.figures)}</span>`
       : ''
+    // Prose, not code: a compaction summary is sentences a reader scans, so it is set in the
+    // transcript's own face. Monospace made headings and bullets read as shell output.
     const summary = item.summary
-      ? `<details class="hx-compaction-summary"><summary>What was kept</summary><pre>${escapeHtml(item.summary.slice(0, 20000))}</pre></details>`
+      ? `<details class="hx-compaction-summary"><summary>What was kept</summary><div class="hx-compaction-kept">${escapeHtml(item.summary.slice(0, 20000))}</div></details>`
       : ''
     // While it is being written, the summary is shown in place: the pause is the model working,
     // and a row that says only "Compacting the context…" hides the one thing that explains it.
     // The tail is kept rather than the whole text — the reader wants to watch it arrive, not to
     // scroll back through a page that is still growing.
     const stream = state === 'running' && item.stream
-      ? `<pre class="hx-compaction-stream" data-compaction-stream>${escapeHtml(item.stream.slice(-COMPACTION_PREVIEW))}</pre>`
+      ? `<div class="hx-compaction-stream" data-compaction-stream>${escapeHtml(item.stream.slice(-COMPACTION_PREVIEW))}</div>`
       : ''
     return `<div class="hx-compaction ${tone}" data-state="${state}">
       <div class="hx-compaction-head">
@@ -1423,7 +1711,16 @@
       return
     }
     const stick = transcript && atBottom(transcript)
+    // Each repaint replaces the stream's markup, which would snap the box back to the top on
+    // every token. Follow the newest line instead — unless the reader scrolled up to read
+    // something earlier, in which case their place is kept.
+    const previous = item.node.querySelector('[data-compaction-stream]')
+    const follow = !previous || previous.scrollHeight - previous.scrollTop - previous.clientHeight < 24
+    const wasAt = previous ? previous.scrollTop : 0
     item.node.innerHTML = compactionMarkup(item)
+    const stream = item.node.querySelector('[data-compaction-stream]')
+    if (stream)
+      stream.scrollTop = follow ? stream.scrollHeight : Math.min(wasAt, stream.scrollHeight)
     if (stick && transcript) transcript.scrollTop = transcript.scrollHeight
     scheduleMinimap()
   }
@@ -1484,6 +1781,10 @@
     if (stick) transcript.scrollTop = transcript.scrollHeight
     const jump = $('hx-jump')
     if (jump) jump.style.display = atBottom(transcript) ? 'none' : ''
+    // Folded here, in the same task as the mount, rather than on a frame: a thought that turns
+    // out to be one line is repainted before the browser ever paints the head it arrived with,
+    // so the head does not flash up and vanish on a settled turn or a reopened conversation.
+    applyThoughtFolds(ctx)
     scheduleMinimap()
     syncWaitBadge(ctx)
   }
@@ -1870,8 +2171,10 @@
       rail.addEventListener('pointermove', onMove)
       window.addEventListener('pointerup', onUp)
     })
-    // A resize changes both the scale and the track, so the whole rail is redrawn.
+    // A resize changes both the scale and the track, so the whole rail is redrawn — and it
+    // changes the column a thought wraps at, so a line that fitted may now need a fold.
     window.addEventListener('resize', scheduleMinimap)
+    window.addEventListener('resize', scheduleThoughtFolds)
     // Scrolling moves the window without repainting ticks: the geometry did not change.
     $('hx-transcript')?.addEventListener('scroll', () => {
       if (minimapFrame) return
@@ -2067,11 +2370,19 @@
           // never overwrites it with a bare id. `ctx.answeredModel` is the composer's separate
           // reading of the newest answer, which is what lets a fallback update the strip at once.
           if (model) noteAnsweredModel(ctx, model)
-          const previous = lastAnsweredModel(ctx)
+          const provider = messageProviderName(message, ctx)
+          const previousRow = lastAnsweredRow(ctx)
+          const previous = previousRow?.model || null
           if (model && previous && previous !== model) {
-            ctx.items.push({ kind: 'model', from: previous, to: model })
+            ctx.items.push({
+              kind: 'model',
+              from: previous,
+              to: model,
+              fromProvider: previousRow.provider || '',
+              toProvider: provider,
+            })
           }
-          ctx.items.push({ kind: 'assistant', blocks: [], settled: false, model })
+          ctx.items.push({ kind: 'assistant', blocks: [], settled: false, model, provider })
           syncTranscript({}, ctx)
         }
         break
@@ -2114,6 +2425,7 @@
               block.durationMs = Math.max(0, (block.lastDeltaAt || Date.now()) - block.startedAt)
             }
             assignThinkingStats(item, message.usage?.reasoning)
+            rememberThoughtStats(ctx, message, item.blocks)
             if (!item.blocks.some((block) => String(block.text || '').trim())) {
               // A turn that produced nothing leaves no row at all: neither an empty bubble nor
               // the pending "…" it was drawn as. The notice below, if any, explains the turn.
@@ -2544,36 +2856,34 @@
       if (strip) strip.dataset.unavailable = '1'
       setHint(`Agent unavailable — ${data.error || 'the pi runtime was not found'}`, 'error', console)
     }
+    // A route can move without a usage frame (a fresh status after a restart), so paint the
+    // quota meter from the route itself as well as from renderUsage.
+    renderQuota(ctx)
+  }
+
+  /** The routed row's published context window, only when the table states an exact one. */
+  function routedContextWindow(ctx) {
+    const routed = ctx?.routedModel
+    if (!routed) return 0
+    const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
+    const label = String(row?.context || '')
+    // A bound such as ">238k" is not a denominator: using it would make the bar look safer
+    // than the model's real limit. Pi's own contextWindow is preferred anyway; this is only
+    // the fallback for a reopened conversation where Pi reported none.
+    if (!label || /[<>≤≥]/.test(label)) return 0
+    const match = label.replace(/,/g, '').match(/([\d.]+)\s*([kKmM])?/)
+    const value = Number(match?.[1])
+    if (!Number.isFinite(value) || value <= 0) return 0
+    const unit = String(match?.[2] || '').toLowerCase()
+    return Math.round(value * (unit === 'm' ? 1e6 : unit === 'k' ? 1e3 : 1))
   }
 
   function renderUsage(ctx = active()) {
     if (ctx !== active()) return
     const usage = state.usage
     const el = $('hx-usage-text')
-    const bar = $('hx-usage-fill')
+    const bar = $('hx-context-bar')
     if (!el) return
-    if (!usage) {
-      el.textContent = 'No tokens reported yet'
-      if (bar) bar.style.width = '0%'
-      return
-    }
-    // The bridge reports pi's per-message usage split into its real components (input,
-    // output, and the cached halves of the prompt). Older builds sent a single cumulative
-    // `tokens` count with no split; those still render, as one undivided total.
-    const input = Number(usage.inputTokens ?? usage.input ?? 0)
-    const output = Number(usage.outputTokens ?? usage.output ?? 0)
-    const cacheRead = Number(usage.cacheReadTokens ?? usage.cacheRead ?? 0)
-    const cacheWrite = Number(usage.cacheWriteTokens ?? usage.cacheWrite ?? 0)
-    const total =
-      Number(usage.totalTokens ?? usage.tokens) || input + output + cacheRead + cacheWrite
-    if (total <= 0 && !(Number(usage.cost) > 0)) {
-      // A session that has not billed anything yet is a fresh one; say so instead of a
-      // row of zeros that reads like the reporting is broken.
-      el.textContent = 'No tokens reported yet'
-      if (bar) bar.style.width = '0%'
-      return
-    }
-    const parts = []
     // Compact token figures — "433k", "1.2M", "8.1k" — one decimal only when a single digit
     // leads the lumped number, so the strip never widens to a full comma-grouped count.
     const compact = n => {
@@ -2588,6 +2898,34 @@
     // the window object, which is the only place a classic script can share a helper between
     // two function scopes without a build step.
     window.hxCompact = compact
+    const fallbackWindow = routedContextWindow(ctx)
+    if (!usage) {
+      el.textContent = 'No tokens reported yet'
+      // A fresh console can still know the context ceiling from its routed row. Painting the
+      // meter here keeps the bar honest ("not measured") instead of clearing a useful limit.
+      renderContext(bar, {}, compact, fallbackWindow)
+      renderQuota(ctx)
+      return
+    }
+    // The bridge reports pi's per-message usage split into its real components (input,
+    // output, and the cached halves of the prompt). Older builds sent a single cumulative
+    // `tokens` count with no split; those still render, as one undivided total.
+    const input = Number(usage.inputTokens ?? usage.input ?? 0)
+    const output = Number(usage.outputTokens ?? usage.output ?? 0)
+    const cacheRead = Number(usage.cacheReadTokens ?? usage.cacheRead ?? 0)
+    const cacheWrite = Number(usage.cacheWriteTokens ?? usage.cacheWrite ?? 0)
+    const total =
+      Number(usage.totalTokens ?? usage.tokens) || input + output + cacheRead + cacheWrite
+    if (total <= 0 && !(Number(usage.cost) > 0)) {
+      // A session that has not billed anything yet is a fresh one; say so instead of a
+      // row of zeros that reads like the reporting is broken. Its context figure may still
+      // be the only thing Pi has measured, so paint that before returning.
+      el.textContent = 'No tokens reported yet'
+      renderContext(bar, usage, compact, fallbackWindow)
+      renderQuota(ctx)
+      return
+    }
+    const parts = []
     if (total > 0 && input + output + cacheRead + cacheWrite === 0) {
       // No split available: show the one number we were given.
       parts.push(`${compact(total)} tokens`)
@@ -2601,7 +2939,13 @@
     el.textContent = parts.join(' · ')
     // The meter is drawn against the model's own window, not against the turn's spend: only
     // the window says how close compaction is. Both figures come from the frame.
-    renderContext(bar, usage, compact)
+    renderContext(bar, usage, compact, fallbackWindow)
+    // Quota is about the routed row, not this conversation. Paint it from the same table the
+    // router uses, and refresh that table when its cache has aged out.
+    renderQuota(ctx)
+    void loadKnownTtfts().then(() => {
+      if (ctx === active()) renderQuota(ctx)
+    })
   }
 
   /**
@@ -2620,21 +2964,35 @@
    * @param {HTMLElement|null} bar
    * @param {any} usage
    * @param {(n: number) => string} compact
+   * @param {number} [fallbackWindow] the routed row's published window, when it is exact
    */
-  function renderContext(bar, usage, compact) {
+  function setContextValue(text) {
+    const el = $('hx-context-value')
+    if (el) el.textContent = text
+  }
+
+  function renderContext(bar, usage, compact, fallbackWindow = 0) {
     const note = $('hx-context-note')
+    const fill = bar?.firstElementChild || null
     // `contextUsage` is pi's figure (it may also ride along on a live usage frame);
     // `usage.contextWindow` is the flat estimate a bare per-message count would give.
     const context = usage.contextUsage || null
-    const window_ = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
+    const window_ =
+      Number(context?.contextWindow) || Number(usage.contextWindow) || Number(fallbackWindow) || 0
     if (window_ <= 0) {
       // No window declared: the turn-share bar, kept and labelled for what it actually is.
       if (bar) {
         bar.classList.remove('is-context', 'is-full')
+        bar.setAttribute('aria-valuenow', '0')
+        bar.removeAttribute('aria-valuetext')
+        bar.style.removeProperty('--hx-context-trigger')
         const spent = Number(usage.totalTokens ?? usage.tokens) || 0
         const contextTokens = Number(usage.contextTokens ?? usage.context) || 0
-        bar.style.width = `${spent > 0 ? Math.min(100, Math.round((contextTokens / spent) * 100)) : 0}%`
+        if (fill) {
+          fill.style.width = `${spent > 0 ? Math.min(100, Math.round((contextTokens / spent) * 100)) : 0}%`
+        }
       }
+      setContextValue('—')
       if (note) {
         note.hidden = true
         note.textContent = ''
@@ -2643,29 +3001,528 @@
     }
     const used = Number(context?.tokens)
     const measured = Number.isFinite(used) && used >= 0
+    // A live tally is an estimate from the text streamed so far, and it says so: a figure the
+    // bridge guessed must not read like one Pi vouched for.
+    const estimated = context?.estimated === true
     // Pi reserves room for the reply: it compacts at `window - reserve`, which is why a
     // meter filled to 100% is a meter that has already compacted.
     const RESERVE = 16384
-    const trigger = window_ - RESERVE
+    const trigger = Math.max(0, window_ - RESERVE)
     const pct = measured ? Math.max(0, Math.min(100, (used / window_) * 100)) : null
     if (bar) {
       bar.classList.add('is-context')
       bar.classList.toggle('is-full', pct != null && pct >= 95)
-      bar.style.width = pct != null ? `${pct}%` : '0%'
+      bar.setAttribute('aria-valuenow', pct != null ? String(Math.round(pct)) : '')
+      bar.setAttribute(
+        'aria-valuetext',
+        pct != null ? `${compact(used)} of ${compact(window_)} tokens` : 'context not measured',
+      )
       // The trigger tick sits at the share of the window pi holds back for its reply.
-      const fill = bar.firstElementChild
-      if (fill) fill.style.right = `${100 - (trigger / window_) * 100}%`
+      bar.style.setProperty('--hx-context-trigger', `${(trigger / window_) * 100}%`)
+      if (fill) fill.style.width = pct != null ? `${pct}%` : '0%'
     }
+    setContextValue(pct == null ? 'not measured' : `${estimated ? '~' : ''}${Math.round(pct)}%`)
     if (note) {
       note.hidden = false
       if (!measured) {
         // Pi's own answer to "how full is it": it cannot tell until a model answers again.
         note.textContent = `context not measured · window ${compact(window_)}`
+      } else if (estimated) {
+        note.textContent = `~${compact(used)} of ${compact(window_)} · estimating while it answers`
       } else {
         const left = Math.max(0, window_ - used)
         note.textContent = `${compact(used)} of ${compact(window_)} · ${compact(left)} free`
       }
     }
+  }
+
+  // ── Quota meter ───────────────────────────────────────────────────────────────────
+  //
+  // The row in the Router table already answers "what allowance does this model have?" by
+  // merging published limits, provider usage, response headers and observed quota refusals.
+  // The rail asks the same question about the one row the agent is on, so it reads the same
+  // fields from /api/models and keeps the table's vocabulary rather than inventing a second
+  // quota model. The formatting is narrower, but the numbers are the row's own.
+
+  const RAIL_QUOTA_PERIOD_LABEL = {
+    minute: 'MINUTE',
+    hour: 'HOUR',
+    day: 'DAY',
+    week: 'WEEK',
+    month: 'MONTH',
+    lifetime: 'ONE-OFF',
+    rolling: 'ROLLING',
+    window: 'WINDOW',
+  }
+  const RAIL_QUOTA_RECORDED_FIELD = {
+    tokens: {
+      minute: 'tokensLastMinute',
+      hour: 'tokensLastHour',
+      day: 'tokensToday',
+      week: 'tokensThisWeek',
+      month: 'tokensThisMonth',
+      lifetime: 'tokensLifetime',
+    },
+    requests: {
+      minute: 'requestsLastMinute',
+      hour: 'requestsLastHour',
+      day: 'requestsToday',
+      week: 'requestsThisWeek',
+      month: 'requestsThisMonth',
+    },
+  }
+  const RAIL_QUOTA_PERIOD_ORDER = {
+    minute: 0,
+    hour: 0.5,
+    day: 1,
+    week: 2,
+    month: 3,
+    lifetime: 4,
+    rolling: 5,
+    window: 6,
+  }
+  const RAIL_QUOTA_METRIC_ORDER = { requests: 0, tokens: 1 }
+
+  function railQuotaPeriod(value) {
+    const text = String(value || '').toLowerCase()
+    if (/\bminute\b|per\s*minute|\brpm\b/.test(text)) return 'minute'
+    if (/\bday\b|daily|24\s*hour|rolling\s*24/.test(text)) return 'day'
+    if (/\bhour\b|hourly|per\s*hour/.test(text)) return 'hour'
+    if (/\bweek\b|weekly|7\s*day/.test(text)) return 'week'
+    if (/\bmonth\b|monthly|30\s*day/.test(text)) return 'month'
+    if (/lifetime|one[- ]?off|one[- ]?time|signup/.test(text)) return 'lifetime'
+    if (/rolling/.test(text)) return 'rolling'
+    return 'window'
+  }
+
+  function railQuotaPeriodLabel(period, rawWindow) {
+    return (
+      RAIL_QUOTA_PERIOD_LABEL[period] ||
+      (rawWindow ? String(rawWindow).toUpperCase() : 'WINDOW')
+    )
+  }
+
+  function railQuotaResetAt(period) {
+    if (period === 'day') {
+      const d = new Date()
+      d.setUTCHours(24, 0, 0, 0)
+      return d.getTime()
+    }
+    if (period === 'week') {
+      const d = new Date()
+      const weekday = d.getUTCDay() || 7
+      d.setUTCDate(d.getUTCDate() + 8 - weekday)
+      d.setUTCHours(0, 0, 0, 0)
+      return d.getTime()
+    }
+    if (period === 'month') {
+      const d = new Date()
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).getTime()
+    }
+    return null
+  }
+
+  function railQuotaResetText(ms) {
+    const raw = Number(ms)
+    if (!Number.isFinite(raw) || raw <= 0) return ''
+    const total = Math.max(1, Math.floor(raw / 1000))
+    const days = Math.floor(total / 86400)
+    const hours = Math.floor((total % 86400) / 3600)
+    const minutes = Math.floor((total % 3600) / 60)
+    if (days > 0) return `${days}d ${hours}h`
+    if (hours > 0) return `${hours}h ${minutes}m`
+    if (minutes > 0) return `${minutes}m`
+    return `${total}s`
+  }
+
+  function railQuotaPercentText(raw) {
+    if (raw == null || !Number.isFinite(raw)) return 'not reported'
+    if (raw > 0 && raw < 0.01) return '<0.01'
+    if (raw < 10) return raw.toFixed(2)
+    if (raw < 100) return raw.toFixed(1)
+    return Math.round(raw).toLocaleString()
+  }
+
+  function railQuotaCompact(n) {
+    return typeof window.hxCompact === 'function' ? window.hxCompact(n) : String(n)
+  }
+
+  function railQuotaWindow({
+    period,
+    metric = 'tokens',
+    rawWindow,
+    used,
+    total,
+    remaining,
+    resetAt,
+    detail,
+    stale,
+    unavailable,
+    usedPercent,
+    percentOnly,
+  }) {
+    const normalizedMetric = metric === 'requests' ? 'requests' : 'tokens'
+    let totalValue = total == null ? null : Number(total)
+    let remainingValue = remaining == null ? null : Number(remaining)
+    let usedValue = used == null ? null : Number(used)
+    let usedPercentValue = usedPercent == null ? null : Number(usedPercent)
+    if (!Number.isFinite(totalValue) || totalValue < 0) totalValue = null
+    if (!Number.isFinite(remainingValue)) remainingValue = null
+    if (!Number.isFinite(usedValue)) usedValue = null
+    if (!Number.isFinite(usedPercentValue) || usedPercentValue < 0) usedPercentValue = null
+    if (usedPercentValue != null) usedPercentValue = Math.min(100, usedPercentValue)
+    const isPercentOnly = Boolean(percentOnly) || (totalValue == null && usedPercentValue != null)
+    const zeroLimit = totalValue === 0 || Boolean(unavailable)
+    if (zeroLimit) {
+      usedValue = 0
+      remainingValue = 0
+    }
+    if (usedValue == null && totalValue != null && totalValue > 0 && remainingValue != null) {
+      usedValue = Math.max(0, totalValue - remainingValue)
+    }
+    if (remainingValue == null && totalValue != null && totalValue > 0 && usedValue != null) {
+      remainingValue = Math.max(0, totalValue - usedValue)
+    }
+    if (usedPercentValue == null && totalValue != null && totalValue > 0 && usedValue != null) {
+      usedPercentValue = Math.max(0, (usedValue / totalValue) * 100)
+    }
+    if (
+      usedValue == null &&
+      totalValue == null &&
+      remainingValue == null &&
+      usedPercentValue == null
+    ) {
+      return null
+    }
+    return {
+      period,
+      metric: normalizedMetric,
+      rawWindow,
+      total: totalValue,
+      remaining: remainingValue,
+      used: usedValue,
+      usedPercent: usedPercentValue,
+      percentOnly: isPercentOnly,
+      resetAt: Number.isFinite(Number(resetAt)) && Number(resetAt) > 0 ? Number(resetAt) : null,
+      detail: detail || '',
+      stale: Boolean(stale),
+      unavailable: zeroLimit,
+    }
+  }
+
+  function railQuotaWindows(row) {
+    const windows = []
+    const byWindow = new Map()
+    const add = (window, replace = false) => {
+      if (!window) return
+      // A positive window whose reset has already passed is history, not a live quota.
+      if (
+        window.total != null &&
+        window.total > 0 &&
+        window.resetAt != null &&
+        window.resetAt <= Date.now()
+      ) {
+        return
+      }
+      const key = `${window.metric}:${window.period}`
+      const existing = byWindow.get(key)
+      if (existing && !replace) return
+      if (existing) {
+        const index = windows.indexOf(existing)
+        if (index >= 0) windows.splice(index, 1)
+      }
+      byWindow.set(key, window)
+      windows.push(window)
+    }
+
+    const known = row?.knownQuota
+    const knownLimits = Array.isArray(known?.limits) ? known.limits : []
+    const scope = known?.limitScope === 'model' ? 'model' : 'account'
+    const recorded = scope === 'model' ? row?.recordedUsage : row?.providerRecordedUsage || row?.recordedUsage
+    for (const limit of knownLimits) {
+      const metric = limit?.metric === 'requests' ? 'requests' : limit?.metric === 'tokens' ? 'tokens' : null
+      if (!metric) continue
+      const total = Number(limit.limit)
+      if (!Number.isFinite(total) || total < 0) continue
+      const period = railQuotaPeriod(limit.period)
+      const field = RAIL_QUOTA_RECORDED_FIELD[metric]?.[period]
+      const recordedValue = field ? Number(recorded?.[field]) : NaN
+      const used = field ? (Number.isFinite(recordedValue) ? recordedValue : 0) : null
+      add(
+        railQuotaWindow({
+          period,
+          metric,
+          rawWindow: limit.period,
+          used,
+          total,
+          remaining: used == null ? null : Math.max(0, total - used),
+          resetAt: railQuotaResetAt(period),
+          detail: limit.label || 'published limit',
+        }),
+      )
+    }
+
+    const report = row?.providerUsage
+    const reportMetric =
+      report?.metric === 'requests' ? 'requests' : report?.metric === 'tokens' ? 'tokens' : null
+    if (report && reportMetric) {
+      add(
+        railQuotaWindow({
+          period: railQuotaPeriod(report.window),
+          metric: reportMetric,
+          rawWindow: report.window,
+          used: report.used,
+          total: report.limit ?? report.total,
+          remaining: report.remaining,
+          resetAt: report.resetAt,
+          detail: report.accountLabel || report.model || report.window || 'provider usage',
+          stale: report.freshness === 'stale',
+        }),
+        true,
+      )
+    }
+
+    const rateLimit = row?.rateLimit
+    if (rateLimit) {
+      const retryReset =
+        rateLimit.capturedAt && rateLimit.retryAfterMs
+          ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
+          : null
+      // Token Harbor's free tier is a percentage of a rolling seven-day allowance, not a
+      // token total. Show the percentage the gateway reported rather than inventing a limit.
+      if (
+        rateLimit.freeUsedPercent != null &&
+        (rateLimit.freeResetAt == null || Number(rateLimit.freeResetAt) > Date.now())
+      ) {
+        add(
+          railQuotaWindow({
+            period: 'week',
+            metric: 'tokens',
+            rawWindow: 'rolling 7-day free allowance',
+            usedPercent: rateLimit.freeUsedPercent,
+            resetAt: rateLimit.freeResetAt,
+            detail: 'Token Harbor free-tier allowance',
+            percentOnly: true,
+          }),
+        )
+      }
+      if (rateLimit.limitTokens != null || rateLimit.remainingTokens != null) {
+        add(
+          railQuotaWindow({
+            period: 'window',
+            metric: 'tokens',
+            rawWindow: 'last response',
+            used:
+              rateLimit.limitTokens != null && rateLimit.remainingTokens != null
+                ? Math.max(0, Number(rateLimit.limitTokens) - Number(rateLimit.remainingTokens))
+                : null,
+            total: rateLimit.limitTokens,
+            remaining: rateLimit.remainingTokens,
+            resetAt: rateLimit.resetTokensAt || retryReset,
+            detail: 'from the last response',
+          }),
+        )
+      }
+      if (rateLimit.limitRequests != null || rateLimit.remainingRequests != null) {
+        add(
+          railQuotaWindow({
+            period: 'window',
+            metric: 'requests',
+            rawWindow: 'last response',
+            used:
+              rateLimit.limitRequests != null && rateLimit.remainingRequests != null
+                ? Math.max(0, Number(rateLimit.limitRequests) - Number(rateLimit.remainingRequests))
+                : null,
+            total: rateLimit.limitRequests,
+            remaining: rateLimit.remainingRequests,
+            resetAt: rateLimit.resetRequestsAt || retryReset,
+            detail: 'from the last response',
+          }),
+        )
+      }
+    }
+
+    for (const observed of Array.isArray(row?.quotaWindows) ? row.quotaWindows : []) {
+      add(
+        railQuotaWindow({
+          period: railQuotaPeriod(observed.period || observed.rawWindow),
+          metric: observed.metric,
+          rawWindow: observed.rawWindow,
+          used: observed.used,
+          total: observed.limit ?? observed.total,
+          remaining: observed.remaining,
+          resetAt: observed.resetAt,
+          detail: observed.detail,
+          stale: observed.stale,
+          unavailable: observed.unavailable,
+          usedPercent: observed.usedPercent,
+          percentOnly: observed.percentOnly,
+        }),
+        true,
+      )
+    }
+
+    const sorted = windows.sort(
+      (a, b) =>
+        (RAIL_QUOTA_PERIOD_ORDER[a.period] ?? 9) -
+          (RAIL_QUOTA_PERIOD_ORDER[b.period] ?? 9) ||
+        (RAIL_QUOTA_METRIC_ORDER[a.metric] ?? 9) - (RAIL_QUOTA_METRIC_ORDER[b.metric] ?? 9),
+    )
+    // Four zero-limit windows say the same thing four times. If any real window exists,
+    // drop the zeros; otherwise collapse the whole row into one "not available" statement.
+    const available = sorted.filter((window) => !window.unavailable)
+    if (available.length > 0) return available
+    if (sorted.length === 0) return []
+    const first = sorted[0]
+    return [
+      {
+        period: 'window',
+        metric: first.metric,
+        rawWindow: 'free tier',
+        total: 0,
+        remaining: 0,
+        used: 0,
+        usedPercent: null,
+        percentOnly: false,
+        resetAt: null,
+        detail: 'Requests and tokens are not included in the free tier.',
+        stale: false,
+        unavailable: true,
+      },
+    ]
+  }
+
+  function railQuotaWindowHtml(window) {
+    const noFreeTier = window.unavailable && !window.percentOnly && window.period === 'window'
+    const periodLabel = noFreeTier
+      ? 'FREE TIER'
+      : railQuotaPeriodLabel(window.period, window.rawWindow)
+    const unit = window.metric === 'requests' ? 'requests' : 'tokens'
+    const remainingPercent =
+      (window.unavailable && !window.percentOnly) || window.usedPercent == null
+        ? null
+        : 100 - Math.min(100, window.usedPercent)
+    const totalText = noFreeTier
+      ? 'not included'
+      : window.percentOnly
+        ? 'allowance not published'
+        : window.total != null
+          ? `${railQuotaCompact(window.total)} ${unit} / ${periodLabel.toLowerCase()}`
+          : 'limit not reported'
+    const remainingText = noFreeTier
+      ? ''
+      : window.percentOnly
+        ? remainingPercent == null
+          ? 'remaining not reported'
+          : `${railQuotaPercentText(remainingPercent)}% left`
+        : window.unavailable
+          ? 'no free-tier allowance'
+          : window.remaining != null
+            ? `${railQuotaCompact(window.remaining)} left`
+            : 'remaining not reported'
+    const resetMs = window.resetAt == null ? null : window.resetAt - Date.now()
+    const resetText =
+      noFreeTier || resetMs == null || resetMs <= 0
+        ? ''
+        : `resets in ${railQuotaResetText(resetMs)}`
+    const percentText = noFreeTier
+      ? 'no allowance'
+      : window.percentOnly && window.usedPercent != null
+        ? `${railQuotaPercentText(window.usedPercent)}% used`
+        : window.unavailable
+          ? 'not available'
+          : window.usedPercent == null
+            ? 'usage not reported'
+            : `${railQuotaPercentText(window.usedPercent)}% used`
+    const barWidth =
+      window.usedPercent == null || (window.unavailable && !window.percentOnly)
+        ? 0
+        : Math.min(100, window.usedPercent)
+    const tone =
+      remainingPercent == null
+        ? 'unknown'
+        : remainingPercent <= 10
+          ? 'error'
+          : remainingPercent <= 30
+            ? 'warning'
+            : 'success'
+    const titleParts = noFreeTier
+      ? ['No free-tier requests or tokens', window.detail]
+      : [
+          window.percentOnly ? `${percentText} · allowance not published` : percentText,
+          window.used != null && window.total != null && !window.unavailable
+            ? `${window.used.toLocaleString()} of ${window.total.toLocaleString()} ${unit}`
+            : '',
+          window.remaining != null && !window.unavailable
+            ? `${window.remaining.toLocaleString()} ${unit} remaining`
+            : '',
+          window.percentOnly && remainingPercent != null
+            ? `${railQuotaPercentText(remainingPercent)}% remaining`
+            : '',
+          resetText,
+          window.detail,
+          window.stale ? 'stale' : '',
+        ]
+    const meta = noFreeTier
+      ? window.detail
+      : [totalText, remainingText, resetText].filter(Boolean).join(' · ')
+    return `<div class="hx-quota-window${window.stale ? ' is-stale' : ''}${
+      window.unavailable ? ' is-unavailable' : ''
+    }" title="${escapeHtml(titleParts.filter(Boolean).join(' · '))}">
+      <div class="hx-quota-head"><span class="hx-quota-period">${escapeHtml(
+        periodLabel,
+      )}</span><span class="hx-quota-pct">${escapeHtml(percentText)}</span></div>
+      <div class="hx-quota-track${
+        (window.unavailable && !window.percentOnly) || window.usedPercent == null
+          ? ' hx-quota-track-unknown'
+          : ''
+      }" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${
+        (window.unavailable && !window.percentOnly) || window.usedPercent == null
+          ? ''
+          : Math.round(Math.min(100, window.usedPercent))
+      }" aria-label="${escapeHtml(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeHtml(
+        percentText,
+      )}"><div class="hx-quota-fill hx-quota-fill-${tone}" style="width:${barWidth.toFixed(
+        2,
+      )}%"></div></div>
+      ${meta ? `<div class="hx-quota-meta">${escapeHtml(meta)}</div>` : ''}
+    </div>`
+  }
+
+  function renderQuota(ctx = active()) {
+    const list = $('hx-quota-windows')
+    const modelEl = $('hx-quota-model')
+    const routed = ctx?.routedModel
+    if (!list) return
+    if (!routed) {
+      if (modelEl) {
+        modelEl.textContent = 'no model'
+        modelEl.title = ''
+      }
+      list.innerHTML = '<div class="hx-quota-empty">No model routed yet.</div>'
+      return
+    }
+    const label = routed.label || routed.modelId || routed.realModelId || 'model'
+    if (modelEl) {
+      modelEl.textContent = label
+      modelEl.title = [label, routed.providerName].filter(Boolean).join(' · ')
+    }
+    const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
+    if (!row) {
+      if (Date.now() < ttftFreshUntil) {
+        list.innerHTML = '<div class="hx-quota-empty">No quota is reported for this model.</div>'
+      } else {
+        list.innerHTML = '<div class="hx-quota-empty">Reading quota…</div>'
+        void loadKnownTtfts().then(() => {
+          if (ctx === active()) renderQuota(ctx)
+        })
+      }
+      return
+    }
+    const windows = railQuotaWindows(row)
+    list.innerHTML = windows.length
+      ? windows.map(railQuotaWindowHtml).join('')
+      : '<div class="hx-quota-empty">No quota is reported for this model.</div>'
   }
 
   async function refreshStatus(console = active()) {
@@ -2686,6 +3543,16 @@
         console.usage = data.usage
         if (console === active()) {
           state.usage = data.usage
+          renderUsage(console)
+        }
+      }
+      // Pi's context figure rides on the status, not on `usage`. A reopened conversation
+      // carries it here with an otherwise empty usage object, so dropping it left the context
+      // bar blank even though the agent had answered exactly how full the window was.
+      if (data.contextUsage) {
+        console.usage = { ...(console.usage || {}), contextUsage: data.contextUsage }
+        if (console === active()) {
+          state.usage = console.usage
           renderUsage(console)
         }
       }
@@ -3668,6 +4535,7 @@
     // belongs. That is what makes a model change survive a restart — or a conversation opened
     // for the first time in this page, which never saw the live event at all.
     let previousModel = null
+    let previousProvider = ''
     for (const message of data.messages || []) {
       if (message.role === 'user') {
         ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
@@ -3678,14 +4546,27 @@
         // reply that is not from the model talking a line earlier. A historical message that
         // only names Hammer's `best` alias has no recoverable model, so it is left unset rather
         // than having today's route painted over an old turn.
+        const provider = messageProviderName(message, ctx)
         if (model && previousModel && previousModel !== model) {
-          ctx.items.push({ kind: 'model', from: previousModel, to: model })
+          ctx.items.push({
+            kind: 'model',
+            from: previousModel,
+            to: model,
+            fromProvider: previousProvider,
+            toProvider: provider,
+          })
         }
-        if (model) previousModel = model
+        if (model) {
+          previousModel = model
+          previousProvider = provider
+        }
         // A turn that only called tools wrote no prose. Its tool rows carry that story, and an
         // empty bubble would sit in the transcript as "…" forever after a resume.
         if (blocks.length) {
-          const item = { kind: 'assistant', blocks, settled: true, model }
+          const item = { kind: 'assistant', blocks, settled: true, model, provider }
+          // A remembered figure goes on first, so a provider-reported one can replace it and
+          // an estimate only fills what neither the session file nor the memory has.
+          applyRememberedThoughtStats(ctx, message, blocks)
           assignThinkingStats(item, message.usage?.reasoning)
           ctx.items.push(item)
         }
@@ -4146,10 +5027,10 @@
     // A re-render replaces the element a disclosure lived in, so the open state the reader chose
     // has to live on the item. It is recorded from the click, never from the `toggle` event: a
     // running row is painted open, and the toggle the browser fires for the page's own `open`
-    // attribute is indistinguishable from a reader opening it. Recording that made every finished
-    // edit and thought stay open for the rest of the turn — only a restart, whose fresh items
-    // carry no recorded state, folded them. The default action has not run when the click arrives,
-    // so the state is read on the next frame.
+    // attribute is indistinguishable from a reader opening it. Recording that made every
+    // finished edit and thought stay open for the rest of the turn — only a restart, whose fresh
+    // items carry no recorded state, folded them. The default action has not run when the click
+    // arrives, so the state is read on the next frame.
     $('hx-transcript')?.addEventListener(
       'click',
       (event) => {
@@ -4163,9 +5044,9 @@
             const item = state.items.find((entry) => entry.node?.contains(node))
             if (!item) return
             const nodes = [...(item.node?.querySelectorAll('.hx-thinking') || [])]
-            const blocks = (item.blocks || []).filter((block) => block.kind === 'thinking')
-            const block = blocks[nodes.indexOf(node)]
-            if (block) block.open = node.open
+            const block = thinkingBlocks(item)[nodes.indexOf(node)]
+            // A thought shown in place has no disclosure: it is a div, so this path never sees it.
+            if (block && !block.inline) block.open = node.open
             return
           }
           if (!node.classList?.contains('hx-tool')) return

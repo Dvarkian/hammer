@@ -5,12 +5,15 @@ import { readFileSync } from 'node:fs'
 import { providerQuotaTable } from '../lib/providers/index.js'
 import { quotaAppliesToHost } from '../lib/providers/schema.js'
 import { getDefaultProviderBaseUrl } from '../lib/providers/discovery.js'
+import { parseTokenHarborFreeTierHeaders } from '../lib/utils.js'
 
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
 const dashboardCss = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
 const indexHtml = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
 const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
 const modelsRoute = readFileSync(new URL('../lib/http/routes/models.js', import.meta.url), 'utf8')
+const proxyRoute = readFileSync(new URL('../lib/http/routes/proxy.js', import.meta.url), 'utf8')
 
 test('the UI opens only after imported-provider startup discovery is awaited', () => {
   const discovery = server.indexOf('const discoverySettled = await Promise.allSettled')
@@ -70,6 +73,46 @@ test('a pooled provider draws one remaining-quota bar per account, side by side'
     dashboardCss,
     /\.credential-pool-grid \{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/,
   )
+})
+
+test('Token Harbor free-tier headers become a percent-only weekly window', () => {
+  const now = Date.parse('2026-11-10T12:00:00.000Z')
+  const parsed = parseTokenHarborFreeTierHeaders(
+    new Headers({
+      'x-th-free-used-pct': '42.5',
+      'x-th-free-resets': '2026-11-17T00:00:00.000Z',
+    }),
+    now,
+  )
+  assert.equal(parsed.freeUsedPercent, 42.5)
+  assert.equal(parsed.freeResetAt, Date.parse('2026-11-17T00:00:00.000Z'))
+  assert.equal(parsed.freeCapturedAt, now)
+  // The allowance's size is unpublished, so nothing may turn 42.5% into a token count.
+  assert.equal('limitTokens' in parsed, false)
+  assert.equal(parseTokenHarborFreeTierHeaders(new Headers(), now), null)
+
+  const relative = parseTokenHarborFreeTierHeaders(
+    { 'X-TH-Free-Used-Pct': '12%', 'X-TH-Free-Resets': '3600' },
+    now,
+  )
+  assert.equal(relative.freeUsedPercent, 12)
+  assert.equal(relative.freeResetAt, now + 3600_000)
+
+  // Both response paths capture the headers, and both UI surfaces render the percentage.
+  assert.match(server, /parseTokenHarborFreeTierHeaders\(rl\)/)
+  assert.match(server, /parseTokenHarborFreeTierHeaders\(headers\)/)
+  assert.match(dashboard, /rateLimit\.freeUsedPercent/)
+  assert.match(harness, /rateLimit\.freeUsedPercent/)
+
+  // Token Harbor states the allowance only on a non-streamed answer, and the proxy forces
+  // SSE upstream — so the free rows need a check of their own or the percentage never lands.
+  assert.match(proxyRoute, /refreshTokenHarborFreeAllowance/)
+  assert.match(proxyRoute, /parseTokenHarborFreeTierHeaders\(response\.headers\)/)
+  assert.match(proxyRoute, /\/:free\$\/i\.test/)
+  // The allowance is account state, so the check has to persist it: a route context that does
+  // not seed the saver turns the write into a silent no-op that a restart erases.
+  assert.match(proxyRoute, /ctx\.saveUsageStats\?\.\(\)/)
+  assert.match(server, /\bsaveUsageStats,\n\s*scheduleLogSave,/)
 })
 
 test('the account bars are fed by quota captured per credential', () => {
@@ -181,6 +224,10 @@ test('the model table shows a quota window for every endpoint', () => {
 })
 
 test('the graveyard carries the quota column and Google rows link to live project limits', () => {
+  // InferX publishes no usage endpoint, so a row with nothing observed points at its model
+  // list instead of showing a dash that reads like "no limit".
+  assert.match(dashboard, /QUOTA_PROVIDER_NOTES\[m\?\.providerKey\]/)
+  assert.match(dashboard, /No usage API/)
   assert.match(indexHtml, /<th id="th-graveyard-quota"/)
   assert.match(dashboard, /\$\{quotaRowCell\(first\)\}/)
   assert.match(dashboard, /function quotaProviderNote\(m\)/)
@@ -358,11 +405,16 @@ test('every published numeric limit renders a bar, and none without a number doe
   for (const quota of numeric) {
     for (const limit of quota.limits) {
       assert.ok(limit.limit > 0, `${quota.source} limit must be positive`)
-      // Every period here has a recorded counter to draw against, the hourly one included:
-      // KiloCode's 200 requests/hour free pool is measured against the trailing hour.
-      assert.ok(['hour', 'day', 'week', 'month', 'lifetime'].includes(limit.period))
+      // Every period here has a recorded counter to draw against: KiloCode's 200 requests/hour
+      // free pool is measured against the trailing hour, and Token Harbor's 60 requests/minute
+      // against the current minute of the same ring.
+      assert.ok(['minute', 'hour', 'day', 'week', 'month', 'lifetime'].includes(limit.period))
     }
   }
+  // The minute limit needs the same treatment as the hourly one: both surfaces read the
+  // newest bucket of the trailing-hour ring for it.
+  assert.match(dashboard, /minute: 'requestsLastMinute'/)
+  assert.match(harness, /minute: 'requestsLastMinute'/)
 })
 
 // A stated reset that has already passed means the window it described no longer exists: the

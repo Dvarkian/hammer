@@ -332,6 +332,32 @@ test('boot timing is available on request and never changes what is drawn', () =
 })
 // ── Waiting for the first token ──────────────────────────────────────────────────────────
 
+test('the inspector rail carries both context and routed-row quota', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  // The context meter is named and separate from the quota meter: one says how full this
+  // conversation is, the other how much of the routed model's allowance is left.
+  assert.match(html, /id="hx-context-bar"/)
+  assert.match(html, /id="hx-context-value"/)
+  assert.match(html, /id="hx-quota-windows"/)
+  assert.match(html, /id="hx-quota-model"/)
+  // Quota comes from the same /api/models row the Router table reads, not a second estimate.
+  assert.match(harness, /const quotaRowByModel = new Map\(\)/)
+  assert.match(harness, /quotaRowByModel\.set\(/)
+  assert.match(harness, /function renderQuota\(/)
+  assert.match(harness, /function railQuotaWindows\(/)
+  assert.match(harness, /function railQuotaWindowHtml\(/)
+  assert.match(harness, /row\?\.quotaWindows/)
+  assert.match(harness, /row\?\.providerUsage/)
+  // Pi's context figure arrives on status; a status refresh must not discard it.
+  assert.match(harness, /if \(data\.contextUsage\)/)
+  assert.match(harness, /contextUsage: data\.contextUsage/)
+  assert.match(harness, /function routedContextWindow\(/)
+  assert.match(css, /\.hx-quota-window/)
+  assert.match(css, /\.hx-quota-fill-success/)
+})
+
 test('a live wait below the spine runs on the model’s own TTFT', () => {
   const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
   const harnessCss = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')

@@ -31,13 +31,14 @@ const FAKE_PI = fileURLToPath(new URL('./support/fake-pi.mjs', import.meta.url))
  * @param {string} root
  * @param {Record<string, string>} [env]
  */
-function supervisedBridge(root, env = {}) {
+function supervisedBridge(root, env = {}, options = {}) {
   return new PiBridge({
     command: process.execPath,
     args: [FAKE_PI, '--mode', 'rpc'],
     cwd: root,
     env,
     autoRestart: false,
+    ...options,
     supervisor: {
       script: materializeSupervisor(supervisorScriptPath(root)),
       node: process.execPath,
@@ -108,6 +109,64 @@ test('a replacement router replays what the agent wrote while it was gone', asyn
   // Replayed records are remembered, not re-processed: the turn's tokens were already counted
   // by the router that witnessed them.
   assert.equal(second.status().usage.totalTokens, 0)
+})
+
+test('a fresh router adopts the running agent without waiting for a status request', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-keeper-'))
+  const first = supervisedBridge(root)
+  t.after(() => {
+    first.dispose()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  await first.prompt('what is in this directory')
+  await waitFor(() => first.status().phase === 'alive' && !first.status().isStreaming)
+  first.release()
+
+  const second = supervisedBridge(root)
+  t.after(() => second.dispose())
+  // No `describe()` and no page asking for anything: registration is enough.
+  assert.equal(await second.adoptKeeper(), true, 'the live keeper had an agent to take over')
+  assert.ok(
+    second.history().some((record) => record.type === 'agent_settled'),
+    'the records written while no router was attached were replayed',
+  )
+})
+
+test('a turn that ended during a restart is continued by the adopting router', async (t) => {
+  // The reported failure: the agent's turn dies while Hammer is restarting. Its records reach
+  // the keeper, but no router is attached to act on them, so nothing continues the turn.
+  const root = mkdtempSync(join(tmpdir(), 'hammer-keeper-'))
+  const first = supervisedBridge(
+    root,
+    { FAKE_PI_END_ERROR: 'socket hang up' },
+    // Long enough that the old router's own continuation cannot fire before it is released.
+    { autoContinueBaseMs: 60_000 },
+  )
+  t.after(() => {
+    first.dispose()
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  await first.prompt('do the thing')
+  await waitFor(() => first.status().phase === 'alive' && !first.status().isStreaming)
+  first.release()
+
+  const second = supervisedBridge(
+    root,
+    { FAKE_PI_END_ERROR: 'socket hang up' },
+    { autoContinueBaseMs: 5, autoContinueLimit: 1 },
+  )
+  t.after(() => second.dispose())
+  await second.adoptKeeper()
+  // The continuation is a follow-up, and the fake queues one on an idle agent the way the
+  // protocol allows, so the queued text is the evidence it was sent at all.
+  await waitFor(() =>
+    second.history().some((record) => /Repeat your last action/.test(JSON.stringify(record))),
+  )
+  // The replayed turn was not re-counted by the replay itself. (The number is not asserted: the
+  // continuation then runs a turn of its own, which has usage of its own.)
+  assert.ok(second.history().some((record) => record.type === 'agent_settled'))
 })
 
 test('disposing stops the agent instead of leaving it behind', async (t) => {

@@ -16,6 +16,7 @@ import assert from 'node:assert/strict'
 
 import {
   accumulateOutputCapObservation,
+  accumulateUsageSample,
   deriveContextState,
   extractErrorMessage,
   isBlockedModelName,
@@ -38,6 +39,7 @@ import {
   resolveRefusalVerdict,
   resolveSelectionSource,
   selectModelBySlope,
+  revalidateContextBound,
   revalidateOutputCap,
   summarizeErrorDetails,
   withOutputBudgetCap,
@@ -939,6 +941,120 @@ test('a window ceiling is read from above, never from a lower bound', () => {
   assert.equal(resolveContextUpperBound('256k', { contextMax: 4096, contextMaxExact: false }), 4096)
   assert.equal(resolveContextUpperBound(null, null), null)
   assert.equal(resolveContextUpperBound(null, {}), null)
+})
+
+test('OrcaRouter’s free prompt cap is a size refusal, not a rate limit', () => {
+  // The vendor publishes the request rate, not the per-request prompt ceiling. Its envelope
+  // uses the generic `free_rate_limited` code but the reason says which limit was hit; that
+  // reason is what makes this a prompt-size failure the router can learn from and fail over.
+  const body = JSON.stringify({
+    error: {
+      message:
+        'This prompt is longer than the free tier allows for a single request. Shorten it, or add credits to use this model without the free-tier cap: https://www.orcarouter.ai/console/billing',
+      type: 'invalid_request_error',
+      code: 'free_rate_limited',
+      param: '',
+      metadata: {
+        reason: 'err_free_prompt_cap',
+        retryable: false,
+        buy_credits_url: 'https://www.orcarouter.ai/console/billing',
+      },
+    },
+  })
+  assert.equal(isContextOverflowErrorText(body), true)
+  assert.equal(isRequestTooLargeErrorText(body), true)
+  assert.equal(isRateLimitedErrorText(body), false)
+  assert.equal(resolveRefusalVerdict(body, 400), 'down')
+})
+
+test('OrcaRouter’s free-capacity refusal is a rate limit, not a payment wall', () => {
+  // The other half of the same envelope: `err_free_rate` with `retry_after_seconds` is the
+  // request window itself. The message says "add credits", so the money rules used to claim
+  // it and the row wore a Paid badge for a limit that a clock reopens.
+  const body = JSON.stringify({
+    error: {
+      code: 'free_rate_limited',
+      message:
+        'Free model capacity is limited right now. Retry shortly, or add credits for higher, more stable limits: https://www.orcarouter.ai/console/billing | Recharging will increase your access frequency.',
+      metadata: {
+        buy_credits_url: 'https://www.orcarouter.ai/console/billing',
+        reason: 'err_free_rate',
+        retry_after_seconds: 78262,
+      },
+      type: 'rate_limit_error',
+    },
+  })
+  assert.equal(isRateLimitedErrorText(body), true)
+  assert.equal(isPaymentRequiredError(body, 400), false)
+  assert.equal(isPaymentRequiredError(body, 429), false)
+  assert.equal(resolveRefusalVerdict(body, 400), 'rate-limited')
+
+  // A persisted Paid flag cannot outrank the refusal's own words, or a row classified before
+  // this rule would keep the badge forever.
+  assert.equal(
+    permanentTestVerdict({
+      at: Date.now(),
+      ok: false,
+      status: 400,
+      error: body,
+      paymentRequired: true,
+    }),
+    null,
+  )
+  assert.equal(
+    resolveModelStatus({
+      modelId: 'deepseek/deepseek-v4.1-flash',
+      providerKey: 'orcarouter',
+      status: 'paid',
+      lastResponse: {
+        at: Date.now(),
+        ok: false,
+        status: 400,
+        error: body,
+        paymentRequired: true,
+      },
+    }),
+    'rate-limited',
+  )
+})
+
+test('a prompt cap cannot produce a range whose lower bound exceeds its ceiling', () => {
+  // OrcaRouter's free model succeeded on a 9,373-token prompt that produced a 21,262-token
+  // answer, then refused a 25,639-token prompt. Counting prompt+completion as the lower bound
+  // made that read ">31k, <26k": two true facts about different quantities, shown as one
+  // impossible range. The context lower bound must measure the prompt, like the refusal does.
+  const success = accumulateUsageSample(null, {
+    promptTokens: 9373,
+    completionTokens: 21262,
+    contextTokens: 30635,
+  })
+  assert.equal(success.contextMin, 9373, 'the lower bound is the accepted prompt size')
+  assert.equal(success.completionTokensSum, 21262, 'usage accounting still keeps the answer')
+
+  const evidence = JSON.stringify({
+    error: {
+      message:
+        'This prompt is longer than the free tier allows for a single request. Shorten it, or add credits to use this model without the free-tier cap: https://www.orcarouter.ai/console/billing',
+      type: 'invalid_request_error',
+      code: 'free_rate_limited',
+      metadata: { reason: 'err_free_prompt_cap' },
+    },
+  })
+  const historic = {
+    contextMin: 30635,
+    contextMax: 25639,
+    contextMaxExact: false,
+    contextEvidence: { text: evidence, kind: 'inferred', parserVersion: 2 },
+  }
+  assert.equal(deriveContextState(null, historic).display, '<26k')
+
+  // The load-time repair drops the contradictory lower bound and leaves the ceiling, which is
+  // the only half of the range that describes the cap.
+  const repaired = revalidateContextBound(historic)
+  assert.equal(repaired.contextMin, 0)
+  assert.equal(repaired.contextMax, 25639)
+  assert.equal(deriveContextState(null, repaired).display, '<26k')
+  assert.equal(resolveContextUpperBound(null, repaired), 25639)
 })
 
 test('a decision-model schema refusal is incompatible, not a retryable Down', () => {

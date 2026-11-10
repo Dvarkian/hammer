@@ -145,6 +145,9 @@ test('the trailing hour counts the last sixty minutes and forgets the rest', () 
   const inside = buildRecordedUsageForEntry(entry, new Date('2026-09-24T12:59:30.000Z'))
   assert.equal(inside.requestsLastHour, 2)
   assert.equal(inside.tokensLastHour, 400)
+  // The minute window is the newest bucket of the same ring: only the 12:59 request counts.
+  assert.equal(inside.requestsLastMinute, 1)
+  assert.equal(inside.tokensLastMinute, 300)
   // The day window is unaffected: the hour is a trailing count, not a slice of the day.
   assert.equal(inside.requestsToday, 2)
 
@@ -152,14 +155,17 @@ test('the trailing hour counts the last sixty minutes and forgets the rest', () 
   const later = buildRecordedUsageForEntry(entry, new Date('2026-09-24T13:00:00.000Z'))
   assert.equal(later.requestsLastHour, 1)
   assert.equal(later.tokensLastHour, 300)
+  // Nothing landed in the new minute yet, so a per-minute cap reads zero rather than the
+  // previous minute's count.
+  assert.equal(later.requestsLastMinute, 0)
+  assert.equal(later.tokensLastMinute, 0)
 
   // Recording again trims the expired minute instead of keeping it forever.
   recordUsageBuckets(entry, { contextTokens: 50 }, new Date('2026-09-24T13:00:10.000Z'))
   assert.equal(entry.recorded.hour.length, 2)
-  assert.equal(
-    buildRecordedUsageForEntry(entry, new Date('2026-09-24T13:00:20.000Z')).requestsLastHour,
-    2,
-  )
+  const afterRecord = buildRecordedUsageForEntry(entry, new Date('2026-09-24T13:00:20.000Z'))
+  assert.equal(afterRecord.requestsLastHour, 2)
+  assert.equal(afterRecord.requestsLastMinute, 1)
 })
 
 test('the trailing hour sums a provider across its models', () => {

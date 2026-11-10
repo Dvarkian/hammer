@@ -40,7 +40,7 @@ test('a tick stands at the position its row actually occupies', () => {
 test('the rail repaints with the transcript, on every path that rebuilds it', () => {
   assert.match(
     harness,
-    /if \(jump\) jump\.style\.display = atBottom\(transcript\) \? 'none' : ''\s*\n\s*scheduleMinimap\(\)/,
+    /if \(jump\) jump\.style\.display = atBottom\(transcript\) \? 'none' : ''[\s\S]{0,400}scheduleMinimap\(\)/,
   )
   assert.match(harness, /function renderMinimap\(\)/)
   assert.match(harness, /if \(minimapFrame\) return/)

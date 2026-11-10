@@ -180,6 +180,34 @@ test('a reset-only text quota is useful for providers that state no number', () 
   assert.equal(windows[0].resetAt, NOW + 84_066_000)
 })
 
+test("InferX's tenant refusal still says the account is spent", () => {
+  // The gateway refuses at the tenant, not at a window: no metric, no limit, no reset. The
+  // window keeps only what the refusal proves — nothing will be served — so the Quota cell
+  // stops showing an empty dash while the provider is saying the account is exhausted.
+  const windows = extractQuotaWindows(
+    {
+      modelId: 'deepseek-v4.1-flash-1017-basic',
+      lastResponse: {
+        status: 429,
+        at: NOW,
+        error: 'service failure: tenant tn-5foy8e963f quota exceeded',
+      },
+    },
+    NOW,
+  )
+  assert.equal(windows.length, 1)
+  assert.equal(windows[0].metric, 'requests')
+  assert.equal(windows[0].period, 'window')
+  assert.equal(windows[0].limit, null)
+  assert.equal(windows[0].remaining, 0)
+  assert.equal(windows[0].scope, 'account')
+  assert.equal(windows[0].resetAt, null)
+  // No denominator is published, but the refusal proves the allowance is spent: the cell
+  // draws a full bar instead of an unknown one next to "0 left".
+  assert.equal(windows[0].usedPercent, 100)
+  assert.match(windows[0].detail, /tn-5foy8e963f/)
+})
+
 test('a positive window whose reset has passed is no longer shown', () => {
   const windows = extractQuotaWindows(
     {

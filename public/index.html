@@ -169,11 +169,32 @@
         <section class="hx-panel">
           <div class="hx-panel-head"><span class="hx-panel-title">Usage</span></div>
           <div class="hx-kv"><dt>Tokens</dt><dd id="hx-usage-text">No tokens reported yet</dd></div>
-          <div class="hx-usage-bar"><span id="hx-usage-fill" style="width:0%"></span></div>
           <!-- How much of the model's context window this conversation fills. It is the only
-               figure that decides compaction, so it is named rather than left as a bare bar:
-               the meter above is the old turn-share bar and this says which one is which. -->
-          <div class="hx-context-note" id="hx-context-note" hidden></div>
+               figure that decides compaction, so it is a named meter rather than a bare bar:
+               the reader can tell it apart from the quota meter below at a glance. -->
+          <div class="hx-meter">
+            <div class="hx-meter-head">
+              <span class="hx-meter-label">Context</span>
+              <span class="hx-meter-value" id="hx-context-value">—</span>
+            </div>
+            <div class="hx-usage-bar" id="hx-context-bar" role="progressbar"
+              aria-label="Context window" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span id="hx-usage-fill" style="width:0%"></span>
+            </div>
+            <div class="hx-context-note" id="hx-context-note" hidden></div>
+          </div>
+          <!-- The routed model's quota, using the same windows as the Router table's Quota
+               column. It is separate from context: context is this conversation's fill, while
+               quota is the allowance the provider will let this model spend. -->
+          <div class="hx-meter hx-quota-meter">
+            <div class="hx-meter-head">
+              <span class="hx-meter-label">Quota</span>
+              <span class="hx-meter-value" id="hx-quota-model">no model</span>
+            </div>
+            <div class="hx-quota-windows" id="hx-quota-windows">
+              <div class="hx-quota-empty">No model routed yet.</div>
+            </div>
+          </div>
           <!-- This conversation's tokens over time, from its own transcript. It sits under
                the turn total because the two answer the same question at two scales: what the
                agent has spent, and when. It is the whole conversation rather than this

@@ -132,6 +132,37 @@ export const MODEL_LABEL_OVERRIDES = {
   'deepseek-v3.1:671b': 'DeepSeek V3.1',
   'deepseek-v3.2': 'DeepSeek V3.2',
   'deepseek-v4-flash-free': 'DeepSeek V4 Flash',
+  // OrcaRouter's free ids carry the vendor's own names (`Z.ai: GLM 5.3 Flash (Free)`); the
+  // `(free)` marker is kept so a free row is distinguishable from its paid twin at a glance.
+  'deepseek/deepseek-v4-flash-free': 'DeepSeek V4 Flash (free)',
+  'deepseek/deepseek-v4.1-flash-free': 'DeepSeek V4.1 Flash (free)',
+  'orca/orcaverify-text1.0-free': 'OrcaVerify Text 1.0 (free)',
+  'tencent/hy3-free': 'Tencent Hy3 (free)',
+  'tencent/hy4-preview-free': 'Tencent Hy4 Preview (free)',
+  'z-ai/glm-5.3-flash-free': 'GLM 5.3 Flash (free)',
+  'orcarouter/free': 'OrcaRouter Free (auto)',
+  // Token Harbor's free ids are wire-only and end in `:free`, which the generic formatter
+  // renders as `Deepseek V4 Flash:Free`. Keep the vendor's name and the lowercase marker the
+  // other free tiers use, so a free row reads as free beside its paid twin.
+  'deepseek-v4.1-flash:free': 'DeepSeek V4.1 Flash (free)',
+  'deepseek-v4-flash:free': 'DeepSeek V4 Flash (free)',
+  'mimo-v2.6-flash:free': 'MiMo V2.6 Flash (free)',
+  'mimo-v2.5:free': 'MiMo V2.5 (free)',
+  // InferX publishes no labels, only wire ids, so its catalogue would otherwise render with
+  // title-cased spellings (`Gpt Oss 20b`, `Gemma 4 31B It Fp8`).
+  'deepseek-v4.1-flash-1017-basic': 'DeepSeek V4.1 Flash 1017 Basic',
+  'deepseek-v4.1-flash-1017': 'DeepSeek V4.1 Flash 1017',
+  'deepseek-v4.1-flash': 'DeepSeek V4.1 Flash',
+  'deepseek-v4-flash-0731': 'DeepSeek V4 Flash 0731',
+  'gpt-oss-20b': 'GPT OSS 20B',
+  'gemma-4-31B-it-fp8': 'Gemma 4 31B',
+  'Qwen3.8-27B-FP8': 'Qwen3.8 27B',
+  'Qwen3.6-35B-A3B-FP8': 'Qwen3.6 35B A3B',
+  'Qwen3-Coder-Next-FP8': 'Qwen3 Coder Next',
+  'qwen3.8-max': 'Qwen3.8 Max',
+  'glm-5.3': 'GLM 5.3',
+  'Agents-A1': 'Agents A1',
+  'Devstral-2-123B-Instruct-2512-int4-AutoRound': 'Devstral 2 123B (AutoRound)',
   'devstral-2:123b': 'Devstral 2 123B',
   'devstral-small-2': 'Devstral Small 2 24B',
   'devstral-small-2:24b': 'Devstral Small 2 24B',
@@ -214,6 +245,12 @@ export const MODEL_LABEL_OVERRIDES = {
 }
 
 export const MODEL_CONTEXT_OVERRIDES = {
+  // OrcaRouter publishes no context length on its ids; the model detail for the free DeepSeek
+  // V4 Flash states 1M.
+  'deepseek/deepseek-v4-flash-free': '1M',
+  // InferX's /v1/models publishes no context length; its catalogue page states 262,144 for the
+  // one endpoint it serves at $0.
+  'deepseek-v4.1-flash-1017-basic': '262k',
   'cohere/north-mini-code': '256k',
   'hy3-free': '262k',
   'kimi-k2.7-code': '262k',
@@ -707,6 +744,59 @@ export const sources = {
       ['codex-mini-latest', 'Codex Mini', '192k'],
     ],
   },
+  // --- OrcaRouter -------------------------------------------------------------
+  // The free tier is the id suffix (`-free`), with `orcarouter/free` as the difficulty-routing
+  // alias; discovery supplies the full catalogue and marks the metered rows Paid. No context
+  // length is published for these ids.
+  orcarouter: {
+    name: 'OrcaRouter',
+    url: 'https://api.orcarouter.ai/v1/chat/completions',
+    contextUrl: 'https://api.orcarouter.ai/v1/models',
+    discoverable: true,
+    models: [],
+  },
+  // --- InferX ----------------------------------------------------------------
+  // OpenAI-compatible gateway. Its list is discovered rather than curated, and because the
+  // list publishes no pricing, rows are classified by probes and errors rather than marked
+  // Paid from a curated allowlist. `api.inferx.com` from the vendor's developers page does
+  // not resolve; `model.inferx.net` is the live host.
+  inferx: {
+    name: 'InferX',
+    url: 'https://model.inferx.net/endpoints/v1/chat/completions',
+    contextUrl: 'https://model.inferx.net/endpoints/v1/models',
+    discoverable: true,
+    models: [],
+  },
+  // --- Token Harbor ----------------------------------------------------------
+  // One OpenAI-compatible gateway over ~80 frontier models. Its list is discovered rather
+  // than curated, and it prices every row itself, so free-ness is decided by the `:free` id
+  // suffix (see markTokenHarborPaidModels) rather than by an entry in this table.
+  tokenharbor: {
+    name: 'Token Harbor',
+    url: 'https://tokenharbor.ai/v1/chat/completions',
+    contextUrl: 'https://tokenharbor.ai/v1/models',
+    discoverable: true,
+    models: [],
+  },
+  // --- Puter ----------------------------------------------------------------
+  // Puter's AI surface is a driver RPC, not an OpenAI endpoint, so the roster is curated
+  // rather than discovered: its catalogue at /puterai/chat/models/details is not an OpenAI
+  // /models shape. These are the DeepSeek rows its own tutorial documents; the context
+  // lengths are what that catalogue publishes for them. Not marked `discoverable` for the
+  // same reason gptfree is not — there is no OpenAI-shaped list to read.
+  puter: {
+    name: 'Puter',
+    url: 'https://api.puter.com/drivers/call',
+    contextUrl: 'https://docs.puter.com/AI/chat/',
+    models: [
+      ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash', '1M'],
+      ['deepseek-v4-pro', 'DeepSeek V4 Pro', '1M'],
+      ['deepseek-v4-pro-0813', 'DeepSeek V4 Pro 0813', '1M'],
+      ['deepseek-v4-flash-0731', 'DeepSeek V4 Flash 0731', '1M'],
+      ['deepseek-v4-flash-ga-260731', 'DeepSeek V4 Flash', '1M'],
+      ['deepseek-flash', 'DeepSeek Flash', '1M'],
+    ],
+  },
   // --- gpt4free (g4f) --------------------------------------------------------
   // One provider for the whole gpt4free service. g4f.space/v1 is the hosted
   // gateway (many models, discovered from /models). Anonymous traffic is gated
@@ -735,6 +825,19 @@ export const sources = {
   // therefore unknown and is left unstated: a number here would rank it in the
   // min_ctx filter on no evidence at all.
   //
+  // --- MoonMath (Zro) ---------------------------------------------------------
+  // MoonMath's private inference gateway (`zro.moonmath.ai/v1`) speaks the OpenAI
+  // chat-completions API. Its Free plan includes daily usage on GLM-5.3 Flash and
+  // DeepSeek V4.1 Flash; everything else needs Pro or a usage pack, so the roster is
+  // discovered and rows are classified by what this key is actually allowed to call
+  // rather than by a hardcoded price list.
+  moonmath: {
+    name: 'MoonMath',
+    url: 'https://zro.moonmath.ai/v1/chat/completions',
+    contextUrl: 'https://zro.moonmath.ai/v1/models',
+    discoverable: true,
+    models: [],
+  },
   // Deliberately NOT `discoverable` — there is no model list to discover from.
   gptfree: {
     name: 'GPTFree',

@@ -14,6 +14,7 @@
  *   FAKE_PI_SETTLE_DELAY_MS=<ms>  hold the run open this long, so a UI can be seen mid-run
  *   FAKE_PI_SESSION_STATS=<json>  the `get_session_stats` payload (default: 42 total tokens)
  *   FAKE_PI_MESSAGE_USAGE=<json>  usage object attached to the assistant `message_end`
+ *   FAKE_PI_END_ERROR=<text>      end each turn with this provider error instead of an answer
  *   FAKE_PI_NO_FOLLOW_UP=1        leave follow-ups queued on settle instead of starting them
  *   FAKE_PI_FOLLOW_UP_DELAY_MS=<ms> gap between a settled turn and its queued follow-up
  */
@@ -167,19 +168,21 @@ function handle(command) {
         tailPending = false
         for (const held of outbox.splice(0)) write(held)
         const usage = envJson('FAKE_PI_MESSAGE_USAGE')
-        write({
-          type: 'message_end',
-          message: {
-            role: 'assistant',
-            content: [{ type: 'text', text: 'Hello\u2028wörld' }],
-            stopReason: 'stop',
-            ...(usage ? { usage } : {}),
-          },
-        })
+        // A knob for the one turn shape auto-continue exists for: the provider dropped the
+        // stream, so the turn ends with an error instead of an answer.
+        const failure = process.env.FAKE_PI_END_ERROR || ''
+        const answer = {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Hello\u2028wörld' }],
+          stopReason: failure ? 'error' : 'stop',
+          ...(failure ? { errorMessage: failure } : {}),
+          ...(usage ? { usage } : {}),
+        }
+        write({ type: 'message_end', message: answer })
         const settleAfter = Number(process.env.FAKE_PI_SETTLE_DELAY_MS || 0)
         setTimeout(
           () => {
-            write({ type: 'agent_end', messages: [] })
+            write({ type: 'agent_end', messages: failure ? [answer] : [] })
             streaming = false
             steeringQueue.length = 0
             // A finished turn consumes its follow-up queue and starts the next turn — the

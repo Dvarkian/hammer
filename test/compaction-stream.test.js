@@ -76,6 +76,18 @@ test('the transcript renders the summary while it streams', () => {
   assert.match(harness, /item\.stream = ''/)
 })
 
+test('the summary follows its own stream and is set as prose', () => {
+  // The repaint replaces the stream's markup on every token; without restoring the scroll the
+  // box snapped back to the top each time, so the newest line was never where the reader was.
+  assert.match(harness, /const follow = !previous \|\| previous\.scrollHeight/)
+  assert.match(harness, /stream\.scrollTop = follow \? stream\.scrollHeight/)
+  // Prose, not a <pre>: a summary is read, not copied, so it keeps the transcript's face.
+  assert.doesNotMatch(harness, /<pre class="hx-compaction/)
+  assert.doesNotMatch(harnessCss, /\.hx-compaction-summary > pre/)
+  assert.match(harnessCss, /\.hx-compaction-summary \.hx-compaction-kept \{[^}]*font: inherit;/)
+  assert.match(harnessCss, /\.hx-compaction-stream \{[^}]*font: inherit;/)
+})
+
 test('a compaction is a station on the spine, not a card beside it', () => {
   // A capacitor: two plates across the spine, each joined to the row's edge above and below.
   assert.match(harness, /function compactionIcon\(\)/)
@@ -157,16 +169,32 @@ test('a model change is a station on the spine that names both ends', () => {
 
   // A change is its own row, not a plain notice, and it records where it came from.
   assert.match(harness, /if \(item\.kind === 'model'\) return modelMarkup\(item\)/)
-  assert.match(harness, /ctx\.items\.push\(\{ kind: 'model', from: previous, to: model \}\)/)
+  assert.match(harness, /kind: 'model',\s+from: previous,\s+to: model,/)
   // The station belongs to the transcript, not to a variable only the live stream fills: the row
   // records which model answered, so a restart can rebuild the same marks from the session's
   // messages instead of losing every change it did not watch happen.
-  assert.match(harness, /const previous = lastAnsweredModel\(ctx\)/)
+  assert.match(harness, /const previous = previousRow\?\.model \|\| null/)
   assert.match(harness, /item\.kind === 'assistant' && item\.model/)
   assert.match(harness, /let previousModel = null/)
   assert.match(harness, /if \(model && previousModel && previousModel !== model\) \{/)
   assert.match(harness, /kind: 'assistant', blocks: \[\], settled: false, model/)
   assert.match(harness, /changed from \$\{escapeHtml\(from\)\} to \$\{escapeHtml\(to\)\}/)
+})
+
+test('a model change names the provider at both ends', () => {
+  // "Changed from gpt-5 to claude-sonnet-4.5" makes the reader ask who served each. The
+  // provider is captured when the answer is recorded, so a route change cannot rewrite it.
+  assert.match(harness, /function messageProviderName\(message, ctx\)/)
+  assert.match(harness, /function modelWithProvider\(name, provider\)/)
+  assert.match(harness, /const from = modelWithProvider\(item\.from, item\.fromProvider\)/)
+  assert.match(harness, /const to = modelWithProvider\(item\.to, item\.toProvider\)/)
+  assert.match(harness, /fromProvider: previousRow\.provider \|\| ''/)
+  assert.match(harness, /kind: 'assistant', blocks: \[\], settled: false, model, provider/)
+  // History rebuilds the same stations from the session, so it records the provider too.
+  assert.match(harness, /fromProvider: previousProvider/)
+  assert.match(harness, /kind: 'assistant', blocks, settled: true, model, provider/)
+  // A provider already inside the model name is not repeated.
+  assert.match(harness, /if \(!provider \|\| label\.toLowerCase\(\)\.includes/)
 })
 
 test('the router alias never becomes a transcript model name', () => {

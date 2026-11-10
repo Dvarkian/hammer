@@ -93,6 +93,8 @@ import {
   providerFaviconDomain,
   providerFaviconDomains,
   transformStreamingUpstreamErrorResponse,
+  buildPuterRequestPayload,
+  transformPuterResponse,
 } from '../lib/server.js'
 import {
   DISCOVERY_TIMEOUT_MS,
@@ -104,6 +106,8 @@ import {
   isProviderAuthOptional,
   lazyDiscoveryCandidates,
   markBazaarLinkPaidModels,
+  markOrcaRouterPaidModels,
+  markTokenHarborPaidModels,
   providerDiscoveryNeedsCredential,
   resolveDiscoveryModelsUrl,
   resolveRequestModels,
@@ -163,6 +167,11 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     devin: 'DEVIN_API_KEY',
     'github-copilot': 'GITHUB_COPILOT_TOKEN',
     g4f: 'G4F_API_KEY',
+    inferx: 'INFERX_API_KEY',
+    orcarouter: 'ORCAROUTER_API_KEY',
+    tokenharbor: 'TOKENHARBOR_API_KEY',
+    moonmath: 'MOONMATH_API_KEY',
+    puter: 'PUTER_AUTH_TOKEN',
   })
 })
 
@@ -824,19 +833,21 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
   }
 })
 
-test('the 15 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 20 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
-  // key page — and would have hidden a *removed* hammer URL behind an added import.
+  // key page — and would have hidden a *removed* hammer URL behind an added import. Every
+  // descriptor ships a signup page today (20 with `moonmath`), so the count and the table
+  // must agree.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(
     (key) => PROVIDER_DESCRIPTORS[key].signupUrl,
   )
-  assert.equal(hammerOwned.length, 15)
+  assert.equal(hammerOwned.length, 20)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
   }
-  assert.ok(Object.keys(table).length > 18, 'imported providers must add key pages')
+  assert.ok(Object.keys(table).length > 20, 'imported providers must add key pages')
 })
 
 // ── The curated key-page table ─────────────────────────────────────────────────────────
@@ -924,10 +935,11 @@ test('every registered descriptor is valid and unique', () => {
   }
 })
 
-test('hammer ships 15 providers and none of them regressed', () => {
-  // 15 since `google-antigravity` joined: it is hammer-owned, routable and carries a chatUrl,
-  // so it belongs in the same table as the rest rather than in a second one.
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 15)
+test('hammer ships 20 providers and none of them regressed', () => {
+  // 20 since `moonmath` joined (19 with `puter`, 18 with `tokenharbor`, 17 with `orcarouter`,
+  // 16 with `inferx`): all five are hammer-owned, routable and carry a chatUrl, so they belong
+  // in the same table as the rest rather than in a second one.
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 20)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -1417,6 +1429,265 @@ test('a catalog that prices per model marks everything outside its free tier as 
     'auto:free': false,
     'deepseek-v4.1-flash-1017': true,
   })
+})
+
+test('InferX rows are left to response classification instead of a paid allowlist', () => {
+  // InferX's /v1/models carries no pricing block and no `:free` twin, so the list itself
+  // cannot say which rows cost money. Do not guess from a curated set: the same gateway can
+  // change its pricing, and a model is not permanently Paid just because it once was.
+  const models = [
+    { modelId: 'deepseek-v4.1-flash-1017-basic' },
+    { modelId: 'deepseek-v4.1-flash-1017' },
+    { modelId: 'glm-5.3' },
+    { modelId: 'qwen3.8-max' },
+  ]
+  for (const model of models) {
+    const meta = toOpenAICompatibleDiscoveredModelMeta({ id: model.modelId }, 'inferx')
+    assert.equal(meta.paymentRequired, undefined)
+  }
+  // A real payment refusal still classifies as Paid; ordinary failures do not.
+  assert.equal(resolveRefusalVerdict('Payment required for this model.', 402), 'paid')
+  assert.equal(resolveRefusalVerdict('Internal server error', 500), 'down')
+
+  // The descriptor routes to the host that resolves, and its list is the sibling of its chat
+  // path — the same derivation every plain OpenAI-compatible provider uses.
+  const provider = getProvider('inferx')
+  assert.equal(provider.chatUrl, 'https://model.inferx.net/endpoints/v1/chat/completions')
+  assert.equal(
+    resolveDiscoveryModelsUrl(sources.inferx),
+    'https://model.inferx.net/endpoints/v1/models',
+  )
+  assert.equal(provider.auth.envVar, 'INFERX_API_KEY')
+
+  // The list omits context length, so the curated figure has to reach the discovered row:
+  // `MODEL_CONTEXT_OVERRIDES` was exported but only read by an unused helper, which left a
+  // row whose catalogue states 262,144 with an empty Context column.
+  assert.equal(
+    toOpenAICompatibleDiscoveredModelMeta({ id: 'deepseek-v4.1-flash-1017-basic' }, 'inferx').ctx,
+    '262k',
+  )
+})
+
+test('OrcaRouter serves only its -free ids at zero, and everything else is metered', () => {
+  // The free tier is the id suffix, not a pricing field in the list: `-free` ids are $0 per
+  // token under a request-rate allowance, and `orcarouter/free` routes across them by
+  // difficulty. Every other id — the paid twin of a free model included — bills, so it is
+  // marked Paid and never probed.
+  const models = [
+    { modelId: 'orcarouter/free' },
+    { modelId: 'deepseek/deepseek-v4-flash-free' },
+    { modelId: 'deepseek/deepseek-v4.1-flash-free' },
+    { modelId: 'orca/orcaverify-text1.0-free' },
+    { modelId: 'tencent/hy3-free' },
+    { modelId: 'tencent/hy4-preview-free' },
+    { modelId: 'z-ai/glm-5.3-flash-free' },
+    { modelId: 'orcarouter/pod' },
+    { modelId: 'openai/gpt-4o-mini' },
+    { modelId: 'deepseek/deepseek-v4-flash' },
+    // `free` as a substring is not the tier marker.
+    { modelId: 'freeform-9b' },
+  ]
+  markOrcaRouterPaidModels(models)
+  assert.deepEqual(
+    models.filter((model) => !model.paymentRequired).map((model) => model.modelId),
+    [
+      'orcarouter/free',
+      'deepseek/deepseek-v4-flash-free',
+      'deepseek/deepseek-v4.1-flash-free',
+      'orca/orcaverify-text1.0-free',
+      'tencent/hy3-free',
+      'tencent/hy4-preview-free',
+      'z-ai/glm-5.3-flash-free',
+    ],
+  )
+  assert.equal(models.find((model) => model.modelId === 'freeform-9b').paymentRequired, true)
+
+  const provider = getProvider('orcarouter')
+  assert.equal(provider.chatUrl, 'https://api.orcarouter.ai/v1/chat/completions')
+  assert.equal(resolveDiscoveryModelsUrl(sources.orcarouter), 'https://api.orcarouter.ai/v1/models')
+  assert.equal(provider.auth.envVar, 'ORCAROUTER_API_KEY')
+})
+
+test("Token Harbor's `:free` ids are the free tier, and the paid twin bills the wallet", () => {
+  // The catalogue prices every row and labels the free ones, but the stable rule is the id:
+  // a `:free` suffix draws on the rolling allowance and is never billed, while dropping the
+  // suffix reaches the same weights on the metered route. A free account's wallet is empty,
+  // so probing the paid half could only spend a billable request to discover the 402.
+  const models = [
+    { modelId: 'deepseek-v4.1-flash:free' },
+    { modelId: 'mimo-v2.6-flash:free' },
+    { modelId: 'deepseek-v4-flash:free' },
+    { modelId: 'mimo-v2.5:free' },
+    { modelId: 'deepseek-v4.1-flash' },
+    { modelId: 'th-orchestra' },
+    { modelId: 'freeform-9b' },
+  ]
+  markTokenHarborPaidModels(models)
+  assert.deepEqual(
+    models.filter((model) => !model.paymentRequired).map((model) => model.modelId),
+    [
+      'deepseek-v4.1-flash:free',
+      'mimo-v2.6-flash:free',
+      'deepseek-v4-flash:free',
+      'mimo-v2.5:free',
+    ],
+  )
+  // `free` as a substring is not the tier marker, and neither is `:free` in the middle of an id.
+  assert.equal(models.find((model) => model.modelId === 'freeform-9b').paymentRequired, true)
+  assert.equal(models.find((model) => model.modelId === 'th-orchestra').paymentRequired, true)
+  assert.equal(
+    models.find((model) => model.modelId === 'deepseek-v4.1-flash').paymentRequired,
+    true,
+  )
+
+  const provider = getProvider('tokenharbor')
+  assert.equal(provider.chatUrl, 'https://tokenharbor.ai/v1/chat/completions')
+  assert.equal(resolveDiscoveryModelsUrl(sources.tokenharbor), 'https://tokenharbor.ai/v1/models')
+  assert.equal(provider.auth.envVar, 'TOKENHARBOR_API_KEY')
+})
+
+test("Puter's driver RPC envelope is built and translated back to OpenAI", async () => {
+  // `/puterai/openai/v1` needs a paid plan, so the free path is the `ai-chat` driver: the
+  // arguments ride one level down in the body and the reply is `{success, result}` rather
+  // than a completion. Both halves are pinned here because the probe and the proxy share them.
+  const outbound = buildPuterRequestPayload(
+    {
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: 'hi' }],
+      max_tokens: 16,
+      temperature: 0.2,
+      stream: true,
+    },
+    'deepseek-v4.1-flash',
+  )
+  assert.equal(outbound.interface, 'puter-chat-completion')
+  assert.equal(outbound.service, 'ai-chat')
+  assert.equal(outbound.method, 'complete')
+  assert.equal(outbound.args.model, 'deepseek-v4.1-flash')
+  assert.equal(outbound.args.max_tokens, 16)
+  assert.equal(outbound.args.temperature, 0.2)
+  assert.equal(outbound.stream, undefined, 'the upstream call always completes')
+  assert.equal(outbound.args.stream, undefined)
+
+  const translated = await transformPuterResponse(
+    new Response(
+      JSON.stringify({
+        success: true,
+        result: {
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: 'pong', reasoning: 'thinking' },
+          usage: { prompt_tokens: 5, completion_tokens: 2 },
+        },
+      }),
+      { status: 200 },
+    ),
+    'deepseek-v4.1-flash',
+    false,
+  )
+  const body = await translated.json()
+  assert.equal(body.object, 'chat.completion')
+  assert.equal(body.choices[0].message.content, 'pong')
+  assert.equal(body.choices[0].message.reasoning_content, 'thinking')
+  assert.deepEqual(body.usage, { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 })
+
+  // The descriptor itself: a driver RPC at the source URL, keyed by the dashboard token, with
+  // a curated roster because Puter's catalogue is not an OpenAI /models shape.
+  const provider = getProvider('puter')
+  assert.equal(provider.chatUrl, 'https://api.puter.com/drivers/call')
+  assert.equal(provider.auth.envVar, 'PUTER_AUTH_TOKEN')
+  assert.equal(provider.discoverable, false)
+  assert.deepEqual(
+    sources.puter.models.map(([id]) => id),
+    [
+      'deepseek-v4.1-flash',
+      'deepseek-v4-pro',
+      'deepseek-v4-pro-0813',
+      'deepseek-v4-flash-0731',
+      'deepseek-v4-flash-ga-260731',
+      'deepseek-flash',
+    ],
+  )
+})
+
+test('Puter carries the tool call the driver parsed into an OpenAI reply', async () => {
+  // Pinned live failure: the driver answered `finish_reason: tool_calls`, this translation built
+  // `{role, content}` and dropped the call, so Pi ended a turn on an empty message and the
+  // console waited for a Continue nobody typed.
+  const payload = {
+    success: true,
+    result: {
+      finish_reason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: '',
+        reasoning: 'I should run it.',
+        tool_calls: [
+          {
+            id: 'call_1',
+            type: 'function',
+            function: { name: 'run_terminal_command', arguments: { command: 'pwd' } },
+          },
+        ],
+      },
+      usage: { prompt_tokens: 9, completion_tokens: 4 },
+    },
+  }
+  const translated = await transformPuterResponse(
+    new Response(JSON.stringify(payload), { status: 200 }),
+    'deepseek-v4.1-flash',
+    false,
+  )
+  const body = await translated.json()
+  const call = body.choices[0].message.tool_calls[0]
+  assert.equal(body.choices[0].finish_reason, 'tool_calls')
+  assert.equal(call.id, 'call_1')
+  assert.equal(call.type, 'function')
+  assert.equal(call.function.name, 'run_terminal_command')
+  assert.equal(
+    call.function.arguments,
+    '{"command":"pwd"}',
+    'the arguments reach the client as the JSON string it expects',
+  )
+
+  // Streamed: the call has to be in a delta, because a client assembling chunks never reads
+  // the message form.
+  const streamed = await transformPuterResponse(
+    new Response(JSON.stringify(payload), { status: 200 }),
+    'deepseek-v4.1-flash',
+    true,
+  )
+  const frames = (await streamed.text())
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => line.slice(6).trim())
+    .filter((line) => line !== '[DONE]')
+    .map((line) => JSON.parse(line))
+  const deltas = frames.flatMap((frame) => frame.choices?.[0]?.delta?.tool_calls || [])
+  assert.equal(deltas.length, 1)
+  assert.equal(deltas[0].function.name, 'run_terminal_command')
+  assert.equal(frames.at(-1).choices[0].finish_reason, 'tool_calls')
+
+  // A call without an id still has to be matchable to its result, so one is minted.
+  const anonymous = await transformPuterResponse(
+    new Response(
+      JSON.stringify({
+        success: true,
+        result: {
+          message: {
+            role: 'assistant',
+            content: '',
+            tool_calls: [{ name: 'run_terminal_command', arguments: '{"command":"ls"}' }],
+          },
+        },
+      }),
+      { status: 200 },
+    ),
+    'deepseek-v4.1-flash',
+    false,
+  )
+  const bare = (await anonymous.json()).choices[0].message.tool_calls[0]
+  assert.match(bare.id, /^call_/)
+  assert.equal(bare.function.arguments, '{"command":"ls"}')
 })
 
 test("Cloudflare's model list is account-scoped, and discovery can fill the account id in", () => {
