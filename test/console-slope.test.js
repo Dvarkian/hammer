@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   SELECTOR_DEFAULT_PERCENT,
   selectModelBySlope,
@@ -8,7 +10,9 @@ import {
   selectorSlopeForPercent,
 } from '../lib/utils.js'
 import {
+  configureConsoleSlopeStore,
   consoleSlopePercent,
+  consoleSlopeStorePath,
   listConsoleSlopes,
   registerConsoleSlope,
   resetConsoleSlopesForTests,
@@ -63,6 +67,42 @@ test('every console starts at the exported default and keeps its own value', () 
   assert.equal(setConsoleSlopePercent('', 10), null)
   resetConsoleSlopesForTests()
   assert.deepEqual(listConsoleSlopes(), [])
+})
+
+test('a conversation gets its own slope back after a restart', () => {
+  // The value belongs to the conversation, not to the process: a restart used to reset every
+  // composer to the exported default, which silently moved a conversation onto another model.
+  resetConsoleSlopesForTests()
+  const dir = mkdtempSync(join(tmpdir(), 'hammer-slopes-'))
+  const path = consoleSlopeStorePath(dir)
+  assert.equal(path, join(dir, 'console-slopes.json'))
+  configureConsoleSlopeStore(path)
+  assert.equal(registerConsoleSlope('7352'), SELECTOR_DEFAULT_PERCENT)
+  assert.equal(setConsoleSlopePercent('7352', 19), 19)
+  assert.equal(setConsoleSlopePercent('7352-f6a7fc43', 83), 83)
+
+  // A restart is this module's memory going away while the file stays behind.
+  resetConsoleSlopesForTests()
+  configureConsoleSlopeStore(path)
+  assert.equal(registerConsoleSlope('7352'), 19)
+  assert.equal(registerConsoleSlope('7352-f6a7fc43'), 83)
+  assert.equal(registerConsoleSlope('7352-unknown'), SELECTOR_DEFAULT_PERCENT)
+  // A value chosen in this run still wins over the one on disk.
+  assert.equal(setConsoleSlopePercent('7352', 60), 60)
+  assert.equal(registerConsoleSlope('7352', 5), 60, 'registering never overwrites a choice')
+
+  // Unusable content is ignored rather than crashing a console, and a value outside the range
+  // comes back clamped to it.
+  writeFileSync(path, JSON.stringify({ consoleSlopes: { 7352: 'wide open', '7352-other': 250 } }))
+  resetConsoleSlopesForTests()
+  configureConsoleSlopeStore(path)
+  assert.equal(registerConsoleSlope('7352'), SELECTOR_DEFAULT_PERCENT)
+  assert.equal(registerConsoleSlope('7352-other'), 100)
+
+  // Nothing configured means nothing written: that is the mounted-test-console case.
+  resetConsoleSlopesForTests()
+  assert.equal(setConsoleSlopePercent('7352', 12), 12)
+  rmSync(dir, { recursive: true, force: true })
 })
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
