@@ -1203,6 +1203,8 @@
   /** When the table must be read again; a failed read ages out like a successful one. */
   let ttftFreshUntil = 0
   let ttftLoad = null
+  /** The composer slope slider's notches, as percentages of the data's slope ceiling. */
+  let slopeNotches = []
 
   /**
    * Reads the router's per-model TTFT table.
@@ -1249,6 +1251,13 @@
               })
             }
           }
+          slopeNotches = (Array.isArray(data.selector?.notchesPercent)
+            ? data.selector.notchesPercent
+            : []
+          )
+            .map(Number)
+            .filter((n) => Number.isFinite(n) && n >= 0 && n <= 100)
+          paintSlopeNotches()
         }
       } catch {
         // No measurement, no table: the ring keeps its default period rather than vanishing.
@@ -2773,6 +2782,27 @@
     if (slider && String(slider.value) !== String(shown)) slider.value = String(shown)
   }
 
+  /**
+   * Paints the slope slider's notches: one per region in which the router's pick does not
+   * change, at the region's midpoint, so dragging across a notch is dragging across a model.
+   */
+  function paintSlopeNotches() {
+    const slider = $('hx-slope-slider')
+    if (!slider) return
+    const stops = slopeNotches.map((pct) => `${pct}%`)
+    slider.style.setProperty(
+      '--slope-notches',
+      stops.length
+        ? `linear-gradient(to right, ${stops
+            .map(
+              (stop) =>
+                `transparent calc(${stop} - 1px), var(--border) calc(${stop} - 1px) calc(${stop} + 1px), transparent calc(${stop} + 1px)`,
+            )
+            .join(', ')})`
+        : 'none',
+    )
+  }
+
   let slopeSaveTimer = null
 
   /** Saves the slider's slope for this conversation; the router uses it on the next turn. */
@@ -3005,6 +3035,7 @@
         : 0)
     }
     if (data.slopePercent != null) paintSlopePercent(data.slopePercent)
+    paintSlopeNotches()
     if (data.cwd) {
       const cwdEl = $('hx-cwd')
       if (cwdEl) {
@@ -5198,6 +5229,8 @@
     )
     $('hx-thinking-slider')?.addEventListener('input', thinkingFromSlider)
   $('hx-slope-slider')?.addEventListener('input', slopeFromSlider)
+  // The notches come from the model table, which may not have been read yet.
+  void loadKnownTtfts()
 
     // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
     bindMinimap()

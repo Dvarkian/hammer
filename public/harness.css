@@ -2225,14 +2225,14 @@ body.hx-details-collapsed .hx-side-details {
   border: 1px solid var(--border);
 }
 
-.hx-composer-thinking input[type=range]::-webkit-slider-runnable-track {
+.hx-composer-thinking #hx-thinking-slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 3px;
   background: var(--surface-alt);
   border: none;
 }
 
-.hx-composer-thinking input[type=range]::-moz-range-track {
+.hx-composer-thinking #hx-thinking-slider::-moz-range-track {
   height: 6px;
   border-radius: 3px;
   background: var(--surface-alt);
@@ -2245,7 +2245,7 @@ body.hx-details-collapsed .hx-side-details {
    painted under the thumb, so the resting notch is the one the thumb covers. The WebKit and
    Firefox tracks get separate rules: a selector list mixing the two invalidates the whole
    rule in Chromium, and the ticks silently vanish. */
-.hx-composer-thinking input[type=range]::-webkit-slider-runnable-track {
+.hx-composer-thinking #hx-thinking-slider::-webkit-slider-runnable-track {
   background-image: linear-gradient(
     to right,
     transparent calc(8% - 1px),
@@ -2260,7 +2260,7 @@ body.hx-details-collapsed .hx-side-details {
   );
 }
 
-.hx-composer-thinking input[type=range]::-moz-range-track {
+.hx-composer-thinking #hx-thinking-slider::-moz-range-track {
   background-image: linear-gradient(
     to right,
     transparent calc(8% - 1px),
@@ -2273,6 +2273,25 @@ body.hx-details-collapsed .hx-side-details {
     var(--border) calc(92% - 1px) calc(92% + 1px),
     transparent calc(92% + 1px)
   );
+}
+
+/* The slope slider's notches are data, not steps: one hairline per region in which the
+   router's pick does not change (see paintSlopeNotches). Painted into --slope-notches, read here
+   as the track's image — the same treatment the router page's slope control had. */
+.hx-composer-thinking #hx-slope-slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--surface-alt);
+  border: none;
+  background-image: var(--slope-notches, none);
+}
+
+.hx-composer-thinking #hx-slope-slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--surface-alt);
+  border: none;
+  background-image: var(--slope-notches, none);
 }
 
 .hx-composer-thinking #hx-thinking-level {
