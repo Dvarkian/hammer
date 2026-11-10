@@ -3063,6 +3063,23 @@
    * @param {(n: number) => string} compact
    * @param {number} [fallbackWindow] the routed row's published window, when it is exact
    */
+  /**
+   * A token count in the meter's own units, rounded down.
+   *
+   * The remainder a full window leaves must never round up to the whole window: "349 of
+   * 262k · 262k free" reads as both nothing spent and 349 tokens spent. Truncating is the
+   * honest direction for room that is left.
+   * @param {number} n
+   */
+  function compactFloor(n) {
+    const v = Number(n)
+    if (!Number.isFinite(v) || v < 0) return String(n)
+    if (v >= 1e9) { const u = v / 1e9; return `${u >= 10 ? Math.floor(u) : Math.floor(u * 10) / 10}B` }
+    if (v >= 1e6) { const u = v / 1e6; return `${u >= 10 ? Math.floor(u) : Math.floor(u * 10) / 10}M` }
+    if (v >= 1e3) { const u = v / 1e3; return `${u >= 10 ? Math.floor(u) : Math.floor(u * 10) / 10}k` }
+    return String(Math.floor(v))
+  }
+
   function setContextValue(text) {
     const el = $('hx-context-value')
     if (el) el.textContent = text
@@ -3107,8 +3124,15 @@
     // bridge guessed must not read like one Pi vouched for.
     const estimated = context?.estimated === true
     // Pi reserves room for the reply: it compacts at `window - reserve`, which is why a
-    // meter filled to 100% is a meter that has already compacted.
-    const RESERVE = 16384
+    // meter filled to 100% is a meter that has already compacted. The reserve is Pi's launch
+    // setting (`pi.compaction.reserveTokens`), so a configured one wins; 16384 is Pi's own
+    // default, and the fallback for a status that does not carry the setting.
+    const configuredReserve = Number(state.status?.compactionReserveTokens)
+    const RESERVE =
+      Number.isFinite(configuredReserve) && configuredReserve > 0 ? configuredReserve : 16384
+    // Auto-compaction switched off is a wall Pi will walk straight past, so the meter must not
+    // draw a trigger for it. `null` is Pi not reporting the switch, which is not off.
+    const autoCompactionOff = state.status?.autoCompactionEnabled === false
     // Where pi actually compacts: the tighter of its alias ceiling and the routed model's
     // window. A model with more room than the alias still stops at the alias, so the tick and
     // the note say so rather than letting a 1M bar hide a 131k wall.
@@ -3125,10 +3149,15 @@
         pct != null ? `${compact(used)} of ${compact(window_)} tokens` : 'context not measured',
       )
       // The trigger tick sits at the share of the window pi holds back for its reply.
-      bar.style.setProperty('--hx-context-trigger', `${(trigger / window_) * 100}%`)
+      if (autoCompactionOff) bar.style.removeProperty('--hx-context-trigger')
+      else bar.style.setProperty('--hx-context-trigger', `${(trigger / window_) * 100}%`)
       if (fill) fill.style.width = pct != null ? `${pct}%` : '0%'
     }
-    setContextValue(pct == null ? 'not measured' : `${estimated ? '~' : ''}${Math.round(pct)}%`)
+    // Half a percent of a large window is still tokens in the context, so a measured sliver
+    // says "<1%" rather than "0%" — the rounding is this page's, not Pi's.
+    let share = pct == null ? 'not measured' : pct > 0 && pct < 0.5 ? '<1%' : `${Math.round(pct)}%`
+    if (estimated && pct != null && pct >= 0.5) share = `~${share}`
+    setContextValue(share)
     if (note) {
       note.hidden = false
       if (!measured) {
@@ -3138,8 +3167,11 @@
         note.textContent = `~${compact(used)} of ${compact(window_)} · estimating while it answers`
       } else {
         const left = Math.max(0, window_ - used)
-        const compacts = ceiling < window_ && trigger > 0 ? ` · compacts at ${compact(trigger)}` : ''
-        note.textContent = `${compact(used)} of ${compact(window_)} · ${compact(left)} free${compacts}`
+        const compacts =
+          !autoCompactionOff && ceiling < window_ && trigger > 0
+            ? ` · compacts at ${compact(trigger)}`
+            : ''
+        note.textContent = `${compact(used)} of ${compact(window_)} · ${compactFloor(left)} free${compacts}`
       }
     }
   }

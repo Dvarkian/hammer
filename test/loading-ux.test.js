@@ -354,6 +354,17 @@ test('the inspector rail carries both context and routed-row quota', () => {
   assert.match(harness, /if \(data\.contextUsage\)/)
   assert.match(harness, /contextUsage: data\.contextUsage/)
   assert.match(harness, /function routedContextWindow\(/)
+  // The meter's own figures have to be readable and true: the remainder floors instead of
+  // rounding up to the whole window, a measured sliver is not "0%", and a Pi with
+  // auto-compaction off gets neither a "compacts at" wall nor a trigger tick.
+  assert.match(harness, /function compactFloor\(n\)/)
+  assert.match(harness, /compactFloor\(left\)/)
+  assert.match(harness, /'<1%'/)
+  assert.match(harness, /autoCompactionEnabled === false/)
+  assert.match(
+    harness,
+    /if \(autoCompactionOff\) bar\.style\.removeProperty\('--hx-context-trigger'\)/,
+  )
   assert.match(css, /\.hx-quota-window/)
   assert.match(css, /\.hx-quota-fill-success/)
 })
