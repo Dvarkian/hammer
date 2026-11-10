@@ -199,7 +199,10 @@ test('a model change is a station on the spine that names both ends', () => {
   )
   assert.match(harness, /item\.kind === 'assistant' && item\.model/)
   assert.match(harness, /let previousModel = null/)
-  assert.match(harness, /if \(model && previousModel && previousModel !== model\) \{/)
+  assert.match(
+    harness,
+    /if \(model && previousModel && !sameAnswerIdentity\(ctx, previousModel, model\)\) \{/,
+  )
   assert.match(harness, /kind: 'assistant', blocks: \[\], settled: false, model/)
   assert.match(harness, /changed from \$\{escapeHtml\(from\)\} to \$\{escapeHtml\(to\)\}/)
 })

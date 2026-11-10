@@ -1592,8 +1592,34 @@
     if (!resolveAlias) return null
     const routed = ctx && ctx.routedModel
     if (!routed) return null
-    const name = modelName(routed.realModelLabel || routed.label || routed.modelId)
+    // The id, not the label. A message that named a model records the provider's id, so resolving
+    // an alias-only message to the row's display label made the next answer from the same model
+    // read as a change ("swe-2-flash-medium" -> "Devin SWE-2 Flash Medium").
+    const name = modelName(routed.modelId || routed.realModelId || routed.label)
     return name && name !== 'unknown model' ? name : null
+  }
+
+  /**
+   * Whether two recorded model names are the same answer's model.
+   *
+   * A message names what the provider reported — an id such as `swe-2-flash-medium`. An older
+   * message, or one whose answer was resolved through Hammer's alias, can name the same row by
+   * its display label ("Devin SWE-2 Flash Medium"). Comparing those as strings puts a model-change
+   * station between two answers from the same model, which is worse than saying nothing: the
+   * reader is told the route moved when it did not. Both sides are folded, and either side may be
+   * any of the route's own names.
+   */
+  function sameAnswerIdentity(ctx, left, right) {
+    const fold = (value) =>
+      printableModelName(value).toLowerCase().replace(/\s+/g, ' ').trim()
+    if (!left || !right) return false
+    if (fold(left) === fold(right)) return true
+    const routed = ctx && ctx.routedModel
+    if (!routed) return false
+    const names = [routed.modelId, routed.realModelId, routed.label, routed.realModelLabel]
+      .filter(Boolean)
+      .map(fold)
+    return names.includes(fold(left)) && names.includes(fold(right))
   }
 
   /**
@@ -2468,7 +2494,7 @@
           const previousProvider = ctx.lastAnswer?.model
             ? ctx.lastAnswer.provider || ''
             : previousRow?.provider || ''
-          if (model && previous && previous !== model) {
+          if (model && previous && !sameAnswerIdentity(ctx, previous, model)) {
             ctx.items.push({
               kind: 'model',
               from: previous,
@@ -4792,7 +4818,7 @@
         // only names Hammer's `best` alias has no recoverable model, so it is left unset rather
         // than having today's route painted over an old turn.
         const provider = messageProviderName(message, ctx)
-        if (model && previousModel && previousModel !== model) {
+        if (model && previousModel && !sameAnswerIdentity(ctx, previousModel, model)) {
           ctx.items.push({
             kind: 'model',
             from: previousModel,
