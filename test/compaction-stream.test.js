@@ -170,6 +170,47 @@ test('a summarization is recognized where Pi actually puts its instruction', () 
   assert.equal(isSummarizationRequest([]), false)
 })
 
+test('a summary replayed in the history does not make every later turn a summary', () => {
+  // A session that compacted once carries the old instruction quoted in its history. Reading
+  // that as a live instruction routed every later turn as a summary — narrowed to the rows that
+  // can hold the whole prompt — so a turn whose console showed one model could be served, and
+  // refused with that row's 402, by another model entirely.
+  const replayed = [
+    { role: 'system', content: 'You are an expert coding assistant operating inside pi.' },
+    {
+      role: 'user',
+      content:
+        'The conversation history before this point was compacted into the following summary:\n' +
+        '<summary>\nYou are a context summarization assistant.\n' +
+        'The messages above are a conversation to summarize.\n</summary>',
+    },
+    { role: 'assistant', content: 'Now let me look at the rate-limit cell rendering.' },
+    { role: 'tool', content: 'function rateLimitEvidence(m) { … }' },
+    { role: 'user', content: 'Fix this: the error came from another model.' },
+  ]
+  assert.equal(isSummarizationRequest(replayed), false)
+  // The instruction is still found where Pi puts it: in the last message, or as the system prompt.
+  assert.equal(
+    isSummarizationRequest([
+      ...replayed.slice(0, 4),
+      { role: 'user', content: 'The messages above are a conversation to summarize.' },
+    ]),
+    true,
+  )
+})
+
+test('a payment wall benches the row and moves a router-chosen request on', () => {
+  // A 402 is a verdict about the account, not a wait: the row takes the Paid verdict a manual
+  // Test gives it, and a request the router chose tries another candidate instead of ending the
+  // turn with an error from a model the console never showed (see markModelBudgetRefused).
+  assert.match(proxy, /if \(isPaymentRequiredError\(bodyText, response\.status\)\) \{/)
+  assert.match(proxy, /markModelBudgetRefused\(best, bodyText\)/)
+  assert.match(
+    proxy,
+    /if \(isPaymentRequiredError\(bodyText, response\.status\)\) \{[\s\S]*?pendingCandidate = alternative[\s\S]*?attemptMeta\.retryable = true/,
+  )
+})
+
 test('a model change is a station on the spine that names both ends', () => {
   // The glyph is two lines diverging, and it must join the spine at the row's edges the way a
   // tool glyph does: (12,0) at the top, (12,24) at the foot. The top stroke leaves to the
