@@ -1805,6 +1805,17 @@
       font-variant-numeric: tabular-nums;
     }
 
+    /* The automatic retry that waits behind a benched row's Test button. A waiting row is
+       not a broken one, so it wears the warning colour the Status clock does, and the
+       tabular figures keep the countdown from shifting the button as it ticks. */
+    .test-retry {
+      font-size: 0.65rem;
+      color: var(--warning);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      cursor: default;
+    }
+
     /* Rate-limit countdown shown in the status column after a 429 test response */
     .rl-countdown {
       font-size: 0.75rem;

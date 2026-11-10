@@ -371,6 +371,26 @@
     // test with the same class of failure must not be re-tested every poll.
     const AUTOMATIC_RETEST_COOLDOWN_MS = 10 * 60_000;
     const automaticRetestAt = new Map();
+    // ── Retrying the rows that are only waiting ────────────────────────────────────────
+    //
+    // A rate limit or an exhausted quota is the provider saying "later", not "never": the
+    // row comes back on its own, so the one thing needed to notice is another test. A row
+    // carrying one of those verdicts — never a paid or dead one, which no retry can change —
+    // is therefore tested again every minute. The plot's line decides the order — rows it
+    // could reach are tried first — but not who qualifies: a benched row is never on that
+    // line while it is benched, so gating on it scheduled nothing at all. The waits are kept
+    // here, one per row, and drawn beside the Test button as a countdown (see autoRetestNote).
+    const AUTO_RETEST_INTERVAL_MS = 60_000;
+    // The floor between two automatic starts. A bench of twenty rows must not fire its tests
+    // on one tick into providers that are already refusing traffic; sequential tests with
+    // this gap spread them out, and the first pass spreads them across the whole minute.
+    const AUTO_RETEST_GAP_MS = 4_000;
+    // 'overloaded' is a rate limit with no quota behind it (a busy provider), so it waits on
+    // the same clock. 'timeout' names no window the provider reopens, and the struck verdicts
+    // (paid, dead, incompatible, micro, noauth) cannot be retried into a different answer.
+    const AUTO_RETEST_VERDICTS = new Set(['rate-limited', 'overloaded']);
+    const autoRetestAt = new Map();
+    let autoRetestBusy = false;
     // How long the dashboard waits for one Test before abandoning the request. The router spends
     // up to three 60s attempts on a row — a provider-stated max_tokens cap and a reasoning-only
     // answer each earn a re-ask (MAX_TEST_ATTEMPTS/TEST_TIMEOUT_MS in lib/server.js) — so this is
@@ -1051,6 +1071,8 @@
         });
 
         scheduleContradictoryRetests();
+        // Rows waiting on a provider window get their own clock: one retry a minute, staggered.
+        scheduleAutomaticRetests();
         // Show the 'Test All' button when the rendered main table has inactive rows.
         updateTestAllButtonVisibility();
         // Live-update logs if that tab is currently active
@@ -5848,7 +5870,10 @@
         return '<div class="test-cell"><span class="test-meta" style="color:var(--text-muted);">—</span></div>';
       }
       const btn = testBtnHTML(opts);
-      if (!lastResponse) return `<div class="test-cell">${btn}</div>`;
+      // The retry clock sits beside the button so a click does not look like the only way
+      // the row will be tested again; it is empty for anything not on that schedule.
+      const retry = autoRetestNote(opts && opts.rowKey);
+      if (!lastResponse) return `<div class="test-cell">${btn}${retry}</div>`;
       // Timeout errors carry an expiry; once it passes, treat the result as absent
       // so a stale timeout no longer populates the test result field.
       const expired = lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt);
@@ -6411,6 +6436,196 @@
         const button = row?.querySelector('.test-btn:not([disabled])');
         if (button) testModelButton(button, { rowKey, providerKey: m.providerKey, modelId: m.modelId });
       }
+    }
+
+    // The earliest automatic retry waiting among a group's members, or 0. A collapsed group
+    // hides its member rows, so the note that belongs to a benched member would be invisible;
+    // the heading's Test button tests those same members (testModelGroupButton), so the wait
+    // is drawn beside it as well.
+    function groupAutoRetestAt(groupKey) {
+      const group = (lastMainGroups || []).find(g => g && g.key === groupKey);
+      if (!group || !Array.isArray(group.members)) return 0;
+      let soonest = 0;
+      for (const member of group.members) {
+        const at = Number(autoRetestAt.get(getModelRowKey(member))) || 0;
+        if (at > 0 && (!soonest || at < soonest)) soonest = at;
+      }
+      return soonest;
+    }
+
+    // The countdown beside a row's Test button, or '' when no automatic retry is waiting.
+    function autoRetestNote(rowKey) {
+      if (!rowKey) return '';
+      const isGroup = rowKey.startsWith('g:');
+      const at = isGroup
+        ? groupAutoRetestAt(rowKey.slice(2))
+        : (Number(autoRetestAt.get(rowKey)) || 0);
+      if (at <= 0) return '';
+      return `<span class="test-retry" data-retest-row="${isGroup ? '' : escapeAttr(rowKey)}" data-retest-group="${isGroup ? escapeAttr(rowKey.slice(2)) : ''}" data-retest-at="${at}">${retestWaitLabel(at)}</span>`;
+    }
+
+    function retestWaitLabel(at, now = Date.now()) {
+      const ms = Number(at) - now;
+      // A wait that has come due but not started yet (the scheduler runs one at a time) says
+      // so, rather than counting to 0 and sitting there as if nothing were going to happen.
+      if (!(ms > 0)) return 'testing shortly…';
+      return `testing in ${Math.ceil(ms / 1000)}s`;
+    }
+
+    // The note ticks once a second, so the wait is visible between renders instead of a
+    // countdown that only moves when the table happens to be rebuilt.
+    function updateAutoRetestNotes() {
+      const now = Date.now();
+      // A schedule is made after the snapshot renders (see scheduleAutomaticRetests), so a
+      // row's first note has no markup to update. Attach it here instead of waiting for the
+      // next full render: the countdown is the whole point, and a row that got one only on
+      // the next poll would look unscheduled for that long.
+      for (const [rowKey, at] of autoRetestAt) {
+        const value = Number(at) || 0;
+        if (value <= 0) continue;
+        const cell = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"] .test-cell`);
+        if (!cell) continue;
+        let el = cell.querySelector('.test-retry');
+        if (!el) {
+          const button = cell.querySelector('.test-btn');
+          if (!button) continue;
+          el = document.createElement('span');
+          el.className = 'test-retry';
+          button.insertAdjacentElement('afterend', el);
+        }
+        el.setAttribute('data-retest-row', rowKey);
+        el.removeAttribute('data-retest-group');
+        el.setAttribute('data-retest-at', String(value));
+        el.textContent = retestWaitLabel(value, now);
+      }
+      // The heading of a group with a waiting member carries the earliest of those waits: its
+      // row may be the only Test button on screen while the group is collapsed.
+      for (const group of lastMainGroups || []) {
+        if (!group || !group.key) continue;
+        const at = groupAutoRetestAt(group.key);
+        const row = document.querySelector(`[data-row-key="g:${CSS.escape(group.key)}"]`);
+        const cell = row?.querySelector('.test-cell');
+        if (!cell) continue;
+        let el = cell.querySelector('.test-retry');
+        if (!at) {
+          if (el && el.getAttribute('data-retest-group')) el.remove();
+          continue;
+        }
+        if (!el) {
+          const button = cell.querySelector('.test-btn');
+          if (!button) continue;
+          el = document.createElement('span');
+          el.className = 'test-retry';
+          button.insertAdjacentElement('afterend', el);
+        }
+        el.setAttribute('data-retest-group', group.key);
+        el.removeAttribute('data-retest-row');
+        el.setAttribute('data-retest-at', String(at));
+        el.textContent = retestWaitLabel(at, now);
+      }
+      for (const el of document.querySelectorAll('.test-retry[data-retest-at]')) {
+        const rowKey = el.getAttribute('data-retest-row');
+        const groupKey = el.getAttribute('data-retest-group');
+        if (rowKey && !autoRetestAt.has(rowKey)) { el.remove(); continue; }
+        if (groupKey && !groupAutoRetestAt(groupKey)) { el.remove(); continue; }
+        const at = Number(el.getAttribute('data-retest-at')) || 0;
+        if (!at) { el.remove(); continue; }
+        el.textContent = retestWaitLabel(at, now);
+      }
+    }
+
+    // Schedule a retry for every row that is only waiting on its provider.
+    //
+    // A benched row is by definition not routable right now, and the hull of the plot is built
+    // from the rows that still are: requiring a hull entry meant no rate-limited row was ever
+    // scheduled, so the clock never appeared. Rows with a plotted position go first — they are
+    // the ones the router could pick the moment a test clears them — then rows with no dot yet,
+    // which is exactly the state another test can fix.
+    //
+    // Runs after each refresh, so a row a test just proved healthy stops being scheduled
+    // and a row that has just fallen onto a rate limit starts. The first pass spreads the
+    // bench across one interval (row i waits i·interval/N), and only rows with no wait yet
+    // are placed: a refresh must never push an existing countdown later.
+    function scheduleAutomaticRetests() {
+      const now = Date.now();
+      const { rows } = buildScatterRows(allModels);
+      // Used only to rank the queue: plotted rows first, rows with no dot yet after them.
+      const plotted = new Set(rows.map(r => getModelRowKey(r.m)));
+      const seen = new Set();
+      const targets = [];
+      for (const m of allModels) {
+        if (!m || m.hasAuth === false) continue;
+        if (!AUTO_RETEST_VERDICTS.has(rowVerdict(m))) continue;
+        const key = getModelRowKey(m);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        targets.push({ key, rank: plotted.has(key) ? 0 : 1 });
+      }
+      targets.sort((a, b) => a.rank - b.rank);
+      const keys = new Set(targets.map(t => t.key));
+      for (const key of [...autoRetestAt.keys()]) {
+        if (!keys.has(key)) autoRetestAt.delete(key);
+      }
+      const slot = AUTO_RETEST_INTERVAL_MS / Math.max(1, targets.length);
+      targets.forEach((target, index) => {
+        if (!autoRetestAt.has(target.key)) autoRetestAt.set(target.key, now + index * slot);
+      });
+      runDueAutomaticRetest(now);
+    }
+
+    // Start at most one automatic test, and only when nothing else is testing. The next
+    // start is held AUTO_RETEST_GAP_MS behind this one, so a bench that all became due at
+    // once is spread out instead of aimed at one provider as a burst.
+    // A retry for a row whose group is collapsed. `testModelButton` needs the member row's
+    // button, and that markup does not exist while the group is folded — which is the usual
+    // shape of a duplicate provider. The endpoint is the one the button posts to, so the
+    // server records the same attempt; the refresh then reads the verdict it produced.
+    async function autoRetestRequest(model) {
+      try {
+        await fetch('/api/test-model', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ providerKey: model.providerKey, modelId: model.modelId }),
+          signal: AbortSignal.timeout(TEST_RESPONSE_TIMEOUT_MS),
+        });
+      } catch {
+        // A transport failure is still an attempt: the server records what it saw, if anything,
+        // and the next refresh carries that verdict.
+      }
+      fetchData().catch(() => {});
+    }
+
+    function runDueAutomaticRetest(now = Date.now()) {
+      if (autoRetestBusy || testAllRunning) return;
+      // A row freshly scheduled from a snapshot is queued from now on; nothing else gates it.
+      const due = [...autoRetestAt.entries()]
+        .filter(([key, at]) => at <= now && !inflightTests.has(key))
+        .sort((a, b) => a[1] - b[1])
+        .find(([key]) => {
+          // The model must still be in the table; a stale key is dropped so it cannot hold
+          // the queue. A visible button is used when there is one, but never required: a
+          // collapsed group has no member row to click.
+          return allModels.some(m => getModelRowKey(m) === key);
+        });
+      if (!due) return;
+      const [rowKey] = due;
+      const model = allModels.find(m => getModelRowKey(m) === rowKey);
+      if (!model) { autoRetestAt.delete(rowKey); return; }
+      const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
+      const button = row?.querySelector('.test-btn:not([disabled])');
+      autoRetestBusy = true;
+      // The next slot is claimed before the request starts, so a refresh while it is in
+      // flight cannot schedule the same row again on top of itself.
+      autoRetestAt.set(rowKey, now + AUTO_RETEST_INTERVAL_MS);
+      const work = button
+        ? testModelButton(button, { rowKey, providerKey: model.providerKey, modelId: model.modelId })
+        : autoRetestRequest(model);
+      Promise.resolve(work)
+        .catch(() => {})
+        .finally(() => {
+          autoRetestBusy = false;
+          setTimeout(() => runDueAutomaticRetest(), AUTO_RETEST_GAP_MS);
+        });
     }
 
     function updateVisibleMetrics(model, rowKey = getModelRowKey(model)) {
