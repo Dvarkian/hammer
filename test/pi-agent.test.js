@@ -521,11 +521,11 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   assert.match(harness, /appendDelta\('thinking', update\.contentIndex, update\.delta, ctx\)/)
   assert.match(harness, /class="hx-thinking-text"/)
   // Thinking is a disclosure on the spine: a station with its own mark, open while it is being
-  // written and folded once the message settles, like a finished tool call.
-  assert.match(harness, /<details class="hx-thinking \$\{settled \? 'settled' : 'running'\}"/)
+  // written and folded as soon as the model moves on.
+  assert.match(harness, /<details class="hx-thinking \$\{complete \? 'settled' : 'running'\}"/)
   assert.match(harness, /function thinkingIcon\(\)/)
   assert.match(harness, /class="hx-thinking-icon"/)
-  assert.match(harness, /const open = block\.open \?\? !settled/)
+  assert.match(harness, /const open = block\.open \?\? !complete/)
   assert.match(harness, /item\.settled = true/)
   // A settled head states what the thought cost, and the reasoning figure comes from the
   // message's own usage rather than an estimate: "Thought for 10s · 1.5k tokens."
@@ -2744,4 +2744,24 @@ test('a streaming assistant row is mounted on its first token, not at the end of
     /item\.kind === 'assistant' &&\s*!\(item\.blocks \|\| \[\]\)\.some\(\(block\) => String\(block\.text \|\| ''\)\.trim\(\)\)/,
     'the skip stays: an assistant row with no visible text still does not render',
   )
+})
+
+test('a finished call or thought folds while the turn is still running', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  // A thought is complete when the model moves on to prose, a tool call or the end of the
+  // message — not only when the turn settles. Folding at message_end left every finished
+  // thought open above the answer it produced.
+  assert.match(harness, /const complete = settled \|\| block\.finished === true/)
+  assert.match(harness, /const open = block\.open \?\? !complete/)
+  assert.match(harness, /function finishBlocks\(item\)/)
+  assert.match(
+    harness,
+    /finishBlocks\(item\)\n\s+block = \{ kind, index: contentIndex, text: '' \}/,
+  )
+  assert.match(harness, /finishBlocks\(lastAssistant\(ctx\)\)/)
+  // A reader's open state is recorded from the click, never from the toggle the page itself
+  // causes by painting a running row open — that is what left finished edits and thoughts open
+  // for the rest of the turn, collapsing only after a restart.
+  assert.doesNotMatch(harness, /addEventListener\(\s*'toggle'/)
+  assert.match(harness, /summary\.hx-tool-head, summary\.hx-thinking-head'\)/)
 })

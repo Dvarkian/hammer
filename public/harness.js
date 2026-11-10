@@ -886,6 +886,30 @@
   }
 
   /**
+   * Ends every block of a message that is still being written.
+   *
+   * A thought is finished as soon as the model moves on — to prose, to a tool call, or to the
+   * end of the message — not when the whole turn settles. `message_end` is the only place that
+   * used to fold them, so a turn that thought, called three tools and then answered left every
+   * finished thought open above the answer it produced.
+   *
+   * @param {any} item an assistant item
+   */
+  function finishBlocks(item) {
+    if (!item || !Array.isArray(item.blocks)) return
+    const now = Date.now()
+    for (const block of item.blocks) {
+      if (block.finished) continue
+      block.finished = true
+      // The head reports how long the thought ran; a thought that ended mid-turn gets the same
+      // figure a settled one does, stopped at its last delta rather than at the message's end.
+      if (block.kind === 'thinking' && block.startedAt && block.durationMs == null) {
+        block.durationMs = Math.max(0, (block.lastDeltaAt || now) - block.startedAt)
+      }
+    }
+  }
+
+  /**
    * A thought is a station on the spine, so it behaves like a tool call: while the model is
    * still writing it the row is open, and once its message settles it folds away. The answer
    * stays in the log; the reasoning that produced it stays one click behind it.
@@ -895,8 +919,12 @@
    */
   function thinkingMarkup(block, item) {
     const settled = item.settled === true
-    const open = block.open ?? !settled
-    return `<details class="hx-thinking ${settled ? 'settled' : 'running'}"${open ? ' open' : ''}>
+    // A thought is complete when the model stops writing it — it moved on to prose, a tool
+    // call, or the end of the message — not only when the whole turn settles. Folding at
+    // message_end is what kept every finished thought open for the rest of the turn.
+    const complete = settled || block.finished === true
+    const open = block.open ?? !complete
+    return `<details class="hx-thinking ${complete ? 'settled' : 'running'}"${open ? ' open' : ''}>
           <summary class="hx-thinking-head">
             ${thinkingIcon()}
             <span class="hx-thinking-label">${thinkingLabel(block, settled)}</span>
@@ -1890,6 +1918,9 @@
       (candidate) => candidate.kind === kind && candidate.index === contentIndex,
     )
     if (!block) {
+      // A new block is the model moving on: whatever it was writing before is finished, and
+      // folds where it stands.
+      finishBlocks(item)
       block = { kind, index: contentIndex, text: '' }
       // The head reports how long the thought took to arrive, so the clock starts on its first
       // delta; `lastDeltaAt` is what stops before the model moves on to writing the answer.
@@ -1910,6 +1941,8 @@
     const key = String(id || name || 'tool')
     let item = ctx.tools.get(key)
     if (item) return item
+    // The call ends whatever the model was writing to introduce it: that thought folds now.
+    finishBlocks(lastAssistant(ctx))
     item = { kind: 'tool', id: key, name: name || 'tool', args: null, status: 'preparing', result: '', partial: '' }
     ctx.tools.set(key, item)
     ctx.items.push(item)
@@ -2069,6 +2102,7 @@
           if (item) {
             // The message is complete: its thoughts stop being live and fold away with it.
             item.settled = true
+            finishBlocks(item)
             // Only visible text counts as streamed: a turn whose one delta was a newline is as
             // empty as one that streamed nothing, and must not keep the block it made.
             const streamed = item.blocks.some((block) => String(block.text || '').trim())
@@ -4109,27 +4143,35 @@
       box.focus()
     })
 
-    // A re-render replaces the element a disclosure lived in, so the open state has to live on
-    // the item: without this, every streaming update collapsed output the reader had opened.
+    // A re-render replaces the element a disclosure lived in, so the open state the reader chose
+    // has to live on the item. It is recorded from the click, never from the `toggle` event: a
+    // running row is painted open, and the toggle the browser fires for the page's own `open`
+    // attribute is indistinguishable from a reader opening it. Recording that made every finished
+    // edit and thought stay open for the rest of the turn — only a restart, whose fresh items
+    // carry no recorded state, folded them. The default action has not run when the click arrives,
+    // so the state is read on the next frame.
     $('hx-transcript')?.addEventListener(
-      'toggle',
+      'click',
       (event) => {
-        const node = event.target
-        if (node.classList?.contains('hx-thinking')) {
-          // Thinking is one disclosure per reasoning block; the block keeps the state so a
-          // repaint does not fold an opened thought (or reopen one the reader closed).
-          const item = state.items.find((entry) => entry.node?.contains(node))
-          if (item) {
+        const summary = event.target.closest?.('summary.hx-tool-head, summary.hx-thinking-head')
+        const node = summary?.parentElement
+        if (!node) return
+        requestAnimationFrame(() => {
+          if (node.classList?.contains('hx-thinking')) {
+            // Thinking is one disclosure per reasoning block; the block keeps the state so a
+            // repaint does not fold an opened thought (or reopen one the reader closed).
+            const item = state.items.find((entry) => entry.node?.contains(node))
+            if (!item) return
             const nodes = [...(item.node?.querySelectorAll('.hx-thinking') || [])]
             const blocks = (item.blocks || []).filter((block) => block.kind === 'thinking')
             const block = blocks[nodes.indexOf(node)]
             if (block) block.open = node.open
+            return
           }
-          return
-        }
-        if (!node.classList?.contains('hx-tool')) return
-        const item = state.items.find((entry) => entry.node?.contains(node))
-        if (item) item.open = node.open
+          if (!node.classList?.contains('hx-tool')) return
+          const item = state.items.find((entry) => entry.node?.contains(node))
+          if (item) item.open = node.open
+        })
       },
       true,
     )
