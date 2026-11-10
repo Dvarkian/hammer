@@ -2456,17 +2456,28 @@
           // reading of the newest answer, which is what lets a fallback update the strip at once.
           if (model) noteAnsweredModel(ctx, model)
           const provider = messageProviderName(message, ctx)
+          // The row is the transcript's record, but it is not the record of the last answer: a
+          // message that only called a tool leaves no row behind (`message_end` drops it), and
+          // in a tool-heavy run that is every message. Comparing against surviving rows alone
+          // therefore kept finding the one old row that had prose and drew the same "changed
+          // from" line on every turn, while the agent answered on the same model throughout.
+          // `ctx.lastAnswer` is the message immediately before this one, row or no row; the
+          // last row is only the fallback for a console that has not seen a message yet.
           const previousRow = lastAnsweredRow(ctx)
-          const previous = previousRow?.model || null
+          const previous = ctx.lastAnswer?.model || previousRow?.model || null
+          const previousProvider = ctx.lastAnswer?.model
+            ? ctx.lastAnswer.provider || ''
+            : previousRow?.provider || ''
           if (model && previous && previous !== model) {
             ctx.items.push({
               kind: 'model',
               from: previous,
               to: model,
-              fromProvider: previousRow.provider || '',
+              fromProvider: previousProvider,
               toProvider: provider,
             })
           }
+          if (model) ctx.lastAnswer = { model, provider }
           ctx.items.push({ kind: 'assistant', blocks: [], settled: false, model, provider })
           syncTranscript({}, ctx)
         }
@@ -2494,6 +2505,14 @@
           // the one that keeps the rail's newest bar level with the newest answer. A console
           // in the background waits for the switch (see activate).
           if (ctx.sessionFile === active()?.sessionFile) void publishSessionUsage(ctx)
+          // The message's own report is the truth, not the route it was sent on: a fallback
+          // answers with a model the pick did not name. This is the base the next message is
+          // compared against, so it has to be what answered rather than what was asked.
+          const reported = messageModelName(message, ctx)
+          if (reported) {
+            ctx.lastAnswer = { model: reported, provider: messageProviderName(message, ctx) }
+            noteAnsweredModel(ctx, reported)
+          }
           const item = lastAssistant(ctx)
           if (item) {
             // The message is complete: its thoughts stop being live and fold away with it.
@@ -4792,6 +4811,12 @@
       ctx.tools.set(key, item)
       ctx.items.push(item)
     }
+    // A rebuilt transcript must hand the live stream the same base it compares against: the
+    // last message that answered here, so the first new one is measured against it rather
+    // than against a row or against nothing.
+    ctx.lastAnswer = previousModel
+      ? { model: previousModel, provider: previousProvider }
+      : null
     syncTranscript({ reset: true }, ctx)
     // This console's transcript now comes from its session file, which is authoritative and
     // survives a restart; the replay log is no longer needed to describe it.

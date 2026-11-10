@@ -191,7 +191,12 @@ test('a model change is a station on the spine that names both ends', () => {
   // The station belongs to the transcript, not to a variable only the live stream fills: the row
   // records which model answered, so a restart can rebuild the same marks from the session's
   // messages instead of losing every change it did not watch happen.
-  assert.match(harness, /const previous = previousRow\?\.model \|\| null/)
+  // The base is the previous message whether or not it left a row: a tool-call-only
+  // message leaves none, and the row-based comparison redrew the same line every turn.
+  assert.match(
+    harness,
+    /const previous = ctx\.lastAnswer\?\.model \|\| previousRow\?\.model \|\| null/,
+  )
   assert.match(harness, /item\.kind === 'assistant' && item\.model/)
   assert.match(harness, /let previousModel = null/)
   assert.match(harness, /if \(model && previousModel && previousModel !== model\) \{/)
@@ -206,7 +211,7 @@ test('a model change names the provider at both ends', () => {
   assert.match(harness, /function modelWithProvider\(name, provider\)/)
   assert.match(harness, /const from = modelWithProvider\(item\.from, item\.fromProvider\)/)
   assert.match(harness, /const to = modelWithProvider\(item\.to, item\.toProvider\)/)
-  assert.match(harness, /fromProvider: previousRow\.provider \|\| ''/)
+  assert.match(harness, /fromProvider: previousProvider,/)
   assert.match(harness, /kind: 'assistant', blocks: \[\], settled: false, model, provider/)
   // History rebuilds the same stations from the session, so it records the provider too.
   assert.match(harness, /fromProvider: previousProvider/)
@@ -273,4 +278,23 @@ test('the proxy taps the stream and names the console it belongs to', () => {
   assert.match(proxy, /piBridgeForConsole\(compactionConsole\)/)
   assert.match(proxy, /createCompactionTap\(compactionBridge\)/)
   assert.match(proxy, /bridge\.noteCompactionText\(delta\.content\)/)
+})
+
+test('a prose-less message still counts as the previous model', () => {
+  // Every message in a tool-heavy run can be tool-call-only, and `message_end` drops those
+  // rows on purpose. Comparing against surviving rows alone therefore kept finding the one
+  // old row that had prose and redrew the same "changed from" line on every turn while the
+  // agent answered on one model throughout. The base is the previous message, not the
+  // previous row; history hands the live stream the same base after a rebuild.
+  assert.match(
+    harness,
+    /const previous = ctx\.lastAnswer\?\.model \|\| previousRow\?\.model \|\| null/,
+  )
+  assert.match(harness, /const previousProvider = ctx\.lastAnswer\?\.model/)
+  assert.match(harness, /if \(model\) ctx\.lastAnswer = \{ model, provider \}/)
+  assert.match(harness, /ctx\.lastAnswer = previousModel/)
+  assert.match(
+    harness,
+    /ctx\.lastAnswer = \{ model: reported, provider: messageProviderName\(message, ctx\) \}/,
+  )
 })
