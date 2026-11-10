@@ -3181,10 +3181,10 @@
     // `contextUsage` is pi's figure (it may also ride along on a live usage frame);
     // `usage.contextWindow` is the flat estimate a bare per-message count would give.
     const context = usage.contextUsage || null
-    // The model's own window is the limit the models table reports for the routed row. Pi's
-    // figure is the alias's declared ceiling (a fixed 131k, see lib/pi/agent-dir.js), which is
-    // not a property of the model: preferring it put "131k" in this meter beside "1M" in the
-    // table for the very same pick.
+    // The model's own window is the limit the models table reports for the routed row, and it
+    // is what the router compacts against (see lib/pi/bridge.js). Pi's figure is only the alias
+    // declaration, kept as a cap: it used to be a fixed 131k, which put "131k" in this meter
+    // beside "1M" in the table for the very same pick.
     const piWindow = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
     const routedWindow = Number(fallbackWindow) || 0
     const window_ = routedWindow || piWindow
