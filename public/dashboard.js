@@ -6085,7 +6085,7 @@
     // The other half of the account refusals, kept in step with isRateLimitedErrorText in
     // lib/utils.js: a quota the row waits out. It outranks a bare 402 in the verdicts below,
     // because a provider that labels its rate limit 402 must not earn a Paid badge for it.
-    const RATE_LIMIT_RE = /resource_exhausted|freeusagelimiterror|err_free_rate|free model capacity is limited|rate_limit_error|quota exceeded|rate limit exceeded|too many requests|\b(?:reached|exceeded)\s+(?:the|your)\s+limit\b/i;
+    const RATE_LIMIT_RE = /resource_exhausted|freeusagelimiterror|err_free_rate|free model capacity is limited|rate_limit_error|quota exceeded|rate limit exceeded|too many requests|concurrent\s+requests?|in-?flight\s+(?:requests?|limit)|\b(?:reached|exceeded)\s+(?:the|your)\s+limit\b/i;
     // The incompatible half of the same mirror, kept in step with isIncompatibleModelError in
     // lib/utils.js — the rule the server reads the same stored text with. The narrow
     // `image/video only | not support text` pair this replaces missed most of the canonical

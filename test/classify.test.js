@@ -28,6 +28,7 @@ import {
   isOutputCapOnlyErrorText,
   isPaymentRequiredError,
   isRateLimitedErrorText,
+  waitVerdictOf,
   isRequestTooLargeErrorText,
   isZeroFreeTierQuota,
   parseContextLimitFromError,
@@ -1032,6 +1033,66 @@ test('OrcaRouter’s free-capacity refusal is a rate limit, not a payment wall',
       },
     }),
     'rate-limited',
+  )
+})
+
+test("Requesty's in-flight limit is a wait, not a payment wall or a bad key", () => {
+  // The gateway caps concurrent requests per organization, and the message says "top up"
+  // because the cap scales with the balance. That is a window — retrying once a request
+  // finishes reopens it — not a statement that the key is wrong or the row is unpaid. The
+  // 403 spelling is covered too: a gateway may wrap the same refusal in the auth code, which
+  // used to earn a no-auth verdict.
+  const body =
+    "Your organization reached its limit of concurrent requests. The limit scales with your organization's balance, top up at https://app.requesty.ai/settings/billing or contact support@requesty.ai. See https://docs.requesty.ai/features/in-flight-rate-limits"
+  for (const status of [429, 403]) {
+    assert.equal(isRateLimitedErrorText(body), true)
+    assert.equal(isPaymentRequiredError(body, status), false)
+    assert.equal(resolveRefusalVerdict(body, status), 'rate-limited')
+  }
+  assert.equal(resolveRefusalVerdict('Maximum in-flight requests reached.', 403), 'rate-limited')
+  assert.equal(
+    resolveRefusalVerdict('Too many concurrent requests; retry shortly.', 400),
+    'rate-limited',
+  )
+  assert.equal(isPaymentRequiredError('Maximum in-flight requests reached.', 403), false)
+})
+
+test('a metered catalog does not hide a live in-flight limit behind a Paid badge', () => {
+  // Requesty prices its whole catalogue, so a metered row is `catalogPaid` and the probe skips
+  // it. That tag says the model bills; it does not say what is stopping the row now. When the
+  // row's own newest answer is the organization's in-flight cap, the row is waiting for a slot —
+  // Exhausted, not Paid — and reading the tag first sent the user to the billing page for a
+  // model that was merely busy. The tag still wins whenever nothing newer speaks: a live success
+  // since the refusal, or a payment wall of the row's own.
+  const now = Date.now()
+  const body =
+    "Your organization reached its limit of concurrent requests. The limit scales with your organization's balance, top up at https://app.requesty.ai/settings/billing or contact support@requesty.ai. See https://docs.requesty.ai/features/in-flight-rate-limits"
+  const row = {
+    modelId: 'tensorx/qwen3.8-2.4t-a95b',
+    providerKey: 'requesty',
+    status: 'paid',
+    catalogPaid: true,
+    lastResponse: { ok: false, text: null, status: 429, error: body, at: now },
+  }
+  assert.equal(waitVerdictOf(row.lastResponse, now), 'rate-limited')
+  assert.equal(resolveModelStatus(row, now), 'rate-limited')
+  assert.equal(resolveModelStatus({ ...row, lastProxiedAt: now + 1 }, now), 'paid')
+  assert.equal(
+    resolveModelStatus(
+      {
+        ...row,
+        lastResponse: {
+          ok: false,
+          text: null,
+          status: 402,
+          error:
+            "Model 'pixverse-modify' requires an active subscription or a positive Pay-As-You-Go balance.",
+          at: now,
+        },
+      },
+      now,
+    ),
+    'paid',
   )
 })
 
