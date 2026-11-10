@@ -395,3 +395,13 @@ test('a live wait below the spine runs on the model’s own TTFT', () => {
   assert.match(harnessCss, /\.hx-ttft-ring \{[\s\S]{0,220}margin-left: -11px;/)
   assert.match(harnessCss, /@media \(prefers-reduced-motion: reduce\)/)
 })
+
+test('the rail compaction buttons are bound through the panel element', () => {
+  // `$` is getElementById, so `$('[data-compaction-toggle]')` was null and neither the
+  // auto-compaction switch nor "Compact now" had a listener at all: the panel looked live and
+  // did nothing. A selector is only ever reached through the panel element.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.doesNotMatch(harness, /\$\(\s*'\[[^\]]*\]'\)\s*\??\.addEventListener/)
+  assert.match(harness, /compactionPanel\s*\??\.\s*querySelector\('\[data-compaction-now\]'\)/)
+  assert.match(harness, /compactionPanel\s*\??\.\s*querySelector\('\[data-compaction-toggle\]'\)/)
+})

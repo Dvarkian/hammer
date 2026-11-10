@@ -5124,10 +5124,15 @@
 
     // Compaction controls. The toggle is hidden until Pi reports whether auto-compaction is
     // on, so an agent that cannot answer does not present a switch that would do nothing.
-    $('[data-compaction-now]')?.addEventListener('click', () => compactNow())
-    $('[data-compaction-toggle]')?.addEventListener('click', () => {
-      const panel = $('hx-compaction-panel')
-      const toggle = panel?.querySelector('[data-compaction-toggle]')
+    // `$` is getElementById, so a selector has to be reached through the panel element: a
+    // bare `$('[data-compaction-toggle]')` was null, which left both buttons unbound and the
+    // panel looking live while doing nothing.
+    const compactionPanel = $('hx-compaction-panel')
+    compactionPanel
+      ?.querySelector('[data-compaction-now]')
+      ?.addEventListener('click', () => compactNow())
+    compactionPanel?.querySelector('[data-compaction-toggle]')?.addEventListener('click', () => {
+      const toggle = compactionPanel.querySelector('[data-compaction-toggle]')
       if (!toggle) return
       const next = toggle.getAttribute('aria-pressed') !== 'true'
       toggle.disabled = true
