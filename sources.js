@@ -440,10 +440,16 @@ export function isSameModelIdentity(a, b) {
   // A bare number only ever trails a g4f duplicate marker ("...-30b - 1"), and
   // must not be read as a version — so it is ignorable only after a named token.
   if (/^\d+$/.test(shortTokens[shortTokens.length - 1])) return false
+  // A short number on the end is a snapshot, not a sibling: g4f's duplicate marker ("- 1")
+  // and a provider's build stamp ("deepseek-v4.1-flash-1017", the October build the plain
+  // `deepseek-v4.1-flash` id also serves) both name the same weights. Four digits is the
+  // widest stamp `m-d`/`mmdd`/`md` spellings produce; a longer run is a date ("20241022") and
+  // stays a distinct snapshot, and a token after the stamp is a real variant, so
+  // "…-1017-fast" keeps its own group.
   const extra = longTokens.slice(shortTokens.length)
   return extra.every(
     (token, index) =>
-      isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)),
+      isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,4}$/.test(token)),
   )
 }
 

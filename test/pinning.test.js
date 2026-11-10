@@ -445,3 +445,26 @@ test('the request path resolves a pin after discovery and retains the final fami
   assert.match(server, /response\.clone\(\)\.text\(\)/)
   assert.match(server, /fallback: !isPinnedModel\(best\)/)
 })
+
+test('a build stamp on a model id groups under the family it snapshots', () => {
+  // BazaarLink, OrcaRouter, TokenHarbor, Requesty and ollama all list the October build of this
+  // model beside its plain id ("DeepSeek V4.1 Flash 1017" / "deepseek-v4.1-flash-1017"), so the
+  // dashboard showed the same weights twice under two headings. A stamp is a snapshot of the
+  // family, not a sibling — unlike `-1017-fast`, which names a different serving mode.
+  const rows = [
+    row('puter', 'deepseek-v4.1-flash', 'DeepSeek V4.1 Flash'),
+    row('orcarouter', 'deepseek/deepseek-v4.1-flash', 'DeepSeek: DeepSeek V4.1 Flash'),
+    row('orcarouter', 'deepseek/deepseek-v4.1-flash-1017', 'DeepSeek: DeepSeek V4.1 Flash 1017'),
+    row('tokenharbor', 'deepseek-v4.1-flash-1017', 'DeepSeek V4.1 Flash 1017'),
+    row('ollama', 'deepseek-v4.1-flash:1017', 'Deepseek V4.1 Flash:1017'),
+    row('tokenharbor', 'deepseek-v4.1-flash-1017-fast', 'Deepseek V4.1 Flash 1017 Fast'),
+  ]
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const groupOf = (modelId) =>
+    groups.find((group) => group.models.some((model) => model.modelId === modelId))
+  assert.equal(groupOf('deepseek/deepseek-v4.1-flash-1017'), groupOf('deepseek-v4.1-flash'))
+  assert.equal(groupOf('deepseek-v4.1-flash:1017'), groupOf('deepseek-v4.1-flash'))
+  assert.notEqual(groupOf('deepseek-v4.1-flash-1017-fast'), groupOf('deepseek-v4.1-flash'))
+  // The heading is the family, not the snapshot that happened to bring more providers.
+  assert.equal(groupOf('deepseek-v4.1-flash').label, 'DeepSeek V4.1 Flash')
+})
