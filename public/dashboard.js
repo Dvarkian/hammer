@@ -393,6 +393,10 @@
     // (paid, dead, incompatible, micro, noauth) cannot be retried into a different answer.
     const AUTO_RETEST_VERDICTS = new Set(['rate-limited', 'overloaded']);
     const autoRetestAt = new Map();
+    // When each row was last automatically retested. The queue spaces the *starts*; this spaces
+    // each row, so a test that came back with the same verdict cannot bounce straight back into
+    // the front of the queue and starve the rows that have been waiting longer.
+    const autoRetestLastAt = new Map();
     let autoRetestBusy = false;
     // When the last automatic test actually started. The floor above is measured from this
     // rather than from the end of the previous request: a snapshot and the one-second ticker
@@ -6527,7 +6531,22 @@
       return soonest;
     }
 
-    // The countdown beside a row's Test button, or '' when no automatic retry is waiting.
+    // The member a group's note speaks for: the one whose slot comes first. A position in the
+    // queue is keyed by row, and a collapsed group draws its wait on the heading, so the
+    // heading needs the row behind that wait to be able to name its place.
+    function groupAutoRetestRow(groupKey) {
+      const group = (lastMainGroups || []).find(g => g && g.key === groupKey);
+      let soonest = 0;
+      let soonestKey = '';
+      for (const member of group?.members || []) {
+        const key = getModelRowKey(member);
+        const at = Number(autoRetestAt.get(key)) || 0;
+        if (at > 0 && (!soonest || at < soonest)) { soonest = at; soonestKey = key; }
+      }
+      return soonestKey;
+    }
+
+    // The note beside a row's Test button, or '' when no automatic retry is waiting.
     function autoRetestNote(rowKey) {
       if (!rowKey) return '';
       const isGroup = rowKey.startsWith('g:');
@@ -6535,15 +6554,45 @@
         ? groupAutoRetestAt(rowKey.slice(2))
         : (Number(autoRetestAt.get(rowKey)) || 0);
       if (at <= 0) return '';
-      return `<span class="test-retry" data-retest-row="${isGroup ? '' : escapeAttr(rowKey)}" data-retest-group="${isGroup ? escapeAttr(rowKey.slice(2)) : ''}" data-retest-at="${at}">${retestWaitLabel(at)}</span>`;
+      const queueKey = isGroup ? groupAutoRetestRow(rowKey.slice(2)) : rowKey;
+      return `<span class="test-retry" title="${escapeAttr(autoRetestTitle(queueKey))}" data-retest-row="${isGroup ? '' : escapeAttr(rowKey)}" data-retest-group="${isGroup ? escapeAttr(rowKey.slice(2)) : ''}" data-retest-at="${at}">${retestWaitLabel(at)}</span>`;
     }
 
+    // The queue in the order its slots will start. The slot times are the order — rows join at
+    // the back — so this is what a row's place is read from.
+    function autoRetestOrder() {
+      return [...autoRetestAt.entries()].sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]));
+    }
+
+    // "48s", "3m 05s", "1h 12m". A wait spelled in seconds alone reads as "testing in 137s" a
+    // few rows into the queue, which is a number nobody can turn into a decision.
+    function retestWaitText(ms) {
+      const total = Math.max(0, Math.ceil(Number(ms) / 1000));
+      if (total < 60) return `${total}s`;
+      const minutes = Math.floor(total / 60);
+      const seconds = total % 60;
+      if (minutes < 60)
+        return seconds ? `${minutes}m ${String(seconds).padStart(2, '0')}s` : `${minutes}m`;
+      return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+    }
+
+    // When this row's turn comes. "retest next" means its slot has arrived and it is the test
+    // the scheduler starts as soon as the one in flight finishes — a fact about this row. The
+    // wording it replaces claimed the same thing for every row in a twenty-row queue, for the
+    // whole twenty minutes it took to walk that queue.
     function retestWaitLabel(at, now = Date.now()) {
       const ms = Number(at) - now;
-      // A wait that has come due but not started yet (the scheduler runs one at a time) says
-      // so, rather than counting to 0 and sitting there as if nothing were going to happen.
-      if (!(ms > 0)) return 'testing shortly…';
-      return `testing in ${Math.ceil(ms / 1000)}s`;
+      if (!(ms > 0)) return autoRetestBusy || testAllRunning ? 'retest next' : 'retest now';
+      return `retest in ${retestWaitText(ms)}`;
+    }
+
+    // The hover text: the row's place in the queue, and the rule the queue runs on.
+    function autoRetestTitle(queueKey) {
+      const order = autoRetestOrder();
+      const index = queueKey ? order.findIndex(([key]) => key === queueKey) : -1;
+      const where =
+        index >= 0 ? `${index + 1} of ${order.length} waiting` : `${order.length} waiting`;
+      return `Automatic retest — ${where}, one test a minute`;
     }
 
     // The note ticks once a second, so the wait is visible between renders instead of a
@@ -6570,6 +6619,7 @@
         el.setAttribute('data-retest-row', rowKey);
         el.removeAttribute('data-retest-group');
         el.setAttribute('data-retest-at', String(value));
+        el.title = autoRetestTitle(rowKey);
         el.textContent = retestWaitLabel(value, now);
       }
       // The heading of a group with a waiting member carries the earliest of those waits: its
@@ -6595,6 +6645,7 @@
         el.setAttribute('data-retest-group', group.key);
         el.removeAttribute('data-retest-row');
         el.setAttribute('data-retest-at', String(at));
+        el.title = autoRetestTitle(groupAutoRetestRow(group.key));
         el.textContent = retestWaitLabel(at, now);
       }
       for (const el of document.querySelectorAll('.test-retry[data-retest-at]')) {
@@ -6604,6 +6655,7 @@
         if (groupKey && !groupAutoRetestAt(groupKey)) { el.remove(); continue; }
         const at = Number(el.getAttribute('data-retest-at')) || 0;
         if (!at) { el.remove(); continue; }
+        el.title = autoRetestTitle(rowKey || (groupKey ? groupAutoRetestRow(groupKey) : ''));
         el.textContent = retestWaitLabel(at, now);
       }
     }
@@ -6616,10 +6668,10 @@
     // the ones the router could pick the moment a test clears them — then rows with no dot yet,
     // which is exactly the state another test can fix.
     //
-    // Runs after each refresh, so a row a test just proved healthy stops being scheduled
-    // and a row that has just fallen onto a rate limit starts. The first pass spreads the
-    // bench across one interval (row i waits i·interval/N), and only rows with no wait yet
-    // are placed: a refresh must never push an existing countdown later.
+    // Runs after each refresh, so a row a test just proved healthy leaves the queue and a row
+    // that has just fallen onto a rate limit joins it. A row is given a slot when it joins and
+    // keeps it until its test starts: a refresh must never push an existing wait later, and it
+    // must not let a row that has just joined jump ahead of one that has been waiting.
     function scheduleAutomaticRetests() {
       const now = Date.now();
       const { rows } = buildScatterRows(allModels);
@@ -6641,13 +6693,27 @@
       for (const key of [...autoRetestAt.keys()]) {
         if (!keys.has(key)) autoRetestAt.delete(key);
       }
-      // The starts, not the rows, are what the queue has to fit into: with one automatic test a
-      // minute, each waiting row is handed its own minute. A row still waiting its turn reads
-      // "testing shortly…" (see retestWaitLabel) rather than looking stuck.
-      const slot = AUTO_RETEST_GAP_MS;
-      targets.forEach((target, index) => {
-        if (!autoRetestAt.has(target.key)) autoRetestAt.set(target.key, now + index * slot);
-      });
+      // A row that has left the table altogether takes its own interval with it.
+      const live = new Set(allModels.map(m => getModelRowKey(m)));
+      for (const key of [...autoRetestLastAt.keys()]) {
+        if (!live.has(key)) autoRetestLastAt.delete(key);
+      }
+      // Rows already queued keep the slot they were given and new rows join behind the last
+      // one, a minute apart. A row retested inside its own interval waits that out first, so a
+      // test that came back unchanged cannot bounce to the front and starve the rows behind it.
+      const queued = autoRetestOrder();
+      const tail = queued.length ? Number(queued[queued.length - 1][1]) || 0 : 0;
+      let slotAt = Math.max(
+        now,
+        lastAutoRetestStartedAt + AUTO_RETEST_GAP_MS,
+        tail + AUTO_RETEST_GAP_MS,
+      );
+      for (const { key } of targets) {
+        if (autoRetestAt.has(key)) continue;
+        if (now - (autoRetestLastAt.get(key) || 0) < AUTO_RETEST_INTERVAL_MS) continue;
+        autoRetestAt.set(key, slotAt);
+        slotAt += AUTO_RETEST_GAP_MS;
+      }
       runDueAutomaticRetest(now);
     }
 
@@ -6696,9 +6762,12 @@
       const button = row?.querySelector('.test-btn:not([disabled])');
       autoRetestBusy = true;
       lastAutoRetestStartedAt = now;
-      // The next slot is claimed before the request starts, so a refresh while it is in
-      // flight cannot schedule the same row again on top of itself.
-      autoRetestAt.set(rowKey, now + AUTO_RETEST_INTERVAL_MS);
+      // The row leaves the queue as its test starts. If it is still waiting afterwards, the
+      // next refresh re-queues it behind the rows that have waited longer, and its own interval
+      // holds it back until that minute is up. The old code put every started row on its own
+      // timer instead, which is why a row could come due while the queue was still busy.
+      autoRetestAt.delete(rowKey);
+      autoRetestLastAt.set(rowKey, now);
       const work = button
         ? testModelButton(button, { rowKey, providerKey: model.providerKey, modelId: model.modelId })
         : autoRetestRequest(model);

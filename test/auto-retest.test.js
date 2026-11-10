@@ -63,11 +63,25 @@ test('retries are paced, staggered and never overlap a manual test', () => {
     /if \(lastAutoRetestStartedAt && now - lastAutoRetestStartedAt < AUTO_RETEST_GAP_MS\) return/,
   )
   assert.match(dashboard, /lastAutoRetestStartedAt = now/)
-  // Each waiting row is handed its own minute rather than a share of the minute.
-  assert.match(dashboard, /const slot = AUTO_RETEST_GAP_MS/)
+  // The queue is what the schedule is: rows already waiting keep their slot, and new rows
+  // join behind the last one a minute apart rather than being handed a share of a minute.
+  assert.match(dashboard, /const queued = autoRetestOrder\(\)/)
+  assert.match(
+    dashboard,
+    /let slotAt = Math\.max\(\n {8}now,\n {8}lastAutoRetestStartedAt \+ AUTO_RETEST_GAP_MS,\n {8}tail \+ AUTO_RETEST_GAP_MS,\n {6}\)/,
+  )
   assert.doesNotMatch(dashboard, /AUTO_RETEST_INTERVAL_MS \/ Math\.max\(1, targets\.length\)/)
+  // Each row has its own interval too, so an unchanged verdict cannot bounce to the front.
+  assert.match(
+    dashboard,
+    /if \(now - \(autoRetestLastAt\.get\(key\) \|\| 0\) < AUTO_RETEST_INTERVAL_MS\) continue/,
+  )
   assert.match(dashboard, /if \(autoRetestBusy \|\| testAllRunning\) return/)
-  assert.match(dashboard, /autoRetestAt\.set\(rowKey, now \+ AUTO_RETEST_INTERVAL_MS\)/)
+  // A row leaves the queue when its test starts instead of being held on a personal timer.
+  assert.match(
+    dashboard,
+    /autoRetestAt\.delete\(rowKey\);\n {6}autoRetestLastAt\.set\(rowKey, now\);/,
+  )
   // The next slot is claimed before the request, and the floor spaces the starts out.
   assert.match(dashboard, /setTimeout\(\(\) => runDueAutomaticRetest\(\), AUTO_RETEST_GAP_MS\)/)
 })
@@ -75,8 +89,26 @@ test('retries are paced, staggered and never overlap a manual test', () => {
 test('the wait is drawn beside the Test button and ticks every second', () => {
   assert.match(dashboard, /function autoRetestNote\(rowKey\)/)
   assert.match(dashboard, /class="test-retry"/)
-  assert.match(dashboard, /testing in \$\{Math\.ceil\(ms \/ 1000\)\}s/)
-  assert.match(dashboard, /testing shortly…/)
+  // The note states when the row's turn comes, in units a person can read, and says "retest
+  // next" only for the row whose slot has arrived. The old wording showed "testing shortly…"
+  // to every row in a long queue, which was neither true nor useful.
+  assert.match(dashboard, /return `retest in \$\{retestWaitText\(ms\)\}`/)
+  assert.match(
+    dashboard,
+    /return autoRetestBusy \|\| testAllRunning \? 'retest next' : 'retest now'/,
+  )
+  assert.doesNotMatch(dashboard, /testing shortly…/)
+  // Minutes and hours, not a bare count of seconds.
+  assert.match(dashboard, /function retestWaitText\(ms\)/)
+  assert.match(dashboard, /`\$\{minutes\}m \$\{String\(seconds\)\.padStart\(2, '0'\)\}s`/)
+  // Its hover text names the row's place in the queue.
+  assert.match(dashboard, /function autoRetestTitle\(queueKey\)/)
+  assert.match(dashboard, /Automatic retest — \$\{where\}, one test a minute/)
+  assert.match(
+    dashboard,
+    /const where =\n {8}index >= 0 \? `\$\{index \+ 1\} of \$\{order\.length\} waiting` : `\$\{order\.length\} waiting`/,
+  )
+  assert.match(dashboard, /function groupAutoRetestRow\(groupKey\)/)
   assert.match(dashboard, /function groupAutoRetestAt\(groupKey\)/)
   // The ticker is the trigger as well as the readout: a row due between polls still runs.
   assert.match(
