@@ -119,6 +119,10 @@ const ACCESS_BY_FREE_TYPE = {
  * hammer's own descriptor is deleted — the exclusion is what makes the removal stick.
  */
 export const EXCLUDED_PROVIDER_KEYS = new Set([
+  // `huggingface` (2026-11-10): a free account gets $0.10/month of Inference Provider
+  // credits — a tenth of a dollar, not a usable allowance — and the roster's own row is ToS
+  // `caution`. There is no free usage to hold a row for.
+  'huggingface',
   'nlpcloud',
   'nebius',
   'liquid',

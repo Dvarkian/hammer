@@ -102,13 +102,6 @@
       "modelCount": 2
     },
     {
-      "key": "huggingface",
-      "access": "recurring",
-      "steadyTokensPerMonth": 200000,
-      "tos": "caution",
-      "modelCount": 6
-    },
-    {
       "key": "kiro",
       "access": "recurring",
       "steadyTokensPerMonth": 25000,
