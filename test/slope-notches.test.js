@@ -67,6 +67,10 @@ test('the models payload carries the notches for the composer', () => {
   assert.match(harness, /data\.selector\?\.notchesPercent/)
   assert.match(harness, /function paintSlopeNotches\(\)/)
   assert.match(harness, /setProperty\(\s*'--slope-notches'/)
+  // A notch is drawn under the thumb's centre for its value, not at the raw percentage: the
+  // 14px thumb on an 88px track insets its centre by 7px at each end, so the two differ.
+  assert.match(harness, /function thumbCentrePercent\(percent, width\)/)
+  assert.match(harness, /slopeNotches\.map\(\(pct\) => `\$\{thumbCentrePercent\(pct, width\)/)
   const css = read('public/harness.css')
   assert.match(
     css,

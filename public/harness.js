@@ -2782,14 +2782,34 @@
     if (slider && String(slider.value) !== String(shown)) slider.value = String(shown)
   }
 
+  /** The thumb's width in px; the thinking slider's track is sized for the same dot. */
+  const SLOPE_THUMB_PX = 14
+  /** The CSS width of a composer slider, used when the control has not been laid out yet. */
+  const SLOPE_TRACK_PX = 88
+
+  /**
+   * Where a slider value puts the thumb's *centre* on the track, as a percentage of its width.
+   * The thumb is 14px wide on an 88px track, so its centre travels 7px→81px while the value
+   * travels 0→100: that is why the thinking slider's quarters read 8/36/64/92%, and why a
+   * hairline painted at the raw percentage would sit beside the dot that is supposed to rest
+   * on it. `width` is the measured track, or 0 before layout.
+   */
+  function thumbCentrePercent(percent, width) {
+    const span = width > SLOPE_THUMB_PX ? width : SLOPE_TRACK_PX
+    const clamped = Math.max(0, Math.min(100, Number(percent)))
+    return ((SLOPE_THUMB_PX / 2 + (clamped / 100) * (span - SLOPE_THUMB_PX)) / span) * 100
+  }
+
   /**
    * Paints the slope slider's notches: one per region in which the router's pick does not
    * change, at the region's midpoint, so dragging across a notch is dragging across a model.
+   * Each hairline is placed under the thumb's centre for its value, not at the value itself.
    */
   function paintSlopeNotches() {
     const slider = $('hx-slope-slider')
     if (!slider) return
-    const stops = slopeNotches.map((pct) => `${pct}%`)
+    const width = slider.getBoundingClientRect?.().width || 0
+    const stops = slopeNotches.map((pct) => `${thumbCentrePercent(pct, width).toFixed(2)}%`)
     slider.style.setProperty(
       '--slope-notches',
       stops.length
