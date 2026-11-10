@@ -269,6 +269,29 @@ test('a model id the provider does not recognise is dead', () => {
   )
 })
 
+test('a bare Not Found or an unrecognised id is a tombstone', () => {
+  // A gateway with no route for the id answers with nothing but the status line, and a relay
+  // says the same thing in words: "please check the model you provided" (live 2026-11-10 on
+  // poolside/laguna-m.1 and poolside/laguna-xs.2, HTTP 404, both reading Down). Both name an
+  // address the provider cannot serve, so no window reopens them; leaving them on Down meant
+  // re-probing a model that can never answer.
+  assert.equal(isDeadModelError('Not Found', 404), true)
+  assert.equal(isDeadModelError('404 Not Found', 404), true)
+  assert.equal(isDeadModelError('{"error":"please check the model you provided"}', 404), true)
+  assert.equal(isDeadModelError('please check the model you provided', 400), true)
+  assert.equal(resolveRefusalVerdict('Not Found', 404), 'dead')
+  // The status is what makes a bare body a tombstone: a 500 that happens to say "Not Found" is
+  // a broken deployment, and an access refusal is still about this caller, not the catalogue.
+  assert.equal(isDeadModelError('Not Found', 500), false)
+  assert.equal(
+    isDeadModelError(
+      'The model `canopy labs orpheus v1 english` does not exist or you do not have access to it.',
+      404,
+    ),
+    false,
+  )
+})
+
 test('a provider that says the row does not serve chat is incompatible', () => {
   // llm7 keeps listing its image/video ids (Seedance and friends) among the chat models it
   // serves, and answers every one of them with HTTP 400: "Model 'seedance-2.0-fast' does not

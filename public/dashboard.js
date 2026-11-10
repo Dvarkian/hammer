@@ -6213,7 +6213,7 @@
         && (code === 402 || /payment required|billing/i.test(errText) || INSUFFICIENT_FUNDS_RE.test(errText))) return 'paid';
       // The access phrasing wins over the generic 'does not exist' tombstone: the provider
       // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
-      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model/i.test(errText)
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model|please check the model you provided|^(?:(?:http\s*)?404[\s:-]*)?not\s*found\.?$/i.test(errText)
         && !isIncompatibleModelText(errText);
       if (code === 410 || deadText) return 'dead';
       if (isIncompatibleModelText(errText)) return 'incompatible';
@@ -6316,7 +6316,7 @@
           // row whose stored evidence predates that rule still reads Dead rather than Down.
           // The access phrasing wins over the generic 'does not exist' tombstone: the provider
       // still lists the model and refuses this org (see isDeadModelError in lib/utils.js).
-      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model/i.test(errText)
+      const deadText = /model is dead|model_not_found|410 Gone|model does not exist|invalid[ _]model|unknown[ _]model|please check the model you provided|^(?:(?:http\s*)?404[\s:-]*)?not\s*found\.?$/i.test(errText)
         && !isIncompatibleModelText(errText);
       if (code === 410 || deadText) return 'dead';
           // Kept in step with isIncompatibleModelError in lib/utils.js, so stored evidence from
