@@ -48,11 +48,27 @@ test('only verdicts a retry can change are queued', () => {
 
 test('retries are paced, staggered and never overlap a manual test', () => {
   assert.match(dashboard, /const AUTO_RETEST_INTERVAL_MS = 60_000/)
-  assert.match(dashboard, /const AUTO_RETEST_GAP_MS = 4_000/)
-  assert.match(dashboard, /const slot = AUTO_RETEST_INTERVAL_MS \/ Math\.max\(1, targets\.length\)/)
+  // At least a minute between any two automatic starts. The floor used to be four seconds,
+  // which let a bench of twenty waiting rows fire inside a single tick and knocked on a
+  // provider that was already refusing traffic; the retest is meant to notice a window
+  // reopening, so one automatic test a minute is the whole budget.
+  assert.match(dashboard, /const AUTO_RETEST_GAP_MS = 60_000/)
+  const gap = dashboard.match(/const AUTO_RETEST_GAP_MS = ([\d_]+)/)
+  assert.ok(gap, 'the automatic-start floor is stated once')
+  assert.ok(Number(gap[1].replace(/_/g, '')) >= 60_000, 'the floor is at least a minute')
+  // The floor is measured from the last start, not from the end of the last request, so a
+  // scheduler call from a snapshot or the ticker cannot squeeze a second start in.
+  assert.match(
+    dashboard,
+    /if \(lastAutoRetestStartedAt && now - lastAutoRetestStartedAt < AUTO_RETEST_GAP_MS\) return/,
+  )
+  assert.match(dashboard, /lastAutoRetestStartedAt = now/)
+  // Each waiting row is handed its own minute rather than a share of the minute.
+  assert.match(dashboard, /const slot = AUTO_RETEST_GAP_MS/)
+  assert.doesNotMatch(dashboard, /AUTO_RETEST_INTERVAL_MS \/ Math\.max\(1, targets\.length\)/)
   assert.match(dashboard, /if \(autoRetestBusy \|\| testAllRunning\) return/)
   assert.match(dashboard, /autoRetestAt\.set\(rowKey, now \+ AUTO_RETEST_INTERVAL_MS\)/)
-  // The next slot is claimed before the request, and the gap spaces the starts out.
+  // The next slot is claimed before the request, and the floor spaces the starts out.
   assert.match(dashboard, /setTimeout\(\(\) => runDueAutomaticRetest\(\), AUTO_RETEST_GAP_MS\)/)
 })
 

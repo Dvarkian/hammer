@@ -381,16 +381,25 @@
     // line while it is benched, so gating on it scheduled nothing at all. The waits are kept
     // here, one per row, and drawn beside the Test button as a countdown (see autoRetestNote).
     const AUTO_RETEST_INTERVAL_MS = 60_000;
-    // The floor between two automatic starts. A bench of twenty rows must not fire its tests
-    // on one tick into providers that are already refusing traffic; sequential tests with
-    // this gap spread them out, and the first pass spreads them across the whole minute.
-    const AUTO_RETEST_GAP_MS = 4_000;
+    // The floor between two automatic starts: a full minute, however long the queue is. A
+    // bench of twenty rows must not fire its tests into providers that are already refusing
+    // traffic, and the retest exists to notice a window reopening, not to hammer it. One
+    // automatic test a minute means a waiting row is re-asked at most once a minute, and a
+    // queue of twenty takes twenty minutes to walk. The schedule below spaces its slots by the
+    // same floor, so two rows never come due on the same tick and race each other's start.
+    const AUTO_RETEST_GAP_MS = 60_000;
     // 'overloaded' is a rate limit with no quota behind it (a busy provider), so it waits on
     // the same clock. 'timeout' names no window the provider reopens, and the struck verdicts
     // (paid, dead, incompatible, micro, noauth) cannot be retried into a different answer.
     const AUTO_RETEST_VERDICTS = new Set(['rate-limited', 'overloaded']);
     const autoRetestAt = new Map();
     let autoRetestBusy = false;
+    // When the last automatic test actually started. The floor above is measured from this
+    // rather than from the end of the previous request: a snapshot and the one-second ticker
+    // both call the scheduler continuously, so a row that came due while the last test was in
+    // flight would otherwise start the moment it finished, and the spacing would be that
+    // request's own duration rather than a minute.
+    let lastAutoRetestStartedAt = 0;
     // How long the dashboard waits for one Test before abandoning the request. The router spends
     // up to three 60s attempts on a row — a provider-stated max_tokens cap and a reasoning-only
     // answer each earn a re-ask (MAX_TEST_ATTEMPTS/TEST_TIMEOUT_MS in lib/server.js) — so this is
@@ -6632,7 +6641,10 @@
       for (const key of [...autoRetestAt.keys()]) {
         if (!keys.has(key)) autoRetestAt.delete(key);
       }
-      const slot = AUTO_RETEST_INTERVAL_MS / Math.max(1, targets.length);
+      // The starts, not the rows, are what the queue has to fit into: with one automatic test a
+      // minute, each waiting row is handed its own minute. A row still waiting its turn reads
+      // "testing shortly…" (see retestWaitLabel) rather than looking stuck.
+      const slot = AUTO_RETEST_GAP_MS;
       targets.forEach((target, index) => {
         if (!autoRetestAt.has(target.key)) autoRetestAt.set(target.key, now + index * slot);
       });
@@ -6663,6 +6675,9 @@
 
     function runDueAutomaticRetest(now = Date.now()) {
       if (autoRetestBusy || testAllRunning) return;
+      // At least a minute since the previous automatic start, whatever brought us here: the
+      // ticker, a fresh snapshot, or the re-arm after the last test finished.
+      if (lastAutoRetestStartedAt && now - lastAutoRetestStartedAt < AUTO_RETEST_GAP_MS) return;
       // A row freshly scheduled from a snapshot is queued from now on; nothing else gates it.
       const due = [...autoRetestAt.entries()]
         .filter(([key, at]) => at <= now && !inflightTests.has(key))
@@ -6680,6 +6695,7 @@
       const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
       const button = row?.querySelector('.test-btn:not([disabled])');
       autoRetestBusy = true;
+      lastAutoRetestStartedAt = now;
       // The next slot is claimed before the request starts, so a refresh while it is in
       // flight cannot schedule the same row again on top of itself.
       autoRetestAt.set(rowKey, now + AUTO_RETEST_INTERVAL_MS);
