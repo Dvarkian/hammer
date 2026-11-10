@@ -138,6 +138,12 @@
                 title="Thinking effort — off, low, medium, high. Sent in the form the chosen model understands.">
               <span id="hx-thinking-level">off</span>
             </div>
+            <div class="hx-composer-thinking" aria-label="Intelligence vs speed slope">
+              <span class="hx-composer-thinking-label">slope</span>
+              <input type="range" id="hx-slope-slider" min="0" max="100" value="4" step="1"
+                title="Intelligence vs speed for this conversation — 0% picks the smartest model, 100% the fastest. Each conversation routes on its own slope.">
+              <span id="hx-slope-value">4%</span>
+            </div>
             <div class="hx-composer-btns">
               <button class="hx-btn hx-icon" id="hx-attach" type="button" title="Attach images" aria-label="Attach images">
                 <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.5 3.5 5 9a2.1 2.1 0 0 0 3 3l5.6-5.6a3.5 3.5 0 0 0-5-5L2.5 7.5a5 5 0 0 0 7 7l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -283,12 +289,6 @@
             <span class="kpi-value is-loading" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;"></span>
           </div>
           <svg id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
-          <div class="scatter-controls">
-            <span class="kpi-label" style="margin:0; white-space:nowrap;">Slope</span>
-            <input type="range" id="sel-slope-slider" min="0" max="1000" value="0"
-              style="flex:1; min-width:80px; max-width:200px; height:14px;" title="Slope of the intelligence-vs-speed line — 0% picks the smartest model, 100% picks the fastest">
-            <span class="kpi-value" id="sel-slope-value" style="font-size:0.72rem; min-width:34px; text-align:right;">—</span>
-          </div>
         </div>
       </div>
     </div>

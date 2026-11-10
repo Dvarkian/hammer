@@ -442,6 +442,9 @@
     let selectorSaveTimer = null;
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
+    // Every conversation's own pick, from /api/models. Several conversations can be answering on
+    // different models, so more than one table row is lit at a time.
+    let activePickRows = [];
     // The model the router moved to mid-request, because the model it had selected refused the
     // request. A fallback never changes the next request's pin > slope > intelligence rule, but
     // it is temporarily shown as the serving model everywhere in the UI until the next snapshot
@@ -1008,6 +1011,7 @@
         // else without making the UI briefly jump back to the model that just failed.
         currentBestModelId = data.best || null;
         currentBestProviderKey = data.bestProviderKey || null;
+        activePickRows = Array.isArray(data.activePicks) ? data.activePicks : [];
         // A fallback is an event, not a fourth selection rule. Keep its explanation only when
         // the model it named is still the server's current pin/slope/ranking pick; after a
         // slope or pin change, the old fallback must not relabel the new current model.
@@ -5575,6 +5579,10 @@
     // predicate drives every highlight in the main table so the group header
     // and the provider sub-row it contains always agree on which one is lit.
     function isCurrentBestRow(m) {
+      // Multiple conversations means multiple live models: a row is lit when any conversation's
+      // slope picked it, as well as when it is the exported `best` the KPI names.
+      if (activePickRows.some((pick) => pick.modelId === m.modelId
+        && (!pick.providerKey || pick.providerKey === m.providerKey))) return true;
       return !!currentBestModelId && m.modelId === currentBestModelId
         && (!currentBestProviderKey || m.providerKey === currentBestProviderKey);
     }

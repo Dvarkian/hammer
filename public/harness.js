@@ -2737,6 +2737,50 @@
     setThinkingLevel(THINKING_CYCLE[Number(slider.value)] || 'off')
   }
 
+  /** Paints the conversation's slope, which the router reports with every status. */
+  function paintSlopePercent(percent) {
+    const value = Number(percent)
+    const shown = Number.isFinite(value) ? Math.round(value) : 4
+    const label = $('hx-slope-value')
+    if (label) label.textContent = shown + '%'
+    const slider = $('hx-slope-slider')
+    if (slider && String(slider.value) !== String(shown)) slider.value = String(shown)
+  }
+
+  let slopeSaveTimer = null
+
+  /** Saves the slider's slope for this conversation; the router uses it on the next turn. */
+  async function setSlopePercent(percent) {
+    const ctx = active()
+    if (!ctx) return
+    try {
+      const res = await fetch(consoleApi(ctx, '/slope'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ percent }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || 'Could not change the slope (' + res.status + ').')
+      paintSlopePercent(data.percent)
+      // The models table now lights one row per conversation, so its pick is stale after this.
+      refreshStatus(ctx).catch(() => {})
+    } catch (err) {
+      setHint((err && err.message) || 'Could not change the slope.', 'error', ctx)
+    }
+  }
+
+  function slopeFromSlider() {
+    const slider = $('hx-slope-slider')
+    if (!slider) return
+    paintSlopePercent(Number(slider.value))
+    if (slopeSaveTimer) clearTimeout(slopeSaveTimer)
+    // A drag crosses dozens of values; only the one it lands on is worth a request.
+    slopeSaveTimer = setTimeout(() => {
+      slopeSaveTimer = null
+      void setSlopePercent(Number(slider.value))
+    }, 250)
+  }
+
   /**
    * One console's turn state. The sidebar is drawn from every console, not only this one, so a
    * background conversation turns its own spinner whether or not it is on screen.
@@ -2934,6 +2978,7 @@
         ? THINKING_CYCLE.indexOf(data.thinkingLevel)
         : 0)
     }
+    if (data.slopePercent != null) paintSlopePercent(data.slopePercent)
     if (data.cwd) {
       const cwdEl = $('hx-cwd')
       if (cwdEl) {
@@ -5126,6 +5171,7 @@
       setQueueMode(state.queueMode === 'followUp' ? 'steer' : 'followUp'),
     )
     $('hx-thinking-slider')?.addEventListener('input', thinkingFromSlider)
+  $('hx-slope-slider')?.addEventListener('input', slopeFromSlider)
 
     // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
     bindMinimap()
