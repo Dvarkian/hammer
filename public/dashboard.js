@@ -1848,9 +1848,9 @@
     // without either of them ever being the pick, because a third line sits above them
     // at that slope — a notch derived from such a crossing would be a place where
     // nothing changes.
-    function computeChangeoverSlopes(rows) {
+    function buildSlopeHull(rows, { routableOnly = false } = {}) {
       const eligible = (rows || [])
-        .filter(r => isRoutableRow(r))
+        .filter(r => !routableOnly || isRoutableRow(r))
         .filter(r => Number.isFinite(r.intell) && Number.isFinite(r.speed))
         .filter(r => r.intell > 0 && r.speed > 0);
       // One line per distinct speed: at a given speed only the smartest row can win.
@@ -1869,18 +1869,46 @@
         let start = -Infinity;
         while (hull.length) {
           const last = hull[hull.length - 1];
-          const x = (last.line.b - b) / (m - last.line.m);
+          const x = (last.intell - b) / (m - last.speed);
           if (x <= last.start) { hull.pop(); continue; }
           start = x;
           break;
         }
         if (hull.length === 0) start = -Infinity;
-        hull.push({ line: { m, b }, start });
+        hull.push({ speed: m, intell: b, start });
       }
-      // Every takeover after the first is a changeover. Slopes at or below zero are
-      // outside the slider's range (it runs from the flat line to the vertical one),
-      // so they are not changeovers the user can reach.
-      return hull.slice(1).map(h => h.start).filter(s => s > 0);
+      return hull;
+    }
+
+    // Every takeover after the first is a changeover. Slopes at or below zero are
+    // outside the slider's range (it runs from the flat line to the vertical one),
+    // so they are not changeovers the user can reach. Routable rows only, because a
+    // notch must sit where the *router's* pick changes.
+    function computeChangeoverSlopes(rows) {
+      return buildSlopeHull(rows, { routableOnly: true })
+        .slice(1)
+        .map(h => h.start)
+        .filter(s => s > 0);
+    }
+
+    // The rows the line can touch at *some* slider angle: every envelope entry whose region
+    // reaches into the non-negative slopes (starts below them, ends above zero). The last
+    // entry runs to +Infinity, so the fastest row is always in; a row buried under another
+    // at every angle is not, and its Test button gets no automatic retry. Built over the
+    // plotted points rather than only routable rows: the rows this is for are, by
+    // definition, benched and therefore not routable right now.
+    function slopeSelectableRowKeys(rows) {
+      const hull = buildSlopeHull(rows);
+      const points = hull.filter((entry, i) =>
+        (i + 1 < hull.length ? hull[i + 1].start : Infinity) > 0);
+      const keys = new Set();
+      for (const r of rows || []) {
+        if (!r || !r.m || !Number.isFinite(r.intell) || !Number.isFinite(r.speed)) continue;
+        if (points.some(p => p.speed === r.speed && p.intell === r.intell)) {
+          keys.add(getModelRowKey(r.m));
+        }
+      }
+      return keys;
     }
 
     // Slider notches sit at the positions furthest from every model changeover. With N
@@ -3031,9 +3059,14 @@
 
       // Always return a clean display name — never raw modelId with '/' or internal names
       function modelDisplayName(m) {
-        if (m.label && m.label.trim()) return m.label.trim();
-        // Fallback: strip provider prefixes from modelId
-        return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '').replace(/[-_](free|latest|snapshot|preview)$/i, '').trim() || m.modelId || 'Unknown';
+        const raw = (m.label && m.label.trim())
+          ? m.label.trim()
+          // Fallback: strip provider prefixes from modelId
+          : (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '').replace(/[-_](free|latest|snapshot|preview)$/i, '').trim() || m.modelId || 'Unknown';
+        // "Free" is the row's tier, not part of the model's name: the same weights are sold
+        // paid under the same label. The label keeps the marker (the table needs it to tell a
+        // free row from its paid twin); the printed name does not.
+        return raw.replace(/\s*\(free\)\s*$/i, '').replace(/\s+free\s*$/i, '').trim() || raw;
       }
 
       // ---- Build one node per model group using the exact same grouping as the
@@ -3148,7 +3181,10 @@
         'exec-agent': 'github.com', 'copilot-search': 'github.com', 'trajectory-compaction': 'github.com',
         // The gateways' own router rows. Their id *is* the gateway's product, which is the
         // opposite of a third-party model relayed by one — there the vendor is the brand.
-        'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai',
+        'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai', 'requesty': 'requesty.ai',
+        // Agnes AI's ids are its own product (`agnes-2.5-flash`), the same case as the rows
+        // above rather than a third-party model relayed by the gateway.
+        'agnes': 'agnes-ai.com',
         // G4F's own router row follows the same rule — the row is the gateway's product, and its
         // label says which gateway ("Auto (G4F)"), which is what the parenthesis reader is for.
         'g4f': 'g4f.dev',
@@ -4880,7 +4916,7 @@
       },
     };
     const QUOTA_ROW_PERIOD_ORDER = { minute: 0, hour: 0.5, day: 1, week: 2, month: 3, lifetime: 4, rolling: 5, window: 6 };
-    const QUOTA_ROW_METRIC_ORDER = { requests: 0, tokens: 1 };
+    const QUOTA_ROW_METRIC_ORDER = { requests: 0, tokens: 1, credits: 2 };
 
     function quotaRowPeriod(value) {
       const text = String(value || '').toLowerCase();
@@ -4944,7 +4980,10 @@
     const GOOGLE_ACTIVE_QUOTA_URL = 'https://aistudio.google.com/rate-limit?timeRange=last-28-days';
 
     function quotaRowWindow({ period, metric = 'tokens', rawWindow, used, total, remaining, resetAt, source, scope, detail, stale, unavailable, usedPercent, percentOnly }) {
-      const normalizedMetric = metric === 'requests' ? 'requests' : 'tokens';
+      // A credit balance is money, not capacity: OpenRouter's key endpoint counts dollars and
+      // its allowance does not reset, so the metric has to survive as its own unit or the cell
+      // would print "$4.20 tokens".
+      const normalizedMetric = metric === 'requests' ? 'requests' : metric === 'credits' ? 'credits' : 'tokens';
       let totalValue = total == null ? null : Number(total);
       let remainingValue = remaining == null ? null : Number(remaining);
       let usedValue = used == null ? null : Number(used);
@@ -5054,6 +5093,28 @@
       }
       const rateLimit = m?.rateLimit;
       if (rateLimit) {
+        // A key-level credit balance is the provider's own answer to "how much is left on this
+        // account" — OpenRouter reports it from its key endpoint, and every model on the key
+        // draws from the same pot. The provider card has always shown it; the model table did
+        // not, so a row whose account was nearly spent read "—" while the card one click away
+        // showed the balance. It is a one-off allowance rather than a resetting window, so it
+        // is drawn against the lifetime counter that never rolls over.
+        if (rateLimit.creditLimit != null || rateLimit.creditRemaining != null) {
+          add(quotaRowWindow({
+            period: 'lifetime',
+            metric: 'credits',
+            rawWindow: 'account credit',
+            total: rateLimit.creditLimit,
+            remaining: rateLimit.creditRemaining,
+            used: rateLimit.creditLimit != null && rateLimit.creditRemaining != null
+              ? Math.max(0, Number(rateLimit.creditLimit) - Number(rateLimit.creditRemaining))
+              : null,
+            resetAt: rateLimit.creditResetAt,
+            source: 'key',
+            scope: 'account',
+            detail: 'account credit reported by the provider key endpoint',
+          }));
+        }
         const retryReset = rateLimit.capturedAt && rateLimit.retryAfterMs
           ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
           : null;
@@ -5156,7 +5217,7 @@
     function quotaRowWindowHtml(w) {
       const noFreeTier = w.unavailable && !w.percentOnly && w.period === 'window';
       const periodLabel = noFreeTier ? 'FREE TIER' : quotaRowPeriodLabel(w.period, w.rawWindow);
-      const unit = w.metric === 'requests' ? 'requests' : 'tokens';
+      const unit = w.metric === 'requests' ? 'requests' : w.metric === 'credits' ? 'credits' : 'tokens';
       const remainingPercent = (w.unavailable && !w.percentOnly) || w.usedPercent == null ? null : 100 - Math.min(100, w.usedPercent);
       const totalText = noFreeTier
         ? 'not included'
@@ -5974,7 +6035,7 @@
         : (errText
           ? `<div class="test-response err"${expAttr} title="${escapeAttr(text)}">${text ? escapeHtml(text) : `HTTP ${lastResponse.status}`}</div>`
           : '');
-      return `<div class="test-cell">${btn}${body}${meta}</div>`;
+      return `<div class="test-cell">${btn}${retry}${body}${meta}</div>`;
     }
 
     function escapeAttr(s) {
@@ -6020,7 +6081,7 @@
     // needs rather than a quota it waits out. The server marks such a response `paymentRequired`
     // (the primary route to the Paid badge), and this copy is what keeps evidence stored before
     // that rule existed — or a row whose flag was never persisted — from reading as the clock.
-    const INSUFFICIENT_FUNDS_RE = /\b(?:insufficient|not enough|no|out of|low|zero|negative|empty)\b[^.\n]{0,24}\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b|\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b[^.\n]{0,24}\b(?:insufficient|empty|zero|negative|too low|depleted|exhausted|out of funds?)\b/i;
+    const INSUFFICIENT_FUNDS_RE = /\b(?:insufficient|not enough|no|out of|low|zero|negative|empty)\b[^.\n]{0,24}\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b|\b(?:account\s+|wallet\s+|credit\s+)?(?:balance|funds?)\b[^.\n]{0,24}\b(?:insufficient|empty|zero|negative|too low|depleted|exhausted|out of funds?)\b|\bremaining\b\s*[:=]?\s*(?:[$€£¥＄]|usd\s*)\s*0(?:[.,]0+)?(?![\d.,])\b/i;
     // The other half of the account refusals, kept in step with isRateLimitedErrorText in
     // lib/utils.js: a quota the row waits out. It outranks a bare 402 in the verdicts below,
     // because a provider that labels its rate limit 402 must not earn a Paid badge for it.
@@ -6056,6 +6117,10 @@
     // overload belongs here for the same reason a quota does — the provider is refusing for
     // now and the row returns on its own, so nothing is broken and nothing needs fixing.
     const BENCHED_VERDICTS = new Set(['rate-limited', 'overloaded', 'timeout']);
+    // The subset of those that a provider card counts as "still mine": a quota or an overload is a
+    // window the provider will reopen, so the row is benched rather than spent. A timeout is
+    // deliberately outside it — it says nothing about a window, only that one call was slow.
+    const QUOTA_WAIT_VERDICTS = new Set(['rate-limited', 'overloaded']);
     // How long a rate limit stands when the provider names no window at all: the same
     // grace the server applies before it clears its own wasRateLimited flag.
     const RATE_LIMIT_UNSTATED_GRACE_MS = 60_000;
@@ -6550,6 +6615,7 @@
       const now = Date.now();
       const { rows } = buildScatterRows(allModels);
       // Used only to rank the queue: plotted rows first, rows with no dot yet after them.
+
       const plotted = new Set(rows.map(r => getModelRowKey(r.m)));
       const seen = new Set();
       const targets = [];
@@ -7340,6 +7406,12 @@
     // existing SVG untouched unless a verdict or eligibility state actually changed.
     drawSpeedIntellScatter(allModels);
     setInterval(updateRateLimitCountdowns, 1000);
+    // The retry clock is both a readout and a trigger: a row whose countdown runs out is
+    // tested here even if no refresh happens to arrive at that moment.
+    setInterval(() => {
+      updateAutoRetestNotes();
+      runDueAutomaticRetest();
+    }, 1000);
     setInterval(updatePoolBarCountdowns, 1000);
 
     // Why a row is Micro, in the provider's own words. The API only marks a row micro
@@ -7370,6 +7442,32 @@
       const kind = rowVerdict(m);
       if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return verdictLabel(kind);
       return 'Unavailable';
+    }
+
+    // ---- A provider's model counts ------------------------------------------------------------
+    //
+    // Two numbers per provider card, both read from the one verdict the table's dots are painted
+    // with (rowVerdict), so a card can never advertise a model the row beside it shows as struck.
+    //
+    //   live  — a row that can serve a request right now
+    //   total — live plus the rows waiting on a provider window (a quota or an overload)
+    //
+    // A dead, paid, incompatible, micro-context or unauthenticated model is in neither count: it
+    // is not serving and no amount of waiting changes that, which is exactly why the graveyard
+    // holds it and the main table does not. 'timeout' is excluded for the same reason a clock is
+    // not drawn for it (see BENCHED_VERDICTS): it names no window that reopens.
+    function providerModelCounts(providerKey) {
+      const key = String(providerKey || '');
+      if (!key) return { live: 0, total: 0 };
+      let live = 0;
+      let waiting = 0;
+      for (const m of allModels) {
+        if (!m || m.providerKey !== key) continue;
+        const kind = rowVerdict(m);
+        if (kind === 'up') live += 1;
+        else if (QUOTA_WAIT_VERDICTS.has(kind)) waiting += 1;
+      }
+      return { live, total: live + waiting };
     }
 
     // Split display groups into the main table (usable rows only) and the

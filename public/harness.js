@@ -124,6 +124,8 @@
       notesSeen: new Set(),
       /** True once the transcript came from the session file rather than the replay log. */
       historyLoaded: false,
+      /** True while a rebuild from that file is in flight, so it is not started twice. */
+      historyLoading: false,
       /** The model `best` resolved to, as the router reported it (see renderRouting). */
       routedModel: null,
       /** The route's identity, so a repeated status does not erase the last answer's label. */
@@ -391,16 +393,19 @@
    * transcript, so an idle console is rebuilt from it before the stream is even opened.
    */
   async function restoreHistory(ctx) {
-    if (!ctx || !ctx.sessionFile || ctx.historyLoaded) return
+    if (!ctx || !ctx.sessionFile || ctx.historyLoaded || ctx.historyLoading) return
+    ctx.historyLoading = true
     try {
       await loadMessages(ctx)
-      if (ctx) ctx.pendingFullRestore = false
+      ctx.pendingFullRestore = false
       // The transcript that was just rebuilt is the conversation the rail describes, so the
       // plot is published here rather than only when its file is first named — a reopened
       // conversation has a file before it has a turn in this page's life.
       void publishSessionUsage(ctx)
     } catch {
       // The agent may still be starting; the stream will fill the transcript instead.
+    } finally {
+      ctx.historyLoading = false
     }
   }
 
@@ -1189,6 +1194,10 @@
 
   /** modelId -> the router's measured time to first token, in ms. */
   const ttftByModel = new Map()
+  /** providerKey -> the name the router's own table gives it ("puter" -> "Puter"). */
+  const providerNameByKey = new Map()
+  /** modelId -> the provider that offers it, so an old message can still name who served it. */
+  const providerKeyByModel = new Map()
   /** providerKey::modelId -> that row's quota fields, from the same table read. */
   const quotaRowByModel = new Map()
   /** When the table must be read again; a failed read ages out like a successful one. */
@@ -1217,11 +1226,20 @@
             const ms = row && row.ttft != null ? Number(row.ttft) : NaN
             if (id && Number.isFinite(ms) && ms > 0) ttftByModel.set(String(id), ms)
             const providerKey = String(row?.providerKey || '')
+            const providerName = String(row?.providerName || row?.brand || '')
+            if (providerKey && providerName) providerNameByKey.set(providerKey, providerName)
+            if (providerKey && id) providerKeyByModel.set(String(id), providerKey)
             if (providerKey && id) {
               // Keep only what the rail's quota meter reads. The full table is thousands of
               // rows; holding every row in the page would be a second copy of the router.
               quotaRowByModel.set(`${providerKey}::${id}`, {
                 context: row.context || null,
+                // The table's own resolved figure. It is the number the column is sorted
+                // and compared on, and it survives a display such as ">238k" that cannot be
+                // read back as a denominator by parsing.
+                contextTokens: Number.isFinite(Number(row.contextTokens))
+                  ? Number(row.contextTokens)
+                  : null,
                 knownQuota: row.knownQuota || null,
                 quotaWindows: Array.isArray(row.quotaWindows) ? row.quotaWindows : [],
                 providerUsage: row.providerUsage || null,
@@ -1599,12 +1617,47 @@
   }
 
   /**
+   * Whether a value names the router itself rather than a provider that served an answer.
+   *
+   * Pi is configured with Hammer as its provider, so every message it writes says
+   * `provider: "hammer"` — the mechanism, not the host. Printing that beside a model says
+   * nothing about who answered, which is the one thing a model-change line exists to say.
+   */
+  function isRouterProviderValue(value) {
+    const name = String(value || '')
+      .trim()
+      .toLowerCase()
+    return (
+      name === 'hammer' ||
+      name === 'best' ||
+      name === 'router' ||
+      name === 'hammer-router' ||
+      name === 'hammer/best' ||
+      name === 'hammer::best'
+    )
+  }
+
+  /**
+   * A provider key as a reader should see it: the table's own name when it has one, otherwise
+   * the key spaced and capitalised (`openai-codex` -> "Openai Codex") rather than left raw.
+   */
+  function providerDisplayName(key) {
+    const value = String(key || '').trim()
+    if (!value) return ''
+    const known = providerNameByKey.get(value)
+    if (known) return known
+    return value
+      .replace(/[-_]+/g, ' ')
+      .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  }
+
+  /**
    * The provider that served a message, when it can be known.
    *
-   * Pi records the model that answered but not always who served it. A message that names the
-   * router's current pick can borrow that pick's provider — it is the same answer — and a
-   * message that carries a provider of its own (a session written by a newer Pi, or a tool
-   * result from a sub-model) is read directly.
+   * A message that names the router's current pick can borrow that pick's provider — it is the
+   * same answer. One that carries a provider of its own (a session written by a newer Pi, or a
+   * tool result from a sub-model) is read directly. Anything else falls back to the router's
+   * model table, which knows which provider offers the model even when the route has moved on.
    */
   function messageProviderName(message, ctx) {
     const direct = [
@@ -1612,20 +1665,50 @@
       message?.provider?.name,
       message?.provider,
       message?.model?.provider,
-    ].find((value) => typeof value === 'string' && value)
-    if (direct) return direct
-    const routed = ctx && ctx.routedModel
-    if (!routed) return ''
+    ].find(
+      (value) =>
+        typeof value === 'string' && value && !isRouterProviderValue(value) && !isRouterAlias(value),
+    )
+    if (direct) return providerDisplayName(direct)
     const name = modelName(message?.responseModel || message?.model)
-    const names = [routed.modelId, routed.label, routed.realModelId, routed.realModelLabel]
-      .filter(Boolean)
-      .map((value) => modelName(value))
-    return name && names.includes(name) ? routed.providerName || routed.provider || '' : ''
+    const routed = ctx && ctx.routedModel
+    const routedNames = routed
+      ? [routed.modelId, routed.label, routed.realModelId, routed.realModelLabel]
+          .filter(Boolean)
+          .map((value) => modelName(value))
+      : []
+    if (routed && name && routedNames.includes(name)) {
+      const providerName = routed.providerName || providerDisplayName(routed.providerKey)
+      // Learn the brand from the route while it is here: the model table names keys, not hosts,
+      // and a later message from the same provider should not fall back to a prettified key.
+      if (routed.providerKey && providerName) providerNameByKey.set(routed.providerKey, providerName)
+      return providerName
+    }
+    const key = name ? providerKeyByModel.get(name) : ''
+    return key ? providerDisplayName(key) : ''
+  }
+
+  /**
+   * A model's name as it is printed, without its free-tier marker.
+   *
+   * `(free)` is the row's tier, not part of the model's name — the same weights are sold paid
+   * under the same label — so a printed name is "DeepSeek V4.1 Flash", not "DeepSeek V4.1
+   * Flash (free)". The marker is stripped here, at the one place names are printed, rather
+   * than from the router's labels: the table still needs it to tell a free row from its paid
+   * twin. A name that is nothing but the marker keeps it rather than becoming blank.
+   */
+  function printableModelName(name) {
+    const label = modelName(name)
+    const stripped = label
+      .replace(/\s*\(free\)\s*$/i, '')
+      .replace(/\s+free\s*$/i, '')
+      .trim()
+    return stripped || label
   }
 
   /** "Model · Provider", or just the model when the provider would only repeat it. */
   function modelWithProvider(name, provider) {
-    const label = modelName(name)
+    const label = printableModelName(name)
     if (!provider || label.toLowerCase().includes(String(provider).toLowerCase())) return label
     return `${label} · ${provider}`
   }
@@ -1672,17 +1755,19 @@
     const figures = item.figures
       ? `<span class="hx-compaction-figures">${escapeHtml(item.figures)}</span>`
       : ''
-    // Prose, not code: a compaction summary is sentences a reader scans, so it is set in the
-    // transcript's own face. Monospace made headings and bullets read as shell output.
+    // Prose, not code: a compaction summary is sentences a reader scans, and models write it
+    // as Markdown (headings, bullets, bold). It goes through the same renderer as an answer,
+    // which escapes every leaf exactly once, so the summary reads instead of showing its
+    // syntax — and none of it can become markup on the page.
     const summary = item.summary
-      ? `<details class="hx-compaction-summary"><summary>What was kept</summary><div class="hx-compaction-kept">${escapeHtml(item.summary.slice(0, 20000))}</div></details>`
+      ? `<details class="hx-compaction-summary"><summary>What was kept</summary><div class="hx-compaction-kept">${renderText(item.summary.slice(0, 20000))}</div></details>`
       : ''
     // While it is being written, the summary is shown in place: the pause is the model working,
     // and a row that says only "Compacting the context…" hides the one thing that explains it.
     // The tail is kept rather than the whole text — the reader wants to watch it arrive, not to
     // scroll back through a page that is still growing.
     const stream = state === 'running' && item.stream
-      ? `<div class="hx-compaction-stream" data-compaction-stream>${escapeHtml(item.stream.slice(-COMPACTION_PREVIEW))}</div>`
+      ? `<div class="hx-compaction-stream" data-compaction-stream>${renderText(item.stream.slice(-COMPACTION_PREVIEW))}</div>`
       : ''
     return `<div class="hx-compaction ${tone}" data-state="${state}">
       <div class="hx-compaction-head">
@@ -2769,14 +2854,16 @@
       ? [routed.modelId, routed.label, routed.realModelId, routed.realModelLabel].filter(Boolean)
       : []
     const shared = answered && routedNames.includes(answered) ? routed : null
-    nameEl.textContent = answered
-      ? [shared ? shared.label || shared.modelId : answered, shared ? shared.providerName : '']
-          .filter(Boolean)
-          .join(' · ')
-      : routed
-        ? [routed.label || routed.modelId, routed.providerName].filter(Boolean).join(' · ')
+    const answeredLabel = answered
+      ? printableModelName(shared ? shared.label || shared.modelId : answered)
+      : ''
+    const routedLabel = routed ? printableModelName(routed.label || routed.modelId) : ''
+    nameEl.textContent = answeredLabel
+      ? [answeredLabel, shared ? shared.providerName : ''].filter(Boolean).join(' · ')
+      : routedLabel
+        ? [routedLabel, routed.providerName].filter(Boolean).join(' · ')
         : statusModel && !isRouterAlias(statusModel)
-          ? statusModel.name || statusModel.id || 'unknown'
+          ? printableModelName(statusModel.name || statusModel.id || 'unknown')
           : 'no model yet'
     // "GLM 5.3 Flash · NVIDIA" already names the provider, so the separate "via" line goes.
     if (viaEl) viaEl.hidden = Boolean(answered || routed)
@@ -2861,15 +2948,25 @@
     renderQuota(ctx)
   }
 
-  /** The routed row's published context window, only when the table states an exact one. */
+  /** The routed row's own context window — the number the models table shows for it. */
   function routedContextWindow(ctx) {
     const routed = ctx?.routedModel
     if (!routed) return 0
+    // The router already resolved this pick's bound (catalog window, tightened by anything a
+    // provider has stated in a refusal). That is exactly what the table's context column
+    // derives, so reading it here is what keeps the two figures the same number.
+    const resolved = Number(routed.contextTokens)
+    if (Number.isFinite(resolved) && resolved > 0) return Math.round(resolved)
     const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
+    // The table's numeric figure fills the gap the resolved bound leaves: a lower bound
+    // learned from real traffic ("\u003e238k") is a number there, while the router's own
+    // ceiling is deliberately only an upper bound and is null here.
+    const known = Number(row?.contextTokens)
+    if (Number.isFinite(known) && known > 0) return Math.round(known)
     const label = String(row?.context || '')
     // A bound such as ">238k" is not a denominator: using it would make the bar look safer
-    // than the model's real limit. Pi's own contextWindow is preferred anyway; this is only
-    // the fallback for a reopened conversation where Pi reported none.
+    // than the model's real limit. An exact table figure is the fallback for a page that has
+    // the routed pick but no resolved bound on it.
     if (!label || /[<>≤≥]/.test(label)) return 0
     const match = label.replace(/,/g, '').match(/([\d.]+)\s*([kKmM])?/)
     const value = Number(match?.[1])
@@ -2977,8 +3074,13 @@
     // `contextUsage` is pi's figure (it may also ride along on a live usage frame);
     // `usage.contextWindow` is the flat estimate a bare per-message count would give.
     const context = usage.contextUsage || null
-    const window_ =
-      Number(context?.contextWindow) || Number(usage.contextWindow) || Number(fallbackWindow) || 0
+    // The model's own window is the limit the models table reports for the routed row. Pi's
+    // figure is the alias's declared ceiling (a fixed 131k, see lib/pi/agent-dir.js), which is
+    // not a property of the model: preferring it put "131k" in this meter beside "1M" in the
+    // table for the very same pick.
+    const piWindow = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
+    const routedWindow = Number(fallbackWindow) || 0
+    const window_ = routedWindow || piWindow
     if (window_ <= 0) {
       // No window declared: the turn-share bar, kept and labelled for what it actually is.
       if (bar) {
@@ -3007,7 +3109,12 @@
     // Pi reserves room for the reply: it compacts at `window - reserve`, which is why a
     // meter filled to 100% is a meter that has already compacted.
     const RESERVE = 16384
-    const trigger = Math.max(0, window_ - RESERVE)
+    // Where pi actually compacts: the tighter of its alias ceiling and the routed model's
+    // window. A model with more room than the alias still stops at the alias, so the tick and
+    // the note say so rather than letting a 1M bar hide a 131k wall.
+    const limits = [piWindow, routedWindow].filter((value) => value > 0)
+    const ceiling = limits.length ? Math.min(...limits) : window_
+    const trigger = Math.max(0, ceiling - RESERVE)
     const pct = measured ? Math.max(0, Math.min(100, (used / window_) * 100)) : null
     if (bar) {
       bar.classList.add('is-context')
@@ -3031,7 +3138,8 @@
         note.textContent = `~${compact(used)} of ${compact(window_)} · estimating while it answers`
       } else {
         const left = Math.max(0, window_ - used)
-        note.textContent = `${compact(used)} of ${compact(window_)} · ${compact(left)} free`
+        const compacts = ceiling < window_ && trigger > 0 ? ` · compacts at ${compact(trigger)}` : ''
+        note.textContent = `${compact(used)} of ${compact(window_)} · ${compact(left)} free${compacts}`
       }
     }
   }
@@ -3081,7 +3189,7 @@
     rolling: 5,
     window: 6,
   }
-  const RAIL_QUOTA_METRIC_ORDER = { requests: 0, tokens: 1 }
+  const RAIL_QUOTA_METRIC_ORDER = { requests: 0, tokens: 1, credits: 2 }
 
   function railQuotaPeriod(value) {
     const text = String(value || '').toLowerCase()
@@ -3161,7 +3269,8 @@
     usedPercent,
     percentOnly,
   }) {
-    const normalizedMetric = metric === 'requests' ? 'requests' : 'tokens'
+    const normalizedMetric =
+      metric === 'requests' ? 'requests' : metric === 'credits' ? 'credits' : 'tokens'
     let totalValue = total == null ? null : Number(total)
     let remainingValue = remaining == null ? null : Number(remaining)
     let usedValue = used == null ? null : Number(used)
@@ -3284,6 +3393,27 @@
 
     const rateLimit = row?.rateLimit
     if (rateLimit) {
+      // The provider key endpoint reports an account credit balance (OpenRouter's
+      // creditLimit/creditRemaining). Every model on that key draws from the same pot, and the
+      // rail had no window for it at all, so the one figure that answers "is there money left"
+      // never appeared beside the models spending it.
+      if (rateLimit.creditLimit != null || rateLimit.creditRemaining != null) {
+        add(
+          railQuotaWindow({
+            period: 'lifetime',
+            metric: 'credits',
+            rawWindow: 'account credit',
+            total: rateLimit.creditLimit,
+            remaining: rateLimit.creditRemaining,
+            used:
+              rateLimit.creditLimit != null && rateLimit.creditRemaining != null
+                ? Math.max(0, Number(rateLimit.creditLimit) - Number(rateLimit.creditRemaining))
+                : null,
+            resetAt: rateLimit.creditResetAt,
+            detail: 'account credit reported by the provider key endpoint',
+          }),
+        )
+      }
       const retryReset =
         rateLimit.capturedAt && rateLimit.retryAfterMs
           ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
@@ -3502,7 +3632,7 @@
       list.innerHTML = '<div class="hx-quota-empty">No model routed yet.</div>'
       return
     }
-    const label = routed.label || routed.modelId || routed.realModelId || 'model'
+    const label = printableModelName(routed.label || routed.modelId || routed.realModelId || 'model')
     if (modelEl) {
       modelEl.textContent = label
       modelEl.title = [label, routed.providerName].filter(Boolean).join(' · ')
@@ -3561,6 +3691,12 @@
       // A background console's status must not repaint the rail: the panel is one element, and
       // a running inactive tab would otherwise disable the button while the active tab is idle.
       if (console === active()) renderCompactionPanel(console)
+      // Status can be the first word of the conversation's file (the main console learns it
+      // here). With no turn running there is no settle to wait for, so the transcript is
+      // rebuilt now rather than at the end of a turn that may never come.
+      if (!console.running && !console.historyLoaded && console.sessionFile) {
+        void restoreHistory(console)
+      }
     } catch (err) {
       setHint(`Could not reach the agent: ${err?.message || err}`, 'error', console)
       setPhase('dead', console)
@@ -3669,7 +3805,10 @@
     if (!ctx.running) settleOpenTools(ctx)
     // If the turn already settled by the time hello arrived, restore immediately instead
     // of waiting for a running-edge that will never come.
-    if (!ctx.running && ctx.pendingFullRestore && !ctx.historyLoaded) {
+    // An idle console has no running-edge to wait for: hello is its last chance to be rebuilt
+    // from its file. This is the ordinary shape after a restart — a conversation that had
+    // already finished — and waiting for a settle that never comes left it blank.
+    if (!ctx.running && !ctx.historyLoaded) {
       ctx.pendingFullRestore = false
       void restoreHistory(ctx)
     }
@@ -4513,7 +4652,17 @@
 
   /** Rebuilds one conversation from the session file its agent is attached to. */
   async function loadMessages(ctx = active()) {
-    const res = await fetch(consoleApi(ctx, '/messages'))
+    // A rebuilt row names its provider from the router's model table (a message records
+    // "hammer", which is the router). Read it first, or a conversation opened after a restart
+    // labels every model and leaves the provider that served it blank.
+    await loadKnownTtfts().catch(() => {})
+    // Name the conversation explicitly. A bridge that has not yet heard its child's `get_state`
+    // cannot say which file it is on, and a route that trusts only that answers with the
+    // agent's compacted view instead of the file this tab is rebuilding.
+    const session = ctx && ctx.sessionFile
+    const res = await fetch(
+      consoleApi(ctx, session ? `/messages?session=${encodeURIComponent(session)}` : '/messages'),
+    )
     const data = await res.json().catch(() => ({}))
     if (!res.ok || !data.success) {
       throw new Error(data.error || 'Could not read the conversation.')

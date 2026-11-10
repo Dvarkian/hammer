@@ -84,8 +84,26 @@ test('the summary follows its own stream and is set as prose', () => {
   // Prose, not a <pre>: a summary is read, not copied, so it keeps the transcript's face.
   assert.doesNotMatch(harness, /<pre class="hx-compaction/)
   assert.doesNotMatch(harnessCss, /\.hx-compaction-summary > pre/)
-  assert.match(harnessCss, /\.hx-compaction-summary \.hx-compaction-kept \{[^}]*font: inherit;/)
-  assert.match(harnessCss, /\.hx-compaction-stream \{[^}]*font: inherit;/)
+  // The row's own face is the mono one its head uses; the summary must not inherit it, or the
+  // "prose" above still looks like shell output. Neither content block sets a family, so both
+  // take the page's face, and neither keeps the pre-formatted whitespace of plain text.
+  assert.doesNotMatch(harnessCss, /\.hx-compaction \{[^}]*font-family: var\(--hx-mono\)/)
+  assert.doesNotMatch(
+    harnessCss,
+    /\.hx-compaction-summary \.hx-compaction-kept \{[^}]*white-space: pre-wrap;/,
+  )
+  assert.doesNotMatch(harnessCss, /\.hx-compaction-stream \{[^}]*white-space: pre-wrap;/)
+  assert.match(harnessCss, /\.hx-compaction-stream \{[^}]*font-size: 0\.8rem;/)
+  assert.match(
+    harnessCss,
+    /\.hx-compaction-summary \.hx-compaction-kept \{[^}]*font-size: 0\.8rem;/,
+  )
+  // Markdown, not escaped text: a summary arrives with headings and bullets, which the answer
+  // renderer already knows how to set — and it escapes each leaf exactly once before any tag.
+  assert.match(harness, /class="hx-compaction-kept">\$\{renderText\(/)
+  assert.match(harness, /data-compaction-stream>\$\{renderText\(/)
+  assert.doesNotMatch(harness, /hx-compaction-kept">\$\{escapeHtml\(/)
+  assert.doesNotMatch(harness, /data-compaction-stream>\$\{escapeHtml\(/)
 })
 
 test('a compaction is a station on the spine, not a card beside it', () => {

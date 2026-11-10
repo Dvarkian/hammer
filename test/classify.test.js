@@ -661,6 +661,23 @@ test('an unfunded account is Paid, not a quota on a clock', () => {
   assert.equal(isPaymentRequiredError('insufficient balance', 0), true)
   assert.equal(isPaymentRequiredError('Your credit balance is too low for this request.', 0), true)
 
+  // Agnes AI calls its empty wallet a quota (403, live 2026-11-10). "Quota" alone reads as a
+  // window; the currency and the zero are what make it money, so the row is Paid instead of
+  // waiting out a reset that will never come. The full-width currency sign is included because
+  // the provider's console renders it that way.
+  const agnes =
+    'Insufficient user quota, remaining: $0.000000 (request id: 20261110065249173042563Ho6shJnW)'
+  assert.equal(isPaymentRequiredError(agnes, 403), true)
+  assert.equal(isPaymentRequiredError(agnes.replace('$', '＄'), 403), true)
+  assert.equal(resolveRefusalVerdict(agnes, 403), 'paid')
+  // The zero has to be the whole amount: a balance of $0.50 is small, not empty, so the
+  // regex must not stop at the first digit of it.
+  assert.equal(isPaymentRequiredError('Insufficient user quota, remaining: $0.500000', 403), false)
+  assert.equal(isPaymentRequiredError('Insufficient user quota, remaining: $0.05', 403), false)
+  // A zero that is not money stays on the clock: a count of remaining requests is a window.
+  assert.equal(isPaymentRequiredError('Quota remaining: 0 requests this minute.', 429), false)
+  assert.equal(isPaymentRequiredError('Insufficient user quota for this window.', 429), false)
+
   // Negative controls: a balance that is fine is not a wall, and neither is the free credit
   // allowance a quest refills — free credits are not money, so they keep their clock — nor the
   // key budget that is raised rather than topped up.

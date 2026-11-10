@@ -982,11 +982,12 @@ class StubBridge extends EventEmitter {
     this.cancelled = false
     this.sessionFile = null
     this.streaming = false
+    this.running = true
   }
   status() {
     return {
       available: this.available,
-      running: true,
+      running: this.running,
       command: 'pi',
       cwd: '/project',
       model: { id: 'stub-model', provider: 'stub' },
@@ -1408,6 +1409,31 @@ test('the store lists saved sessions with summaries and the current file', async
     assert.equal(a.assistantMessages, 1)
     assert.match(a.preview, /first conversation/)
     assert.ok(a.label, 'every row carries a human label')
+  })
+})
+
+test('a restored transcript is read from its file before the bridge names it', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const target = writeSessionFile(
+    store,
+    'restored.jsonl',
+    '66666666-6666-4666-8666-666666666666',
+    'restore me',
+  )
+  const bridge = new StubBridge()
+  // The shape of a page that just reconnected: the child has not answered get_state, so the
+  // bridge cannot name its file, and no turn is running to make it do so.
+  bridge.sessionFile = null
+  bridge.running = false
+  await withPiApp({ piBridge: bridge, piSessionsDir: store }, async (base) => {
+    const data = await (
+      await fetch(`${base}/api/pi/messages?session=${encodeURIComponent(target)}`)
+    ).json()
+    assert.equal(data.success, true)
+    assert.equal(data.source, 'session')
+    assert.equal(data.messages.length, 2)
+    assert.match(data.messages[0].content[0].text, /restore me/)
+    assert.deepEqual(bridge.calls, [], 'reading history never starts the agent')
   })
 })
 
@@ -2513,6 +2539,19 @@ test('the console adopts a running agent as soon as its routes are registered', 
   const source = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
   assert.match(source, /typeof main\.bridge\.adoptKeeper === 'function'/)
   assert.match(source, /void main\.bridge\.adoptKeeper\(\)/)
+})
+
+test('a model change names the provider that served each end', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  // Pi is configured with Hammer, so every message it writes says `provider: "hammer"`: the
+  // router, not the host. A change line that printed it told the reader nothing.
+  assert.match(harness, /function isRouterProviderValue\(value\)/)
+  assert.match(harness, /!isRouterProviderValue\(value\) && !isRouterAlias\(value\)/)
+  assert.match(harness, /const key = name \? providerKeyByModel\.get\(name\) : ''/)
+  assert.match(harness, /providerNameByKey\.set\(routed\.providerKey, providerName\)/)
+  // The model station's text starts on the tool row's text edge: 8px inside the row's 12px.
+  assert.match(css, /\.hx-model-head \{[^}]*padding-left: 8px/)
 })
 
 test('a turn whose tool call never arrived is continued for any model', async () => {

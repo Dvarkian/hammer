@@ -303,3 +303,136 @@ test('per-minute Google refusals and zero grants get no daily reset', () => {
   assert.equal(googleDailyQuotaResetAt(zero, now), null)
   assert.equal(extractRateLimitResetMs(zero, null, now), null)
 })
+
+// An hourly window is the one period both quota columns could already order, label and count
+// (KiloCode's 200 requests/hour pool is measured against the trailing hour) while the parser
+// that reads refusals had no word for it. An hourly gateway's 429 therefore produced no window
+// at all: `parseQuotaPeriod('per hour')` was null, so the row that was throttled for an hour
+// showed nothing about the allowance that had just run out.
+test('the hour is a period a refusal can name, and "24 hour" still means a day', () => {
+  assert.equal(parseQuotaPeriod('per hour'), 'hour')
+  assert.equal(parseQuotaPeriod('hourly'), 'hour')
+  assert.equal(parseQuotaPeriod('requests per hour'), 'hour')
+  assert.equal(parseQuotaPeriod('200 requests/hour'), 'hour')
+  assert.equal(parseQuotaPeriod('GenerateRequestsPerHourPerProjectPerModel-FreeTier'), 'hour')
+  // The day spellings must not lose to the hour they contain.
+  assert.equal(parseQuotaPeriod('24 hour'), 'day')
+  assert.equal(parseQuotaPeriod('per day'), 'day')
+})
+
+test('an hourly refusal names its window and its stated limit', () => {
+  const windows = extractQuotaWindows(
+    {
+      modelId: 'gpt-oss-120b',
+      lastResponse: {
+        status: 429,
+        at: NOW,
+        error:
+          'Free tier hourly limit reached: 60 requests per hour. Please retry in 1429 seconds.',
+      },
+    },
+    NOW,
+  )
+  assert.equal(windows.length, 1)
+  assert.equal(windows[0].metric, 'requests')
+  assert.equal(windows[0].period, 'hour')
+  assert.equal(windows[0].limit, 60)
+  assert.equal(windows[0].remaining, 0)
+  assert.equal(windows[0].resetAt, NOW + 1_429_000)
+})
+
+// Groq, Cerebras and the other OpenAI-compatible gateways never say the word "quota": they
+// answer "Rate limit reached for 8000 tokens per minute" or "1000 requests per day limit
+// reached". The parser's entry gate demanded "quota", so those bodies were dropped before any
+// window could be read and the row kept a bare clock beside a window the provider had just
+// named and numbered.
+test('an OpenAI-compatible rate-limit body is read without the word "quota"', () => {
+  const tpm = extractQuotaWindows(
+    {
+      modelId: 'gpt-oss-120b',
+      lastResponse: {
+        status: 429,
+        at: NOW,
+        error: 'Rate limit reached for 8000 tokens per minute. Please try again in 4.5 seconds.',
+      },
+    },
+    NOW,
+  )
+  assert.equal(tpm.length, 1)
+  assert.equal(tpm[0].metric, 'tokens')
+  assert.equal(tpm[0].period, 'minute')
+  assert.equal(tpm[0].limit, 8000)
+  // "Please try again in 4.5 seconds" is the same promise as "retry in", which the delay
+  // parser could not see until the words in the middle were allowed for.
+  assert.equal(tpm[0].resetAt, NOW + 4_500)
+
+  const rpd = extractQuotaWindows(
+    {
+      modelId: 'gpt-oss-20b',
+      lastResponse: {
+        status: 429,
+        at: NOW,
+        error:
+          'Rate limit exceeded: 1000 requests per day limit reached. Please try again in 2h5m.',
+      },
+    },
+    NOW,
+  )
+  assert.equal(rpd.length, 1)
+  assert.equal(rpd[0].metric, 'requests')
+  assert.equal(rpd[0].period, 'day')
+  assert.equal(rpd[0].limit, 1000)
+  assert.equal(rpd[0].resetAt, NOW + (2 * 60 + 5) * 60_000)
+})
+
+test('a prose window alone still fills the cell, but never doubles a named one', () => {
+  // No "quota", no retry, no model: the number in the sentence is all there is, and it is
+  // enough to say which allowance ran out and how big it was.
+  const bare = extractQuotaWindows(
+    {
+      modelId: 'x',
+      lastResponse: { status: 429, at: NOW, error: 'rate limit: 200 requests per hour exceeded' },
+    },
+    NOW,
+  )
+  assert.equal(bare.length, 1)
+  assert.equal(bare[0].period, 'hour')
+  assert.equal(bare[0].limit, 200)
+  // Google's body names its windows in the QuotaFailure line, in minutes and in days. The
+  // prose scan sees the same phrases; restating one would put a second, account-scoped bar
+  // beside the model-scoped window that line already described.
+  const google = extractQuotaWindows(
+    {
+      modelId: 'models/gemini-x',
+      lastResponse: {
+        status: 429,
+        at: NOW,
+        error:
+          'You exceeded your current quota.\n' +
+          '* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 5, model: gemini-x, description: Generate content requests per minute limit exceeded on Free Tier.\n' +
+          'Please retry in 30s.',
+      },
+    },
+    NOW,
+  )
+  assert.equal(google.length, 1)
+  assert.equal(google[0].limit, 5)
+  assert.equal(google[0].scope, 'model')
+})
+
+// The gate exists so a body that says nothing about a limit costs nothing to read. Widening
+// it to the rate-limit wordings must not make every failure look like a quota.
+test('a body that names no window still yields no window', () => {
+  for (const error of [
+    'Something went wrong with the network.',
+    'Incorrect API key provided.',
+    'model not found',
+    'Rate limit exceeded',
+  ]) {
+    assert.deepEqual(
+      extractQuotaWindows({ modelId: 'm', lastResponse: { status: 429, at: NOW, error } }, NOW),
+      [],
+      error,
+    )
+  }
+})

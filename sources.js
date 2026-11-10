@@ -849,6 +849,35 @@ export const sources = {
     discoverable: true,
     models: [],
   },
+  // --- Requesty ---------------------------------------------------------------
+  // An OpenAI-compatible router in front of 600+ models (`router.requesty.ai/v1`). Its
+  // roster is discovered from its own /v1/models list, which is the only place its aliases
+  // and routing policies are published; nothing is curated here.
+  requesty: {
+    name: 'Requesty',
+    url: 'https://router.requesty.ai/v1/chat/completions',
+    contextUrl: 'https://router.requesty.ai/v1/models',
+    discoverable: true,
+    models: [],
+  },
+  // --- Agnes AI --------------------------------------------------------------
+  // OpenAI-compatible chat at `apihub.agnes-ai.com/v1`, keyed `sk-`. Its `/v1/models` list
+  // mixes text, image and video ids in one namespace (`agnes-image-*`, `agnes-video-*`), and
+  // a media id refuses a chat completion with 400 — so the roster is curated to the text
+  // models rather than discovered, or the table would offer rows that can never answer. No
+  // context length is published per id, so none is claimed here.
+  agnes: {
+    name: 'Agnes AI',
+    url: 'https://apihub.agnes-ai.com/v1/chat/completions',
+    contextUrl: 'https://wiki.agnes-ai.com/en/docs/quickstart',
+    models: [
+      ['agnes-2.5-flash', 'Agnes 2.5 Flash'],
+      ['agnes-3.0-flash', 'Agnes 3.0 Flash'],
+      ['agnes-2.5-pro', 'Agnes 2.5 Pro'],
+      ['agnes-2.5-pro-beta', 'Agnes 2.5 Pro Beta'],
+      ['agnes-2.5-pro-alpha', 'Agnes 2.5 Pro Alpha'],
+    ],
+  },
   // Deliberately NOT `discoverable` — there is no model list to discover from.
   gptfree: {
     name: 'GPTFree',

@@ -1204,10 +1204,13 @@ body.hx-details-collapsed .hx-side-details {
 .hx-compaction {
   position: relative;
   padding: 0;
-  font-family: var(--hx-mono);
 }
 
 .hx-compaction-head {
+  /* The row's chrome is mono, like a tool call's. The summary it discloses is prose, so the
+     face is set on the parts rather than inherited from the row — `font: inherit` here meant
+     "inherit the row's monospace", which is how body text came out looking like shell output. */
+  font-family: var(--hx-mono);
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1425,13 +1428,11 @@ body.hx-details-collapsed .hx-side-details {
 .hx-compaction-stream {
   margin: 0;
   padding: 4px 0 6px 20px;
-  white-space: pre-wrap;
   word-break: break-word;
   max-height: 240px;
   overflow-y: auto;
-  /* The summary is prose, not code. It inherits the transcript's face; only the size is the
-     row's own, and the line height keeps a stream of markdown readable while it moves. */
-  font: inherit;
+  /* Prose in the transcript's own face, not the row's mono: the summary is Markdown, and the
+     pre-formatted whitespace that pre-wrap kept would double the spacing its blocks add. */
   font-size: 0.8rem;
   line-height: 1.6;
   color: var(--text-muted);
@@ -1450,18 +1451,18 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-compaction-summary > summary {
   cursor: pointer;
+  font-family: var(--hx-mono);
   font-size: 0.72rem;
   color: var(--text-muted);
 }
 
 .hx-compaction-summary .hx-compaction-kept {
   margin: 6px 0 0;
-  white-space: pre-wrap;
   word-break: break-word;
   max-height: 260px;
   overflow-y: auto;
-  /* Kept prose is read, not copied: the same face and measure as the live summary. */
-  font: inherit;
+  /* Kept prose is read, not copied: the transcript's face and measure, same as the live
+     summary, and rendered Markdown rather than pre-formatted text. */
   font-size: 0.8rem;
   line-height: 1.6;
 }

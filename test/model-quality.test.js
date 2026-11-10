@@ -28,6 +28,28 @@ import {
 } from '../lib/benchmarklist-quality.js'
 import { canonicalizeModelId } from '../sources.js'
 
+test('Agnes rows use the AA scores AA actually publishes', () => {
+  // AA's model pages carry these; the Pro Beta release article's older 49/40 figures are on
+  // a previous index revision, so the current pages are what the curated table records.
+  // AA publishes no page for Agnes 2.5 Flash, so it stays unscored rather than guessed at.
+  const rows = [
+    ['agnes/agnes-3.0-flash', 36],
+    ['agnes-3.0-flash', 36],
+    ['agnes/agnes-2.5-pro', 35],
+    ['agnes/agnes-2.5-pro-beta', 35],
+    ['agnes/agnes-2.5-pro-alpha', 27],
+  ]
+  for (const [id, aa] of rows) {
+    const scored = resolveModelQuality({}, id)
+    assert.equal(scored.aa, aa, `${id} uses AA's published figure`)
+    assert.equal(scored.source, 'curated-aa')
+    assert.equal(scored.isEstimated, true, `${id} is an AA estimate, and says so`)
+  }
+  const flash = resolveModelQuality({}, 'agnes/agnes-2.5-flash')
+  assert.equal(flash.source, 'unscored')
+  assert.equal(flash.aa, null)
+})
+
 test('a free twin inherits the measured score of the same weights', () => {
   // KiloCode advertises `reflection/beam-free` and Ollama publishes the same weights as bare
   // `beam`; the benchmark catalog measures the paid OpenRouter spelling. Both aliases must
