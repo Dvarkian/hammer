@@ -13,8 +13,9 @@ test("the routed row's window is the budget, whether it is smaller or larger tha
     effectiveContextWindow({ piWindow: ALIAS_CONTEXT_WINDOW, routedWindow: 262144 }),
     262144,
   )
-  // A declaration is a cap, so a user who pinned a smaller window keeps it.
-  assert.equal(effectiveContextWindow({ piWindow: 65536, routedWindow: 200000 }), 65536)
+  // The route wins even over a declaration still in memory from an older start: a running Pi
+  // that was launched before the alias changed must not keep compacting at the old wall.
+  assert.equal(effectiveContextWindow({ piWindow: 131072, routedWindow: 200000 }), 200000)
 })
 
 test('a route that reports no window falls back to the conservative default', () => {
