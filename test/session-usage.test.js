@@ -309,3 +309,48 @@ test('the rail legend lists models with samples, not the whole catalog', () => {
   assert.match(dashboard, /usage-session-legend-more/)
   assert.match(css, /\.usage-session-legend-more \{/)
 })
+
+test('a restored transcript reads every message the session file holds, past a compaction', async () => {
+  // The agent's `get_messages` answers with the compacted conversation it is working from: a
+  // resumed long session comes back with a summary where its beginning used to be, which is
+  // exactly the "the top gets lost" a restart showed. The file keeps every message.
+  const { readSessionMessages } = await import('../lib/pi/sessions.js')
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = mkdtempSync(join(tmpdir(), 'hammer-pi-history-'))
+  const file = join(dir, 'long.jsonl')
+  const message = (id, body) =>
+    `${JSON.stringify({ type: 'message', id, parentId: null, message: body })}\n`
+  const lines = [
+    `${JSON.stringify({ type: 'session', id: 's', cwd: '/tmp', timestamp: '2026-01-01T00:00:00.000Z' })}\n`,
+    message('m1', {
+      role: 'user',
+      content: [{ type: 'text', text: 'the first question' }],
+      timestamp: 1,
+    }),
+    message('m2', {
+      role: 'assistant',
+      content: [{ type: 'text', text: 'the first answer' }],
+      model: 'a',
+      timestamp: 2,
+    }),
+    `${JSON.stringify({ type: 'compaction', id: 'c1', parentId: 'm2', summary: 'folded away' })}\n`,
+    message('m3', {
+      role: 'user',
+      content: [{ type: 'text', text: 'a later question' }],
+      timestamp: 3,
+    }),
+  ]
+  writeFileSync(file, lines.join(''))
+  assert.deepEqual(
+    readSessionMessages(file).map((m) => m.content[0].text),
+    ['the first question', 'the first answer', 'a later question'],
+  )
+  // One unparseable line costs that line, not the conversation.
+  writeFileSync(file, `${lines[0]}not json\n${lines.slice(1).join('')}`)
+  assert.equal(readSessionMessages(file).length, 3)
+  // A missing file is an empty transcript, not an exception.
+  assert.deepEqual(readSessionMessages(join(dir, 'gone.jsonl')), [])
+  rmSync(dir, { recursive: true, force: true })
+})
