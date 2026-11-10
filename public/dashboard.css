@@ -1186,16 +1186,68 @@
       border-color: var(--accent);
     }
 
-    .providers-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
+    /* Providers are rows, not cards: one provider per row so identity, credential and the
+       account-level facts line up down the page and can be compared at a glance. */
+    .providers-table {
+      width: 100%;
+      border-collapse: collapse;
     }
 
-    .providers-grid > .provider-section {
-      margin: 0;
-      min-width: 0;
-      border-bottom: 0;
+    .providers-table th {
+      text-align: left;
+      padding: 10px 12px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+
+    .providers-table td {
+      vertical-align: top;
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .providers-table tbody tr:hover > td {
+      background: var(--input-bg-alt);
+    }
+
+    .provider-name-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .provider-desc {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin: 8px 0 0;
+      max-width: 52ch;
+    }
+
+    .provider-identity {
+      min-width: 260px;
+      max-width: 420px;
+    }
+
+    .provider-credential {
+      min-width: 340px;
+    }
+
+    .provider-quota-cell,
+    .provider-error-cell,
+    .provider-limits-cell {
+      min-width: 150px;
+      font-size: 0.78rem;
+    }
+
+    .provider-add-row > td {
+      padding: 14px 12px;
+      border-bottom: 1px solid var(--border);
     }
 
     .providers-group-heading {
@@ -1211,14 +1263,9 @@
     }
 
     @media (max-width: 920px) {
-      .providers-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-    }
-
-    @media (max-width: 640px) {
-      .providers-grid {
-        grid-template-columns: 1fr;
+      .provider-identity,
+      .provider-credential {
+        min-width: 0;
       }
     }
 

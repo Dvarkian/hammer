@@ -2774,18 +2774,22 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(css, /\.model-logo-mono \{/)
   assert.match(css, /\.model-logo-img \{/)
 
-  // Everything after the logo shifted by one, and the quota column shifts the trailing cells
-  // again. A stale index writes context into the status cell and blanks the response, which is
-  // worse than no logo column at all.
+  // Everything after the logo shifted by one, and each added column shifts the trailing cells
+  // again — the quota column first, then the rate-limit column beside it. A stale index writes
+  // context into the status cell and blanks the response, which is worse than no column at all.
   assert.match(js, /const modelCell = row\.cells\[1\];/)
   assert.match(js, /const intellCell = row\.cells\[2\];/)
   assert.match(js, /const usageCell = row\.cells\[5\];/)
   assert.match(js, /const quotaCell = row\.cells\[6\];/)
-  assert.match(js, /const ctxCell = row\.cells\[7\];/)
-  assert.match(js, /const statusCell = row\.cells\[8\];/)
-  assert.match(js, /const responseCell = row\.cells\[9\];/)
+  assert.match(js, /const ctxCell = row\.cells\[8\];/)
+  assert.match(js, /const statusCell = row\.cells\[9\];/)
+  assert.match(js, /const responseCell = row\.cells\[10\];/)
   assert.match(js, /const ttftCell = row\.cells\[3\];/)
   assert.match(js, /const tpsCell = row\.cells\[4\];/)
+  // The rate-limit column sits between quota and context in the header and in every row builder
+  // (model heading, provider row, graveyard row).
+  assert.match(table, /id="th-quota"[^]*?<th id="th-rate-limit"/)
+  assert.equal((js.match(/<td class="rate-limit-cell"><\/td>/g) || []).length, 3)
 })
 
 test('the brand map names Beam, GPTFree and ALLaM', () => {

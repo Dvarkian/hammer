@@ -335,6 +335,7 @@
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
               <th id="th-usage" title="Tokens over time for this model+provider row; each column's area is the tokens it accounts for, and idle gaps are collapsed">Usage</th>
               <th id="th-quota" title="Requests and token quota windows for this endpoint: usage against each published or observed limit, the total allowance per window, the remainder, and when the window resets. Every known minute/day/week/month window is shown.">Quota</th>
+              <th id="th-rate-limit" title="Rate limit reported for this endpoint. The column is in place ahead of the data: nothing fills it yet.">Rate limit</th>
               <th id="th-ctx"
                 title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
               <th id="th-status" title="Model health from pings and tests">Status</th>
@@ -359,6 +360,7 @@
                   <th class="text-right">Tok/s</th>
                   <th>Usage</th>
                   <th id="th-graveyard-quota" title="Requests and token quota windows observed for this unavailable endpoint. Rows with no observed refusal link to the provider's live project limits.">Quota</th>
+                  <th id="th-graveyard-rate-limit" title="Rate limit reported for this unavailable endpoint. The column is in place ahead of the data: nothing fills it yet.">Rate limit</th>
                   <th>Context</th>
                   <th>Status</th>
                   <th>Response</th>
@@ -382,12 +384,38 @@
           <span id="refresh-all-status" style="margin-left: 10px; font-size: 0.78rem; color: var(--text-muted);"></span>
         </div>
         <h3 class="providers-group-heading">Active now</h3>
-        <div id="active-providers-container" class="providers-grid" data-loading="true">
-          <!-- Active provider cards generated here; skeleton cards until the first panel build -->
+        <div class="table-wrap">
+          <table class="providers-table" id="active-providers-table">
+            <thead>
+              <tr>
+                <th title="The provider, its connection state, and the actions that act on it">Provider</th>
+                <th title="The credential form for this provider: key, token, or account sign-in, plus its rotation bar">Credentials</th>
+                <th title="The provider's account-level quota windows">Quota</th>
+                <th title="The most recent provider-level error, with its model and HTTP status">Latest error</th>
+                <th title="Rate limits this provider reported on the last prompt">Rate limit</th>
+              </tr>
+            </thead>
+            <tbody id="active-providers-container" data-loading="true">
+              <!-- Active provider rows generated here; skeleton rows until the first panel build -->
+            </tbody>
+          </table>
         </div>
         <h3 class="providers-group-heading">Require setup</h3>
-        <div id="setup-providers-container" class="providers-grid">
-          <!-- Providers requiring setup generated here -->
+        <div class="table-wrap">
+          <table class="providers-table" id="setup-providers-table">
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Credentials</th>
+                <th>Quota</th>
+                <th>Latest error</th>
+                <th>Rate limit</th>
+              </tr>
+            </thead>
+            <tbody id="setup-providers-container">
+              <!-- Providers requiring setup generated here -->
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -486,14 +514,16 @@
       <td><span class="skeleton skeleton-text" style="width:120px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
       <td><span class="skeleton skeleton-text" style="width:min(180px, 60%)"></span></td>
     </tr></template>
-  <template id="skeleton-card-template"><div class="provider-section autoupdate-panel skeleton-card" aria-hidden="true">
-      <span class="skeleton skeleton-text" style="width:45%; height:1.05rem"></span>
-      <span class="skeleton skeleton-text" style="width:70%"></span>
-      <span class="skeleton skeleton-text" style="width:100%; height:8px; margin-top:10px"></span>
-      <span class="skeleton skeleton-text" style="width:60%"></span>
-    </div></template>
+  <template id="skeleton-card-template"><tr class="skeleton-row provider-skeleton-row" aria-hidden="true">
+      <td><span class="skeleton skeleton-text" style="width:55%; height:1.05rem"></span><span class="skeleton skeleton-text skeleton-sub" style="width:80%"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:100%; height:8px"></span><span class="skeleton skeleton-text" style="width:70%; margin-top:10px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:60px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
+      <td><span class="skeleton skeleton-text" style="width:70px"></span></td>
+    </tr></template>
 
   <!-- The command palette: one keystroke to anything the harness can do. -->
   <div class="hx-palette-overlay" id="hx-palette" role="dialog" aria-modal="true" aria-label="Command palette">

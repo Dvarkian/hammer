@@ -5389,6 +5389,8 @@
                since the id does not resolve until then. -->
           <td id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></td>
           ${quotaGroupCell(g)}
+          <!-- Rate limit: an empty column beside Quota, in the table ahead of the data. -->
+          <td class="rate-limit-cell"></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -5622,9 +5624,9 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds) — col 7, after quota (col 6);
-      // the logo column leads the row.
-      const ctxCell = row.cells[7];
+      // Update context window (known limit or observed bounds) — col 8, after quota (col 6) and
+      // the rate-limit column (col 7); the logo column leads the row.
+      const ctxCell = row.cells[8];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -5645,12 +5647,12 @@
       // clock, and observed rate-limit windows arrive with new traffic.
       const quotaCell = row.cells[6];
       if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
-      // Update status cell (col 8) and response cell (col 9); never clobber an in-flight test
-      const statusCell = row.cells[8];
+      // Update status cell (col 9) and response cell (col 10); never clobber an in-flight test
+      const statusCell = row.cells[9];
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[9];
+      const responseCell = row.cells[10];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
       }
@@ -6406,7 +6408,7 @@
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
       const tr = cell.closest('tr');
       tr?.classList.add('row-testing');
-      const statusCell = tr && tr.cells[8];
+      const statusCell = tr && tr.cells[9];
       if (statusCell) {
         statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
       }
@@ -7228,6 +7230,7 @@
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td></td>
           ${quotaRowCell(first)}
+          <td class="rate-limit-cell"></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -7264,6 +7267,7 @@
           ${formatTpsCell(rowTps(m), 'tok/s')}
           <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
           ${quotaRowCell(m)}
+          <td class="rate-limit-cell"></td>
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -8151,14 +8155,16 @@
         setupContainer.innerHTML = '';
         const endpointContainer = activeContainer;
 
-        const addEndpointSection = document.createElement('div');
-        addEndpointSection.className = 'provider-section autoupdate-panel';
+        const addEndpointSection = document.createElement('tr');
+        addEndpointSection.className = 'provider-add-row';
         addEndpointSection.innerHTML = `
+          <td colspan="5">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
             <h3 style="margin:0; font-size:1rem;">OpenAI-Compatible endpoints</h3>
             <button onclick="addOpenAICompatibleEndpoint()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.8rem; font-weight:600;">+ Add Endpoint</button>
           </div>
           <div style="font-size:0.78rem; color:var(--text-muted);">Configure one or more upstream OpenAI-compatible endpoints (vLLM, llama.cpp, custom relays, etc.). Each endpoint exposes a single model id.</div>
+          </td>
         `;
         endpointContainer.appendChild(addEndpointSection);
 
@@ -8299,9 +8305,12 @@
             </div>
           ` : '';
 
-          const section = document.createElement('div');
+          // One provider is one row of the providers table: identity and actions beside its
+          // credential form, with the account-level facts — quota, the last error, the prompt's
+          // rate limits — in their own columns instead of stacked boxes inside a card.
+          const section = document.createElement('tr');
           const isRefreshing = providerRefreshInFlight.has(p.key);
-          section.className = 'provider-section autoupdate-panel';
+          section.className = 'provider-row';
           if (p.key === 'kiro') {
             const kiroStatusOk = p.hasKey;
             const kiroStatusBg = kiroStatusOk ? 'var(--status-success-bg)' : 'var(--status-warning-bg)';
@@ -8363,8 +8372,8 @@
             ` : '';
 
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${kiroStatusBg}; color:${kiroStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${kiroStatusOk ? '✅' : '⚠️'} ${escapeHtml(kiroStatusText)}</span>
                   ${providerTitleHtml(p, 'Set up Kiro')}
                   ${providerEnabledToggleHtml(p)}
@@ -8379,8 +8388,9 @@
 
 
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Connect Kiro with AWS Builder ID device authorization, import a token from the AWS SSO cache, or paste a refresh token manually.</div>
+                <div class="provider-desc">Connect Kiro with AWS Builder ID device authorization, import a token from the AWS SSO cache, or paste a refresh token manually.</div>
+              </td>
+              <td class="provider-credential">
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
                 Recommended: <b>AWS Builder ID</b>. It opens the AWS verification page and waits for approval, which is the same supported Kiro path OmniRoute uses. This avoids the broken <code>kiro://</code> browser handoff.
               </div>
@@ -8397,10 +8407,11 @@
               ${kiroDeviceAuthHtml}
               ${kiroBrowserAuthHtml}
               ${kiroMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8447,8 +8458,8 @@
               : '<button onclick="startCopilotDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with GitHub</button>';
 
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${copilotStatusBg}; color:${copilotStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${copilotConnected ? '✅' : '⚠️'} ${escapeHtml(copilotStatusText)}</span>
                   ${providerTitleHtml(p, 'Manage GitHub Copilot')}
                   ${providerEnabledToggleHtml(p)}
@@ -8461,8 +8472,9 @@
                   </button>
                   ${onboardButtonHtml(p)}
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the GitHub account that has Copilot. Hammer stores the resulting GitHub token locally and uses it as the Copilot credential — model traffic is billed against that account's Copilot plan, with no per-token cost.</div>
+                <div class="provider-desc">Sign in with the GitHub account that has Copilot. Hammer stores the resulting GitHub token locally and uses it as the Copilot credential — model traffic is billed against that account's Copilot plan, with no per-token cost.</div>
+              </td>
+              <td class="provider-credential">
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
                 <b>Sign in with GitHub</b> opens the GitHub device page and waits for approval, which is the same supported path the Copilot CLI uses. Free plans keep working here; models your plan gates (Claude, Grok, the GPT‑5 coding family) are enabled automatically once a token is configured (sign-in or a pasted token).
               </div>
@@ -8476,10 +8488,11 @@
               </div>
               ${copilotDeviceAuthHtml}
               ${copilotMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8529,8 +8542,8 @@
               <div id="antigravity-ui-message" style="margin:0 0 12px 0; padding:10px 12px; border-radius:8px; font-size:0.78rem;">${escapeHtml(antigravityUiMessage.text)}</div>
             ` : '';
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${aaStatusBg}; color:${aaStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${aaSignedIn ? '✅' : '⚠️'} ${escapeHtml(aaStatusText)}</span>
                   ${providerTitleHtml(p, 'Connect Google Antigravity')}
                   ${providerEnabledToggleHtml(p)}
@@ -8539,18 +8552,20 @@
                   </button>
                   ${onboardButtonHtml(p)}
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Gemini and Claude models through Google's Cloud Code Assist backend, authenticated by an OAuth sign-in instead of an API key. This is Antigravity's own OAuth client, so Hammer listens on 127.0.0.1:51121 only while the sign-in runs.</div>
+                <div class="provider-desc">Gemini and Claude models through Google's Cloud Code Assist backend, authenticated by an OAuth sign-in instead of an API key. This is Antigravity's own OAuth client, so Hammer listens on 127.0.0.1:51121 only while the sign-in runs.</div>
+              </td>
+              <td class="provider-credential">
               ${aaAccountListHtml}
               <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;">
                 ${aaActions}
               </div>
               ${aaFlowHtml}
               ${aaMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8612,8 +8627,8 @@
               : '<button onclick="startGoogleOAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with Google</button>';
 
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${googleStatusBg}; color:${googleStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${googleConnected ? '✅' : '⚠️'} ${escapeHtml(googleStatusText)}</span>
                   ${providerTitleHtml(p, 'Connect Google Gemini')}
                   ${providerEnabledToggleHtml(p)}
@@ -8626,8 +8641,9 @@
                   </button>
                   ${onboardButtonHtml(p)}
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the Google account behind Gemini. Hammer uses the resulting OAuth token for Gemini traffic and reads that project's Code Assist quota for the model table. A GOOGLE_API_KEY can still be pasted below as a fallback.</div>
+                <div class="provider-desc">Sign in with the Google account behind Gemini. Hammer uses the resulting OAuth token for Gemini traffic and reads that project's Code Assist quota for the model table. A GOOGLE_API_KEY can still be pasted below as a fallback.</div>
+              </td>
+              <td class="provider-credential">
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
                 Quota is provider-reported as a remaining percentage with a reset time. Google does not publish an absolute request count, so Hammer shows the percentage rather than inventing one.
               </div>
@@ -8642,10 +8658,11 @@
               </div>
               ${googleFlowHtml}
               ${googleMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8735,8 +8752,8 @@
               : '<button onclick="startCodexDeviceAuth()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:8px; font-size:0.78rem; font-weight:600;">Sign in with ChatGPT</button>';
 
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${codexStatusBg}; color:${codexStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${codexConnected ? '✅' : '⚠️'} ${escapeHtml(codexStatusText)}</span>
                   ${providerTitleHtml(p, 'Manage the ChatGPT plan behind Codex')}
                   ${providerEnabledToggleHtml(p)}
@@ -8749,8 +8766,9 @@
                   </button>
                   ${onboardButtonHtml(p)}
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing. Sign in again with a different account to add it: the first is spent before the next is used, so one plan's limit is not the ceiling for the whole router.</div>
+                <div class="provider-desc">Sign in with the ChatGPT account whose plan should back the router. Hammer stores the resulting OAuth refresh token locally and exchanges it for short-lived access tokens — usage counts against that account's ChatGPT plan instead of per-token billing. Sign in again with a different account to add it: the first is spent before the next is used, so one plan's limit is not the ceiling for the whole router.</div>
+              </td>
+              <td class="provider-credential">
               <div style="margin:0 0 12px 0; padding:10px 12px; background:var(--status-info-bg); border:1px solid var(--status-info-border); border-radius:8px; color:var(--status-info-text); font-size:0.78rem; line-height:1.45;">
                 Codex is not an OpenAI-compatible endpoint: traffic is translated to the Responses API, and only the models your plan may serve are listed. Your ChatGPT password is never seen by Hammer — the device flow only ever returns a token.
               </div>
@@ -8765,10 +8783,11 @@
               </div>
               ${codexDeviceAuthHtml}
               ${codexMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8804,8 +8823,8 @@
             `;
 
             section.innerHTML = `
-              <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <td class="provider-identity">
+                <div class="provider-name-line">
                   <span style="background:${devinStatusBg}; color:${devinStatusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${devinConnected ? '✅' : '⚠️'} ${escapeHtml(devinStatusText)}</span>
                   ${providerTitleHtml(p, 'Get Devin')}
                   ${providerEnabledToggleHtml(p)}
@@ -8818,8 +8837,9 @@
                   </button>
                   ${onboardButtonHtml(p)}
                 </div>
-              </div>
-              <div style="font-size:0.82rem; color:var(--text-muted); margin:0 0 12px 0;">Sign in with your Cognition (Devin) account — the same browser flow the Devin CLI uses. Hammer stores the session token locally and uses it for the swe-1.6 / swe-1.5 models.</div>
+                <div class="provider-desc">Sign in with your Cognition (Devin) account — the same browser flow the Devin CLI uses. Hammer stores the session token locally and uses it for the swe-1.6 / swe-1.5 models.</div>
+              </td>
+              <td class="provider-credential">
               ${devinFlowHtml}
               <div class="form-group" style="display:flex; gap:8px; align-items:center; margin-top:10px;">
                 <input type="password" id="key-${p.key}" placeholder="${p.hasKey ? '\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (Session token configured)' : 'Or paste a session token (devin-session-token$...)'}" style="flex:1; background:var(--input-bg); color:var(--text);" onblur="updateProviderKey(${jsStringAttr(p.key)})" onkeydown="if(event.key==='Enter'){event.preventDefault();updateProviderKey(${jsStringAttr(p.key)});}" title="Press Enter or click away to save">
@@ -8827,17 +8847,18 @@
                 <button onclick="updateProviderKey(${jsStringAttr(p.key)})" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.8rem; font-weight:600; white-space:nowrap;">Save Token</button>
               </div>
               ${devinMessageHtml}
-              ${providerQuotaHtml}
               ${credentialBarHtml(p)}
-              ${providerErrorHtml}
-              ${rateLimitHtml}
+              </td>
+              <td class="provider-quota-cell">${providerQuotaHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
+              <td class="provider-limits-cell">${rateLimitHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
           }
           section.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:0.75rem;">
-              <div style="display:flex; align-items:center; gap:10px;">
+            <td class="provider-identity">
+              <div class="provider-name-line">
                 <span style="background:${statusBg}; color:${statusColor}; border-radius:999px; padding:2px 10px; font-size:0.75rem; font-weight:600;">${statusIcon} ${statusText}</span>
                 ${providerTitleHtml(p)}
                 ${providerEnabledToggleHtml(p)}
@@ -8850,7 +8871,8 @@
                 </button>
                 ${onboardButtonHtml(p)}
               </div>
-            </div>
+            </td>
+            <td class="provider-credential">
             ${discoveryStateHtml(p, modelCount)}
             ${showTopCredentialInput ? `
             <div class="form-group" style="display:flex; gap:8px; align-items:center;">
@@ -8895,10 +8917,11 @@
             ` : ''}
             ${optionalBearerAuthHtml}
             ${openAiCompatibleFieldsHtml}
-            ${providerQuotaHtml}
             ${credentialBarHtml(p)}
-            ${providerErrorHtml}
-            ${rateLimitHtml}
+            </td>
+            <td class="provider-quota-cell">${providerQuotaHtml}</td>
+            <td class="provider-error-cell">${providerErrorHtml}</td>
+            <td class="provider-limits-cell">${rateLimitHtml}</td>
           `;
           (providerIsActive ? activeContainer : setupContainer).appendChild(section);
         });
