@@ -174,7 +174,6 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     puter: 'PUTER_AUTH_TOKEN',
     agnes: 'AGNES_API_KEY',
     requesty: 'REQUESTY_API_KEY',
-    vercel: 'AI_GATEWAY_API_KEY',
   })
 })
 
@@ -835,22 +834,21 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
     )
   }
 })
-
-test('the 23 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 22 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import. Every
-  // descriptor ships a signup page today (23 with `vercel`), so the count and the table
+  // descriptor ships a signup page today (22 with `requesty`), so the count and the table
   // must agree.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(
     (key) => PROVIDER_DESCRIPTORS[key].signupUrl,
   )
-  assert.equal(hammerOwned.length, 23)
+  assert.equal(hammerOwned.length, 22)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
   }
-  assert.ok(Object.keys(table).length > 23, 'imported providers must add key pages')
+  assert.ok(Object.keys(table).length > 22, 'imported providers must add key pages')
 })
 
 // ── The curated key-page table ─────────────────────────────────────────────────────────
@@ -937,12 +935,11 @@ test('every registered descriptor is valid and unique', () => {
     )
   }
 })
-
-test('hammer ships 23 providers and none of them regressed', () => {
-  // 23 since `vercel` joined (22 with `requesty`, 21 with `agnes`, 20 with `moonmath`, 19 with
+test('hammer ships 22 providers and none of them regressed', () => {
+  // 22 since `requesty` joined (21 with `agnes`, 20 with `moonmath`, 19 with `puter`, 18 with
   // `tokenharbor`, 17 with `orcarouter`, 16 with `inferx`): all of them are hammer-owned,
   // routable and carry a chatUrl, so they belong in the same table as the rest.
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 23)
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 22)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -950,7 +947,6 @@ test('hammer ships 23 providers and none of them regressed', () => {
     if (descriptor.chatUrl) assert.equal(registered.chatUrl, descriptor.chatUrl)
   }
 })
-
 test('every provider carries a terms flag from the vocabulary', () => {
   const allowed = new Set(['ok', 'caution', 'ambiguous', 'avoid', 'unknown'])
   for (const descriptor of listProviders()) {

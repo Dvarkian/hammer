@@ -755,17 +755,6 @@ export const sources = {
     discoverable: true,
     models: [],
   },
-  // --- Vercel AI Gateway ----------------------------------------------------
-  // OpenAI-compatible gateway (`ai-gateway.vercel.sh/v1`) over the upstream catalogues it
-  // proxies. The roster is discovered from its own list, which publishes no context length
-  // per id, so no static rows are curated here.
-  vercel: {
-    name: 'Vercel',
-    url: 'https://ai-gateway.vercel.sh/v1/chat/completions',
-    contextUrl: 'https://ai-gateway.vercel.sh/v1/models',
-    discoverable: true,
-    models: [],
-  },
   // --- InferX ----------------------------------------------------------------
   // OpenAI-compatible gateway. Its list is discovered rather than curated, and because the
   // list publishes no pricing, rows are classified by probes and errors rather than marked
