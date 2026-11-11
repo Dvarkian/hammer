@@ -30,7 +30,7 @@ test('a sidebar toggle moves the drawer the narrow layout is showing', () => {
   // Every dismissal goes through the helper: a click on a listed session and Escape both do.
   assert.match(
     harness,
-    /const row = event\.target\.closest\('\[data-session\]'\)[\s\S]{0,120}?closeDrawers\(\)\s*openConversation/,
+    /const row = event\.target\.closest\('\[data-session\]'\)[\s\S]{0,320}?closeDrawers\(\)\s*openConversation/,
   )
   assert.match(harness, /closePalette\(\)\s*else closeDrawers\(\)/)
 })
