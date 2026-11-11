@@ -13,6 +13,7 @@ import { EventEmitter } from 'node:events'
 import {
   appendFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -34,6 +35,7 @@ import {
   prepareHammerAgentDir,
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes, shouldCompactBeforePrompt } from '../lib/http/routes/pi.js'
+import { consoleSessionFile, resetConsoleSessionsForTests } from '../lib/pi/console-session.js'
 import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
 import {
   MIN_NODE_MAJOR,
@@ -367,6 +369,53 @@ test('a restart to a session re-spawns the child with --session and keeps it acr
   } finally {
     bridge.dispose()
   }
+})
+
+test('a restarted router reopens the conversation its console was on', async () => {
+  // The reported failure: a restart sometimes came back to an empty conversation while the
+  // transcript sat on disk, because a console started a brand-new session whenever the keeper
+  // no longer owned the previous agent. The file it was on is remembered instead.
+  const root = mkdtempSync(join(tmpdir(), 'hammer-pi-resume-'))
+  const sessions = join(root, 'sessions')
+  const state = join(root, 'state')
+  mkdirSync(sessions, { recursive: true })
+  mkdirSync(state, { recursive: true })
+  const sessionFile = join(sessions, '2026-01-01T00-00-00-000Z_sess-resume.jsonl')
+  writeFileSync(sessionFile, '')
+  const store = join(state, 'console-sessions.json')
+  resetConsoleSessionsForTests()
+
+  const ctx = {
+    piCommand: process.execPath,
+    piArgs: [FAKE_PI],
+    piCwd: sessions,
+    piSessionsDir: sessions,
+    piStateDir: state,
+    piBaseUrl: 'http://127.0.0.1:7352/v1',
+    piAgentDir: join(root, 'agent'),
+    routedSelection: () => null,
+  }
+
+  // The first router starts on a fresh conversation and the agent names the file it opened.
+  await withEnv({ FAKE_PI_SESSION_FILE: sessionFile }, async () => {
+    await withPiApp(ctx, async (base) => {
+      const status = await (await fetch(`${base}/api/pi/status`)).json()
+      assert.equal(status.sessionFile, sessionFile)
+    })
+  })
+  assert.equal(consoleSessionFile('7352'), sessionFile, 'the console remembers its conversation')
+  assert.match(readFileSync(store, 'utf8'), /consoleSessions/)
+
+  // A restart is this module's memory going away while the file it wrote stays behind.
+  resetConsoleSessionsForTests()
+
+  // No FAKE_PI_SESSION_FILE this time: the store is the only way the console can know the file,
+  // and the fake reports whatever `--session` it was launched with.
+  await withPiApp(ctx, async (base) => {
+    const status = await (await fetch(`${base}/api/pi/status`)).json()
+    assert.equal(status.sessionFile, sessionFile, 'the console reopened its own conversation')
+  })
+  resetConsoleSessionsForTests()
 })
 
 test('the command allowlist admits the session controls and nothing broader', async () => {
