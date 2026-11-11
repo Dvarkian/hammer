@@ -6077,8 +6077,9 @@
       }
       const row = event.target.closest('[data-session]')
       if (!row) return
-      document.body.classList.remove('hx-drawer-open')
-      document.body.classList.remove('hx-sessions-drawer-open')
+      // Picking a conversation dismisses the drawer that listed it — through the same helper as
+      // every other dismissal, so the toggle's pressed state cannot be left claiming it is open.
+      closeDrawers()
       openConversation(row.dataset.session)
     })
 
@@ -6209,10 +6210,7 @@
           return
         }
         if ($('hx-palette')?.classList.contains('open')) closePalette()
-        else {
-          document.body.classList.remove('hx-drawer-open')
-          document.body.classList.remove('hx-sessions-drawer-open')
-        }
+        else closeDrawers()
         return
       }
       // Cmd/Ctrl+J returns to the agent from anywhere in the router views.

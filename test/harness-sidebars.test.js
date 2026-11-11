@@ -27,6 +27,12 @@ test('a sidebar toggle moves the drawer the narrow layout is showing', () => {
   // `aria-pressed` follows what is on screen, not the stored column preference.
   assert.match(harness, /document\.body\.classList\.contains\('hx-sessions-drawer-open'\)/)
   assert.match(harness, /document\.body\.classList\.contains\('hx-drawer-open'\)/)
+  // Every dismissal goes through the helper: a click on a listed session and Escape both do.
+  assert.match(
+    harness,
+    /const row = event\.target\.closest\('\[data-session\]'\)[\s\S]{0,120}?closeDrawers\(\)\s*openConversation/,
+  )
+  assert.match(harness, /closePalette\(\)\s*else closeDrawers\(\)/)
 })
 
 test('both sidebars are still drawers in the narrow layout', () => {
