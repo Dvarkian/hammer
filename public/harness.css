@@ -3022,6 +3022,13 @@ body.hx-details-collapsed .hx-side-details {
     transform: translateX(0);
   }
 
+  /* An open drawer covers the page, so the page behind it must not scroll away under the
+     reader's finger while they are aiming at the panel. */
+  body.hx-sessions-drawer-open,
+  body.hx-drawer-open {
+    overflow: hidden;
+  }
+
   body.hx-sessions-drawer-open::after,
   body.hx-drawer-open::after {
     content: '';

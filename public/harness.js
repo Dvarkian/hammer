@@ -42,16 +42,71 @@
     }
   }
 
+  /** The width at which both sidebars stop being columns and become drawers (harness.css). */
+  const DRAWER_QUERY = '(max-width: 960px)'
+
+  /**
+   * Whether the page is showing drawers rather than columns.
+   *
+   * Read from the same query the stylesheet uses, because the two layouts are controlled by
+   * different things: a column is folded by a `*-collapsed` class on the body, a drawer is
+   * moved by a `*drawer-open` class. A toggle that always flipped the column class did nothing
+   * at all on a narrow window — the media query deliberately re-displays the collapsed column
+   * as a drawer — which is what made the header buttons look broken there.
+   */
+  function drawerLayout() {
+    return typeof window.matchMedia === 'function' && window.matchMedia(DRAWER_QUERY).matches
+  }
+
+  /** The body class that holds one sidebar's drawer open, and the one belonging to the other. */
+  function drawerClasses(which) {
+    return which === 'sessions'
+      ? { open: 'hx-sessions-drawer-open', other: 'hx-drawer-open' }
+      : { open: 'hx-drawer-open', other: 'hx-sessions-drawer-open' }
+  }
+
+  /** `aria-pressed` means "on screen", whichever layout is drawing the sidebar. */
+  function syncSidebarPressed() {
+    const drawers = drawerLayout()
+    const stored = loadSidebarState()
+    const sessionsOn = drawers
+      ? document.body.classList.contains('hx-sessions-drawer-open')
+      : stored.sessions
+    const detailsOn = drawers ? document.body.classList.contains('hx-drawer-open') : stored.details
+    const sessionsBtn = $('hx-toggle-sessions')
+    const detailsBtn = $('hx-toggle-details')
+    if (sessionsBtn) sessionsBtn.setAttribute('aria-pressed', String(sessionsOn))
+    if (detailsBtn) detailsBtn.setAttribute('aria-pressed', String(detailsOn))
+  }
+
+  /** Opens or closes one drawer, and never both: they cover the same narrow screen. */
+  function setDrawer(which, open) {
+    const { open: cls, other } = drawerClasses(which)
+    document.body.classList.remove(other)
+    document.body.classList.toggle(cls, Boolean(open))
+    syncSidebarPressed()
+  }
+
+  /** Closes whichever drawer is open, if any. */
+  function closeDrawers() {
+    document.body.classList.remove('hx-drawer-open', 'hx-sessions-drawer-open')
+    syncSidebarPressed()
+  }
+
   function applySidebarState(state) {
     document.body.classList.toggle('hx-sessions-collapsed', !state.sessions)
     document.body.classList.toggle('hx-details-collapsed', !state.details)
-    const sessionsBtn = $('hx-toggle-sessions')
-    const detailsBtn = $('hx-toggle-details')
-    if (sessionsBtn) sessionsBtn.setAttribute('aria-pressed', String(state.sessions))
-    if (detailsBtn) detailsBtn.setAttribute('aria-pressed', String(state.details))
+    syncSidebarPressed()
   }
 
   function toggleSidebar(which) {
+    // A narrow window has no columns to fold: the same button moves the drawer the CSS is
+    // actually showing, or it would appear to do nothing.
+    if (drawerLayout()) {
+      const { open: cls } = drawerClasses(which)
+      setDrawer(which, !document.body.classList.contains(cls))
+      return
+    }
     const next = loadSidebarState()
     next[which] = !next[which]
     saveSidebarState(next)
@@ -5787,7 +5842,7 @@
       label: 'Open a session…',
       run: () => {
         // The rail is a drawer under 960px; opening the command has to open what it points at.
-        document.body.classList.add('hx-sessions-drawer-open')
+        setDrawer('sessions', true)
         $('hx-session-search')?.focus()
       },
     },
@@ -5921,19 +5976,31 @@
     // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
     bindMinimap()
 
-    // The inspector is a drawer below 960px. A toggle, Escape, or a click outside closes it.
+    // The inspector is the same control at every width: a column on a wide window, a drawer
+    // below 960px. Toggling it goes through the same function as the header's icon so the two
+    // buttons can never disagree about whether it is open.
     $('hx-details')?.addEventListener('click', (event) => {
       event.stopPropagation()
-      document.body.classList.toggle('hx-drawer-open')
+      toggleSidebar('details')
     })
     document.addEventListener('click', (event) => {
-      for (const cls of ['hx-drawer-open', 'hx-sessions-drawer-open']) {
-        if (!document.body.classList.contains(cls)) continue
-        if (event.target.closest('.hx-side')) return
-        if (cls === 'hx-drawer-open' && event.target.closest('#hx-details')) return
-        if (cls === 'hx-sessions-drawer-open' && event.target.closest('#hx-toggle-sessions')) return
-        document.body.classList.remove(cls)
+      if (!document.body.classList.contains('hx-drawer-open')) {
+        if (!document.body.classList.contains('hx-sessions-drawer-open')) return
       }
+      // A click inside the open drawer, or on the button that toggles it, is not a dismissal.
+      if (event.target.closest('.hx-side')) return
+      if (event.target.closest('#hx-details, #hx-toggle-details, #hx-toggle-sessions')) return
+      closeDrawers()
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeDrawers()
+    })
+    // A drawer belongs to the narrow layout. Widening the window must not leave the body
+    // claiming one is open, and the toggles then report the column state they control.
+    const drawerQuery = window.matchMedia?.(DRAWER_QUERY)
+    drawerQuery?.addEventListener?.('change', () => {
+      closeDrawers()
+      syncSidebarPressed()
     })
     $('hx-new')?.addEventListener('click', newSession)
     $('hx-restart')?.addEventListener('click', restartAgent)
