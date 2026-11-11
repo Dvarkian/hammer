@@ -203,7 +203,11 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
-    minWidth: 960,
+    // How narrow the window may be dragged. The harness already switches both sidebars to
+    // drawers below 960px and wraps the composer bar, so the old 960px floor only stopped the
+    // window short of a layout the page can already draw. 360 is a phone-sized column: narrow
+    // enough to sit beside other work, wide enough for the transcript to keep a measure.
+    minWidth: 360,
     minHeight: 620,
     title: APP_TITLE,
     backgroundColor: '#0b0e14',
