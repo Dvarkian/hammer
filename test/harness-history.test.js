@@ -35,6 +35,8 @@ test('a console stuck "running" still rebuilds its transcript from its file', ()
 
 test('opening a conversation that is already open shows it instead of failing', () => {
   assert.match(harness, /if \(res\.status === 409\)/)
-  assert.match(harness, /await refreshStatus\(state\.consoles\.get\('main'\)\)/)
+  // The main console is asked for its file once, because that is the one that answers 409.
+  assert.match(harness, /const main = state\.consoles\.get\('main'\)/)
+  assert.match(harness, /await refreshStatus\(main\)/)
   assert.match(harness, /if \(focus\) activate\(open\)/)
 })
