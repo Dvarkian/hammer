@@ -139,7 +139,7 @@ invoke the tool directly:
 
 | Script                    | Direct invocation                                                                         |
 | ------------------------- | ----------------------------------------------------------------------------------------- |
-| `npm test`                | `$NODE --test "test/**/*.test.js"`                                                        |
+| `npm test`                | `$NODE --test --test-force-exit --test-timeout=120000 "test/**/*.test.js"`                |
 | `npm run lint`            | `$NODE node_modules/eslint/bin/eslint.js .`                                               |
 | `npm run typecheck`       | `$NODE node_modules/typescript/bin/tsc --noEmit`                                          |
 | `npm run format:check`    | `$NODE node_modules/prettier/bin/prettier.cjs --check .`                                  |

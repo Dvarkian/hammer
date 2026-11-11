@@ -33,7 +33,7 @@
     "desktop:package": "electron-packager . Hammer --executable-name=hammer --out=release --overwrite --prune --icon=desktop/assets/icon.png --ignore=\"^/(release|test|tools|docs|\\.git|\\.github|\\.freebuff|\\.cloud-attachments|\\.test-home)\"",
     "desktop:launcher": "node tools/install-desktop-launcher.mjs",
     "icons": "node tools/make-desktop-icons.mjs",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test --test-force-exit --test-timeout=120000 \"test/**/*.test.js\"",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
