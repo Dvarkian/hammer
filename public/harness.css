@@ -17,6 +17,28 @@
 :root {
   --hx-gutter: 28px;
   --hx-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Syntax colours, local to code blocks: comments recede, strings and numbers stand out, a
+     keyword takes the accent because it is the skeleton of the line. They live here rather
+     than in dashboard.css so the router's own palette is untouched. */
+  --hx-hl-com: var(--text-muted);
+  --hx-hl-key: #7d2231;
+  --hx-hl-str: #0f766e;
+  --hx-hl-num: #b45309;
+  --hx-hl-fn: #1d4ed8;
+  --hx-hl-prop: #0e7490;
+  --hx-hl-tag: #7d2231;
+  --hx-hl-attr: #b45309;
+}
+
+[data-theme="dark"] {
+  --hx-hl-com: var(--text-muted);
+  --hx-hl-key: #e08c96;
+  --hx-hl-str: #7fdcc0;
+  --hx-hl-num: #fbbf24;
+  --hx-hl-fn: #93c5fd;
+  --hx-hl-prop: #7dd3fc;
+  --hx-hl-tag: #e08c96;
+  --hx-hl-attr: #fbbf24;
 }
 
 html,
@@ -795,6 +817,52 @@ body.hx-details-collapsed .hx-side-details {
   line-height: 1.6;
   overflow-x: auto;
   white-space: pre;
+  /* A tab is the width it is in an editor, so indentation in a code block and in a read's body
+     line up instead of drifting apart by one terminal's idea of a tab stop. */
+  tab-size: 2;
+}
+
+/* ── Syntax tokens ────────────────────────────────────────────────────────────────── */
+/*
+ * The classes the highlighter writes into a fenced block and a read's body. Colour only: the
+ * monospace face and the box belong to `.hx-code` / `.hx-tool-out`, so a read keeps its
+ * compact line rhythm and a fence keeps its own padding.
+ */
+.hx-tool-out {
+  tab-size: 2;
+}
+
+.hx-hl-com {
+  color: var(--hx-hl-com);
+  font-style: italic;
+}
+
+.hx-hl-key {
+  color: var(--hx-hl-key);
+}
+
+.hx-hl-str {
+  color: var(--hx-hl-str);
+}
+
+.hx-hl-num {
+  color: var(--hx-hl-num);
+}
+
+.hx-hl-fn {
+  color: var(--hx-hl-fn);
+}
+
+.hx-hl-prop {
+  color: var(--hx-hl-prop);
+}
+
+.hx-hl-tag {
+  color: var(--hx-hl-tag);
+}
+
+.hx-hl-attr {
+  color: var(--hx-hl-attr);
 }
 
 .hx-inline-code {

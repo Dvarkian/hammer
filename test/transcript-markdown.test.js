@@ -50,8 +50,40 @@ test('a heading, a table, a list and a quote render as their elements', () => {
 
 test('a fenced block shows the code, not its language tag', () => {
   const html = renderText('```js\nconst x = 1\n```')
-  assert.match(html, /<pre class="hx-code">const x = 1<\/pre>/)
-  assert.doesNotMatch(html, /js\\nconst/)
+  // The language is an attribute now, and the body is coloured by it.
+  assert.match(html, /<pre class="hx-code" data-lang="js">/)
+  assert.match(html, /<span class="hx-hl-key">const<\/span> x = <span class="hx-hl-num">1<\/span>/)
+  assert.doesNotMatch(html, /js\nconst/)
+})
+
+test('a fence colours what it can, and a language it does not know stays plain', () => {
+  const css = renderText('```css\n/* note */\n.card { color: red; }\n```')
+  assert.match(css, /<span class="hx-hl-com">\/\* note \*\/<\/span>/)
+  assert.match(css, /<span class="hx-hl-prop">color<\/span>/)
+
+  const html = renderText('```html\n<a href="/x">hi</a>\n```')
+  assert.match(html, /<span class="hx-hl-tag">&lt;a<\/span>/)
+  assert.match(html, /<span class="hx-hl-attr">href<\/span>/)
+
+  const python = renderText('```py\ndef go(x):\n    return x  # done\n```')
+  assert.match(python, /<span class="hx-hl-key">def<\/span>/)
+  assert.match(python, /<span class="hx-hl-com"># done<\/span>/)
+
+  const json = renderText('```json\n{"name": true}\n```')
+  assert.match(json, /<span class="hx-hl-prop">&quot;name&quot;<\/span>/)
+
+  // No info string means no language: the block is escaped and left as it was written.
+  assert.equal(
+    renderText('```\nno language here\n```'),
+    '<pre class="hx-code">no language here</pre>',
+  )
+})
+
+test('code inside a fence is escaped, never markup', () => {
+  const html = renderText('```html\n<script>alert(1)</script>\n```')
+  assert.doesNotMatch(html, /<script/)
+  assert.match(html, /&lt;script/)
+  assert.match(html, /&lt;\/script/)
 })
 
 test('model output never becomes markup on the page', () => {

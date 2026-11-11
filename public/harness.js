@@ -497,6 +497,285 @@
       .replace(/'/g, '&#39;')
   }
 
+  // ── Syntax highlighting ─────────────────────────────────────────────────────────────
+  /*
+   * Code the agent shows is meant to be read: a fence that names its language, and the body of
+   * a `read` call. Both arrive here as text, already escaped — this pass only wraps spans
+   * around the parts that carry meaning (a comment, a string, a keyword, a number, a call), so
+   * a file's structure is visible before its words are. It is a tokenizer, not a parser: a
+   * handful of families rather than a language list, and anything it does not recognise stays
+   * plain, which is the right answer for prose and for a language nobody has taught it.
+   */
+
+  /** The family that colours each name a fence's info string or a file extension can carry. */
+  const HL_LANGUAGES = {
+    js: 'js',
+    javascript: 'js',
+    jsx: 'js',
+    mjs: 'js',
+    cjs: 'js',
+    ts: 'js',
+    tsx: 'js',
+    typescript: 'js',
+    json: 'json',
+    jsonc: 'json',
+    css: 'css',
+    scss: 'css',
+    sass: 'css',
+    less: 'css',
+    html: 'html',
+    htm: 'html',
+    xml: 'html',
+    svg: 'html',
+    vue: 'html',
+    svelte: 'html',
+    hbs: 'html',
+    py: 'py',
+    python: 'py',
+    rb: 'py',
+    ruby: 'py',
+    yml: 'py',
+    yaml: 'py',
+    toml: 'py',
+    ini: 'py',
+    sh: 'sh',
+    bash: 'sh',
+    zsh: 'sh',
+    shell: 'sh',
+    console: 'sh',
+    fish: 'sh',
+    sql: 'sql',
+    postgres: 'sql',
+    postgresql: 'sql',
+    mysql: 'sql',
+    go: 'c',
+    rust: 'c',
+    rs: 'c',
+    java: 'c',
+    kt: 'c',
+    kotlin: 'c',
+    swift: 'c',
+    c: 'c',
+    h: 'c',
+    cpp: 'c',
+    cc: 'c',
+    hpp: 'c',
+    cs: 'c',
+    csharp: 'c',
+    php: 'c',
+    lua: 'c',
+    dart: 'c',
+    scala: 'c',
+  }
+
+  /** The words that are structure rather than names, per family. */
+  const HL_WORDS = {
+    js: new Set(
+      (
+        'as async await break case catch class const continue debugger default delete do else ' +
+        'export extends false finally for from function get if import in instanceof let new null ' +
+        'of return set static super switch this throw true try typeof undefined var void while ' +
+        'with yield interface type enum implements readonly public private protected namespace ' +
+        'declare abstract satisfies keyof infer'
+      ).split(' '),
+    ),
+    py: new Set(
+      (
+        'and as assert async await break class continue def del elif else except False finally ' +
+        'for from global if import in is lambda None nonlocal not or pass raise return True try ' +
+        'while with yield match case self'
+      ).split(' '),
+    ),
+    sh: new Set(
+      (
+        'if then elif else fi for in do done while until case esac function return export local ' +
+        'readonly unset shift source alias echo cd set trap exit'
+      ).split(' '),
+    ),
+    sql: new Set(
+      (
+        'select from where insert into values update delete join left right inner outer full on ' +
+        'group by order having limit offset create table index alter drop add column primary key ' +
+        'foreign references not null and or as distinct union all case when then else end begin ' +
+        'commit rollback'
+      ).split(' '),
+    ),
+    c: new Set(
+      (
+        'auto break case char const continue default do double else enum extern float for goto if ' +
+        'inline int long register restrict return short signed sizeof static struct switch typedef ' +
+        'union unsigned void volatile while fn let mut pub impl trait use mod match loop where ' +
+        'struct enum true false nil func type interface package import go defer chan range select ' +
+        'map var class public private protected final new this super extends implements throws ' +
+        'try catch finally throw async await'
+      ).split(' '),
+    ),
+  }
+
+  const HL_COMMENTS = {
+    js: [/\/\/[^\n]*/g, /\/\*[\s\S]*?\*\//g],
+    json: [/\/\/[^\n]*/g, /\/\*[\s\S]*?\*\//g],
+    css: [/\/\*[\s\S]*?\*\//g],
+    py: [/#[^\n]*/g],
+    sh: [/#[^\n]*/g],
+    sql: [/--[^\n]*/g, /\/\*[\s\S]*?\*\//g],
+    c: [/\/\/[^\n]*/g, /\/\*[\s\S]*?\*\//g],
+  }
+
+  const HL_STRINGS = {
+    js: /'(?:\\[\s\S]|[^'\\\n])*'|"(?:\\[\s\S]|[^"\\\n])*"|`(?:\\[\s\S]|[^`\\])*`/g,
+    json: /"(?:\\[\s\S]|[^"\\\n])*"/g,
+    css: /'(?:\\[\s\S]|[^'\\\n])*'|"(?:\\[\s\S]|[^"\\\n])*"/g,
+    html: /'(?:\\[\s\S]|[^'\\\n])*'|"(?:\\[\s\S]|[^"\\\n])*"/g,
+    py: /'(?:\\[\s\S]|[^'\\\n])*'|"(?:\\[\s\S]|[^"\\\n])*"/g,
+    sh: /'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`(?:[^`\\]|\\.)*`/g,
+    sql: /'(?:''|[^'])*'/g,
+    c: /'(?:\\[\s\S]|[^'\\\n])*'|"(?:\\[\s\S]|[^"\\\n])*"/g,
+  }
+
+  const HL_NUMBER = /(?:0[xX][0-9a-fA-F]+|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)/g
+  const HL_WORD = /[A-Za-z_$][\w$]*/g
+
+  /**
+   * The language a fence's info string, or a file path's extension, asks to be coloured as.
+   * @param {string} language
+   * @returns {string} a family key, or '' when nothing here colours it
+   */
+  function languageKey(language) {
+    const value = String(language || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^language-/, '')
+    return HL_LANGUAGES[value] || ''
+  }
+
+  /**
+   * The language of a file path, so a read's body is coloured by what it read.
+   * @param {string} path
+   * @returns {string} a family key, or '' for a file this page does not colour
+   */
+  function languageForPath(path) {
+    const name = String(path || '')
+      .split(/[?#]/)[0]
+      .split(/[\\/]/)
+      .pop()
+    if (/^(makefile|dockerfile|procfile|bashrc|zshrc|profile)$/i.test(String(name).replace(/^\./, '')))
+      return 'sh'
+    const extension = /\.([A-Za-z0-9]+)$/.exec(String(name || ''))
+    return extension ? languageKey(extension[1]) : ''
+  }
+
+  /**
+   * Code as escaped HTML with its tokens in spans.
+   *
+   * Every token is escaped as it is written, exactly once, so a `<script>` in a file is text
+   * here just as it is in prose. A language this page does not know is escaped whole and left
+   * uncoloured rather than guessed at.
+   * @param {string} source raw code
+   * @param {string} language a fence's info string, a path, or a family key
+   * @returns {string}
+   */
+  function highlightCode(source, language) {
+    const code = String(source == null ? '' : source)
+    const family = languageKey(language)
+    if (!family) return escapeHtml(code)
+    const words = HL_WORDS[family] || HL_WORDS.c
+    const comments = HL_COMMENTS[family] || []
+    const strings = HL_STRINGS[family] || HL_STRINGS.c
+    const foldCase = family === 'sql'
+    let html = ''
+    let i = 0
+    /** The text a rule matches exactly at the cursor, or '' when it does not apply here. */
+    const test = (pattern) => {
+      pattern.lastIndex = i
+      const match = pattern.exec(code)
+      return match && match.index === i ? match[0] : ''
+    }
+    const span = (kind, text) => {
+      html += kind ? `<span class="hx-hl-${kind}">${escapeHtml(text)}</span>` : escapeHtml(text)
+    }
+    while (i < code.length) {
+      if (family === 'html') {
+        const comment = test(/<!--[\s\S]*?-->/g)
+        if (comment) {
+          span('com', comment)
+          i += comment.length
+          continue
+        }
+        const doctype = test(/<!DOCTYPE[^>]*>/gi)
+        if (doctype) {
+          span('com', doctype)
+          i += doctype.length
+          continue
+        }
+        const tag = test(/<\/?[A-Za-z][\w:.-]*/g)
+        if (tag) {
+          span('tag', tag)
+          i += tag.length
+          continue
+        }
+        const attribute = test(/[A-Za-z_:][\w:.-]*(?=\s*=)/g)
+        if (attribute) {
+          span('attr', attribute)
+          i += attribute.length
+          continue
+        }
+      } else {
+        let comment = ''
+        for (const rule of comments) {
+          comment = test(rule)
+          if (comment) break
+        }
+        if (comment) {
+          span('com', comment)
+          i += comment.length
+          continue
+        }
+      }
+      const string = test(strings)
+      if (string) {
+        // A JSON key is a string followed by `:`; colouring it as one is what makes a blob of
+        // JSON readable at a glance rather than a wall of quoted text.
+        let after = i + string.length
+        while (after < code.length && /\s/.test(code[after])) after += 1
+        const isKey = family === 'json' && code[after] === ':'
+        span(isKey ? 'prop' : 'str', string)
+        i += string.length
+        continue
+      }
+      const number = test(HL_NUMBER)
+      if (number) {
+        span('num', number)
+        i += number.length
+        continue
+      }
+      const word = test(HL_WORD)
+      if (word) {
+        const rest = code.slice(i + word.length)
+        const before = i > 0 ? code[i - 1] : ''
+        const key = foldCase ? word.toLowerCase() : word
+        if (family === 'css' && before === '@') span('key', word)
+        else if (family === 'css' && /^\s*:/.test(rest)) span('prop', word)
+        else if (words.has(key)) span('key', word)
+        else if (/^\s*\(/.test(rest)) span('fn', word)
+        else span('', word)
+        i += word.length
+        continue
+      }
+      // Whitespace in runs, everything else one character at a time: indentation is most of a
+      // file, and re-testing every rule for each of its columns is the one cost worth avoiding.
+      const space = test(/\s+/g)
+      if (space) {
+        html += escapeHtml(space)
+        i += space.length
+        continue
+      }
+      html += escapeHtml(code[i])
+      i += 1
+    }
+    return html
+  }
+
   function clip(text, limit) {
     const value = String(text == null ? '' : text)
     if (value.length <= limit) return value
@@ -696,8 +975,10 @@
           // The fence's info string (the language) is not part of the code; the body starts
           // after the first newline, and one trailing newline closes the fence.
           const nl = chunk.indexOf('\n')
+          const info = (nl >= 0 ? chunk.slice(0, nl) : '').trim()
           const body = nl >= 0 ? chunk.slice(nl + 1) : ''
-          return `<pre class="hx-code">${escapeHtml(body.replace(/\n$/, ''))}</pre>`
+          const lang = languageKey(info)
+          return `<pre class="hx-code"${lang ? ` data-lang="${escapeHtml(lang)}"` : ''}>${highlightCode(body.replace(/\n$/, ''), lang)}</pre>`
         }
         return renderBlocks(chunk)
       })
@@ -1246,6 +1527,7 @@
                 quotaWindows: Array.isArray(row.quotaWindows) ? row.quotaWindows : [],
                 providerUsage: row.providerUsage || null,
                 rateLimit: row.rateLimit || null,
+                quota: row.quota || null,
                 recordedUsage: row.recordedUsage || null,
                 providerRecordedUsage: row.providerRecordedUsage || null,
               })
@@ -1501,7 +1783,14 @@
     const isEdit = /^edit$/i.test(String(item.name || ''))
     const diff =
       isEdit && item.status !== 'error' && item.status !== 'interrupted' ? diffMarkup(item) : ''
-    const body = diff || (output ? `<pre class="hx-tool-out">${escapeHtml(output)}</pre>` : '')
+    // A read's body is code from a named file, so its language is the file's; any other tool's
+    // output is text and is escaped uncoloured, which is what it is.
+    const readPath = /^read(?:_files)?$/i.test(String(item.name || '')) ? item.args?.path : ''
+    const readLang = readPath ? languageForPath(readPath) : ''
+    const readBody = output
+      ? `<pre class="hx-tool-out"${readLang ? ` data-lang="${escapeHtml(readLang)}"` : ''}>${highlightCode(output, readLang)}</pre>`
+      : ''
+    const body = diff || readBody
     // A finished call folds away, whatever its verdict: failure is a word in the summary ("failed",
     // in the error colour) and its output is one click away, exactly like a call that succeeded.
     // Keeping every failure open meant one broken command pushed the rest of the turn off screen,
@@ -3564,52 +3853,57 @@
       )
     }
 
+    // Capacity (credit balance, free-tier percentage) lives on the quota half; throttle
+    // counters (limitRequests/limitTokens) stay on rateLimit. Both feed the rail, because the
+    // split is about ownership, not about hiding either from the user.
     const rateLimit = row?.rateLimit
-    if (rateLimit) {
+    const quotaState = row?.quota
+    const capacity = quotaState || rateLimit
+    if (capacity) {
       // The provider key endpoint reports an account credit balance (OpenRouter's
       // creditLimit/creditRemaining). Every model on that key draws from the same pot, and the
       // rail had no window for it at all, so the one figure that answers "is there money left"
       // never appeared beside the models spending it.
-      if (rateLimit.creditLimit != null || rateLimit.creditRemaining != null) {
+      if (capacity.creditLimit != null || capacity.creditRemaining != null) {
         add(
           railQuotaWindow({
             period: 'lifetime',
             metric: 'credits',
             rawWindow: 'account credit',
-            total: rateLimit.creditLimit,
-            remaining: rateLimit.creditRemaining,
+            total: capacity.creditLimit,
+            remaining: capacity.creditRemaining,
             used:
-              rateLimit.creditLimit != null && rateLimit.creditRemaining != null
-                ? Math.max(0, Number(rateLimit.creditLimit) - Number(rateLimit.creditRemaining))
+              capacity.creditLimit != null && capacity.creditRemaining != null
+                ? Math.max(0, Number(capacity.creditLimit) - Number(capacity.creditRemaining))
                 : null,
-            resetAt: rateLimit.creditResetAt,
+            resetAt: capacity.creditResetAt,
             detail: 'account credit reported by the provider key endpoint',
           }),
         )
       }
       const retryReset =
-        rateLimit.capturedAt && rateLimit.retryAfterMs
+        rateLimit?.capturedAt && rateLimit?.retryAfterMs
           ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
           : null
       // Token Harbor's free tier is a percentage of a rolling seven-day allowance, not a
       // token total. Show the percentage the gateway reported rather than inventing a limit.
       if (
-        rateLimit.freeUsedPercent != null &&
-        (rateLimit.freeResetAt == null || Number(rateLimit.freeResetAt) > Date.now())
+        capacity.freeUsedPercent != null &&
+        (capacity.freeResetAt == null || Number(capacity.freeResetAt) > Date.now())
       ) {
         add(
           railQuotaWindow({
             period: 'week',
             metric: 'tokens',
             rawWindow: 'rolling 7-day free allowance',
-            usedPercent: rateLimit.freeUsedPercent,
-            resetAt: rateLimit.freeResetAt,
+            usedPercent: capacity.freeUsedPercent,
+            resetAt: capacity.freeResetAt,
             detail: 'Token Harbor free-tier allowance',
             percentOnly: true,
           }),
         )
       }
-      if (rateLimit.limitTokens != null || rateLimit.remainingTokens != null) {
+      if (rateLimit?.limitTokens != null || rateLimit?.remainingTokens != null) {
         add(
           railQuotaWindow({
             period: 'window',
@@ -3626,7 +3920,7 @@
           }),
         )
       }
-      if (rateLimit.limitRequests != null || rateLimit.remainingRequests != null) {
+      if (rateLimit?.limitRequests != null || rateLimit?.remainingRequests != null) {
         add(
           railQuotaWindow({
             period: 'window',
