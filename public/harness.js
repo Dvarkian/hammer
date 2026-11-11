@@ -1798,10 +1798,15 @@
       .map((pair) => {
         const rows = diffRows(pair.before, pair.after)
         const shown = rows.slice(0, DIFF_MAX_ROWS)
+        // The change is code from a named file, so it is coloured by that file. Each row is
+        // highlighted on its own: a diff is read line by line, and a construct that spans rows
+        // simply stays plain on the rows that do not hold both its ends.
+        const diffLang = languageForPath(item.args?.path || item.args?.file_path || '')
         const body = shown
           .map((row) => {
             const mark = row.op === 'add' ? '+' : row.op === 'del' ? '−' : ' '
-            return `<div class="hx-diff-row ${row.op}"><span class="hx-diff-mark">${mark}</span><span class="hx-diff-text">${escapeHtml(row.text)}</span></div>`
+            const text = diffLang ? highlightCode(row.text, diffLang) : escapeHtml(row.text)
+            return `<div class="hx-diff-row ${row.op}"><span class="hx-diff-mark">${mark}</span><span class="hx-diff-text">${text}</span></div>`
           })
           .join('')
         const more =

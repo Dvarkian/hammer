@@ -116,6 +116,17 @@ test('a run block is coloured by the code it runs', () => {
   assert.match(harness, /highlightCode\(runCommand, runLang\)/)
 })
 
+test("an edit's diff is coloured by the file it changed", () => {
+  // The diff is the change itself, and each row is code from the file the call names.
+  assert.match(
+    harness,
+    /const diffLang = languageForPath\(item\.args\?\.path \|\| item\.args\?\.file_path \|\| ''\)/,
+  )
+  assert.match(harness, /highlightCode\(row\.text, diffLang\)/)
+  // A diff row is still escaped through the highlighter, never interpolated raw.
+  assert.doesNotMatch(harness, /hx-diff-text">\$\{row\.text\}/)
+})
+
 test('model output never becomes markup on the page', () => {
   const html = renderText('<script>alert(1)</script> and [x](javascript:alert(1))')
   assert.doesNotMatch(html, /<script/)
