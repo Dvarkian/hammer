@@ -1563,6 +1563,8 @@
   let ttftLoad = null
   /** The composer slope slider's notches, as percentages of the data's slope ceiling. */
   let slopeNotches = []
+  /** The field the popup draws: one {intelligence, speed} per routable row of /api/models. */
+  let slopePlotPoints = []
 
   /**
    * Reads the router's per-model TTFT table.
@@ -1617,6 +1619,10 @@
             .map(Number)
             .filter((n) => Number.isFinite(n) && n >= 0 && n <= 100)
           paintSlopeNotches()
+          slopePlotPoints = collectSlopePlotPoints(
+            Array.isArray(data.models) ? data.models : [],
+          )
+          if (!$('hx-slope-pop')?.hidden) renderSlopePlot(Number($('hx-slope-slider')?.value))
         }
       } catch {
         // No measurement, no table: the ring keeps its default period rather than vanishing.
@@ -3202,6 +3208,205 @@
     )
   }
 
+  // ── The slope popup ─────────────────────────────────────────────────────────────────────
+  //
+  // The slider is three words wide and a percentage; the choice it makes is a picture — every
+  // model placed by how smart and how fast it is, and the line this conversation's slope lowers
+  // onto them. Dragging it used to change a number with no way to see what moved, so the field
+  // is drawn above the composer while the control is in hand and folds away when it is not.
+  //
+  // The numbers are copies of lib/utils.js (computeRowSpeed, selectorSlopeCeiling), for the same
+  // reason the dashboard keeps one: the browser cannot import the server's module, and a line
+  // drawn from a different constant would name a model the router would not pick.
+  /** The answered length every row is scored at, in output tokens. */
+  const SLOPE_PLOT_REFERENCE_TOKENS = 500
+  /** How far past the last takeover the top of the slider sits (lib/utils.js' headroom). */
+  const SLOPE_PLOT_HEADROOM = 1.5
+
+  /** The rows the popup plots: a rating and a speed, and nothing else it would have to trust. */
+  function collectSlopePlotPoints(models) {
+    const points = []
+    for (const row of models) {
+      // A row the router will not send work to is not part of the decision the line makes.
+      if (!row || row.status !== 'up') continue
+      const id = String(row.modelId || row.id || '')
+      const aa = Number(row.aa)
+      const intell = Number.isFinite(aa) && aa > 0 ? aa : Number(row.intell) * 100
+      const ttft = Number(row.ttft)
+      const tps = Number(row.tps)
+      if (!id || !(Number.isFinite(intell) && intell > 0)) continue
+      if (!Number.isFinite(ttft) || ttft < 0) continue
+      if (!Number.isFinite(tps) || tps <= 0) continue
+      points.push({
+        modelId: id,
+        providerKey: String(row.providerKey || ''),
+        label: String(row.label || row.name || id),
+        intell,
+        speed: SLOPE_PLOT_REFERENCE_TOKENS / (ttft / 1000 + SLOPE_PLOT_REFERENCE_TOKENS / tps),
+      })
+    }
+    return points
+  }
+
+  /**
+   * The slope at the top of the slider, over the plotted field.
+   *
+   * A copy of selectorSlopeCeiling: the intelligence spread over the speed spread, or the
+   * fastest row's own takeover slope when that is larger (a row can be both smart and fast, and
+   * then it keeps winning past the spread), times the headroom that gives the top of the track
+   * a region of its own.
+   */
+  function slopePlotCeiling(points) {
+    if (points.length < 2) return null
+    let intellMin = Infinity
+    let intellMax = -Infinity
+    let speedMin = Infinity
+    let speedMax = -Infinity
+    for (const point of points) {
+      intellMin = Math.min(intellMin, point.intell)
+      intellMax = Math.max(intellMax, point.intell)
+      speedMin = Math.min(speedMin, point.speed)
+      speedMax = Math.max(speedMax, point.speed)
+    }
+    const speedSpan = speedMax - speedMin
+    const intellSpan = intellMax - intellMin
+    const spread = speedSpan > 0 && intellSpan > 0 ? intellSpan / speedSpan : 0
+    // The upper envelope of `intelligence + slope × speed`: at a given speed only the smartest
+    // row can win, and a row whose takeover comes no later than its predecessor's never does.
+    const bySpeed = new Map()
+    for (const point of points) {
+      const previous = bySpeed.get(point.speed)
+      if (!previous || point.intell > previous.intell) bySpeed.set(point.speed, point)
+    }
+    const hull = []
+    for (const point of [...bySpeed.values()].sort((a, b) => a.speed - b.speed)) {
+      let start = -Infinity
+      while (hull.length) {
+        const last = hull[hull.length - 1]
+        const crossing = (last.intell - point.intell) / (point.speed - last.speed)
+        if (crossing <= last.start) {
+          hull.pop()
+          continue
+        }
+        start = crossing
+        break
+      }
+      if (hull.length === 0) start = -Infinity
+      hull.push({ intell: point.intell, speed: point.speed, start })
+    }
+    const takeover = hull.length >= 2 ? hull[hull.length - 1].start : 0
+    const base = Math.max(spread, Number.isFinite(takeover) && takeover > 0 ? takeover : 0)
+    return base > 0 ? base * SLOPE_PLOT_HEADROOM : null
+  }
+
+  /** The plot, as markup: dots, the line this slope lowers, and the row it lands on. */
+  function slopePlotMarkup(percent) {
+    const points = slopePlotPoints
+    if (!points.length) {
+      return '<p class="hx-slope-pop-empty">No measured model to plot yet.</p>'
+    }
+    const W = 236
+    const H = 128
+    const pad = { top: 14, right: 10, bottom: 18, left: 10 }
+    const plotW = W - pad.left - pad.right
+    const plotH = H - pad.top - pad.bottom
+    let xMin = Math.min(...points.map((point) => point.speed))
+    let xMax = Math.max(...points.map((point) => point.speed))
+    if (!(xMax > xMin)) {
+      const span = Math.abs(xMax) * 0.2 || 0.001
+      xMin -= span
+      xMax += span
+    }
+    const xPad = (xMax - xMin) * 0.06
+    xMin = Math.max(0, xMin - xPad)
+    xMax += xPad
+    let yMin = Math.min(...points.map((point) => point.intell))
+    let yMax = Math.max(...points.map((point) => point.intell))
+    const ySpan0 = yMax - yMin || Math.abs(yMax) * 0.05 || 10
+    yMin = Math.max(0, yMin - ySpan0 * 0.08)
+    // An Artificial Analysis index cannot exceed 100, so the axis never needs to.
+    yMax = Math.min(100, yMax + ySpan0 * 0.08)
+    if (!(yMax > yMin)) yMax = yMin + 1
+    const xSpan = Math.max(1e-9, xMax - xMin)
+    const ySpan = Math.max(1e-9, yMax - yMin)
+    const xOf = (speed) => pad.left + ((Math.min(speed, xMax) - xMin) / xSpan) * plotW
+    const yOf = (intell) => pad.top + (1 - (intell - yMin) / ySpan) * plotH
+
+    const ceiling = slopePlotCeiling(points)
+    const slope = ceiling ? (percent / 100) * ceiling : 0
+    // The line is a constant score: intelligence + slope × speed. The row on it with the
+    // highest score is the router's pick at this slope, which is what the caption names.
+    let pick = points[0]
+    let best = -Infinity
+    for (const point of points) {
+      const value = point.intell + slope * point.speed
+      if (value > best) {
+        best = value
+        pick = point
+      }
+    }
+    const line = ceiling
+      ? `<line class="hx-slope-line" x1="${xOf(xMin).toFixed(1)}" y1="${yOf(best - slope * xMin).toFixed(1)}" x2="${xOf(xMax).toFixed(1)}" y2="${yOf(best - slope * xMax).toFixed(1)}"/>`
+      : ''
+    const dots = points
+      .map((point) => {
+        const isPick = point === pick
+        const cls = isPick ? 'hx-slope-dot hx-slope-dot-pick' : 'hx-slope-dot'
+        return `<circle class="${cls}" cx="${xOf(point.speed).toFixed(1)}" cy="${yOf(point.intell).toFixed(1)}" r="${isPick ? 3 : 1.9}"><title>${escapeHtml(point.label)} · ${Math.round(point.intell)} intelligence</title></circle>`
+      })
+      .join('')
+    const svg =
+      `<svg viewBox="0 0 ${W} ${H}" role="presentation" aria-hidden="true">` +
+      `<defs><clipPath id="hx-slope-clip"><rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"/></clipPath></defs>` +
+      `<rect class="hx-slope-frame" x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"/>` +
+      `<g clip-path="url(#hx-slope-clip)">${line}${dots}</g>` +
+      `<text class="hx-slope-axis" x="${pad.left}" y="${pad.top - 4}">smarter ↑</text>` +
+      `<text class="hx-slope-axis" x="${W - pad.right}" y="${H - 5}" text-anchor="end">faster →</text>` +
+      `</svg>`
+    const label = pick.label.length > 26 ? `${pick.label.slice(0, 25)}…` : pick.label
+    return (
+      svg +
+      `<div class="hx-slope-pop-cap"><span class="hx-slope-pop-pct">${percent}%</span>` +
+      `<span class="hx-slope-pop-pick">${escapeHtml(label)}</span></div>`
+    )
+  }
+
+  /** Draws the popup for a slope. Called on every drag step, so it stays a single write. */
+  function renderSlopePlot(percent) {
+    const pop = $('hx-slope-pop')
+    if (!pop) return
+    const value = Number(percent)
+    const pct = Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : 4
+    pop.innerHTML = slopePlotMarkup(pct)
+  }
+
+  let slopePlotHideTimer = null
+
+  /** Shows the plot while the slider is in hand, with the value it currently holds. */
+  function showSlopePlot(percent) {
+    const pop = $('hx-slope-pop')
+    if (!pop) return
+    if (slopePlotHideTimer) {
+      clearTimeout(slopePlotHideTimer)
+      slopePlotHideTimer = null
+    }
+    renderSlopePlot(percent)
+    pop.hidden = false
+  }
+
+  /** Folds it away. A delay keeps the last frame legible after the thumb is let go. */
+  function hideSlopePlot(delayMs = 0) {
+    const pop = $('hx-slope-pop')
+    if (!pop) return
+    if (slopePlotHideTimer) clearTimeout(slopePlotHideTimer)
+    const hide = () => {
+      slopePlotHideTimer = null
+      if (pop) pop.hidden = true
+    }
+    if (delayMs > 0) slopePlotHideTimer = setTimeout(hide, delayMs)
+    else hide()
+  }
+
   let slopeSaveTimer = null
 
   /** Saves the slider's slope for this conversation; the router uses it on the next turn. */
@@ -3228,6 +3433,9 @@
     const slider = $('hx-slope-slider')
     if (!slider) return
     paintSlopePercent(Number(slider.value))
+    // The plot follows the thumb, not the saved value: a drag crosses dozens of slopes and the
+    // one under the thumb is the one being read.
+    if (!$('hx-slope-pop')?.hidden) renderSlopePlot(Number(slider.value))
     if (slopeSaveTimer) clearTimeout(slopeSaveTimer)
     // A drag crosses dozens of values; only the one it lands on is worth a request.
     slopeSaveTimer = setTimeout(() => {
@@ -5651,9 +5859,24 @@
       setQueueMode(state.queueMode === 'followUp' ? 'steer' : 'followUp'),
     )
     $('hx-thinking-slider')?.addEventListener('input', thinkingFromSlider)
-  $('hx-slope-slider')?.addEventListener('input', slopeFromSlider)
-  // The notches come from the model table, which may not have been read yet.
-  void loadKnownTtfts()
+    const slopeSlider = $('hx-slope-slider')
+    slopeSlider?.addEventListener('input', slopeFromSlider)
+    // The plot is a tooltip on the control: it appears when the thumb is taken or the slider is
+    // focused, and leaves when either is let go. A click anywhere ends the drag, not only one
+    // released over the track.
+    slopeSlider?.addEventListener('pointerdown', () => showSlopePlot(Number(slopeSlider.value)))
+    slopeSlider?.addEventListener('focus', () => showSlopePlot(Number(slopeSlider.value)))
+    slopeSlider?.addEventListener('blur', () => hideSlopePlot(300))
+    slopeSlider?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape') return
+      hideSlopePlot(0)
+      slopeSlider.blur()
+    })
+    window.addEventListener('pointerup', () => {
+      if ($('hx-slope-pop') && !$('hx-slope-pop').hidden) hideSlopePlot(900)
+    })
+    // The notches come from the model table, which may not have been read yet.
+    void loadKnownTtfts()
 
     // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
     bindMinimap()

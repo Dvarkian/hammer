@@ -115,6 +115,31 @@ test('the slope control lives in the composer, not under the plot', () => {
   assert.doesNotMatch(html, /id="sel-slope-value"/)
 })
 
+test('the slope popup plots the field the slider is choosing from', () => {
+  const html = read('public/index.html')
+  // The plot hangs off the slope control itself, so it can be positioned against it.
+  assert.match(html, /class="hx-composer-thinking hx-composer-slope"/)
+  assert.match(html, /id="hx-slope-pop"/)
+  const harness = read('public/harness.js')
+  assert.match(harness, /function collectSlopePlotPoints\(models\)/)
+  assert.match(harness, /function slopePlotCeiling\(points\)/)
+  assert.match(harness, /function renderSlopePlot\(percent\)/)
+  assert.match(harness, /function showSlopePlot\(percent\)/)
+  assert.match(harness, /function hideSlopePlot\(delayMs = 0\)/)
+  // The line has to be the router's line, not a second scale invented for the picture.
+  assert.match(harness, /const SLOPE_PLOT_REFERENCE_TOKENS = 500/)
+  assert.match(harness, /const SLOPE_PLOT_HEADROOM = 1\.5/)
+  // A row the router will not use is not part of the decision the line makes.
+  assert.match(harness, /if \(!row \|\| row\.status !== 'up'\) continue/)
+  // Shown when the control is taken, and the drag repaints it.
+  assert.match(harness, /addEventListener\('pointerdown', \(\) => showSlopePlot/)
+  assert.match(harness, /if \(!\$\('hx-slope-pop'\)\?\.hidden\) renderSlopePlot/)
+  const css = read('public/harness.css')
+  assert.match(css, /\.hx-slope-pop \{/)
+  assert.match(css, /\.hx-slope-dot-pick \{/)
+  assert.match(css, /\.hx-slope-line \{/)
+})
+
 test('the composer saves the slope for its own conversation', () => {
   const harness = read('public/harness.js')
   assert.match(harness, /function setSlopePercent\(percent\)/)

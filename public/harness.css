@@ -2362,6 +2362,92 @@ body.hx-details-collapsed .hx-side-details {
   background-image: var(--slope-notches, none);
 }
 
+/* The slope slider explains itself with a plot. While the control is in hand, the field the
+   router picks from is drawn just above the composer — one dot per routable model, the line for
+   the current slope, and the model it lands on. It is a tooltip, so it never takes a click. */
+.hx-composer-slope {
+  position: relative;
+}
+
+.hx-slope-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: -8px;
+  z-index: 40;
+  width: 258px;
+  padding: 8px 9px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-alt);
+  box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
+  pointer-events: none;
+}
+
+.hx-slope-pop svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.hx-slope-frame {
+  fill: none;
+  stroke: var(--border);
+}
+
+.hx-slope-dot {
+  fill: var(--text-muted);
+  fill-opacity: 0.5;
+}
+
+.hx-slope-dot-pick {
+  fill: var(--accent, #4c8dff);
+  fill-opacity: 1;
+  stroke: var(--text);
+  stroke-width: 1;
+}
+
+.hx-slope-line {
+  stroke: var(--accent, #4c8dff);
+  stroke-opacity: 0.75;
+  stroke-width: 1.4;
+  stroke-dasharray: 4 3;
+}
+
+.hx-slope-axis {
+  fill: var(--text-muted);
+  font-size: 8px;
+}
+
+.hx-slope-pop-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 3px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
+.hx-slope-pop-pct {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.hx-slope-pop-pick {
+  margin-left: auto;
+  max-width: 168px;
+  overflow: hidden;
+  color: var(--text-dim);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-slope-pop-empty {
+  margin: 0;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+
 .hx-composer-thinking #hx-thinking-level {
   color: var(--text);
   font-weight: 600;

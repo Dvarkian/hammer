@@ -138,11 +138,14 @@
                 title="Thinking effort — off, low, medium, high. Sent in the form the chosen model understands.">
               <span id="hx-thinking-level">off</span>
             </div>
-            <div class="hx-composer-thinking" aria-label="Intelligence vs speed slope">
+            <div class="hx-composer-thinking hx-composer-slope" aria-label="Intelligence vs speed slope">
               <span class="hx-composer-thinking-label">slope</span>
               <input type="range" id="hx-slope-slider" min="0" max="100" value="4" step="1"
                 title="Intelligence vs speed for this conversation — 0% picks the smartest model, 100% the fastest. Each conversation routes on its own slope.">
               <span id="hx-slope-value">4%</span>
+              <!-- The field the slider is choosing from, drawn while it is in hand: every
+                   measured model, and the line this conversation's slope lowers onto them. -->
+              <div class="hx-slope-pop" id="hx-slope-pop" hidden aria-hidden="true"></div>
             </div>
             <div class="hx-composer-btns">
               <button class="hx-btn hx-icon" id="hx-attach" type="button" title="Attach images" aria-label="Attach images">
@@ -411,9 +414,10 @@
               <tr>
                 <th title="The provider, its connection state, and the actions that act on it">Provider</th>
                 <th title="The credential form for this provider: key, token, or account sign-in, plus its rotation bar">Credentials</th>
+                <th title="Tokens served by this provider over time; each bar is a slice's tokens, with idle gaps collapsed">Usage</th>
                 <th title="The provider's account-level quota windows">Quota</th>
-                <th title="The most recent provider-level error, with its model and HTTP status">Latest error</th>
                 <th title="Rate limits this provider reported on the last prompt">Rate limit</th>
+                <th title="The most recent provider-level error, with its model and HTTP status">Latest error</th>
               </tr>
             </thead>
             <tbody id="active-providers-container" data-loading="true">
@@ -428,9 +432,10 @@
               <tr>
                 <th>Provider</th>
                 <th>Credentials</th>
+                <th>Usage</th>
                 <th>Quota</th>
-                <th>Latest error</th>
                 <th>Rate limit</th>
+                <th>Latest error</th>
               </tr>
             </thead>
             <tbody id="setup-providers-container">
