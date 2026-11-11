@@ -177,6 +177,10 @@
     updateComposer()
     renderSessions()
     saveOpenConversations()
+    // A console can be shown before its transcript was ever rebuilt — it is the one the rail
+    // click had to activate, or the one a restart resumed mid-turn. Arm the stall check here so
+    // the wait ends in the file being read rather than in an empty log.
+    watchStalledHistory(console)
     // The rail follows the conversation on screen: the plot is this console's history now,
     // which is the difference between "the last hour" (the router's own view) and "this
     // conversation, all of it". A console with no file yet publishes the router's view back.
@@ -385,6 +389,33 @@
   }
 
   /**
+   * How long a console that says it is running may produce no record before its transcript is
+   * rebuilt from its file anyway.
+   *
+   * "Running" is the child's flag, not evidence that anything is arriving. After a restart the
+   * router adopts an agent mid-turn, and a turn whose model was lost never settles: the flag
+   * stays true, no record ever comes, and the transcript stayed on the replay log — which starts
+   * empty after a restart — so a long conversation looked gone. A live turn emits records
+   * continuously; quiet is a stale flag, and the file is the whole conversation either way.
+   */
+  const HISTORY_STALL_MS = 2500
+
+  /** Arms the stall check for one console; harmless when it is loaded, idle or already armed. */
+  function watchStalledHistory(ctx, delayMs = HISTORY_STALL_MS) {
+    if (!ctx || ctx.historyLoaded || !ctx.running || !ctx.sessionFile || ctx.stallTimer) return
+    ctx.stallTimer = setTimeout(() => {
+      ctx.stallTimer = null
+      if (!ctx || ctx.historyLoaded || !ctx.running) return
+      // A record arrived: this really is a live turn, so leave its stream alone and look again.
+      if (Date.now() - (ctx.lastRecordAt || 0) < HISTORY_STALL_MS) {
+        watchStalledHistory(ctx)
+        return
+      }
+      void restoreHistory(ctx, { force: true })
+    }, delayMs)
+  }
+
+  /**
    * Rebuilds a conversation from its session file, once.
    *
    * The event stream only replays the last few hundred records the router happens to hold, and
@@ -392,8 +423,11 @@
    * its JSONL on disk still held the whole conversation. The file is the authoritative
    * transcript, so an idle console is rebuilt from it before the stream is even opened.
    */
-  async function restoreHistory(ctx) {
+  async function restoreHistory(ctx, { force = false } = {}) {
     if (!ctx || !ctx.sessionFile || ctx.historyLoaded || ctx.historyLoading) return
+    // A live turn is left to its own stream: a rebuild underneath it would meet the same message
+    // twice. `force` is the stall check's answer to a "running" flag with nothing behind it.
+    if (ctx.running && !force) return
     ctx.historyLoading = true
     try {
       await loadMessages(ctx)
@@ -406,6 +440,10 @@
       // The agent may still be starting; the stream will fill the transcript instead.
     } finally {
       ctx.historyLoading = false
+      if (ctx.historyLoaded && ctx.stallTimer) {
+        clearTimeout(ctx.stallTimer)
+        ctx.stallTimer = null
+      }
     }
   }
 
@@ -2796,6 +2834,9 @@
    */
   function applyRecord(record, ctx = active()) {
     if (!record || typeof record !== 'object' || !ctx) return
+    // Proof the console's stream is alive, which is what the stall check measures: a busy
+    // console that produces nothing is a flag nobody is behind.
+    ctx.lastRecordAt = Date.now()
     switch (record.type) {
       case 'agent_start':
         setRunning(true, ctx)
@@ -3223,6 +3264,13 @@
       if (!ctx.running && (!ctx.historyLoaded || ctx.pendingFullRestore)) {
         ctx.pendingFullRestore = false
         void restoreHistory(ctx)
+      }
+      // A turn that is reported as running is watched: if it never says anything, its flag is
+      // the only thing keeping the transcript from being rebuilt from the file.
+      if (ctx.running) watchStalledHistory(ctx)
+      else if (ctx.stallTimer) {
+        clearTimeout(ctx.stallTimer)
+        ctx.stallTimer = null
       }
       // Remembered per tab: a conversation still working when the app closes is the one a
       // later page resumes, and settling clears the flag again.
@@ -5368,6 +5416,18 @@
         body: JSON.stringify(body),
       })
     let res = await start()
+    if (res.status === 409) {
+      // The conversation is already open — on the main console, usually, and the page may not
+      // have been told which file that console is on yet. Asking it once turns "already open"
+      // into the conversation appearing, instead of an error over a transcript that is there.
+      const main = state.consoles.get('main')
+      if (main) await refreshStatus(main)
+      const open = [...state.consoles.values()].find((ctx) => ctx.sessionFile === sessionFile)
+      if (open) {
+        if (focus) activate(open)
+        return open
+      }
+    }
     if (res.status === 429) {
       // The server caps parallel consoles. An idle conversation nobody is looking at is not
       // doing anything, so its slot is the one to reuse rather than refusing the new one.
