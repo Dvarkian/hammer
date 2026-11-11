@@ -3223,26 +3223,56 @@
   /** How far past the last takeover the top of the slider sits (lib/utils.js' headroom). */
   const SLOPE_PLOT_HEADROOM = 1.5
 
-  /** The rows the popup plots: a rating and a speed, and nothing else it would have to trust. */
+  /** A response that actually answered. A refusal measures the provider's mood, not its speed. */
+  function plottedResponse(lastResponse) {
+    if (!lastResponse || lastResponse.ok === false || lastResponse.error) return null
+    if (lastResponse.text == null || String(lastResponse.text).trim() === '') return null
+    return lastResponse
+  }
+
+  /**
+   * The rows the popup plots: a rating and a speed, and nothing else it would have to trust.
+   *
+   * Every measured row is drawn, routable or not — a benched or exhausted row is still a place
+   * on this map, and its absence would quietly shrink the field the slider is choosing within.
+   * The line, though, is only lowered onto rows the router would actually use, so it lands on
+   * the model the router would pick.
+   */
   function collectSlopePlotPoints(models) {
     const points = []
     for (const row of models) {
-      // A row the router will not send work to is not part of the decision the line makes.
-      if (!row || row.status !== 'up') continue
+      // A `noauth` row has never been measured against a model; there is nothing to place.
+      if (!row || row.status === 'noauth') continue
       const id = String(row.modelId || row.id || '')
       const aa = Number(row.aa)
       const intell = Number.isFinite(aa) && aa > 0 ? aa : Number(row.intell) * 100
-      const ttft = Number(row.ttft)
-      const tps = Number(row.tps)
+      // The row's own measurement, or the last response that answered — the same fallback the
+      // table's columns and the dashboard's scatter read.
+      const served = plottedResponse(row.lastResponse)
+      const ttft =
+        row.ttft != null
+          ? Number(row.ttft)
+          : served && served.ttftMs != null
+            ? Number(served.ttftMs)
+            : null
+      const tps =
+        row.tps != null
+          ? Number(row.tps)
+          : served && served.tps != null
+            ? Number(served.tps)
+            : null
       if (!id || !(Number.isFinite(intell) && intell > 0)) continue
-      if (!Number.isFinite(ttft) || ttft < 0) continue
-      if (!Number.isFinite(tps) || tps <= 0) continue
+      if (ttft == null || !Number.isFinite(ttft) || ttft < 0) continue
+      if (tps == null || !Number.isFinite(tps) || tps <= 0) continue
       points.push({
         modelId: id,
         providerKey: String(row.providerKey || ''),
         label: String(row.label || row.name || id),
         intell,
         speed: SLOPE_PLOT_REFERENCE_TOKENS / (ttft / 1000 + SLOPE_PLOT_REFERENCE_TOKENS / tps),
+        // The router's own flag, so "what the line picks" and "what the router routes" cannot
+        // drift apart. Payloads from an older server fall back to the table's verdict.
+        routable: typeof row.routingEligible === 'boolean' ? row.routingEligible : row.status === 'up',
       })
     }
     return points
@@ -3332,13 +3362,17 @@
     const xOf = (speed) => pad.left + ((Math.min(speed, xMax) - xMin) / xSpan) * plotW
     const yOf = (intell) => pad.top + (1 - (intell - yMin) / ySpan) * plotH
 
-    const ceiling = slopePlotCeiling(points)
+    // The line belongs to the rows the router would use; with fewer than two of them there is
+    // no slope to speak of, so the field is drawn and the line is left off.
+    const routable = points.filter((point) => point.routable)
+    const field = routable.length >= 2 ? routable : points
+    const ceiling = slopePlotCeiling(field)
     const slope = ceiling ? (percent / 100) * ceiling : 0
     // The line is a constant score: intelligence + slope × speed. The row on it with the
     // highest score is the router's pick at this slope, which is what the caption names.
-    let pick = points[0]
+    let pick = field[0]
     let best = -Infinity
-    for (const point of points) {
+    for (const point of field) {
       const value = point.intell + slope * point.speed
       if (value > best) {
         best = value
@@ -3351,7 +3385,13 @@
     const dots = points
       .map((point) => {
         const isPick = point === pick
-        const cls = isPick ? 'hx-slope-dot hx-slope-dot-pick' : 'hx-slope-dot'
+        // A row the router will not use keeps its place but gives up its bulk: the field stays
+        // whole, and the rows that can actually win are the ones the eye lands on.
+        const cls = isPick
+          ? 'hx-slope-dot hx-slope-dot-pick'
+          : point.routable
+            ? 'hx-slope-dot'
+            : 'hx-slope-dot hx-slope-dot-idle'
         return `<circle class="${cls}" cx="${xOf(point.speed).toFixed(1)}" cy="${yOf(point.intell).toFixed(1)}" r="${isPick ? 3 : 1.9}"><title>${escapeHtml(point.label)} · ${Math.round(point.intell)} intelligence</title></circle>`
       })
       .join('')

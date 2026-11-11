@@ -2399,6 +2399,10 @@ body.hx-details-collapsed .hx-side-details {
   fill-opacity: 0.5;
 }
 
+.hx-slope-dot-idle {
+  fill-opacity: 0.22;
+}
+
 .hx-slope-dot-pick {
   fill: var(--accent, #4c8dff);
   fill-opacity: 1;

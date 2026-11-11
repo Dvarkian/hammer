@@ -129,8 +129,10 @@ test('the slope popup plots the field the slider is choosing from', () => {
   // The line has to be the router's line, not a second scale invented for the picture.
   assert.match(harness, /const SLOPE_PLOT_REFERENCE_TOKENS = 500/)
   assert.match(harness, /const SLOPE_PLOT_HEADROOM = 1\.5/)
-  // A row the router will not use is not part of the decision the line makes.
-  assert.match(harness, /if \(!row \|\| row\.status !== 'up'\) continue/)
+  // The field is every measured row; the line is lowered onto the ones the router would use.
+  assert.match(harness, /row\.routingEligible/)
+  assert.match(harness, /const field = routable\.length >= 2 \? routable : points/)
+  assert.match(harness, /if \(!row \|\| row\.status === 'noauth'\) continue/)
   // Shown when the control is taken, and the drag repaints it.
   assert.match(harness, /addEventListener\('pointerdown', \(\) => showSlopePlot/)
   assert.match(harness, /if \(!\$\('hx-slope-pop'\)\?\.hidden\) renderSlopePlot/)
