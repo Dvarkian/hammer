@@ -666,6 +666,45 @@
   }
 
   /**
+   * The language a run block is running, when its command is a program rather than a shell line.
+   *
+   * A call that runs code through an interpreter is code the reader is meant to follow —
+   * `python3 - <<'EOF' … EOF` puts the whole script in the block — so the block takes the
+   * interpreter's language. An ordinary shell line (`ls -la`, `grep -n x file`) names no
+   * language, and stays plain: guessing from a word that merely appears on the line is how a
+   * `grep python` would end up coloured as Python.
+   * @param {string} command
+   * @returns {string} a family key, or '' when the line runs no language
+   */
+  function languageForCommand(command) {
+    const text = String(command || '').trim()
+    if (!text) return ''
+    const line = text.split('\n').find((part) => part.trim()) || ''
+    // The program is the first word of the last pipeline stage, skipping flags and the
+    // wrappers that carry nothing: `cd x && python3 …` and `sudo -E node …` both find it.
+    const segment = line.split(/[;&|]+/).filter((part) => part.trim()).pop() || ''
+    const program = (segment.match(/\S+/g) || []).find(
+      (word) =>
+        !word.startsWith('-') &&
+        !/^\w+=/.test(word) &&
+        !/^(sudo|env|time|nohup|exec|command|nice)$/.test(word),
+    )
+    const base = String(program || '')
+      .replace(/^["']|["']$/g, '')
+      .split('/')
+      .pop()
+      .toLowerCase()
+    if (/^python[0-9.]*$/.test(base) || base === 'pypy' || base === 'pypy3') return 'python'
+    if (/^(node|nodejs|deno|bun)$/.test(base)) return 'js'
+    if (/^(bash|sh|zsh|dash|fish)$/.test(base)) return 'sh'
+    if (/^(sqlite3|psql|mysql)$/.test(base)) return 'sql'
+    if (/^(ruby|irb)$/.test(base)) return 'ruby'
+    // `cat > script.py <<'EOF'` writes code without naming a program for it.
+    if (/<<-?\s*['"]?\w+['"]?/.test(text) && /\.py\b/.test(line)) return 'python'
+    return ''
+  }
+
+  /**
    * Code as escaped HTML with its tokens in spans.
    *
    * Every token is escaped as it is written, exactly once, so a `<script>` in a file is text
@@ -1791,6 +1830,11 @@
       ? `<pre class="hx-tool-out"${readLang ? ` data-lang="${escapeHtml(readLang)}"` : ''}>${highlightCode(output, readLang)}</pre>`
       : ''
     const body = diff || readBody
+    // A run block's head is the program it ran, which for an interpreter is the code itself.
+    const runCommand = /^(run|bash|shell|exec|command|terminal)$/i.test(String(item.name || ''))
+      ? toolSummary(item)
+      : ''
+    const runLang = runCommand ? languageForCommand(runCommand) : ''
     // A finished call folds away, whatever its verdict: failure is a word in the summary ("failed",
     // in the error colour) and its output is one click away, exactly like a call that succeeded.
     // Keeping every failure open meant one broken command pushed the rest of the turn off screen,
@@ -1803,7 +1847,7 @@
           <summary class="hx-tool-head">
             ${toolIcon(item.name || 'tool')}
             <span class="hx-tool-name">${escapeHtml(toolLabel(item.name))}</span>
-            <span class="hx-tool-cmd">${escapeHtml(toolSummary(item))}</span>
+            <span class="hx-tool-cmd"${runLang ? ` data-lang="${escapeHtml(runLang)}"` : ''}>${runLang ? highlightCode(runCommand, runLang) : escapeHtml(toolSummary(item))}</span>
             <span class="hx-tool-state">${escapeHtml(meta)}</span>
           </summary>
           ${body}

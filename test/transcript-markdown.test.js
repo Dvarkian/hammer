@@ -17,8 +17,8 @@ const start = harness.indexOf('function escapeHtml')
 const end = harness.indexOf('function setHint')
 assert.notEqual(start, -1, 'escapeHtml is present in harness.js')
 assert.notEqual(end, -1, 'setHint is present in harness.js')
-const { renderText } = new Function(
-  `const MAX_TEXT = 120000;\n${harness.slice(start, end)}; return { renderText }`,
+const { renderText, highlightCode, languageForCommand } = new Function(
+  `const MAX_TEXT = 120000;\n${harness.slice(start, end)}; return { renderText, highlightCode, languageForCommand }`,
 )()
 
 test('a heading, a table, a list and a quote render as their elements', () => {
@@ -84,6 +84,36 @@ test('code inside a fence is escaped, never markup', () => {
   assert.doesNotMatch(html, /<script/)
   assert.match(html, /&lt;script/)
   assert.match(html, /&lt;\/script/)
+})
+
+test('a run block is coloured by the code it runs', () => {
+  // The reported case: a Python script handed to the interpreter through a heredoc, which is
+  // the whole of the block a reader has to follow.
+  const command = [
+    "python3 - <<'EOF'",
+    'import json',
+    'for row in rows:',
+    '    print(row)  # done',
+    'EOF',
+  ].join('\n')
+  assert.equal(languageForCommand(command), 'python')
+  const html = highlightCode(command, languageForCommand(command))
+  assert.match(html, /<span class="hx-hl-key">import<\/span>/)
+  assert.match(html, /<span class="hx-hl-com"># done<\/span>/)
+  // The interpreter line itself is still readable, escaped once.
+  assert.match(html, /python3 - &lt;&lt;/)
+
+  // The program is found through wrappers and pipelines, and not from a word that is merely
+  // an argument.
+  assert.equal(languageForCommand('cd /tmp && python3 build.py'), 'python')
+  assert.equal(languageForCommand('sudo -E node scripts/check.js'), 'js')
+  assert.equal(languageForCommand('cat file | sqlite3 db.sqlite'), 'sql')
+  assert.equal(languageForCommand('bash -lc "make -j"'), 'sh')
+  assert.equal(languageForCommand('grep -n python file.txt'), '')
+  assert.equal(languageForCommand('ls -la'), '')
+
+  // The card asks the command and paints it with the same highlighter.
+  assert.match(harness, /highlightCode\(runCommand, runLang\)/)
 })
 
 test('model output never becomes markup on the page', () => {
