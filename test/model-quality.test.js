@@ -20,6 +20,7 @@ import {
   scoreForAa,
 } from '../lib/model-quality.js'
 import {
+  anchorResolution,
   benchmarklistLookupKeys,
   BENCHMARKLIST_CALIBRATION_BENCHMARKS,
   buildBenchmarkListQualityIndex,
@@ -31,7 +32,9 @@ import { canonicalizeModelId } from '../sources.js'
 test('Agnes rows use the AA scores AA actually publishes', () => {
   // AA's model pages carry these; the Pro Beta release article's older 49/40 figures are on
   // a previous index revision, so the current pages are what the curated table records.
-  // AA publishes no page for Agnes 2.5 Flash, so it stays unscored rather than guessed at.
+  // AA publishes no page for Agnes 2.5 Flash, so it has no curated figure and stays
+  // unscored on this evidence-free path; the benchmarklist path can still estimate it
+  // from the vendor's own published benchmarks (see the self-reported test below).
   const rows = [
     ['agnes/agnes-3.0-flash', 36],
     ['agnes-3.0-flash', 36],
@@ -355,7 +358,12 @@ test('benchmarklist leaf slugs reach the bare model behind a vendor prefix', () 
   assert.ok(swe.includes('swe-1.6'))
   assert.ok(!swe.includes('1'), 'the bare version alone is never a match')
   assert.ok(benchmarklistLookupKeys('swe-1-6-slow').includes('cognition-swe-1.6'))
-  assert.ok(benchmarklistLookupKeys('swe-2-flash-medium').includes('cognition-swe-2'))
+  // Effort tiers of one model share its rows, but SWE-2 Flash is a smaller, separately
+  // published model: it keeps its own identity instead of borrowing the flagship's ratings.
+  assert.ok(benchmarklistLookupKeys('swe-2-medium').includes('cognition-swe-2'))
+  const flash = benchmarklistLookupKeys('swe-2-flash-medium')
+  assert.ok(flash.includes('cognition-swe-2-flash'))
+  assert.ok(!flash.includes('cognition-swe-2'))
 
   // Keep the family name on size-based IDs; `2-7b` alone matches unrelated 2.7B models.
   assert.ok(!benchmarklistLookupKeys('ALLaM-2-7b').includes('2-7b'))
@@ -513,6 +521,47 @@ test('benchmarklist evidence scores Devin SWE 1.6 from its own benchmark rows', 
   assert.equal(measuredCatalogModel.source, 'vals_terminal_bench_2_1')
   assert.equal(measuredCatalogModel.aa, resolved.aa, 'benchmarklist overrides AA direct ratings')
   assert.equal(measuredCatalogModel.isEstimated, true)
+})
+
+test('vendor self-reported benchmark scores resolve flagged, not measured', async () => {
+  // Agnes 2.5 Flash has no AA page and no benchmarklist row, so the only evidence is the
+  // vendor's own launch-post figures. They are injected into the calibration lookups and
+  // projected through the same isotonic curve, but every contribution is flagged
+  // `selfReported` and the detail says so — a company claim is not a measurement.
+  const catalog = Array.from({ length: 12 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 2 }),
+  )
+  const snapshots = [
+    benchmarklistSnapshot(
+      catalog
+        .map((model, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 40 + i * 2))
+        .concat([benchmarklistRow('cognition-swe-1-6', 'Devin SWE 1.6', 47)]),
+    ),
+  ]
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ snapshots, next_cursor: null }) })
+  const quality = await buildBenchmarkListQualityIndex(catalog, { fetchImpl })
+  assert.ok(quality.selfReported, 'the build tracks which keys are vendor claims')
+  assert.ok(
+    quality.selfReported.vals_swebench?.has('agnes-2.5-flash'),
+    'the Flash id is registered as self-reported on SWE-bench Verified',
+  )
+
+  const resolved = resolveBenchmarkListQuality(quality, 'agnes-2.5-flash')
+  assert.ok(resolved, 'the vendor figures resolve to an estimate')
+  assert.equal(resolved.isEstimated, true)
+  assert.ok(resolved.aa > 0 && resolved.aa <= 100)
+  assert.ok(
+    resolved.contributions.every((c) => c.selfReported),
+    'every contribution is a vendor claim, none is a benchmarklist measurement',
+  )
+  assert.match(resolved.detail, /vendor self-reported/)
+
+  const integratedQuality = buildOpenRouterQualityIndex(catalog)
+  integratedQuality.benchmarklistOnly = true
+  integratedQuality.benchmarklist = quality
+  const integrated = resolveModelQuality(integratedQuality, 'agnes-2.5-flash')
+  assert.equal(integrated.aa, resolved.aa)
+  assert.equal(integrated.isEstimated, true)
 })
 
 test('benchmarklist is the exclusive score source when its endpoints have no data', async () => {
@@ -717,6 +766,73 @@ test('historical snapshots only normalize against the same publisher', () => {
   )
 })
 
+test('SWE-2 Flash is scored on its own published benchmarks, not the flagship', async () => {
+  // Cognition published separate numbers for SWE-2 Flash (a 276B-A12B model on Inkling-Small)
+  // from the 2.8T flagship, and BenchmarkList measures neither Devin id. The vendor's own launch
+  // table is what places the row — flagged as self-reported — instead of a blank dash or the
+  // flagship's rows.
+  const catalog = Array.from({ length: 10 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 8 }),
+  )
+  const wide = catalog.map((_, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 10 + i * 8))
+  const fetchImpl = async (url) => {
+    const href = String(url)
+    if (href.includes('artificial_analysis_intelligence_index')) {
+      return { ok: true, json: async () => ({ snapshots: [benchmarklistSnapshot(wide)] }) }
+    }
+    // DeepSWE and FrontierCode have real range on this fixture, so they carry the placement.
+    if (href.includes('deepswe_1_1') || href.includes('frontiercode')) {
+      return { ok: true, json: async () => ({ snapshots: [benchmarklistSnapshot(wide)] }) }
+    }
+    return { ok: true, json: async () => ({ snapshots: [] }) }
+  }
+  const quality = {
+    benchmarklistOnly: true,
+    benchmarklist: await buildBenchmarkListQualityIndex(catalog, { fetchImpl }),
+  }
+
+  // The fixture's synthetic calibration is perfect (MAE 0). Give it the real calibration's
+  // held-out error so the self-reported lower-confidence margin is exercised.
+  for (const calibration of Object.values(quality.benchmarklist.calibrations)) {
+    calibration.mae = 4
+  }
+  const flash = resolveModelQuality(quality, 'swe-2-flash-medium')
+  assert.ok(flash.aa != null, 'the row is scored rather than left blank')
+  assert.ok(flash.aa > 0 && flash.aa < 90, 'a mid-pack model does not land at the top')
+  assert.equal(flash.isEstimated, true, 'a vendor figure is an estimate, not a measurement')
+  assert.match(flash.detail, /deepswe_1_1/)
+  assert.match(flash.detail, /frontiercode/)
+  assert.match(flash.detail, /vendor self-reported/)
+  assert.match(flash.detail, /lower-confidence/)
+
+  // The raw vendor blend is not the reported score. Each self-reported contribution is
+  // reduced by its calibration error before combining, so a vendor claim cannot outrank an
+  // independently measured model on its own optimism.
+  const direct = resolveBenchmarkListQuality(quality.benchmarklist, 'swe-2-flash-medium')
+  const rawBlend =
+    direct.contributions.reduce((sum, contribution) => {
+      const raw = contribution.selfReported
+        ? contribution.value + (Number.isFinite(contribution.mae) ? contribution.mae : 10)
+        : contribution.value
+      return sum + raw * contribution.weight
+    }, 0) / direct.contributions.reduce((sum, contribution) => sum + contribution.weight, 0)
+  assert.ok(direct.aa < rawBlend, 'the vendor estimate is reported conservatively')
+
+  // The table is keyed to Flash's identity, so the flagship's effort tiers stay unaffected.
+  assert.equal(resolveBenchmarkListQuality(quality.benchmarklist, 'swe-2-medium'), null)
+})
+
+test('a saturated benchmark carries less weight than a board with range', () => {
+  // Held-out error alone cannot separate these two: both are perfectly predictable. What
+  // differs is the headroom the anchors used, and a board pressed against its ceiling cannot
+  // rank the models this app chooses between however low its MAE is.
+  const saturated = Array.from({ length: 8 }, (_, i) => [0.88 + (0.07 * i) / 7, 50])
+  const withRange = Array.from({ length: 8 }, (_, i) => [0.2 + (0.7 * i) / 7, 50])
+  assert.ok(anchorResolution(saturated) < 0.25)
+  assert.equal(anchorResolution(withRange), 1)
+  assert.equal(anchorResolution([[0.5, 50]]), 0, 'too few anchors is not a calibration')
+})
+
 test('Devin SWE variants resolve BenchmarkList scores across percent/fraction units', () => {
   const calibrationKey = 'calibration'
   const cognitionKey = 'cognition'
@@ -778,7 +894,11 @@ test('Devin SWE variants resolve BenchmarkList scores across percent/fraction un
   }
 
   assert.equal(resolveBenchmarkListQuality(quality, 'swe-1-6-slow').aa, 39.7)
-  assert.equal(resolveBenchmarkListQuality(quality, 'swe-2-flash-medium').aa, 59)
+  // The flagship's effort tiers resolve to its rows, across the percent/fraction unit change.
+  assert.equal(resolveBenchmarkListQuality(quality, 'swe-2-medium').aa, 59)
+  // SWE-2 Flash is not one of those tiers: with no rows of its own it stays unscored rather
+  // than being scored on the flagship's Terminal-Bench 2.1 result.
+  assert.equal(resolveBenchmarkListQuality(quality, 'swe-2-flash-medium'), null)
   quality.scoreLookups.vals_terminal_bench_2_1.snapshots.get(cognitionKey).unit = null
   assert.equal(
     resolveBenchmarkListQuality(quality, 'swe-1-6-slow'),

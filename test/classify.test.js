@@ -88,6 +88,10 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
     'qwen/qwen3.8-27b',
     'mistral-large-2512',
     'mistral-medium-3.1',
+    // `nousresearch` contains `search`, but it names a lab rather than a search model.
+    'nousresearch/hermes-4-70b',
+    'nebius/nousresearch/hermes-4-405b',
+    'vendor/deep-research-assistant',
     '',
     null,
   ]) {

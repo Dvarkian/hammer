@@ -166,7 +166,7 @@
     const LOADING_CONTAINERS = ['kpi-grid', 'models-view', 'models-table-container', 'providers-panel'];
     const LOADING_VALUES = [
       'readout-models', 'readout-combos', 'readout-providers', 'readout-rows',
-      'kpi-best', 'speed-intell-count',
+      'kpi-best',
     ];
     // Whether the shell is still the only thing on screen. Refreshes after the first snapshot
     // are silent: the skeleton is a first-load affordance, and a page that flashes placeholder
@@ -435,11 +435,6 @@
     let pendingPinMutations = 0;
     let pinMutationQueue = Promise.resolve();
 
-    // Slope-line selector (Intelligence-vs-Speed plot → smartest routing).
-    // Mirrors the server-side selectModelBySlope() pick so the plot is a live
-    // preview of what the router will select when no model is manually pinned.
-    let selectorState = { slope: null, minSpeed: null, minIntell: null };
-    let selectorSaveTimer = null;
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
     // Every conversation's own pick, from /api/models. Several conversations can be answering on
@@ -454,11 +449,6 @@
     // when an event arrived must not roll the UI back to the selection it read before the event.
     let routerEventRevision = 0;
     let proxyErrorState = null;
-    let scatterDrag = null;       // active threshold-line drag
-    let scatterScales = null;     // plot extents, refreshed by every draw
-    let selectorSlopeMax = 0;         // data-derived slider scale: slope of the 100% line (pure angle mapping)
-    let selectorGuaranteeSlope = 0;   // fastest-row guarantee slope, applied only at 100%
-    let selectorNotches = [];         // slider positions (0..1000) furthest from any model changeover
     const isTableHovered = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
@@ -714,7 +704,6 @@
       accentRepaintQueued = true
       setTimeout(() => {
         accentRepaintQueued = false
-        requestScatterRedraw()
         drawUsagePlots()
         renderSessionUsageLegend()
       }, 150)
@@ -1358,7 +1347,6 @@
         ? models.find(m => m.modelId === effectiveId && (!effectiveKey || m.providerKey === effectiveKey))
         : null;
       drawBipartiteTopology(models, bestModel);
-      drawSpeedIntellScatter(models);
     }
 
     // Numbers *and* both plots, together and immediately. This is the shape every live-event paint
@@ -1444,365 +1432,11 @@
     // makes the score a property of the row rather than of whoever measured it.
     const SPEED_REFERENCE_TOKENS = 500;
 
-    // One row per measurable model/provider combination, using the same
-    // numbers behind the main table's Intelligence / TTFT / Tok-s columns.
-    // Returns those rows plus how many primary-table rows had no speed to plot,
-    // so the card can report an omission instead of quietly drawing fewer dots
-    // than the table has rows.
-    function buildScatterRows(models) {
-      const rows = [];
-      let tableRowsWithoutSpeed = 0;
-      for (const m of models || []) {
-        if (!m || m.status === 'noauth') continue;
-        // Same number the Intelligence column shows (the AA index): AA's own rating
-        // when the row has one, otherwise the raw score mapped onto that same scale.
-        const aaNum = Number(m.aa);
-        const intellNum = (Number.isFinite(aaNum) && aaNum > 0) ? aaNum : Number(m.intell) * 100;
-        const ttft = rowTtft(m);
-        const tps = rowTps(m);
-        // The row's own mean answered length. It is no longer what the score divides by
-        // (that is the fixed reference above) — it rides along for the tooltip, so the user
-        // can still see how much output the row's own numbers were measured over.
-        const answeredTokens = rowSpeedTokens(m);
-        // A dot needs both axes: an honest position needs a rating and a speed. The rate and
-        // the prefill latency are the measurements; the answer length is the reference.
-        const plottable = Number.isFinite(intellNum) && intellNum > 0
-          && ttft != null && Number.isFinite(ttft) && ttft >= 0
-          && tps != null && Number.isFinite(tps) && tps > 0;
-        if (!plottable) {
-          // Count only rows the main table shows, so the number matches what the user
-          // can count for themselves (graveyard rows are not omissions from the table).
-          if (!isRowStruck(m)) tableRowsWithoutSpeed += 1;
-          continue;
-        }
-        rows.push({
-          m,
-          intell: intellNum,
-          ttft,
-          tps,
-          tokens: answeredTokens,
-          // S = R / (TTFT + R/TPS), in tokens per second, with R = SPEED_REFERENCE_TOKENS —
-          // the same expression lib/utils.js computeRowSpeed() gives the router, so the line
-          // the slider draws is the line the router lowers onto the plot.
-          speed: SPEED_REFERENCE_TOKENS / (ttft / 1000 + SPEED_REFERENCE_TOKENS / tps),
-        });
-      }
-      rows.sort((a, b) => a.intell - b.intell);
-      return { rows, tableRowsWithoutSpeed };
-    }
-
     // How far past the rest of the field a dot may sit before the axis stops calling
     // that speed a scale. A row at twice the speed of everything else would flatten every
     // other dot into the left margin, so the axis ends where the field ends and the row is
     // drawn at the edge with an arrow. Dimensionless: it describes the spread, not a speed.
     const SCATTER_OUTLIER_FACTOR = 2;
-
-    // The axis maximum the field supports, plus how many rows sit past it. Walking the
-    // speeds downwards, the first row that more than doubles the next one marks the end
-    // of the field; everything above it is off-scale (and keeps its real speed for the
-    // tooltip, the selection and the router — only its position is capped). A cut only
-    // counts while the rows above the gap stay a strict minority: a 2x ratio between two
-    // small speeds is ordinary jitter at the slow end of the field — and a lone slow row
-    // leaves the same signature — so without this guard the walk cut deep into the list,
-    // capped the axis at whichever small speed tripped the factor, and flagged nearly
-    // every dot as off-scale. Once the rows above a gap outnumber the rows the cut
-    // would keep on the axis, they are the field, not its outliers.
-    function scatterAxisLimit(speeds) {
-      const sorted = speeds.filter(v => Number.isFinite(v) && v > 0).sort((a, b) => b - a);
-      for (let i = 1; i < sorted.length; i++) {
-        if (sorted[i - 1] > sorted[i] * SCATTER_OUTLIER_FACTOR) {
-          // Off-scale rows must stay the exception, never more than the field the axis
-          // keeps. Deeper gaps only stack more rows above them, so the walk can stop.
-          if (i >= sorted.length - i) break;
-          return { limit: sorted[i], offScale: i };
-        }
-      }
-      return { limit: sorted[0] ?? 0, offScale: 0 };
-    }
-
-    // Plot geometry from the current rows: padded plot rect, data extents with
-    // a little headroom, and the x/y mappers (the drag handlers reuse the same
-    // scales through the global scatterScales).
-    function computeScatterScales(rows, W, H) {
-      const pad = { top: 44, right: 18, bottom: 46, left: 62 };
-      const plotW = Math.max(40, W - pad.left - pad.right);
-      const plotH = Math.max(40, H - pad.top - pad.bottom);
-
-      const xs = rows.map(r => r.speed);
-      const ys = rows.map(r => r.intell);
-      let xMin = Math.min(...xs), xMax = Math.max(...xs);
-      let yMin = Math.min(...ys), yMax = Math.max(...ys);
-      if (xMax === xMin) { const p = (Math.abs(xMax) * 0.2) || 0.001; xMin -= p; xMax += p; }
-      const { limit, offScale } = scatterAxisLimit(xs);
-      if (offScale > 0) xMax = Math.min(xMax, limit);
-      const xPad = (xMax - xMin) * 0.08 || (xMax * 0.05) || 1;
-      xMin = Math.max(0, xMin - xPad);
-      xMax += xPad;
-      const ySpan0 = (yMax - yMin) || (Math.abs(yMax) * 0.05) || 10;
-      yMin = Math.max(0, yMin - ySpan0 * 0.08);
-      // An Artificial Analysis index cannot exceed 100, so the axis never needs to.
-      yMax = Math.min(100, yMax + ySpan0 * 0.08);
-      const ySpan = Math.max(1e-9, yMax - yMin);
-      const xSpan = Math.max(1e-9, xMax - xMin);
-
-      // Every x position goes through this mapper, so clamping here keeps dots, labels,
-      // the threshold lines and the slope line inside the plot in one place: a row past
-      // the axis limit rests on the right edge instead of stretching the scale.
-      const xOf = s => pad.left + ((Math.min(Number(s), xMax) - xMin) / xSpan) * plotW;
-      const yOf = i => pad.top + (1 - (i - yMin) / ySpan) * plotH;
-      return { pad, plotW, plotH, H, xMin, xMax, yMin, yMax, xSpan, ySpan, xOf, yOf, offScale };
-    }
-
-    function drawScatterGrid(svg, scales) {
-      const { pad, plotW, plotH, H, xMin, xMax, yMin, yMax, ySpan, xSpan, xOf, offScale } = scales;
-      const muted = cssVarValue('--text-muted') || '#999';
-      const g = svgEl('g', {});
-      for (let i = 0; i <= 4; i++) {
-        const gx = pad.left + (i / 4) * plotW;
-        g.appendChild(svgEl('line', { x1: gx, y1: pad.top, x2: gx, y2: pad.top + plotH, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
-        const tv = xMin + (i / 4) * xSpan;
-        const txt = svgEl('text', { x: gx, y: pad.top + plotH + 15, fill: muted, 'font-size': '9px', 'text-anchor': 'middle' });
-        const label = fmtScatterSpeed(tv);
-        // The rightmost tick is where the axis stops, not where the field ends.
-        txt.textContent = (offScale > 0 && i === 4) ? `${label} ➤` : label;
-        g.appendChild(txt);
-      }
-      for (let i = 0; i <= 4; i++) {
-        const gy = pad.top + (i / 4) * plotH;
-        g.appendChild(svgEl('line', { x1: pad.left, y1: gy, x2: pad.left + plotW, y2: gy, stroke: muted, 'stroke-opacity': 0.16, 'stroke-width': 1 }));
-        const iv = yMax - (i / 4) * ySpan;
-        const txt = svgEl('text', { x: pad.left - 7, y: gy + 3, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
-        txt.textContent = fmtScatterIntell(iv);
-        g.appendChild(txt);
-      }
-      // Plot frame: gives the field a definite edge so the two axis captions can
-      // stay tiny (the composite-speed formula lives in the SVG tooltip instead
-      // of a caption line, which was the single cluttering sentence on the plot).
-      g.appendChild(svgEl('rect', {
-        x: pad.left, y: pad.top, width: plotW, height: plotH,
-        fill: 'none', stroke: muted, 'stroke-opacity': 0.22, 'stroke-width': 1,
-      }));
-      const capX = svgEl('text', { x: pad.left + plotW, y: H - 10, fill: muted, 'font-size': '9px', 'text-anchor': 'end' });
-      capX.textContent = 'faster →';
-      g.appendChild(capX);
-      const capY = svgEl('text', { x: 12, y: pad.top + plotH / 2, fill: muted, 'font-size': '9px', 'text-anchor': 'middle', transform: `rotate(-90 12 ${pad.top + plotH / 2})` });
-      capY.textContent = 'AA index';
-      g.appendChild(capY);
-      svg.appendChild(g);
-      const info = svgEl('title', {});
-      info.textContent = 'Each dot is one model/provider combination.\n' +
-        `x = speed = ${SPEED_REFERENCE_TOKENS} tokens / (TTFT + ${SPEED_REFERENCE_TOKENS} / tok/s) — every row scored at the same answer length, faster to the right\n` +
-        'a dot marked ➤ is faster than the axis shows: its position is capped, its speed is not\n' +
-        'y = Artificial Analysis Intelligence Index — smarter upward\n' +
-        'Drag the edge lines to set minimums. Hover a dot for its numbers.';
-      svg.appendChild(info);
-    }
-
-    function drawScatterPoints(svg, rows, scales) {
-      const ring = cssVarValue('--card') || '#fff';
-      const rSize = scatterDotSize(rows);
-      // An inactive row keeps its position but gives up its bulk: a full stop marks where the
-      // model measured without competing with the rows the router will actually use. A literal
-      // rather than a fraction of `rSize`, because what makes it read as punctuation is its
-      // absolute size — and a crowded field shrinks `rSize` to 3, which a fraction would have
-      // dragged down with it.
-      const inactiveR = 1.5;
-      const plotRight = scales.pad.left + scales.plotW - 4;
-      const axisLimit = scales.xMax;
-      // Every row is a single filled point, whatever its verdict: a routable model is a
-      // provider-hued dot and an exhausted, benched, or otherwise inactive model is a far
-      // smaller mark in the verdict's colour. Full size follows the router's authoritative
-      // `routingEligible` flag, not merely the row's last successful test: a healthy model whose
-      // provider has been benched still reads `up` locally but must not be advertised as active.
-      const verdictColorFor = (r) => {
-        const kind = rowVerdict(r.m);
-        if (kind === 'up') return ring;
-        if (BENCHED_VERDICTS.has(kind)) return cssVarValue('--warning') || '#d29922';
-        if (STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded') return cssVarValue('--text-muted') || '#8b949e';
-        return cssVarValue('--error') || '#e5484d';
-      };
-      for (const r of rows) {
-        const hue = scatterProviderHue(r.m.providerKey);
-        // The model's own colour, read from its mark; the provider hue is the stand-in until
-        // that read finishes, or the colour when the model has no mark at all.
-        const accent = modelAccent(r.m);
-        const routable = isRoutableRow(r);
-        const verdictColor = verdictColorFor(r);
-        const cx = scales.xOf(r.speed);
-        const cy = scales.yOf(r.intell);
-        const c = svgEl('circle', routable ? {
-          cx, cy, r: rSize,
-          fill: accent || `hsl(${hue} 72% 55%)`, 'fill-opacity': 0.9,
-          stroke: verdictColor, 'stroke-width': 1,
-        } : {
-          // A point, not an outline: a dashed ring has no centre, so an exhausted row read as a
-          // hole in the plot rather than as a model that was measured. It wears the model's
-          // mark colour like every live dot; the small radius, not a grey fill, is what says
-          // this row cannot serve. Until the mark's colour has been read, the verdict tint
-          // stands in. The opacity is higher than a live dot's halo would suggest because the
-          // mark is this small — at a pixel and a half across, anything faint enough to match a
-          // 9px dot's weight would simply vanish.
-          cx, cy, r: inactiveR,
-          fill: accent || verdictColor, 'fill-opacity': 0.75,
-        });
-        const title = svgEl('title', {});
-        const offAxis = r.speed > axisLimit;
-        title.textContent = `${r.m.providerKey} · ${r.m.label || r.m.modelId}${r.m.personaModelId ? ` (catalog: ${r.m.personaModelId})` : ''}\n` +
-          `intelligence ${fmtScatterIntell(r.intell)} · TTFT ${r.ttft} ms · ${r.tps} tok/s · ` +
-          `speed ${fmtScatterSpeed(r.speed)} tok/s at a ${SPEED_REFERENCE_TOKENS}-token answer` +
-          (r.tokens != null ? ` (this row's own mean answer: ${fmtCompactTokens(r.tokens)} tokens)` : '') +
-          (offAxis ? `\nfaster than this axis shows — drawn at the edge ${'➤'}` : '');
-        c.appendChild(title);
-        svg.appendChild(c);
-        if (offAxis) {
-          // The arrow is the row's real position: "somewhere to the right of here".
-          const arrow = svgEl('text', {
-            x: Math.min(cx + rSize + 1, plotRight), y: cy + 3,
-            'font-size': '9px', fill: verdictColor, 'paint-order': 'stroke', stroke: ring, 'stroke-width': '2.5',
-          });
-          arrow.textContent = '➤';
-          svg.appendChild(arrow);
-        }
-      }
-    }
-
-    // Visible labels: the model's short display name beside a dot, with a
-    // card-colored halo so grid lines never cut through the text. Labeling every
-    // dot turned the plot into a wall of text, so labels are placed greedily by
-    // importance — the routed pick first, then the fastest / smartest rows, then
-    // the highest-scoring remainder — and any label that would collide with an
-    // already-placed label or overlap another dot is dropped (the count of
-    // dropped labels is reported once, under the plot). Hovering still reveals
-    // every dot's numbers. When the same model is offered by several providers
-    // the provider is appended so every model/provider combination stays
-    // identifiable.
-    function drawScatterLabels(svg, rows, scales, selection) {
-      const rSize = scatterDotSize(rows);
-      // Real upstream names (the ones relays report for a persona entry) run
-      // longer than catalog labels, so the budget is sized for them — the
-      // collision test below, not this cap, is what keeps the plot readable.
-      const maxLabelChars = 22;
-      const plotRight = scales.pad.left + scales.plotW - 4;
-      const labelFill = cssVarValue('--text') || '#444';
-      const labelHalo = cssVarValue('--card') || '#fff';
-      const accentColor = cssVarValue('--accent') || '#3b82f6';
-      const pickRow = selection && selection.shownSelRow ? selection.shownSelRow : null;
-      const maxLabels = rows.length > 60 ? 9 : (rows.length > 30 ? 12 : 16);
-
-      const nameCounts = {};
-      for (const r of rows) {
-        const n = scatterShortName(r.m);
-        nameCounts[n] = (nameCounts[n] || 0) + 1;
-      }
-      const labelFor = (r) => {
-        const name = scatterShortName(r.m);
-        // The model name is the label. The provider suffix exists only to
-        // disambiguate a name offered by several providers, so it must never
-        // starve the name it qualifies: append it when the pair fits the budget,
-        // otherwise keep the full name and drop the suffix (the dot's hue already
-        // carries the provider, and the tooltip names both).
-        const shortName = name.length > maxLabelChars ? name.slice(0, maxLabelChars - 1) + '…' : name;
-        const suffix = nameCounts[name] > 1 ? ` · ${r.m.providerKey}` : '';
-        if (suffix && shortName.length + suffix.length <= maxLabelChars) return shortName + suffix;
-        return shortName;
-      };
-
-      const maxIntell = Math.max(...rows.map(r => r.intell));
-      const maxSpeed = Math.max(...rows.map(r => r.speed));
-      const priority = (r) => {
-        let p = 0;
-        if (pickRow && r === pickRow) p += 1000;
-        if (r.intell >= maxIntell) p += 200;
-        if (r.speed >= maxSpeed) p += 200;
-        if (!isRoutableRow(r)) p -= 400;
-        // Remaining rows: higher intelligence than speed, so the top of the
-        // field — where routing decisions actually happen — is labeled first.
-        return p + ((r.intell - scales.yMin) / scales.ySpan) * 100;
-      };
-      const ordered = rows.slice().sort((a, b) => priority(b) - priority(a));
-      // The routed pick is not a candidate like the others: it is placed first,
-      // always, and only its own collision test is relaxed below.
-      const candidates = pickRow ? [pickRow, ...ordered.filter(r => r !== pickRow)] : ordered;
-
-      // Obstacles: every plotted dot except the one a label belongs to, plus each
-      // placed label. A tiny inflation keeps labels from touching either.
-      const dots = rows.map(r => ({
-        r,
-        x0: scales.xOf(r.speed) - rSize - 2, x1: scales.xOf(r.speed) + rSize + 2,
-        y0: scales.yOf(r.intell) - rSize - 2, y1: scales.yOf(r.intell) + rSize + 2,
-      }));
-      const overlaps = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
-      const placed = [];
-      let dropped = 0;
-      // The "+N more" note is drawn in the bottom-right corner whenever labels had
-      // to be dropped. When the rows outnumber the label budget a drop (and so the
-      // note) is certain, so its room is reserved up front and no label can land
-      // on top of it.
-      const reserved = [];
-      if (rows.length > maxLabels) {
-        const worst = `+${rows.length} more — hover to identify`;
-        const noteY = scales.pad.top + scales.plotH - 4;
-        reserved.push({ x0: plotRight - worst.length * 4.4 - 2, x1: plotRight, y0: noteY - 8, y1: noteY + 3 });
-      }
-
-      const appendLabel = (r, rect, isPick) => {
-        const t = svgEl('text', {
-          x: rect.right ? rect.x0 : rect.x1,
-          y: scales.yOf(r.intell) + 3,
-          'font-size': isPick ? '9px' : '8.5px',
-          'font-weight': isPick ? 600 : 400,
-          fill: isPick ? accentColor : labelFill,
-          stroke: labelHalo,
-          'stroke-width': '2.5',
-          'stroke-linejoin': 'round',
-          'paint-order': 'stroke',
-          'text-anchor': rect.right ? 'start' : 'end',
-        });
-        t.textContent = labelFor(r);
-        svg.appendChild(t);
-        placed.push(rect);
-      };
-
-      for (const r of candidates) {
-        const isPick = pickRow && r === pickRow;
-        if (!isPick && placed.length >= maxLabels) { dropped++; continue; }
-        const label = labelFor(r);
-        const w = label.length * 4.4 + 2;
-        const dx = scales.xOf(r.speed);
-        const dy = scales.yOf(r.intell);
-        const rectFor = (right) => ({
-          x0: right ? dx + rSize + 5 : dx - rSize - 5 - w,
-          x1: right ? dx + rSize + 5 + w : dx - rSize - 5,
-          y0: dy - 5, y1: dy + 5, right,
-        });
-        const fits = (rect) => rect.x0 >= scales.pad.left + 2 && rect.x1 <= plotRight
-          && !placed.some(p => overlaps(p, rect))
-          && !reserved.some(p => overlaps(p, rect))
-          && !dots.some(d => d.r !== r && overlaps(d, rect));
-        let rect = fits(rectFor(true)) ? rectFor(true) : (fits(rectFor(false)) ? rectFor(false) : null);
-        if (!rect && isPick) {
-          // The routed pick keeps its label even in a crowded or very small plot:
-          // fall back to the roomier side and clamp the text inside the frame.
-          rect = rectFor(rectFor(true).x1 <= plotRight);
-          if (rect.x1 > plotRight) rect = { ...rect, x0: plotRight - w, x1: plotRight };
-          if (rect.x0 < scales.pad.left + 2) rect = { ...rect, x0: scales.pad.left + 2, x1: scales.pad.left + 2 + w };
-        }
-        if (!rect) { dropped++; continue; }
-        appendLabel(r, rect, isPick);
-      }
-
-      if (dropped > 0) {
-        const muted = cssVarValue('--text-muted') || '#999';
-        const more = svgEl('text', {
-          x: plotRight, y: scales.pad.top + scales.plotH - 4,
-          'font-size': '8.5px', fill: muted, 'text-anchor': 'end',
-          stroke: labelHalo, 'stroke-width': '2.5', 'stroke-linejoin': 'round',
-          'paint-order': 'stroke',
-        });
-        more.textContent = `+${dropped} more — hover to identify`;
-        svg.appendChild(more);
-      }
-    }
 
     // ---- Slope-line selector overlay ----
     // Two draggable threshold lines (minimum intelligence / minimum speed) and
@@ -1814,649 +1448,6 @@
     // evenly, so dragging the slider rotates the line smoothly the whole way.
     // SLOPE_SLIDER_ANGLE_MAX is the angle at 100% (the line is drawn truly
     // vertical there and the pick is the fastest eligible row).
-    const SLOPE_SLIDER_ANGLE_MAX = (85 * Math.PI) / 180;
-    const SLOPE_SLIDER_ANGLE_TAN = Math.tan(SLOPE_SLIDER_ANGLE_MAX);
-    // Data slope for a line at visual angle θ: tan(θ)·(ySpan/xSpan)·(plotW/plotH)
-    // (converts plot-pixel geometry to intelligence-per-speed units). The max is
-    // also floored by 2·ySpan/minSpeedGap so the 100% slope provably picks the
-    // fastest eligible row — matching pickFastestRow / the vertical-line display
-    // and, crucially, the server's selectModelBySlope() argmax, so the router
-    // routes to exactly the model the dashboard shows as selected.
-    //
-    // The two are deliberately kept separate: selectorSlopeMax is the pure
-    // angle mapping (equal slider steps = equal rotation, so mid-range drags
-    // stay smooth), while the guarantee slope is only applied AT the 100% end
-    // (see onSlopeSliderInput). Folding the guarantee into the max would push
-    // the line vertical within the first third of the slider whenever two rows
-    // have near-identical speeds.
-    function computeSelectorSlopeMax(scales) {
-      const { xSpan, ySpan, plotW, plotH } = scales;
-      if (!(xSpan > 0) || !(plotW > 0) || !(plotH > 0)) return 0;
-      return SLOPE_SLIDER_ANGLE_TAN * (ySpan / xSpan) * (plotW / plotH);
-    }
-
-    // Slope that makes the argmax pick (intelligence + slope·speed) the fastest
-    // eligible row regardless of intelligence gaps: with slope ≥ 2·ySpan/minSpeedGap,
-    // any speed difference ≥ the smallest gap outweighs any intelligence
-    // difference (≤ ySpan), so the fastest row always wins at 100% — matching
-    // pickFastestRow and the server's selectModelBySlope() argmax.
-    function computeSelectorGuaranteeSlope(scales, rows) {
-      const { xSpan, ySpan } = scales;
-      if (!(xSpan > 0) || !(ySpan > 0)) return 0;
-      let minSpeedGap = Infinity;
-      const eligibleSpeeds = (rows || [])
-        .filter(r => isRoutableRow(r))
-        .map(r => Number(r.speed))
-        .filter(v => Number.isFinite(v))
-        .sort((a, b) => a - b);
-      for (let i = 1; i < eligibleSpeeds.length; i++) {
-        const gap = eligibleSpeeds[i] - eligibleSpeeds[i - 1];
-        if (gap > 0 && gap < minSpeedGap) minSpeedGap = gap;
-      }
-      if (!Number.isFinite(minSpeedGap) || minSpeedGap <= 0) return 0;
-      return 2 * ySpan / minSpeedGap;
-    }
-
-    // Changeover slopes: the exact slopes where the argmax pick flips from one model
-    // to the next. With slope m the pick maximizes intell + m·speed, so each eligible
-    // row is a line L(s) = intell + s·speed and the pick is whichever line is highest.
-    // The changeovers are where the upper envelope of those lines hands over. Building
-    // that envelope (rather than comparing every pair) matters: two models may cross
-    // without either of them ever being the pick, because a third line sits above them
-    // at that slope — a notch derived from such a crossing would be a place where
-    // nothing changes.
-    function buildSlopeHull(rows, { routableOnly = false } = {}) {
-      const eligible = (rows || [])
-        .filter(r => !routableOnly || isRoutableRow(r))
-        .filter(r => Number.isFinite(r.intell) && Number.isFinite(r.speed))
-        .filter(r => r.intell > 0 && r.speed > 0);
-      // One line per distinct speed: at a given speed only the smartest row can win.
-      const bySpeed = new Map();
-      for (const r of eligible) {
-        const prev = bySpeed.get(r.speed);
-        if (!prev || r.intell > prev.intell) bySpeed.set(r.speed, r);
-      }
-      // Hull of lines, ordered by increasing slope (speed). Each entry records the
-      // slope at which that line starts to be the highest one; a line whose takeover
-      // comes no later than its predecessor's is popped — it never wins.
-      const hull = [];
-      for (const p of [...bySpeed.values()].sort((a, b) => a.speed - b.speed)) {
-        const m = p.speed;
-        const b = p.intell;
-        let start = -Infinity;
-        while (hull.length) {
-          const last = hull[hull.length - 1];
-          const x = (last.intell - b) / (m - last.speed);
-          if (x <= last.start) { hull.pop(); continue; }
-          start = x;
-          break;
-        }
-        if (hull.length === 0) start = -Infinity;
-        hull.push({ speed: m, intell: b, start });
-      }
-      return hull;
-    }
-
-    // Every takeover after the first is a changeover. Slopes at or below zero are
-    // outside the slider's range (it runs from the flat line to the vertical one),
-    // so they are not changeovers the user can reach. Routable rows only, because a
-    // notch must sit where the *router's* pick changes.
-    function computeChangeoverSlopes(rows) {
-      return buildSlopeHull(rows, { routableOnly: true })
-        .slice(1)
-        .map(h => h.start)
-        .filter(s => s > 0);
-    }
-
-    // The rows the line can touch at *some* slider angle: every envelope entry whose region
-    // reaches into the non-negative slopes (starts below them, ends above zero). The last
-    // entry runs to +Infinity, so the fastest row is always in; a row buried under another
-    // at every angle is not, and its Test button gets no automatic retry. Built over the
-    // plotted points rather than only routable rows: the rows this is for are, by
-    // definition, benched and therefore not routable right now.
-    function slopeSelectableRowKeys(rows) {
-      const hull = buildSlopeHull(rows);
-      const points = hull.filter((entry, i) =>
-        (i + 1 < hull.length ? hull[i + 1].start : Infinity) > 0);
-      const keys = new Set();
-      for (const r of rows || []) {
-        if (!r || !r.m || !Number.isFinite(r.intell) || !Number.isFinite(r.speed)) continue;
-        if (points.some(p => p.speed === r.speed && p.intell === r.intell)) {
-          keys.add(getModelRowKey(r.m));
-        }
-      }
-      return keys;
-    }
-
-    // Slider notches sit at the positions furthest from every model changeover. With N
-    // changeovers there are N+1 selection regions (each region picks one model); placing
-    // one notch per region at its midpoint puts each notch as far as possible from its
-    // region's changeover boundaries. The slider maps fraction v (0..1) to visual angle
-    // v·85°, then to a data slope via tan(θ)·(selectorSlopeMax/tan(85°)) — so a data
-    // slope s corresponds to v = atan(s·tan(85°)/selectorSlopeMax) / 85°.
-    function computeSelectorNotches(rows) {
-      const crossings = computeChangeoverSlopes(rows);
-      if (!selectorSlopeMax || crossings.length === 0) return [];
-      // Region edges in slope space: 0 → crossings sorted → +Infinity
-      const edges = [0, ...crossings.slice().sort((a, b) => a - b), Infinity];
-      const positions = [];
-      for (let i = 0; i < edges.length - 1; i++) {
-        const loSlope = edges[i] === 0 ? 0 : edges[i];
-        const hiSlope = edges[i + 1] === Infinity ? selectorSlopeMax : edges[i + 1];
-        const midSlope = (loSlope + hiSlope) / 2;
-        const frac = Math.atan(midSlope * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX;
-        positions.push(Math.round(Math.min(1, Math.max(0, frac)) * 1000));
-      }
-      return positions;
-    }
-
-    // One definition of "what the plot shows as selected", shared by the label
-    // pass and the overlay so the highlighted dot, its label, the Selected
-    // readout, and the drawn line can never disagree. Mirrors the router's
-    // precedence: manual pin > slope-line pick (only when a slope is set) > the
-    // server-reported intelligence best. Rows the router will not use are never picked, so
-    // pickSlopeModel/pickFastestRow apply the same eligibility the server does.
-    function getPlotSelection(rows) {
-      const pinned = !!activePinnedModelId;
-      // A canonical pin can resolve to a sibling row whose model id differs from the id the
-      // user clicked. Compare the server's resolved current row, not the display id, or the
-      // dashboard would let the local slope pick displace a pin the server is honoring.
-      const currentBestRowKey = currentBestModelId
-        ? getModelRowKey(currentBestProviderKey, currentBestModelId)
-        : '';
-      const pinIsCurrent = pinned && activePinnedRowKeys.includes(currentBestRowKey);
-      const pinnedSelRow = pinIsCurrent
-        ? rows.find(r => getModelRowKey(r.m) === currentBestRowKey)
-        : null;
-      const pinnedModel = (pinned && !pinnedSelRow)
-        ? (allModels.find(x => pinIsCurrent
-          ? getModelRowKey(x) === currentBestRowKey
-          : x.modelId === activePinnedModelId && (!activePinnedProviderKey || x.providerKey === activePinnedProviderKey)) || null)
-        : null;
-      const slopeNum = Number(selectorState.slope);
-      const slopeActive = selectorState.slope != null && Number.isFinite(slopeNum);
-      // A vertical line means "the fastest row", which is only what a positive slope
-      // asks for. Slope 0 is the flat line whose argmax is the smartest row at any
-      // scale — and selectorSlopeMax is legitimately 0 (no speed or intelligence
-      // spread yet, or before the first draw), which would otherwise make slope 0 look
-      // like "max slope" and highlight the fastest row while the router, which treats
-      // slope 0 as the argmax, routes to the smartest one.
-      const atMaxSlope = slopeActive && slopeNum > 0 && slopeNum >= selectorSlopeMax;
-      const slopePick = slopeActive && !pinIsCurrent ? (atMaxSlope ? pickFastestRow(rows) : pickSlopeModel(rows)) : null;
-      // `currentBest` is the server's ordinary pin > slope > ranking result. A pin that has no
-      // usable row is metadata, not a selection, so it must not hide the slope pick (or the
-      // ranking fallback) that the router will actually use.
-      const fallbackRow = (!slopePick && !slopeActive && currentBestModelId)
-        ? rows.find(r => r.m.modelId === currentBestModelId && (!currentBestProviderKey || r.m.providerKey === currentBestProviderKey))
-        : null;
-      const fallbackModel = (!slopePick && !slopeActive && !fallbackRow && currentBestModelId)
-        ? (allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey)) || null)
-        : null;
-      // The router's own move, from the last snapshot. It is shown only when the fallback
-      // model is still the current model; the current selection itself remains pin > slope >
-      // ranking, never fallback-first.
-      const routedFallbackRow = routerFallbackSelection
-        ? (rows.find(r => r.m.modelId === routerFallbackSelection.modelId && (!routerFallbackSelection.providerKey || r.m.providerKey === routerFallbackSelection.providerKey)) || null)
-        : null;
-      const routedFallbackModel = (routerFallbackSelection && !routedFallbackRow)
-        ? (allModels.find(x => x.modelId === routerFallbackSelection.modelId && (!routerFallbackSelection.providerKey || x.providerKey === routerFallbackSelection.providerKey)) || null)
-        : null;
-      return {
-        pinned, pinnedSelRow, pinnedModel, slopeNum, slopeActive, atMaxSlope, slopePick,
-        fallbackRow, fallbackModel,
-        routedFallbackRow, routedFallbackModel,
-        // A live fallback is the model answering this request right now, so it gets the
-        // selection ring/label while the ordinary slope or ranking pick remains the line's
-        // underlying rule. This is display state only; the next server snapshot re-evaluates it.
-        shownSelRow: routedFallbackRow || pinnedSelRow || slopePick || fallbackRow,
-        labelRow: routedFallbackModel || routedFallbackRow || pinnedSelRow || (pinIsCurrent ? pinnedModel : null) || slopePick || fallbackRow || fallbackModel || pinnedModel,
-      };
-    }
-
-    function drawSelectorOverlay(svg, rows, scales, selection) {
-      const { pad, plotW, plotH, xMin, xMax, yMin, yMax, ySpan, xSpan, xOf, yOf } = scales;
-      const muted = cssVarValue('--text-muted') || '#999';
-      const labelHalo = cssVarValue('--card') || '#fff';
-      const accentColor = cssVarValue('--accent') || '#3b82f6';
-      const rSize = scatterDotSize(rows);
-      // The slope-line selector is always active: it drives smartest routing
-      // whenever a slope is configured, so the line is always drawn in the
-      // accent color and the pick is always what the router will select.
-      const selLineColor = accentColor;
-
-      const selClip = svgEl('clipPath', { id: 'sel-plot-clip' });
-      selClip.appendChild(svgEl('rect', { x: pad.left, y: pad.top, width: plotW, height: plotH }));
-      svg.appendChild(selClip);
-
-      const { pinned, slopeNum, slopeActive, atMaxSlope, slopePick, shownSelRow, labelRow, routedFallbackRow, routedFallbackModel } = selection;
-      // The ring around the current model: the accent for a model the selector chose, a warning
-      // hue for one the router had to move to — the difference between "the line touches this"
-      // and "this is what is answering because something else stopped".
-      const selectedRingColor = routedFallbackRow ? (cssVarValue('--warning') || '#d97706') : accentColor;
-
-      // Minimum intelligence: horizontal dashed line, drag up/down. Unset, it
-      // rests on the floor as a faint affordance and carries no value label —
-      // the '—' label was pure clutter on every plot that never set a minimum.
-      const miSet = selectorState.minIntell != null;
-      const miVal = miSet ? Math.min(Math.max(selectorState.minIntell, yMin), yMax) : yMin;
-      const miY = yOf(miVal);
-      svg.appendChild(svgEl('line', {
-        x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
-        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4',
-        'stroke-opacity': miSet ? 0.9 : 0.28,
-      }));
-      svg.appendChild(svgEl('line', {
-        x1: pad.left, y1: miY, x2: pad.left + plotW, y2: miY,
-        stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minIntell', 'pointer-events': 'stroke',
-      }));
-      if (miSet) {
-        const miTxt = svgEl('text', {
-          x: pad.left + plotW - 4, y: Math.min(Math.max(miY - 4, pad.top + 22), pad.top + plotH - 2),
-          'font-size': '9px', fill: selLineColor, 'text-anchor': 'end',
-          'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
-        });
-        miTxt.textContent = `min ${fmtScatterIntell(miVal)}`;
-        svg.appendChild(miTxt);
-      }
-
-      // Minimum speed: vertical dashed line, drag left/right (same unset styling).
-      const msSet = selectorState.minSpeed != null;
-      const msVal = msSet ? Math.min(Math.max(selectorState.minSpeed, xMin), xMax) : xMin;
-      const msX = xOf(msVal);
-      svg.appendChild(svgEl('line', {
-        x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
-        stroke: selLineColor, 'stroke-width': 1, 'stroke-dasharray': '5 4',
-        'stroke-opacity': msSet ? 0.9 : 0.28,
-      }));
-      svg.appendChild(svgEl('line', {
-        x1: msX, y1: pad.top, x2: msX, y2: pad.top + plotH,
-        stroke: 'transparent', 'stroke-width': 14, 'data-sel-drag': 'minSpeed', 'pointer-events': 'stroke',
-      }));
-      if (msSet) {
-        const msTxt = svgEl('text', {
-          x: Math.min(Math.max(msX + 4, pad.left + 2), pad.left + plotW - 56), y: pad.top + plotH - 6,
-          'font-size': '9px', fill: selLineColor,
-          'paint-order': 'stroke', stroke: labelHalo, 'stroke-width': 2.5,
-        });
-        msTxt.textContent = `min ${fmtScatterSpeed(msVal)}`;
-        svg.appendChild(msTxt);
-      }
-
-      // The sloped line, lowered onto the plot: rests on the first model it
-      // touches (nothing qualifies → it rests on the plot floor at bottom-left).
-      // At maximum slope the line is fully vertical through the pick, which is
-      // the fastest eligible row at that slope.
-      if (Number.isFinite(slopeNum)) {
-        if (shownSelRow && atMaxSlope) {
-          svg.appendChild(svgEl('line', {
-            x1: xOf(shownSelRow.speed), y1: pad.top,
-            x2: xOf(shownSelRow.speed), y2: pad.top + plotH,
-            stroke: accentColor,
-            'stroke-width': 1.6,
-            'stroke-opacity': 0.95,
-            'clip-path': 'url(#sel-plot-clip)',
-          }));
-        } else {
-          const intercept = shownSelRow
-            ? (shownSelRow.intell + slopeNum * shownSelRow.speed)
-            : (yMin + slopeNum * xMin);
-          const intellAt = (s) => intercept - slopeNum * s;
-          svg.appendChild(svgEl('line', {
-            x1: xOf(xMin), y1: yOf(intellAt(xMin)),
-            x2: xOf(xMax), y2: yOf(intellAt(xMax)),
-            stroke: accentColor,
-            'stroke-width': 1.6,
-            'stroke-opacity': 0.95,
-            'clip-path': 'url(#sel-plot-clip)',
-          }));
-        }
-      }
-
-      // Highlight the winning dot: a manual pin first, else the slope pick, else
-      // the routed intelligence best. The same name also drives the KPI 'Current' readout
-      // (and vice versa on the next poll), so Current is always the same model —
-      // even mid-drag and when the selector falls back.
-      if (slopeActive && !slopePick) {
-        // A slope is set but nothing clears the minimums: routing falls back to
-        // the intelligence best, so name that model instead of pretending the line
-        // touches a dot.
-        const fbModel = currentBestModelId
-          ? allModels.find(x => x.modelId === currentBestModelId && (!currentBestProviderKey || x.providerKey === currentBestProviderKey))
-          : null;
-        const fbText = fbModel ? kpiBestText(fbModel) : null;
-        // Not a fallback claim, so no explanation: this is the ordinary rules speaking, and the
-        // title is cleared rather than inherited from whatever drew last.
-        if (fbText) setKpiBest(fbText);
-      } else if (labelRow) {
-        // labelRow is either a scatter row (has .m) or a bare model object when
-        // the pinned/best model has no speed data to plot.
-        const kpiText = kpiBestText(labelRow.m || labelRow);
-        if (shownSelRow) {
-          svg.appendChild(svgEl('circle', {
-            cx: xOf(shownSelRow.speed), cy: yOf(shownSelRow.intell), r: rSize + 4, fill: 'none',
-            stroke: selectedRingColor, 'stroke-width': 2,
-          }));
-        }
-        // The fallback explanation is a property of the current selection only. The server now
-        // returns the ordinary pin/slope/ranking pick as `currentBest`; a prior fallback whose
-        // model is no longer that pick must not add a warning ring or change the KPI.
-        if (kpiText) {
-          const fellBack = (routedFallbackRow || routedFallbackModel) && routerFallbackSelection;
-          setKpiBest(
-            fellBack ? `${kpiText} ↯ fallback` : kpiText,
-            fellBack
-              ? `Router fallback: ${kpiText} replaced ${routerFallbackSelection.fromProviderKey ? `${routerFallbackSelection.fromProviderKey}/` : ''}${routerFallbackSelection.fromModelId || 'the selected model'}, which refused the request${routerFallbackSelection.reason ? `: ${routerFallbackSelection.reason}` : '.'}`
-              : '',
-          );
-        }
-      }
-    }
-
-    function drawSpeedIntellScatter(models) {
-      const svg = document.getElementById('speed-intell-svg');
-      if (!svg) return;
-      // The plot SVG now fills only the space between the title and the control
-      // strips (see .scatter-card), so measure the SVG itself, not the card.
-      const W = svg.clientWidth || 600;
-      const H = svg.clientHeight || 340;
-
-      const { rows, tableRowsWithoutSpeed } = buildScatterRows(models);
-
-      const countEl = document.getElementById('speed-intell-count');
-      if (countEl) {
-        const combos = `${rows.length} combo${rows.length === 1 ? '' : 's'}`;
-        // Off-axis rows are still counted as combos — they are plotted, at the edge, with
-        // an arrow. Naming them here is what tells the reader the axis is a truncated one.
-        const { offScale } = scatterAxisLimit(rows.map(r => r.speed));
-        const extras = [
-          tableRowsWithoutSpeed > 0 ? `${tableRowsWithoutSpeed} without speed data` : '',
-          offScale > 0 ? `${offScale} past the axis ➤` : '',
-        ].filter(Boolean).join(' · ');
-        countEl.textContent = rows.length > 0
-          ? (extras ? `${combos} · ${extras}` : combos)
-          : 'no speed data yet';
-      }
-
-      // Selector state is part of the redraw key so threshold drags and slope
-      // changes re-render immediately even when the model data is unchanged.
-      // The routed best and pin are part of the redraw key too: when the server
-      // reports a new best (pin toggled, slope save landed) the selection label
-      // and KPI must re-render even though the rows and slider state didn't move.
-      // Verdict and routing eligibility are row state even when every plotted number is
-      // unchanged. Omitting them let a live failure or provider bench leave the old full-size
-      // mark and selection ring in the SVG until some unrelated metric happened to change.
-      const selHash = `${selectorState.slope ?? 'n'},${selectorState.minSpeed ?? 'n'},${selectorState.minIntell ?? 'n'},best=${currentBestModelId ?? 'n'}/${currentBestProviderKey ?? 'n'},pin=${activePinnedModelId ?? 'n'}/${activePinnedProviderKey ?? 'n'},fb=${routerFallbackSelection ? `${routerFallbackSelection.modelId}/${routerFallbackSelection.providerKey}` : 'n'}`;
-      const hash = rows.map(r => {
-        const routing = typeof r.m.routingEligible === 'boolean' ? r.m.routingEligible : 'legacy';
-        return `${r.m.providerKey}|${r.m.modelId}|${r.intell}|${r.ttft}|${r.tps}|v=${rowVerdict(r.m)}|route=${routing}`;
-      }).sort().join('~') + ':' + W + 'x' + H + ':sel=' + selHash;
-      if (svg.dataset.hash === hash) return;
-      svg.dataset.hash = hash;
-      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-      svg.innerHTML = '';
-
-      if (rows.length === 0) {
-        selectorSlopeMax = 0;
-        selectorGuaranteeSlope = 0;
-        selectorNotches = [];
-        syncSelectorControls();
-        const muted = cssVarValue('--text-muted') || '#999';
-        const t = svgEl('text', { x: 14, y: 46, fill: muted, 'font-size': '12px' });
-        t.textContent = 'No measurements yet — TTFT and tok/s are recorded from real requests and model tests.';
-        svg.appendChild(t);
-        return;
-      }
-
-      const scales = computeScatterScales(rows, W, H);
-      scatterScales = scales;
-      // Derived once, before anything is drawn: the overlay, the labels, the
-      // 'Current' KPI, and the router all key off the same numbers.
-      selectorSlopeMax = computeSelectorSlopeMax(scales);
-      selectorGuaranteeSlope = computeSelectorGuaranteeSlope(scales, rows);
-      selectorNotches = computeSelectorNotches(rows);
-      const selection = getPlotSelection(rows);
-      drawScatterGrid(svg, scales);
-      drawScatterPoints(svg, rows, scales);
-      drawScatterLabels(svg, rows, scales, selection);
-      drawSelectorOverlay(svg, rows, scales, selection);
-      syncSelectorControls();
-    }
-
-    // ---- Slope-line selector helpers (Intelligence-vs-Speed plot) ----
-    // Client-side mirror of selectModelBySlope() in lib/utils.js for immediate
-    // feedback: eligible rows are 'up', not rate-limited, and above both
-    // minimums; the pick maximizes intelligence + slope * speed, which is
-    // exactly the first dot a rightward-descending line of the given slope
-    // touches when lowered from above.
-    // Rows the router would consider. The server marks each row with
-    // routingEligible (its own status/rate-limit check), so the plot prefers that
-    // flag and only falls back to a local check for payloads from older servers.
-    // Using one flag keeps "what the plot selects" and "what the router routes"
-    // identical by construction instead of by two hand-synced conditions.
-    function isRoutableRow(r) {
-      const m = r && r.m;
-      if (!m) return false;
-      if (typeof m.routingEligible === 'boolean') return m.routingEligible;
-      // Older payloads carry no flag: fall back to the dashboard's own verdict, which is
-      // the same set of conditions the server applies.
-      return isRowUp(m);
-    }
-
-    function pickSlopeModel(rows) {
-      const slope = Number(selectorState.slope);
-      if (!Number.isFinite(slope)) return null;
-      let best = null;
-      let bestVal = -Infinity;
-      for (const r of rows || []) {
-        // Same eligibility as the server's selectModelBySlope(): status 'up' and
-        // not HTTP-429 rate-limited. Credit exhaustion alone does NOT exclude a
-        // row (the router only trusts the proxy's 429 signal), so the plot always
-        // selects exactly what routing will pick.
-        if (!isRoutableRow(r)) continue;
-        if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
-        if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
-        const val = r.intell + slope * r.speed;
-        if (val > bestVal) { best = r; bestVal = val; }
-      }
-      return best;
-    }
-
-    // The row a fully vertical line touches: the fastest eligible row above the
-    // minimums (ties broken by intelligence) — the limit of the slope pick as
-    // the slope goes to infinity.
-    function pickFastestRow(rows) {
-      let best = null;
-      let bestSpeed = -Infinity;
-      let bestIntell = -Infinity;
-      for (const r of rows || []) {
-        // Same eligibility as the server's selectModelBySlope() (see pickSlopeModel).
-        if (!isRoutableRow(r)) continue;
-        if (selectorState.minSpeed != null && r.speed < selectorState.minSpeed) continue;
-        if (selectorState.minIntell != null && r.intell < selectorState.minIntell) continue;
-        if (r.speed > bestSpeed || (r.speed === bestSpeed && r.intell > bestIntell)) {
-          best = r;
-          bestSpeed = r.speed;
-          bestIntell = r.intell;
-        }
-      }
-      return best;
-    }
-
-    function svgLocalPoint(svg, clientX, clientY) {
-      try {
-        const ctm = svg.getScreenCTM && svg.getScreenCTM();
-        if (!ctm) return null;
-        const p = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
-        return { x: p.x, y: p.y };
-      } catch { return null; }
-    }
-
-    function syncSelectorControls() {
-      const slider = document.getElementById('sel-slope-slider');
-      const valEl = document.getElementById('sel-slope-value');
-      const slopeValue = selectorState.slope != null && Number.isFinite(Number(selectorState.slope))
-        ? Number(selectorState.slope)
-        : null;
-      const scaled = slopeValue != null && selectorSlopeMax > 0;
-      const frac = scaled
-        ? Math.min(1, Math.atan(slopeValue * SLOPE_SLIDER_ANGLE_TAN / selectorSlopeMax) / SLOPE_SLIDER_ANGLE_MAX)
-        : 0;
-      if (slider) slider.value = String(Math.round(frac * 1000));
-      // Paint the changeover notches as a gradient of hairlines in a CSS custom property,
-      // which the track rules read as their background-image. A datalist cannot be used:
-      // -webkit-appearance:none removes the native ticks. Positions are per-mille of the
-      // 0..1000 slider range; each tick is 2px wide, centred on its stop.
-      if (slider) {
-        const stops = selectorNotches.map(p => p / 10); // per-mille -> percent
-        slider.style.setProperty('--slope-notches', stops.length
-          ? `linear-gradient(to right, ${stops.map(pc =>
-            `transparent calc(${pc}% - 1px), var(--border) calc(${pc}% - 1px) calc(${pc}% + 1px), transparent calc(${pc}% + 1px)`
-          ).join(', ')})`
-          : 'none');
-      }
-      if (valEl) {
-        // Slope 0 is a real setting — the flat line that picks the smartest row — so it
-        // reads as '0%'. Only a missing slope, or a positive one the plot has no scale
-        // to position yet, shows as unset.
-        valEl.textContent = slopeValue == null
-          ? '—'
-          : (slopeValue === 0 ? '0%' : (scaled ? `${Math.round(frac * 100)}%` : '—'));
-      }
-    }
-
-    function onSlopeSliderInput() {
-      const slider = document.getElementById('sel-slope-slider');
-      if (!slider) return;
-      const v = Number(slider.value) / 1000;
-      // Map the slider position to the slope that draws the line at angle v·max:
-      // slope = tan(v·θmax)·(selectorSlopeMax/tan(θmax)) — equal slider steps are
-      // equal rotations, so the line sweeps smoothly from horizontal to vertical.
-      // At 100% pin the slope to at least selectorSlopeMax (plus the guarantee
-      // slope when it is larger, i.e. when two rows have near-identical speeds)
-      // so the vertical-line branch and its fastest-model pick are exact, and the
-      // router selects the same fastest row the plot highlights.
-      // 0% is the scale-free end: slope 0 is meaningful to the router (the flat line
-      // picks the highest-intelligence eligible row), so the leftmost position stores 0.
-      // Clearing it to null instead made the router fall back to the Elo ranking, so the
-      // one pick the slider promises at 0% was the one position that could not express
-      // it. Above 0% a position still needs a plot scale to become a data slope.
-      if (!(v > 0)) {
-        selectorState.slope = 0;
-      } else if (selectorSlopeMax > 0) {
-        selectorState.slope = v >= 1
-          ? Math.max(selectorSlopeMax, selectorGuaranteeSlope)
-          : selectorSlopeMax * Math.tan(v * SLOPE_SLIDER_ANGLE_MAX) / SLOPE_SLIDER_ANGLE_TAN;
-      } else {
-        selectorState.slope = null;
-      }
-      scheduleSelectorSave();
-      requestScatterRedraw();
-    }
-
-    function scheduleSelectorSave() {
-      if (selectorSaveTimer) clearTimeout(selectorSaveTimer);
-      selectorSaveTimer = setTimeout(async () => {
-        selectorSaveTimer = null;
-        try {
-          const res = await fetch('/api/selector', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              slope: selectorState.slope,
-              minSpeed: selectorState.minSpeed,
-              minIntell: selectorState.minIntell,
-            }),
-          });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error(body.error || `Selector update failed (HTTP ${res.status}).`);
-          }
-        } catch (err) {
-          updateProxyErrorBanner({ message: err?.message || 'Selector update failed.', fallback: false });
-        }
-      }, 300);
-    }
-
-    // null / undefined / '' mean "not set". Number(null) is 0, so a plain
-    // finite-number test would read an inert selector as slope 0 and make the
-    // plot claim a selection the router is not making.
-    function toSelectorOption(value) {
-      if (value == null || value === '') return null;
-      const n = Number(value);
-      return Number.isFinite(n) && n >= 0 ? n : null;
-    }
-
-    async function loadSelectorState() {
-      try {
-        const res = await fetch('/api/selector');
-        if (!res.ok) return;
-        const sel = await res.json();
-        selectorState = {
-          slope: toSelectorOption(sel.slope),
-          minSpeed: toSelectorOption(sel.minSpeed),
-          minIntell: toSelectorOption(sel.minIntell),
-        };
-        syncSelectorControls();
-        requestScatterRedraw();
-      } catch { /* defaults until the next save */ }
-    }
-
-    let scatterRedrawQueued = false;
-    function requestScatterRedraw() {
-      if (scatterRedrawQueued) return;
-      scatterRedrawQueued = true;
-      requestAnimationFrame(() => {
-        scatterRedrawQueued = false;
-        drawSpeedIntellScatter(allModels);
-      });
-    }
-
-    function initScatterControls() {
-      const svg = document.getElementById('speed-intell-svg');
-      if (!svg) return;
-      svg.addEventListener('pointerdown', (e) => {
-        const hit = e.target && e.target.closest && e.target.closest('[data-sel-drag]');
-        if (!hit) return;
-        scatterDrag = { type: hit.getAttribute('data-sel-drag') };
-        try { svg.setPointerCapture(e.pointerId); } catch { /* capture optional */ }
-        e.preventDefault();
-      });
-      svg.addEventListener('pointermove', (e) => {
-        if (!scatterDrag) return;
-        const pt = svgLocalPoint(svg, e.clientX, e.clientY);
-        const s = scatterScales;
-        if (!pt || !s) return;
-        if (scatterDrag.type === 'minIntell') {
-          const frac = 1 - (pt.y - s.pad.top) / s.plotH;
-          selectorState.minIntell = Math.min(s.yMax, Math.max(s.yMin, s.yMin + frac * s.ySpan));
-        } else if (scatterDrag.type === 'minSpeed') {
-          const frac = (pt.x - s.pad.left) / s.plotW;
-          selectorState.minSpeed = Math.min(s.xMax, Math.max(s.xMin, s.xMin + frac * s.xSpan));
-        } else {
-          return;
-        }
-        scheduleSelectorSave();
-        requestScatterRedraw();
-      });
-      const endDrag = () => { scatterDrag = null; };
-      svg.addEventListener('pointerup', endDrag);
-      svg.addEventListener('pointercancel', endDrag);
-
-      const slider = document.getElementById('sel-slope-slider');
-      if (slider) slider.addEventListener('input', onSlopeSliderInput);
-
-      // Redraw when the SVG's own box changes (window resize, the grid stretching
-      // this card to match the topology card, fonts settling): the viewBox is set
-      // from the measured box, so a stale viewBox letterboxes the plot inside the
-      // card until the next poll. The hash guard makes this a no-op when the box
-      // didn't actually change, so the plot always fills the space it's given.
-      if (typeof ResizeObserver !== 'undefined') {
-        const ro = new ResizeObserver(() => requestScatterRedraw());
-        ro.observe(svg);
-      }
-
-      loadSelectorState();
-    }
 
     // ──────── Usage plots ────────
     // Time-series usage plots: tokens/s over time, rendered as ~100 equal time buckets,
@@ -2921,6 +1912,45 @@
           if (group) drawGroupUsageSparklineInto(cell, group.members);
         }
       }
+      drawProviderUsageSparklines();
+    }
+
+    // A provider's aggregate series: one sample per second window, summing the tokens every
+    // model it served accounted for in that window. A model group merges providers of the same
+    // model, where one request has one rate, but several of a provider's models can run at
+    // once; the provider's plot is therefore their sum rather than the fastest sample.
+    function combinedProviderSeries(providerKey) {
+      const merged = new Map()
+      for (const [key, pts] of usageSeriesByKey) {
+        if (key.split('::', 1)[0] !== providerKey || !Array.isArray(pts)) continue
+        for (const p of pts) {
+          if (!p || p.t == null) continue
+          const bucket = Math.floor(Number(p.t) / 1000)
+          const prev = merged.get(bucket)
+          if (!prev) {
+            merged.set(bucket, { ...p, t: Number(p.t), tokens: Number(p.tokens) || 0 })
+          } else {
+            prev.tokens += Number(p.tokens) || 0
+          }
+        }
+      }
+      return [...merged.values()].sort((a, b) => a.t - b.t)
+    }
+
+    function drawProviderUsageSparklines() {
+      for (const cell of document.querySelectorAll('td.provider-usage-cell[data-provider-usage]')) {
+        drawProviderUsageSparklineInto(cell, cell.dataset.providerUsage)
+      }
+    }
+
+    function drawProviderUsageSparklineInto(container, providerKey) {
+      if (!container) return
+      const combined = combinedProviderSeries(providerKey)
+      if (combined.length === 0) {
+        container.innerHTML = '<span style="font-size:0.7rem;color:var(--text-muted);">—</span>'
+        return
+      }
+      drawUsageSparklineSeries(container, combined, providerKey)
     }
 
     // A model's combined series, keyed provider::model one per member and summed at
@@ -4996,7 +4026,17 @@
     // answer the quota question by pointing at that live view instead of showing a bare dash.
     const GOOGLE_ACTIVE_QUOTA_URL = 'https://aistudio.google.com/rate-limit?timeRange=last-28-days';
 
-    function quotaRowWindow({ period, metric = 'tokens', rawWindow, used, total, remaining, resetAt, source, scope, detail, stale, unavailable, usedPercent, percentOnly }) {
+    // A window's kind decides which column draws it. Throttle windows are the burst
+    // counters (a minute or an hour of capacity, and any x-ratelimit-* counter whatever
+    // period it reports); capacity windows are the allowances that spend down — days,
+    // weeks, months, credits, and a published free-tier percentage.
+    function quotaRowKindFor(period, source, metric) {
+      if (source === 'key' || metric === 'credits') return 'quota';
+      if (period === 'minute' || period === 'hour') return 'rate-limit';
+      return 'quota';
+    }
+
+    function quotaRowWindow({ period, metric = 'tokens', rawWindow, used, total, remaining, resetAt, source, scope, detail, stale, unavailable, usedPercent, percentOnly, kind, estimated }) {
       // A credit balance is money, not capacity: OpenRouter's key endpoint counts dollars and
       // its allowance does not reset, so the metric has to survive as its own unit or the cell
       // would print "$4.20 tokens".
@@ -5019,8 +4059,14 @@
       if (usedValue == null && totalValue != null && totalValue > 0 && remainingValue != null) usedValue = Math.max(0, totalValue - remainingValue);
       if (remainingValue == null && totalValue != null && totalValue > 0 && usedValue != null) remainingValue = Math.max(0, totalValue - usedValue);
       if (usedPercentValue == null && totalValue != null && totalValue > 0 && usedValue != null) usedPercentValue = Math.max(0, (usedValue / totalValue) * 100);
-      if (usedValue == null && totalValue == null && remainingValue == null && usedPercentValue == null) return null;
+      // A measurement with no allowance behind it is not a window: there is nothing to
+      // draw a percentage against, and the column says ∞ instead of hatching a bar nobody
+      // can read. A zero limit is still a limit — the provider saying nothing is available.
+      const hasAllowance = (totalValue != null && totalValue > 0) || usedPercentValue != null || unavailable === true;
+      if (!hasAllowance) return null;
+      const windowSource = source || 'observed';
       return {
+        kind: kind || quotaRowKindFor(period, windowSource, normalizedMetric),
         period,
         metric: normalizedMetric,
         rawWindow,
@@ -5030,18 +4076,19 @@
         usedPercent: usedPercentValue,
         percentOnly: isPercentOnly,
         resetAt: Number.isFinite(Number(resetAt)) && Number(resetAt) > 0 ? Number(resetAt) : null,
-        source: source || 'observed',
+        source: windowSource,
         scope: scope || null,
         detail: detail || '',
         stale: Boolean(stale),
         unavailable: zeroLimit,
+        estimated: Boolean(estimated),
       };
     }
 
-    function quotaRowViews(m) {
+    function quotaRowViewsUncached(m) {
       const windows = [];
       const byWindow = new Map();
-      const keyFor = (window) => `${window.metric}:${window.period}`;
+      const keyFor = (window) => `${window.metric}:${window.period}:${window.kind}`;
       const add = (window, replace = false) => {
         if (!window) return;
         // A positive window whose stated reset has already passed is history, not a quota the
@@ -5108,52 +4155,64 @@
           stale: report.freshness === 'stale',
         }), true);
       }
+      // Capacity (credit balance, free-tier percentage) lives on the quota half; throttle
+      // counters (limitRequests/limitTokens) stay on rateLimit. Both feed the quota column,
+      // which shows every window the provider named — the split is about ownership, not
+      // about hiding either from the user.
       const rateLimit = m?.rateLimit;
-      if (rateLimit) {
+      const quotaState = m?.quota;
+      const creditSource = quotaState || rateLimit;
+      if (creditSource) {
         // A key-level credit balance is the provider's own answer to "how much is left on this
         // account" — OpenRouter reports it from its key endpoint, and every model on the key
         // draws from the same pot. The provider card has always shown it; the model table did
         // not, so a row whose account was nearly spent read "—" while the card one click away
         // showed the balance. It is a one-off allowance rather than a resetting window, so it
         // is drawn against the lifetime counter that never rolls over.
-        if (rateLimit.creditLimit != null || rateLimit.creditRemaining != null) {
+        if (creditSource.creditLimit != null || creditSource.creditRemaining != null) {
           add(quotaRowWindow({
             period: 'lifetime',
             metric: 'credits',
             rawWindow: 'account credit',
-            total: rateLimit.creditLimit,
-            remaining: rateLimit.creditRemaining,
-            used: rateLimit.creditLimit != null && rateLimit.creditRemaining != null
-              ? Math.max(0, Number(rateLimit.creditLimit) - Number(rateLimit.creditRemaining))
+            total: creditSource.creditLimit,
+            remaining: creditSource.creditRemaining,
+            used: creditSource.creditLimit != null && creditSource.creditRemaining != null
+              ? Math.max(0, Number(creditSource.creditLimit) - Number(creditSource.creditRemaining))
               : null,
-            resetAt: rateLimit.creditResetAt,
+            resetAt: creditSource.creditResetAt,
             source: 'key',
             scope: 'account',
             detail: 'account credit reported by the provider key endpoint',
           }));
         }
-        const retryReset = rateLimit.capturedAt && rateLimit.retryAfterMs
+        const retryReset = rateLimit?.capturedAt && rateLimit?.retryAfterMs
           ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
           : null;
         // Token Harbor's free tier publishes a percentage of a rolling seven-day allowance,
         // not a token total. Keep it percent-only so the column says "62% used" rather than
         // inventing a denominator the vendor never published.
-        if (rateLimit.freeUsedPercent != null
-          && (rateLimit.freeResetAt == null || Number(rateLimit.freeResetAt) > Date.now())) {
+        if (creditSource.freeUsedPercent != null
+          && (creditSource.freeResetAt == null || Number(creditSource.freeResetAt) > Date.now())) {
           add(quotaRowWindow({
             period: 'week',
             metric: 'tokens',
             rawWindow: 'rolling 7-day free allowance',
-            usedPercent: rateLimit.freeUsedPercent,
-            resetAt: rateLimit.freeResetAt,
+            usedPercent: creditSource.freeUsedPercent,
+            resetAt: creditSource.freeResetAt,
             source: 'headers',
             scope: 'account',
             detail: 'Token Harbor free-tier allowance',
             percentOnly: true,
           }));
         }
+      }
+      if (rateLimit) {
+        const retryReset = rateLimit.capturedAt && rateLimit.retryAfterMs
+          ? Number(rateLimit.capturedAt) + Number(rateLimit.retryAfterMs)
+          : null;
         if (rateLimit.limitTokens != null || rateLimit.remainingTokens != null) {
           add(quotaRowWindow({
+            kind: 'rate-limit',
             period: 'window',
             metric: 'tokens',
             rawWindow: 'last response',
@@ -5170,6 +4229,7 @@
         }
         if (rateLimit.limitRequests != null || rateLimit.remainingRequests != null) {
           add(quotaRowWindow({
+            kind: 'rate-limit',
             period: 'window',
             metric: 'requests',
             rawWindow: 'last response',
@@ -5187,6 +4247,7 @@
       }
       for (const observed of Array.isArray(m?.quotaWindows) ? m.quotaWindows : []) {
         add(quotaRowWindow({
+          kind: observed.kind,
           period: quotaRowPeriod(observed.period || observed.rawWindow),
           metric: observed.metric,
           rawWindow: observed.rawWindow,
@@ -5202,6 +4263,34 @@
           usedPercent: observed.usedPercent,
           percentOnly: observed.percentOnly,
         }), true);
+      }
+      // No published cap and no observed window: estimate a ceiling from the traffic
+      // Hammer itself has carried, so the column draws an active bar instead of claiming a
+      // limit nobody stated or an ∞ nobody proved. The window is labelled EST.
+      // A provider that states there is no limit is not estimated against: an inferred
+      // ceiling would turn ∞ back into a number the provider explicitly disclaimed.
+      const observedUsage = m?.knownQuota?.unlimited === true ? {} : (m?.recordedUsage || {});
+      for (const metric of ['requests', 'tokens']) {
+        for (const period of ['minute', 'hour', 'day']) {
+          const field = QUOTA_ROW_RECORDED_FIELD[metric]?.[period];
+          if (!field) continue;
+          if (windows.some((window) => window.metric === metric && window.period === period)) continue;
+          const seen = Number(observedUsage[field]);
+          if (!Number.isFinite(seen) || seen <= 0) continue;
+          const ceiling = estimateLimitCeiling(seen);
+          add(quotaRowWindow({
+            period,
+            metric,
+            rawWindow: `estimated ${period}`,
+            used: seen,
+            total: ceiling,
+            remaining: Math.max(0, ceiling - seen),
+            source: 'estimated',
+            scope: 'account',
+            detail: 'ceiling estimated from traffic Hammer has carried; no published limit',
+            estimated: true,
+          }));
+        }
       }
       const sorted = windows.sort((a, b) =>
         (QUOTA_ROW_PERIOD_ORDER[a.period] ?? 9) - (QUOTA_ROW_PERIOD_ORDER[b.period] ?? 9)
@@ -5234,6 +4323,7 @@
     function quotaRowWindowHtml(w) {
       const noFreeTier = w.unavailable && !w.percentOnly && w.period === 'window';
       const periodLabel = noFreeTier ? 'FREE TIER' : quotaRowPeriodLabel(w.period, w.rawWindow);
+      const displayedLabel = w.estimated ? `${periodLabel} · EST` : periodLabel;
       const unit = w.metric === 'requests' ? 'requests' : w.metric === 'credits' ? 'credits' : 'tokens';
       const remainingPercent = (w.unavailable && !w.percentOnly) || w.usedPercent == null ? null : 100 - Math.min(100, w.usedPercent);
       const totalText = noFreeTier
@@ -5261,8 +4351,11 @@
           : w.unavailable
             ? 'not available'
             : w.usedPercent == null ? 'usage not reported' : `${quotaRowPercentText(w.usedPercent)}% used`;
-      const barWidth = w.usedPercent == null || (w.unavailable && !w.percentOnly) ? 0 : Math.min(100, w.usedPercent);
-      const tone = remainingPercent == null ? 'unknown' : remainingPercent <= 10 ? 'error' : remainingPercent <= 30 ? 'warning' : 'success';
+      // A zero allowance is fully spent, not unknown: a bar at 0% beside "not available"
+      // reads as capacity nobody has touched, which is the opposite of what it says.
+      const zeroAllowance = w.unavailable && !w.percentOnly;
+      const barWidth = zeroAllowance ? 100 : w.usedPercent == null ? 0 : Math.min(100, w.usedPercent);
+      const tone = zeroAllowance ? 'error' : remainingPercent == null ? 'unknown' : remainingPercent <= 10 ? 'error' : remainingPercent <= 30 ? 'warning' : 'success';
       const titleParts = noFreeTier
         ? ['No free-tier requests or tokens', w.detail, w.scope ? `${w.scope}-scoped` : '']
         : [
@@ -5278,9 +4371,9 @@
       const meta = noFreeTier
         ? w.detail
         : [totalText, remainingText, resetText].filter(Boolean).join(' · ');
-      return `<div class="quota-row-window${w.stale ? ' is-stale' : ''}${w.unavailable ? ' is-unavailable' : ''}" data-quota-period="${escapeAttr(w.period)}" data-quota-metric="${escapeAttr(w.metric || 'tokens')}" data-quota-unavailable="${w.unavailable ? 'true' : 'false'}" data-quota-used-percent="${w.usedPercent == null ? '' : w.usedPercent.toFixed(2)}" title="${escapeAttr(titleParts.join(' · '))}">
-        <div class="quota-row-head"><span class="quota-row-period">${escapeHtml(periodLabel)}</span><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
-        <div class="quota-row-track${(w.unavailable && !w.percentOnly) || w.usedPercent == null ? ' quota-row-track-unknown' : ''}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${(w.unavailable && !w.percentOnly) || w.usedPercent == null ? '' : Math.round(Math.min(100, w.usedPercent))}" aria-label="${escapeAttr(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeAttr(percentText)}"><div class="quota-row-fill quota-row-fill-${tone}" style="width:${barWidth.toFixed(2)}%"></div></div>
+      return `<div class="quota-row-window${w.stale ? ' is-stale' : ''}${w.unavailable ? ' is-unavailable' : ''}${w.estimated ? ' is-estimated' : ''}" data-quota-period="${escapeAttr(w.period)}" data-quota-metric="${escapeAttr(w.metric || 'tokens')}" data-quota-unavailable="${w.unavailable ? 'true' : 'false'}" data-quota-used-percent="${w.usedPercent == null ? '' : w.usedPercent.toFixed(2)}" title="${escapeAttr(titleParts.join(' · '))}">
+        <div class="quota-row-head"><span class="quota-row-period">${escapeHtml(displayedLabel)}</span><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
+        <div class="quota-row-track${(zeroAllowance || w.usedPercent != null) ? '' : ' quota-row-track-unknown'}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${zeroAllowance ? 100 : w.usedPercent == null ? '' : Math.round(Math.min(100, w.usedPercent))}" aria-label="${escapeAttr(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeAttr(percentText)}"><div class="quota-row-fill quota-row-fill-${tone}" style="width:${barWidth.toFixed(2)}%"></div></div>
         <div class="quota-row-meta">${escapeHtml(meta)}</div>
       </div>`;
     }
@@ -5302,9 +4395,10 @@
       googleai: {
         label: 'Google AI',
         href: GOOGLE_ACTIVE_QUOTA_URL,
-        meta: 'Project limits',
+        meta: 'Per-model limits',
         linkText: 'Open AI Studio',
-        fallback: 'Google publishes active limits per project in AI Studio.',
+        fallback:
+          'Google publishes free-tier limits per model in AI Studio; this model is not in the current table.',
       },
       inferx: {
         label: 'InferX',
@@ -5348,12 +4442,174 @@
     }
 
     function quotaRowCellInnerHTML(m, opts = {}) {
-      const windows = quotaRowViews(m);
+      // The Quota column carries capacity only. A throttle window belongs to the column
+      // beside it, even when the provider published it as a nominal allowance.
+      const windows = quotaRowViews(m).filter((window) => window.kind !== 'rate-limit');
       if (windows.length === 0) {
-        const note = quotaProviderNote(m);
-        if (note) return quotaProviderNoteHtml(note);
+        return m?.knownQuota?.unlimited === true ? quotaUnlimitedHtml('quota') : quotaUnknownHtml('quota');
       }
       return quotaRowWindowsHtml(windows, opts);
+    }
+
+    // A column never answers with a link or a dash. "∞" is the honest reading of "no limit
+    // is published or has been observed": nothing can exhaust it, and the router treats the
+    // endpoint as unlimited until a response says otherwise.
+    // ∞ is reserved for a provider that states there is no limit at all. "We have not
+    // observed one" is a different claim, and the cell says that instead of borrowing ∞.
+    function quotaUnlimitedHtml(kind) {
+      const throttle = kind === 'rate-limit';
+      const label = throttle ? 'NO RATE LIMIT' : 'NO QUOTA LIMIT';
+      const title = throttle
+        ? 'The provider states there is no rate limit for this endpoint — nothing can exhaust it.'
+        : 'The provider states there is no usage limit for this endpoint — nothing can exhaust it.';
+      return `<div class="quota-row-window quota-row-infinity" data-quota-kind="${kind}" title="${escapeAttr(title)}">
+        <div class="quota-row-head"><span class="quota-row-period">${label}</span><span class="quota-row-pct">∞</span></div>
+        <div class="quota-row-meta">no usage limit published</div>
+      </div>`;
+    }
+
+    function quotaUnknownHtml(kind) {
+      const throttle = kind === 'rate-limit';
+      const label = throttle ? 'RATE LIMIT' : 'QUOTA';
+      return `<div class="quota-row-window quota-row-unknown-limit" data-quota-kind="${kind}" title="No limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.">
+        <div class="quota-row-head"><span class="quota-row-period">${label}</span><span class="quota-row-pct">limit not published</span></div>
+        <div class="quota-row-track quota-row-track-unknown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="quota-row-fill quota-row-fill-unknown" style="width:0%"></div></div>
+        <div class="quota-row-meta">no usage recorded yet</div>
+      </div>`;
+    }
+
+    function groupsUnlimited(members) {
+      return members.length > 0 && members.every((m) => m?.knownQuota?.unlimited === true);
+    }
+
+    // The estimated ceiling for an unmeasured window: the next round tier above the busiest
+    // traffic Hammer has carried. It is a bound built from evidence, not a published number,
+    // and every surface that draws it labels it EST.
+    function estimateLimitCeiling(seen) {
+      const target = Math.max(1, Number(seen) * 1.25);
+      const magnitude = Math.pow(10, Math.floor(Math.log10(target)));
+      for (const step of [1, 2, 5, 10]) {
+        const candidate = step * magnitude;
+        if (candidate >= target) return Math.round(candidate);
+      }
+      return Math.round(10 * magnitude);
+    }
+
+    // ── Rate-limit cell ──────────────────────────────────────────────────────
+    // The throttle half of a row's limit state, drawn with the same bars as the Quota
+    // column: the per-window counters from x-ratelimit-* headers, any published minute/hour
+    // allowance, and every window a refusal named, plus the bench flag. A row with no
+    // throttle data says ∞ rather than a dash, because "no limit" is a fact about routing.
+    function rateLimitCellInnerHTML(m) {
+      const windows = quotaRowViews(m).filter((window) => window.kind === 'rate-limit');
+      const rl = m?.rateLimit;
+      const resets = windows
+        .map((window) => Number(window.resetAt))
+        .filter((at) => Number.isFinite(at) && at > 0);
+      const resetAt = resets.length ? Math.max(...resets) : null;
+      const resetIn = resetAt == null ? '' : formatQuotaReset(resetAt - Date.now());
+      const bench = rl?.wasRateLimited === true
+        ? `<div class="rl-cell-line rl-cell-bench">Bench active${resetIn ? ` · resets in ${resetIn}` : ''}</div>`
+        : '';
+      if (windows.length === 0) {
+        const empty = m?.knownQuota?.unlimited === true
+          ? quotaUnlimitedHtml('rate-limit')
+          : quotaUnknownHtml('rate-limit');
+        return `<div class="rl-cell">${bench}${empty}</div>`;
+      }
+      return `<div class="rl-cell">${bench}<div class="quota-row-windows">${windows.map((window) => quotaRowWindowHtml(window)).join('')}</div></div>`;
+    }
+
+    function rateLimitCell(m) {
+      return `<td class="rate-limit-cell">${rateLimitCellInnerHTML(m)}</td>`;
+    }
+
+    function rateLimitGroupCell(g) {
+      const members = g?.members || [];
+      if (members.length === 0) {
+        return `<td class="rate-limit-cell">${quotaUnknownHtml('rate-limit')}</td>`;
+      }
+      if (members.length === 1) return rateLimitCell(members[0]);
+      // Throttle capacity is additive across providers the router can fan out to: two
+      // endpoints that each allow 20 requests/minute give this model 40. A provider that
+      // cannot route right now is not part of that sum. The same grossing rules apply as
+      // Quota — identity, window shape and reset clocks decide what sums.
+      const capacityMembers = groupCapacityMembers(members);
+      const windows = groupLimitViews(capacityMembers, 'rate-limit');
+      const benched = capacityMembers.some((m) => m?.rateLimit?.wasRateLimited === true);
+      const nextReset = windows
+        .map((window) => Number(window.resetAt))
+        .filter((at) => Number.isFinite(at) && at > Date.now())
+        .sort((a, b) => a - b)[0];
+      const resetIn = nextReset == null ? '' : formatQuotaReset(nextReset - Date.now());
+      const bench = benched
+        ? `<div class="rl-cell-line rl-cell-bench">Bench active${resetIn ? ` · resets in ${resetIn}` : ''}</div>`
+        : '';
+      if (windows.length === 0) {
+        const empty = groupsUnlimited(capacityMembers)
+          ? quotaUnlimitedHtml('rate-limit')
+          : quotaUnknownHtml('rate-limit');
+        return `<td class="rate-limit-cell"><div class="rl-cell">${bench}${empty}</div></td>`;
+      }
+      return `<td class="rate-limit-cell"><div class="rl-cell">${bench}<div class="quota-row-windows">${windows
+        .map((window) => quotaRowWindowHtml(window))
+        .join('')}</div></div></td>`;
+    }
+
+    // The provider table asks the same question of a whole provider that the model table
+    // asks of one row, so it answers with the same windows: the representative row's when
+    // the provider has one, the catalog's published limits when it does not, and ∞ when
+    // neither exists. A provider cell never renders a note or a link instead of a bar.
+    function providerQuotaCellHtml(model, provider) {
+      const source = model || {
+        knownQuota: provider?.knownQuota,
+        recordedUsage: provider?.recordedUsage,
+        providerUsage: Array.isArray(provider?.quotaReports) && provider.quotaReports.length > 0
+          ? provider.quotaReports[0]
+          : null,
+        quotaWindows: Array.isArray(provider?.observedQuota)
+          ? provider.observedQuota.map((report) => ({
+              metric: report?.unit === 'percent' ? 'tokens' : report?.metric,
+              period: report?.window || 'day',
+              rawWindow: report?.window,
+              limit: report?.limit,
+              remaining: report?.remaining,
+              used: report?.used,
+              resetAt: report?.resetAt,
+              scope: 'account',
+              source: 'provider',
+              detail: report?.accountLabel || 'provider usage',
+            }))
+          : [],
+      };
+      const windows = quotaRowViews(source).filter((window) => window.kind !== 'rate-limit');
+      if (windows.length === 0) {
+        const unlimited = model?.knownQuota?.unlimited === true || provider?.knownQuota?.unlimited === true;
+        return unlimited ? quotaUnlimitedHtml('quota') : quotaUnknownHtml('quota');
+      }
+      return `<div class="quota-row-windows">${windows.map((window) => quotaRowWindowHtml(window)).join('')}</div>`;
+    }
+
+    function providerRateLimitCellHtml(model) {
+      const windows = model
+        ? quotaRowViews(model).filter((window) => window.kind === 'rate-limit')
+        : [];
+      const rl = model?.rateLimit;
+      const resets = windows
+        .map((window) => Number(window.resetAt))
+        .filter((at) => Number.isFinite(at) && at > 0);
+      const resetAt = resets.length ? Math.max(...resets) : null;
+      const resetIn = resetAt == null ? '' : formatQuotaReset(resetAt - Date.now());
+      const bench = rl?.wasRateLimited === true
+        ? `<div class="rl-cell-line rl-cell-bench">Bench active${resetIn ? ` · resets in ${resetIn}` : ''}</div>`
+        : '';
+      if (windows.length === 0) {
+        const empty = model?.knownQuota?.unlimited === true
+          ? quotaUnlimitedHtml('rate-limit')
+          : quotaUnknownHtml('rate-limit');
+        return `${bench}${empty}`;
+      }
+      return `${bench}<div class="quota-row-windows">${windows.map((window) => quotaRowWindowHtml(window)).join('')}</div>`;
     }
 
     // Rows under a heading repeat a provider whenever it serves several ids in the same model
@@ -5365,86 +4621,241 @@
       return keys.size;
     }
 
-    // A model heading covers every provider under it, so its quota is the gross of the allowances
-    // behind those rows — but only of the allowances. An account-scoped limit is one allowance no
-    // matter how many of the provider's models are listed, and providerRecordedUsage is already
-    // that account's total, so two KiloCode rows reporting the 200 requests/hour keyless pool must
-    // keep reading 200, not 400, and its usage must not be counted twice. A model-scoped limit is
-    // a separate allowance per model, so those rows do add up: five endpoints with a 1M/day cap
-    // really can serve 5M/day for this model. A window only one row reports still counts once.
-    function quotaGroupViews(members) {
+    // A heading is a claim about capacity the router can use now. A provider that is benched
+    // or down cannot lend its windows to that claim: the model can still serve through a
+    // usable sibling even while one provider's weekly window is at 100%. When nothing is
+    // usable the whole group is shown, so the heading can still explain what is blocking it.
+    function groupCapacityMembers(members) {
+      const all = members || [];
+      const usable = all.filter(isRowUsable);
+      return usable.length > 0 ? usable : all;
+    }
+
+    // A 100% window is not group-wide exhaustion while another usable provider still has
+    // room. The provider rows keep their own exhausted bars; a heading that has any remaining
+    // capacity shows only the bars that can still move.
+    function quotaWindowExhausted(window) {
+      if (window?.unavailable === true) return true;
+      if (window?.usedPercent != null) return Number(window.usedPercent) >= 100;
+      if (window?.total != null && window?.remaining != null) {
+        return Number(window.remaining) <= 0;
+      }
+      return false;
+    }
+
+    function quotaGroupCapacityWindows(windows) {
+      const visible = (windows || []).filter((window) => !quotaWindowExhausted(window));
+      return visible.length > 0 ? visible : (windows || []);
+    }
+
+    // A heading covers every provider under it, and its gross is only as honest as the
+    // allowances it adds together. Two numbers belong in the same sum only when they share
+    // a metric, a period, a window shape (fixed versus rolling) and an owner:
+    //
+    //   - an account-scoped limit is ONE allowance however many of the provider's models are
+    //     listed (KiloCode's 200/hour pool is the same 200 on every row), and provider
+    //     recorded usage is already that account's total, so it must not be counted twice;
+    //   - a model-scoped limit is a separate allowance per model, so those do add up;
+    //   - two provider instances with the same key are separate endpoints, not one account;
+    //   - a rolling 24-hour window and a calendar day both normalise to `day`, but their
+    //     counters cover different spans and reset on different clocks, so they stay apart;
+    //   - a percentage has no denominator to add, and an estimated ceiling is not an
+    //     allowance: those are reported as the tightest reading, clearly labelled.
+    //
+    // A sum of counters that reset at different moments is valid only until the first of
+    // them rolls over, so the gross keeps the earliest reset and says the resets vary
+    // instead of implying a single clock they all share.
+    const groupTightness = (view) => {
+      if (view.usedPercent != null) return Number(view.usedPercent);
+      if (view.total != null && Number(view.total) > 0 && view.remaining != null) {
+        return 100 - (Number(view.remaining) / Number(view.total)) * 100;
+      }
+      return -1;
+    };
+
+    function groupLimitViews(members, kind) {
       const allowances = new Map();
+      const instanceOf = (member) => {
+        if (typeof providerInstanceKey === 'function') {
+          return providerInstanceKey(member) || member?.providerKey || '';
+        }
+        return member?.providerKey || '';
+      };
       for (const member of members || []) {
-        const providerKey = member?.providerKey || '';
+        const providerKey = instanceOf(member);
         for (const view of quotaRowViews(member)) {
-          // Anything not explicitly per model belongs to the provider's account: an observed or
-          // header window that names no scope is the endpoint's view of a shared limit, and
-          // deduplicating it is the safer reading than promising an allowance twice over.
+          if (view.kind !== kind) continue;
+          // Anything not explicitly per model belongs to the provider's account: an observed
+          // or header window that names no scope is the endpoint's view of a shared limit,
+          // and deduplicating it is the safer reading than promising an allowance twice over.
           const perModel = view.scope === 'model';
           const identity = perModel
             ? `model:${providerKey}:${member?.modelId || ''}`
             : `account:${providerKey}`;
-          const key = `${view.metric}:${view.period}:${identity}`;
+          const rolling =
+            view.period === 'rolling' || /rolling/i.test(String(view.rawWindow || ''));
+          const key = `${view.metric}:${view.period}:${rolling ? 'rolling' : 'fixed'}:${identity}`;
           const known = allowances.get(key);
-          if (known) {
-            known.rows += 1;
+          if (!known) {
+            allowances.set(key, { view, rows: 1, rolling });
             continue;
           }
-          allowances.set(key, { view, rows: 1 });
+          known.rows += 1;
+          // The same allowance can be seen on two rows — a provider alias, or a model row
+          // repeating its account's pool. Keep the tighter reading, and let an authoritative
+          // number win over an estimate regardless of which is further along.
+          const knownAuthoritative = known.view.estimated !== true;
+          const viewAuthoritative = view.estimated !== true;
+          if (
+            (viewAuthoritative && !knownAuthoritative) ||
+            (viewAuthoritative === knownAuthoritative &&
+              groupTightness(view) > groupTightness(known.view))
+          ) {
+            known.view = view;
+          }
         }
       }
+
       const grouped = new Map();
-      const add = (a, b) => (a == null && b == null ? null : (a || 0) + (b || 0));
-      for (const { view, rows } of allowances.values()) {
-        const key = `${view.metric}:${view.period}`;
-        const current = grouped.get(key);
-        if (!current) {
-          grouped.set(key, { ...view, contributors: 1, rows });
-          continue;
-        }
-        current.total = add(current.total, view.total);
-        current.used = add(current.used, view.used);
-        current.remaining = add(current.remaining, view.remaining);
-        // A remaining fraction is not additive: two allowances that are each 2% used do not
-        // make one that is 4% used. The heading takes the tightest one instead, which is the
-        // allowance that runs out first, so a family whose providers publish only a percentage
-        // still answers the question the column exists for.
-        current.usedPercent =
-          current.usedPercent != null && view.usedPercent != null
-            ? Math.max(current.usedPercent, view.usedPercent)
-            : (current.usedPercent ?? view.usedPercent);
-        current.percentOnly = current.percentOnly && view.percentOnly;
-        current.resetAt = current.resetAt != null && view.resetAt != null
-          ? Math.min(current.resetAt, view.resetAt)
-          : (current.resetAt || view.resetAt);
-        current.stale = current.stale && view.stale;
-        current.unavailable = current.unavailable && view.unavailable;
-        current.contributors += 1;
+      for (const { view, rows, rolling } of allowances.values()) {
+        // One series per metric, period and window shape. Whether a reading is published
+        // or estimated decides how it is combined below, not whether it gets a second bar.
+        const key = `${view.metric}:${view.period}:${rolling ? 'rolling' : 'fixed'}`;
+        const current = grouped.get(key) || { views: [], rows: 0, resets: [], rolling };
+        current.views.push(view);
         current.rows += rows;
+        if (Number.isFinite(Number(view.resetAt)) && Number(view.resetAt) > 0) {
+          current.resets.push(Number(view.resetAt));
+        }
+        grouped.set(key, current);
       }
+
       const providers = quotaGroupProviderCount(members);
       const providerWord = (count) => `${count} provider${count === 1 ? '' : 's'}`;
+      const sum = (values) => values.reduce((total, value) => total + Number(value), 0);
+      const everyView = (views, field) => views.every((view) => view[field] != null);
+      const distinctResets = (resets) => {
+        const sorted = [...resets].sort((a, b) => a - b);
+        return sorted.filter((at, index) => index === 0 || at - sorted[index - 1] > 60_000);
+      };
+
       return [...grouped.values()]
-        .map((view) => ({
-          ...view,
-          usedPercent: view.total != null && view.total > 0 && view.used != null
-            ? Math.max(0, (view.used / view.total) * 100)
-            : (view.usedPercent ?? null),
-          detail: view.unavailable && view.total === 0
-            ? `no free-tier allowance across ${providerWord(providers)}`
-            : view.percentOnly
-              ? `highest use across ${view.contributors} ${view.contributors === 1 ? 'allowance' : 'allowances'}`
-                + (view.rows > view.contributors ? ` shared by ${view.rows} rows` : '')
-                + ` · ${providerWord(providers)} in this heading`
-              : `gross across ${view.contributors} ${view.contributors === 1 ? 'allowance' : 'allowances'}`
-                + (view.rows > view.contributors ? ` shared by ${view.rows} rows` : '')
-                + ` · ${providerWord(providers)} in this heading`,
-          scope: null,
-          source: 'group',
-        }))
-        .sort((a, b) =>
-          (QUOTA_ROW_PERIOD_ORDER[a.period] ?? 9) - (QUOTA_ROW_PERIOD_ORDER[b.period] ?? 9)
-          || (QUOTA_ROW_METRIC_ORDER[a.metric] ?? 9) - (QUOTA_ROW_METRIC_ORDER[b.metric] ?? 9));
+        .map(({ views, rows, resets, rolling }) => {
+          const allEstimated = views.every((view) => view.estimated === true);
+          const authoritative = views.every((view) => view.estimated !== true);
+          const tightestView = views.reduce(
+            (best, view) => (groupTightness(view) > groupTightness(best) ? view : best),
+            views[0],
+          );
+          // A sum is only reported when every contributor is an authoritative allowance
+          // and has the number. An estimate is not an allowance: mixing it into a sum
+          // understates the provider it came from, so the group reports that provider's
+          // tightest reading instead of a second bar for the same metric and period.
+          const first = authoritative ? views[0] : tightestView;
+          const total = authoritative
+            ? everyView(views, 'total')
+              ? sum(views.map((view) => view.total))
+              : null
+            : first.total;
+          const used = authoritative
+            ? everyView(views, 'used')
+              ? sum(views.map((view) => view.used))
+              : null
+            : first.used;
+          const remaining = authoritative
+            ? everyView(views, 'remaining')
+              ? sum(views.map((view) => view.remaining))
+              : null
+            : first.remaining;
+          const fractions = views.map(groupTightness).filter((value) => value >= 0);
+          const tightest = fractions.length ? Math.max(...fractions) : null;
+          // When the gross can compute its own fraction, that fraction is the truth the
+          // displayed total/used/left add up to. A component's percentage describes that
+          // component's pool, not the sum, so it may only stand in when no summed fraction
+          // exists (a percent-only family). Showing the max beside summed counters was
+          // self-contradictory: 28% next to 14 of 250 used.
+          let usedPercent;
+          if (authoritative) {
+            usedPercent =
+              total != null && total > 0 && used != null
+                ? Math.max(0, (used / total) * 100)
+                : tightest;
+          } else {
+            usedPercent = groupTightness(first) >= 0 ? groupTightness(first) : first.usedPercent;
+          }
+          const percentOnly = authoritative
+            ? views.every((view) => view.percentOnly === true)
+            : first.percentOnly === true;
+          const estimated = first.estimated === true;
+          const mixed = !authoritative;
+          const distinct = distinctResets(resets);
+          const resetsVary = distinct.length > 1;
+          const unavailable = authoritative
+            ? views.every((view) => view.unavailable === true)
+            : first.unavailable === true;
+          const share = rows > views.length ? ` shared by ${rows} rows` : '';
+          const estimateBasis = allEstimated
+            ? `estimated across ${views.length} ${views.length === 1 ? 'allowance' : 'allowances'}`
+            : `tightest across ${views.length} ${views.length === 1 ? 'reading' : 'readings'}`;
+          return {
+            ...first,
+            total,
+            used,
+            remaining,
+            usedPercent: usedPercent == null || !Number.isFinite(usedPercent) ? null : usedPercent,
+            percentOnly,
+            estimated,
+            mixed,
+            resetAt: distinct.length ? Math.min(...distinct) : null,
+            resetsVary,
+            stale: views.some((view) => view.stale === true),
+            unavailable,
+            contributors: views.length,
+            rows,
+            rolling,
+            scope: null,
+            source: 'group',
+            detail:
+              unavailable && (total == null || total === 0)
+                ? `no free-tier allowance across ${providerWord(providers)}`
+                : mixed
+                  ? estimateBasis +
+                    share +
+                    ` · ${providerWord(providers)} in this heading`
+                  : percentOnly
+                    ? `highest use across ${views.length} ${views.length === 1 ? 'allowance' : 'allowances'}` +
+                      share +
+                      ` · ${providerWord(providers)} in this heading`
+                    : `gross across ${views.length} ${views.length === 1 ? 'allowance' : 'allowances'}` +
+                      share +
+                      ` · ${providerWord(providers)} in this heading` +
+                      (resetsVary ? ' · resets vary' : ''),
+          };
+        })
+        .sort(
+          (a, b) =>
+            (QUOTA_ROW_PERIOD_ORDER[a.period] ?? 9) - (QUOTA_ROW_PERIOD_ORDER[b.period] ?? 9) ||
+            (a.rolling === true ? 1 : 0) - (b.rolling === true ? 1 : 0) ||
+            (QUOTA_ROW_METRIC_ORDER[a.metric] ?? 9) - (QUOTA_ROW_METRIC_ORDER[b.metric] ?? 9),
+        );
+    }
+
+    function quotaGroupViews(members) {
+      return groupLimitViews(members, 'quota');
+    }
+
+    // Both limit cells, every group heading and every provider card read the same row's
+    // windows, so the merge runs once per row object instead of once per column per render.
+    // A fresh snapshot brings fresh row objects, so the cache cannot go stale.
+    const quotaRowViewsCache = new WeakMap();
+    function quotaRowViews(m) {
+      if (m && typeof m === 'object') {
+        const cached = quotaRowViewsCache.get(m);
+        if (cached) return cached;
+      }
+      const views = quotaRowViewsUncached(m);
+      if (m && typeof m === 'object') quotaRowViewsCache.set(m, views);
+      return views;
     }
 
     function quotaRowCell(m) {
@@ -5453,27 +4864,40 @@
 
     function quotaGroupCell(g) {
       const members = g?.members || [];
-      if (members.length === 0) return '<td class="quota-cell"><div class="quota-row-empty">—</div></td>';
+      if (members.length === 0) return `<td class="quota-cell">${quotaUnknownHtml('quota')}</td>`;
       if (members.length === 1) {
         return `<td class="quota-cell">${quotaRowCellInnerHTML(members[0])}</td>`;
       }
-      const windows = quotaGroupViews(members);
+      const capacityMembers = groupCapacityMembers(members);
+      const limitedToUsable = capacityMembers.length !== members.length;
+      // An exhausted window on a provider that cannot route is not the group's verdict while
+      // a usable sibling still has allowance. Keep it on the provider row, not the heading.
+      const windows = quotaGroupCapacityWindows(quotaGroupViews(capacityMembers));
       // Percent-only allowances have no total to gross, so the heading reports the tightest of
       // them and says so, rather than labelling summed capacity it does not have.
+      const mixedPercent =
+        windows.some((window) => window.percentOnly) &&
+        !windows.every((window) => window.percentOnly);
+      const mixedEstimate = windows.some(
+        (window) => window.estimated === true || window.mixed === true,
+      );
       const basis =
         windows.length > 0 && windows.every((window) => window.percentOnly)
           ? 'least left'
-          : 'gross';
+          : mixedPercent || mixedEstimate
+            ? 'tightest'
+            : 'gross';
       if (windows.length === 0) {
-        const note = members.map((member) => quotaProviderNote(member)).find(Boolean);
-        if (note) {
-          return `<td class="quota-cell">${quotaProviderNoteHtml({ ...note, label: 'Google AI' })}</td>`;
-        }
+        const empty = groupsUnlimited(capacityMembers) ? quotaUnlimitedHtml('quota') : quotaUnknownHtml('quota');
+        return `<td class="quota-cell">${empty}</td>`;
       }
-      const providers = quotaGroupProviderCount(members);
+      const providers = quotaGroupProviderCount(capacityMembers);
+      const providerTitle = limitedToUsable
+        ? `Quota across the ${providers} usable provider${providers === 1 ? '' : 's'} serving this model. Providers that are benched or down right now are left out. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row. The label says whether the bars are a gross or the tightest reading.`
+        : `Quota across the ${providers} provider${providers === 1 ? '' : 's'} serving this model. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row. The label says whether the bars are a gross or the tightest reading.`;
       return `<td class="quota-cell">${quotaRowWindowsHtml(windows, {
-        providerLabel: `${providers} provider${providers === 1 ? '' : 's'} · ${basis}`,
-        providerTitle: `Gross quota across the ${providers} provider${providers === 1 ? '' : 's'} serving this model. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row.`,
+        providerLabel: `${providers} ${limitedToUsable ? 'usable ' : ''}provider${providers === 1 ? '' : 's'} · ${basis}`,
+        providerTitle,
         emptyTitle: 'No quota is reported for these providers yet.',
       })}</td>`;
     }
@@ -5538,8 +4962,7 @@
                since the id does not resolve until then. -->
           <td id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></td>
           ${quotaGroupCell(g)}
-          <!-- Rate limit: an empty column beside Quota, in the table ahead of the data. -->
-          <td class="rate-limit-cell"></td>
+          ${rateLimitGroupCell(g)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -5800,6 +5223,10 @@
       // clock, and observed rate-limit windows arrive with new traffic.
       const quotaCell = row.cells[6];
       if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
+      // Rate limit (col 7) is rebuilt alongside it: the throttle counters and bench state
+      // change with every response, just as the quota windows do.
+      const rateLimitCellEl = row.cells[7];
+      if (rateLimitCellEl) rateLimitCellEl.innerHTML = rateLimitCellInnerHTML(m);
       // Update status cell (col 9) and response cell (col 10); never clobber an in-flight test
       const statusCell = row.cells[9];
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
@@ -6681,11 +6108,25 @@
     // keeps it until its test starts: a refresh must never push an existing wait later, and it
     // must not let a row that has just joined jump ahead of one that has been waiting.
     function scheduleAutomaticRetests() {
-      const now = Date.now();
-      const { rows } = buildScatterRows(allModels);
-      // Used only to rank the queue: plotted rows first, rows with no dot yet after them.
-
-      const plotted = new Set(rows.map(r => getModelRowKey(r.m)));
+      const now = Date.now();      // Used only to rank the queue: rows with both numbers a dot would need come first, rows
+      // with no measurement yet after them. The plot lives in the composer now, so this reads
+      // the condition itself instead of borrowing a renderer to answer it.
+      const plotted = new Set(
+        (allModels || [])
+          .filter((m) => {
+            if (!m || m.status === 'noauth') return false;
+            const aa = Number(m.aa);
+            const intell = Number.isFinite(aa) && aa > 0 ? aa : Number(m.intell) * 100;
+            const ttft = rowTtft(m);
+            const tps = rowTps(m);
+            return (
+              Number.isFinite(intell) && intell > 0 &&
+              ttft != null && Number.isFinite(ttft) && ttft >= 0 &&
+              tps != null && Number.isFinite(tps) && tps > 0
+            );
+          })
+          .map((m) => getModelRowKey(m)),
+      );
       const seen = new Set();
       const targets = [];
       for (const m of allModels) {
@@ -7223,8 +6664,12 @@
       }
       const now = Date.now();
       const status = String(m.status || '').toLowerCase();
-      const creditExhausted = Number(m.rateLimit?.creditLimit) > 0
-        && m.rateLimit?.creditRemaining != null && Number(m.rateLimit.creditRemaining) <= 0;
+      // Credit exhaustion is capacity, so it lives on the quota half now; the legacy
+      // rateLimit.credit* read is kept for rows persisted before the split.
+      const creditExhausted = (Number(m.quota?.creditLimit) > 0
+        && m.quota?.creditRemaining != null && Number(m.quota.creditRemaining) <= 0)
+        || (Number(m.rateLimit?.creditLimit) > 0
+        && m.rateLimit?.creditRemaining != null && Number(m.rateLimit.creditRemaining) <= 0);
       const serverSaysLimited = m.isRateLimited === true
         || status === 'rate-limited'
         || m.rateLimit?.wasRateLimited === true
@@ -7237,12 +6682,27 @@
       // already passed — instead of dropping to 'down' when the timer hits zero.
       const standing = !liveWindow && refusalKind(m) === 'rate-limited';
       if (!serverSaysLimited && !liveWindow && !standing) return { limited: false, resetAt: null };
+      // An exhausted capacity window can close later than the short retry header on the
+      // same response. Token Harbor's free allowance is the live case: the body says the
+      // weekly allowance returns on 17 Nov while the accompanying retry-after is one hour.
+      // The row cannot reopen until the allowance does, so the longest exhausted window is
+      // the clock that means something.
+      const exhaustedQuotaResets = (Array.isArray(m.quotaWindows) ? m.quotaWindows : [])
+        .filter((window) => {
+          const resetAt = Number(window?.resetAt);
+          if (!Number.isFinite(resetAt) || resetAt <= now) return false;
+          if (window.usedPercent != null) return Number(window.usedPercent) >= 100;
+          return window.limit != null && window.remaining != null && Number(window.remaining) <= 0;
+        })
+        .map((window) => Number(window.resetAt));
       const stated = [
         m.lastResponse?.rateLimitResetAt,
         rateLimitResetFromBody(String(m.lastResponse?.error || '')),
         m.rateLimit?.resetRequestsAt,
         m.rateLimit?.resetTokensAt,
         m.rateLimit?.creditResetAt,
+        m.quota?.creditResetAt,
+        ...exhaustedQuotaResets,
       ].map(Number).filter(value => Number.isFinite(value) && value > now);
       const statedReset = stated.length > 0 ? Math.max(...stated) : null;
       // A countdown only when something actually states when the window reopens;
@@ -7266,7 +6726,9 @@
     // Human-ish label for a quota failure, e.g. "generate quotum: 20" ->
     // "generate content free tier requests (20)". Falls back to 'quota exceeded'.
     function quotaLabel(m) {
-      const q = m && m.rateLimit && m.rateLimit.quota;
+      // The QuotaFailure is capacity evidence; it lives on the quota half as `failure`, with
+      // the legacy `rateLimit.quota` read kept for rows persisted before the split.
+      const q = m?.quota?.failure || m?.rateLimit?.quota;
       if (!q) return null;
       const id = q.quotaId || q.quotaMetric;
       if (id) {
@@ -7493,11 +6955,8 @@
         }
       });
     }
-    // rowVerdict is partly time-dependent: a ready response or provider window can
-    // expire without any API snapshot changing. Re-evaluate the scatter once per
-    // second so its redraw guard catches that transition; the guard still leaves the
-    // existing SVG untouched unless a verdict or eligibility state actually changed.
-    drawSpeedIntellScatter(allModels);
+    // rowVerdict is partly time-dependent: a ready response or provider window can expire
+    // without any API snapshot changing, so the countdowns are re-read once a second.
     setInterval(updateRateLimitCountdowns, 1000);
     // The retry clock is both a readout and a trigger: a row whose countdown runs out is
     // tested here even if no refresh happens to arrive at that moment.
@@ -7692,7 +7151,7 @@
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td></td>
           ${quotaRowCell(first)}
-          <td class="rate-limit-cell"></td>
+          ${rateLimitGroupCell(g)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -7729,7 +7188,7 @@
           ${formatTpsCell(rowTps(m), 'tok/s')}
           <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
           ${quotaRowCell(m)}
-          <td class="rate-limit-cell"></td>
+          ${rateLimitCell(m)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
@@ -8620,7 +8079,7 @@
         const addEndpointSection = document.createElement('tr');
         addEndpointSection.className = 'provider-add-row';
         addEndpointSection.innerHTML = `
-          <td colspan="5">
+          <td colspan="6">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.5rem;">
             <h3 style="margin:0; font-size:1rem;">OpenAI-Compatible endpoints</h3>
             <button onclick="addOpenAICompatibleEndpoint()" style="border:1px solid var(--status-success-border); background:var(--status-success-bg); color:var(--status-success-text); cursor:pointer; padding:6px 12px; border-radius:6px; font-size:0.8rem; font-weight:600;">+ Add Endpoint</button>
@@ -8651,9 +8110,10 @@
           const providerModels = allModels ? allModels.filter(m => m.providerKey === p.key) : [];
           // Count models for this provider from allModels
           const modelCount = providerModels.length;
-          // Get rate limit info from a model with this provider that has rateLimit data
-          const rlModel = providerModels.find(m => m.rateLimit) || null;
-          const rl = rlModel?.rateLimit;
+          // Both cells read the same windows as the model table, from the row that carries
+          // the most limit state: the throttle half (rateLimit) fills Rate limit and the
+          // capacity half (quota) fills Quota.
+          const rlModel = providerModels.find(m => m.rateLimit || m.quota) || providerModels[0] || null;
           const errorModel = providerModels
             .filter(m => {
               if (!m.lastError || m.status === 'up') return false;
@@ -8683,40 +8143,12 @@
             ? (tokenOptional ? 'API Key configured' : 'Key configured')
             : (tokenOptional ? 'API Key optional' : 'No API key');
 
-          // The provider's complete quota snapshot is account-scoped, unlike a single
-          // model's response headers. Draw it beside the credential-rotation bar below.
-          const providerQuotaHtml = quotaBarsHtml(p, rl);
-          let rateLimitHtml = '';
-          if (rl) {
-            // Compact numbers, one decimal only when a single digit leads — "8.1k" but "433k".
-            const fmtNum = n => {
-              const v = Number(n);
-              if (!Number.isFinite(v)) return String(n);
-              if (v >= 1e9) { const u = v / 1e9; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}B`; }
-              if (v >= 1e6) { const u = v / 1e6; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}M`; }
-              if (v >= 1e3) { const u = v / 1e3; return `${u >= 10 ? Math.round(u) : Math.round(u * 10) / 10}k`; }
-              return String(Math.round(v));
-            };
-            const fmtTime = ts => {
-              if (!ts) return null;
-              const d = new Date(ts);
-              return Number.isNaN(d.getTime()) ? null : d.toLocaleString();
-            };
-            const creditLine = rl.creditLimit != null
-              ? `<span>Credits: <b>${fmtNum(rl.creditRemaining ?? '?')}</b> / ${fmtNum(rl.creditLimit)} remaining</span>`
-              : '';
-            const creditResetLine = rl.creditResetAt ? `<span>Credit reset: <b>${fmtTime(rl.creditResetAt) ?? 'unknown'}</b></span>` : '';
-            rateLimitHtml = `
-              <div style="margin-top:12px; padding:10px 12px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:8px; font-size:0.78rem;">
-                <div style="font-weight:600; color:var(--text-muted); text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px; font-size:0.7rem;">Rate Limits (last prompt)</div>
-                <div style="display:flex; gap:16px; flex-wrap:wrap;">
-                  ${rl.limitRequests != null ? `<span>Requests: <b>${fmtNum(rl.remainingRequests ?? '?')}</b> / ${fmtNum(rl.limitRequests)} remaining</span>` : ''}
-                  ${rl.limitTokens != null ? `<span>Tokens: <b>${fmtNum(rl.remainingTokens ?? '?')}</b> / ${fmtNum(rl.limitTokens)} remaining</span>` : ''}
-                  ${creditLine}
-                  ${creditResetLine}
-                </div>
-              </div>`;
-          }
+          // Both provider columns answer from the same windows as the model table: bars
+          // when a limit is known, ∞ when none is. The representative row is whichever of
+          // the provider's rows carries the most limit state.
+          const providerQuotaHtml = providerQuotaCellHtml(rlModel, p);
+          const providerUsageCell = `<td class="provider-usage-cell" data-provider-usage="${escapeAttr(p.key)}"></td>`;
+          const rateLimitHtml = providerRateLimitCellHtml(rlModel);
 
           let providerErrorHtml = '';
           if (providerError && providerError.message) {
@@ -8871,9 +8303,10 @@
               ${kiroMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -8952,9 +8385,10 @@
               ${copilotMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -9025,9 +8459,10 @@
               ${aaMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -9122,9 +8557,10 @@
               ${googleMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -9247,9 +8683,10 @@
               ${codexMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -9311,9 +8748,10 @@
               ${devinMessageHtml}
               ${credentialBarHtml(p)}
               </td>
+              ${providerUsageCell}
               <td class="provider-quota-cell">${providerQuotaHtml}</td>
-              <td class="provider-error-cell">${providerErrorHtml}</td>
               <td class="provider-limits-cell">${rateLimitHtml}</td>
+              <td class="provider-error-cell">${providerErrorHtml}</td>
             `;
             (providerIsActive ? activeContainer : setupContainer).appendChild(section);
             return;
@@ -9381,13 +8819,15 @@
             ${openAiCompatibleFieldsHtml}
             ${credentialBarHtml(p)}
             </td>
+            ${providerUsageCell}
             <td class="provider-quota-cell">${providerQuotaHtml}</td>
-            <td class="provider-error-cell">${providerErrorHtml}</td>
             <td class="provider-limits-cell">${rateLimitHtml}</td>
+            <td class="provider-error-cell">${providerErrorHtml}</td>
           `;
           (providerIsActive ? activeContainer : setupContainer).appendChild(section);
         });
         restoreInputState();
+        drawProviderUsageSparklines();
         // The panel exists now, so a snapshot may refresh it and the staged boot sequence must
         // not build it a second time (see loadModelSnapshot).
         providerPanelState = 'ready';
@@ -11338,7 +10778,7 @@
     // card can observe itself, the catalog's published record, and "nothing published" are
     // five different claims, and the box says which one it is making rather than leaving the
     // provider silently unrepresented.
-    function quotaBarsHtml(provider, rateLimit = null) {
+    function quotaBarsHtml(provider, quota = null) {
       let reports = Array.isArray(provider?.quotaReports) ? provider.quotaReports : [];
       let provenance = 'measured';
       let provenanceLabel = 'Provider-reported';
@@ -11350,13 +10790,13 @@
       // A provider may expose numeric limits only in the last response headers. Those
       // limits are still a real provider quota, so use them when the account usage
       // endpoint did not return a snapshot. They are deliberately a fallback, not a
-      // second source that can overwrite the account-wide reports.
-      if (reports.length === 0 && rateLimit) {
+      // second source that can overwrite the account-wide reports. The capacity half
+      // (quota) is the source now — credit balance, free-tier percentage — while the
+      // throttle half (rateLimit) keeps the per-window request/token counters.
+      if (reports.length === 0 && quota) {
         const headerReports = [];
-        if (rateLimit.limitRequests != null) headerReports.push({ metric: 'requests', unit: 'requests', limit: rateLimit.limitRequests, remaining: rateLimit.remainingRequests, window: 'provider rate-limit window' });
-        if (rateLimit.limitTokens != null) headerReports.push({ metric: 'tokens', unit: 'tokens', limit: rateLimit.limitTokens, remaining: rateLimit.remainingTokens, window: 'provider rate-limit window' });
-        if (rateLimit.creditLimit != null) headerReports.push({ metric: 'credits', unit: 'credits', limit: rateLimit.creditLimit, remaining: rateLimit.creditRemaining, window: 'provider credit window', resetAt: rateLimit.creditResetAt });
-        if (rateLimit.freeUsedPercent != null) headerReports.push({ metric: 'percent', unit: 'percent', limit: 100, remaining: Math.max(0, 100 - Number(rateLimit.freeUsedPercent)), window: 'rolling 7-day free allowance', resetAt: rateLimit.freeResetAt });
+        if (quota.creditLimit != null) headerReports.push({ metric: 'credits', unit: 'credits', limit: quota.creditLimit, remaining: quota.creditRemaining, window: 'provider credit window', resetAt: quota.creditResetAt });
+        if (quota.freeUsedPercent != null) headerReports.push({ metric: 'percent', unit: 'percent', limit: 100, remaining: Math.max(0, 100 - Number(quota.freeUsedPercent)), window: 'rolling 7-day free allowance', resetAt: quota.freeResetAt });
         if (headerReports.length > 0) {
           reports = headerReports;
           provenance = 'headers';
@@ -11758,7 +11198,6 @@
     }
 
     updateLogsPauseButton();
-    initScatterControls();
 
     // No polling loop. This dashboard is a snapshot of server state, so it is re-read only
     // when something the user did could have moved that state: the initial page load, a click

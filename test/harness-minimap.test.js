@@ -165,3 +165,21 @@ test("the rail speaks in the rows' colours: blue for you, maroon for the answers
     /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,300}\.hx-row-flash \{\s*animation: none;/,
   )
 })
+
+test('coming back to the agent view repaints a rail that was sized at zero', () => {
+  // The app restores whichever view was last on screen. On the router view the agent pane is
+  // display:none, so every paint measured a 0px track and bailed; switching back used to
+  // schedule everything but the rail, leaving a restored conversation with no notches.
+  assert.match(css, /body\[data-view='router'\] #agent-view \{\s*display: none !important;/)
+  assert.match(
+    harness,
+    /if \(ctx\?\.sessionFile\) void publishSessionUsage\(ctx\)[\s\S]{0,600}scheduleMinimap\(\)/,
+  )
+  // A paint that measured an unsized track is retried, not dropped for the session.
+  assert.match(harness, /if \(!rail\.clientHeight\) return scheduleMinimapRetry\(\)/)
+  assert.match(harness, /function queueMinimapFrame\(\)/)
+  assert.match(harness, /function scheduleMinimapRetry\(\)/)
+  assert.match(harness, /if \(minimapRetries >= MINIMAP_RETRY_LIMIT\) return/)
+  // A real change restores the retry budget, so the rail can never be starved of frames.
+  assert.match(harness, /minimapRetries = 0[\s\S]{0,120}queueMinimapFrame\(\)/)
+})

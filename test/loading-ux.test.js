@@ -29,7 +29,8 @@ test('the shell states that it is loading instead of printing zeroes', () => {
   }
   assert.match(html, /class="kpi-value is-loading" id="kpi-best"/)
   assert.doesNotMatch(html, /id="kpi-best"[^>]*>Calculating/)
-  assert.match(html, /class="kpi-value is-loading" id="speed-intell-count"/)
+  // The scatter moved into the composer popup, so the shell no longer seeds it.
+  assert.doesNotMatch(html, /id="speed-intell-svg"/)
 
   // The containers the snapshot fills announce their state to assistive tech too.
   assert.match(html, /<div class="kpi-grid" id="kpi-grid" aria-busy="true">/)

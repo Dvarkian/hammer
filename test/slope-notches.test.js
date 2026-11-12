@@ -91,6 +91,14 @@ test('the console reports the model its own slope resolves to', () => {
     /routedModel: routedSelection\(consoleSlopePercent\(console\.bridge\.consoleKey\)\)/,
   )
   assert.match(pi, /routedSelection\(consoleSlopePercent\(key\)\)/)
+  // SSE status and hello frames must carry the console's own pick too. Using the bare
+  // `routedSelection()` there sent the exported default's model while the console was on a
+  // different slope, so the quota card and context meter described the wrong row.
+  assert.match(pi, /routedModel: routedSelection\(consoleSlopePercent\(bridge\.consoleKey\)\)/)
+  assert.match(
+    pi,
+    /routedModel: routedSelection\(consoleSlopePercent\(console\.bridge\.consoleKey\)\)/,
+  )
   assert.match(pi, /ctx\.routedSelection\(percent\)/)
   const server = read('lib/server.js')
   assert.match(server, /const routedSelectionForConsole = \(percent = SELECTOR_DEFAULT_PERCENT\)/)

@@ -28,7 +28,7 @@ test('every waiting row is scheduled, not only the ones on the plot line', () =>
 })
 
 test('plotted rows go to the front of the queue', () => {
-  assert.match(dashboard, /const plotted = new Set\(rows\.map\(r => getModelRowKey\(r\.m\)\)\)/)
+  assert.match(dashboard, /\.map\(\(m\) => getModelRowKey\(m\)\),/)
   assert.match(dashboard, /targets\.push\(\{ key, rank: plotted\.has\(key\) \? 0 : 1 \}\)/)
   assert.match(dashboard, /targets\.sort\(\(a, b\) => a\.rank - b\.rank\)/)
   // Nothing in the queue depends on the hull helper: a benched row is never on the hull.

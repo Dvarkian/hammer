@@ -81,7 +81,7 @@ test('the onboarding job is wired to the shared test path and the verdict helper
   // new roster exists, or a freshly onboarded model stays off the intelligence/speed plot.
   assert.match(
     server,
-    /const refreshProviderModelsForApi = async \(providerKey\) => \{\n\s+const models = await discoverProviderModelsForApi\(providerKey\);[\s\S]{0,600}?if \(qualityData\) \{/,
+    /const refreshProviderModelsForApi = async \(providerKey\) => \{\n\s+const models = await discoverProviderModelsForApi\(providerKey[^)]*\);[\s\S]{0,600}?if \(qualityData\) \{/,
   )
   assert.match(server, /await refreshQualityScores\(false, true\);/)
 })

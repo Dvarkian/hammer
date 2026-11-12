@@ -420,6 +420,39 @@ test('a prose window alone still fills the cell, but never doubles a named one',
   assert.equal(google[0].scope, 'model')
 })
 
+// Token Harbor states its free allowance in prose, not a QuotaFailure: "Your free allowance
+// for ':free' models is used up. It comes back on 17 Nov 2026 at 01:52 UTC." The retry-after
+// header says one hour, but the body's weekly reset is the allowance that actually has to
+// reopen. Without this window the rail showed 60/min and 1.8k/hour at 0% while every request
+// was refused for the week.
+test('Token Harbor free allowance exhaustion is a 100%-used week with its stated reset', () => {
+  const now = Date.UTC(2026, 10, 11, 12, 0, 0)
+  const error =
+    "Your free allowance for ':free' models is used up. It comes back on 17 Nov 2026 at 01:52 UTC. " +
+    "Your account is not limited: remove ':free' from the model name (use 'deepseek-v4.1-flash') " +
+    'to run this request on your plan or balance.'
+  const windows = extractQuotaWindows(
+    {
+      modelId: 'deepseek-v4.1-flash:free',
+      lastResponse: {
+        status: 429,
+        at: now,
+        rateLimitResetAt: now + 3_600_000,
+        error,
+      },
+    },
+    now,
+  )
+  assert.equal(windows.length, 1)
+  const week = windows[0]
+  assert.equal(week.metric, 'tokens')
+  assert.equal(week.period, 'week')
+  assert.equal(week.usedPercent, 100)
+  assert.equal(week.remaining, 0)
+  assert.equal(week.source, 'free-allowance')
+  assert.equal(week.resetAt, Date.UTC(2026, 10, 17, 1, 52))
+})
+
 // The gate exists so a body that says nothing about a limit costs nothing to read. Widening
 // it to the rate-limit wordings must not make every failure look like a quota.
 test('a body that names no window still yields no window', () => {

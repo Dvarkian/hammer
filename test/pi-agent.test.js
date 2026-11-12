@@ -1975,6 +1975,26 @@ test('a prompt is compacted first when the routed model has less room than Pi’
     }),
     false,
   )
+  // OrcaRouter's learned 25.6k bound is a prompt cap, not a total context window: 10k is
+  // nowhere near the 24.4k trigger, while 25k is.
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 10_000,
+      piWindow: 25_639,
+      routedWindow: 25_639,
+      routedPromptCap: true,
+    }),
+    false,
+  )
+  assert.equal(
+    shouldCompactBeforePrompt({
+      usedTokens: 25_000,
+      piWindow: 25_639,
+      routedWindow: 25_639,
+      routedPromptCap: true,
+    }),
+    true,
+  )
   // A measured context already past Pi's own window is compacted even without a routed bound.
   assert.equal(
     shouldCompactBeforePrompt({
@@ -2174,6 +2194,44 @@ test('a turn that fills the routed window between steps compacts mid-turn', () =
     } finally {
       estimateOnly.dispose()
     }
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a prompt-cap routed window compacts near its cap, not at Pi’s full reserve', () => {
+  const bridge = new PiBridge({
+    autoContinue: false,
+    routedWindowTokens: () => 25_639,
+    routedPromptCap: () => true,
+  })
+  try {
+    /** @type {string[]} */
+    const commands = []
+    bridge.runCommand = async (type) => {
+      commands.push(type)
+      return { data: {} }
+    }
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 10_000, output: 0, totalTokens: 10_000 },
+      },
+    })
+    assert.deepEqual(commands, [], '10k is not near a 25.6k prompt cap')
+    assert.equal(bridge.status().compactionReserve, 1_281)
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        usage: { input: 24_500, output: 0, totalTokens: 24_500 },
+      },
+    })
+    assert.deepEqual(commands, ['compact'])
   } finally {
     bridge.dispose()
   }
@@ -2406,6 +2464,7 @@ test('the console renders compaction state from the status the bridge reports', 
       'autoCompactionEnabled',
       'compactionReason',
       'compactionError',
+      'compactionReserve',
     ]) {
       assert.ok(key in status, `${key} is on the status card`)
     }

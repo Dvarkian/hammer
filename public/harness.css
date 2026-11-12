@@ -822,6 +822,82 @@ body.hx-details-collapsed .hx-side-details {
   tab-size: 2;
 }
 
+/* The transcript's own scroller is hidden, but the blocks inside it still scroll — a wide
+   fence, a long tool output, a table — and those need a scrollbar that belongs to the theme.
+   Thin, quiet, and drawn from the same border/surface tokens as everything else. */
+.hx-code,
+.hx-tool-cmd,
+.hx-tool-out,
+.hx-diff,
+.hx-table-wrap,
+.hx-compaction-stream,
+.hx-compaction-kept,
+.hx-queue,
+.hx-side,
+.hx-session-list,
+.hx-palette-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.hx-code::-webkit-scrollbar,
+.hx-tool-cmd::-webkit-scrollbar,
+.hx-tool-out::-webkit-scrollbar,
+.hx-diff::-webkit-scrollbar,
+.hx-table-wrap::-webkit-scrollbar,
+.hx-compaction-stream::-webkit-scrollbar,
+.hx-compaction-kept::-webkit-scrollbar,
+.hx-queue::-webkit-scrollbar,
+.hx-side::-webkit-scrollbar,
+.hx-session-list::-webkit-scrollbar,
+.hx-palette-list::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.hx-code::-webkit-scrollbar-track,
+.hx-tool-cmd::-webkit-scrollbar-track,
+.hx-tool-out::-webkit-scrollbar-track,
+.hx-diff::-webkit-scrollbar-track,
+.hx-table-wrap::-webkit-scrollbar-track,
+.hx-compaction-stream::-webkit-scrollbar-track,
+.hx-compaction-kept::-webkit-scrollbar-track,
+.hx-queue::-webkit-scrollbar-track,
+.hx-side::-webkit-scrollbar-track,
+.hx-session-list::-webkit-scrollbar-track,
+.hx-palette-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hx-code::-webkit-scrollbar-thumb,
+.hx-tool-cmd::-webkit-scrollbar-thumb,
+.hx-tool-out::-webkit-scrollbar-thumb,
+.hx-diff::-webkit-scrollbar-thumb,
+.hx-table-wrap::-webkit-scrollbar-thumb,
+.hx-compaction-stream::-webkit-scrollbar-thumb,
+.hx-compaction-kept::-webkit-scrollbar-thumb,
+.hx-queue::-webkit-scrollbar-thumb,
+.hx-side::-webkit-scrollbar-thumb,
+.hx-session-list::-webkit-scrollbar-thumb,
+.hx-palette-list::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+
+.hx-code::-webkit-scrollbar-thumb:hover,
+.hx-tool-cmd::-webkit-scrollbar-thumb:hover,
+.hx-tool-out::-webkit-scrollbar-thumb:hover,
+.hx-diff::-webkit-scrollbar-thumb:hover,
+.hx-table-wrap::-webkit-scrollbar-thumb:hover,
+.hx-compaction-stream::-webkit-scrollbar-thumb:hover,
+.hx-compaction-kept::-webkit-scrollbar-thumb:hover,
+.hx-queue::-webkit-scrollbar-thumb:hover,
+.hx-side::-webkit-scrollbar-thumb:hover,
+.hx-session-list::-webkit-scrollbar-thumb:hover,
+.hx-palette-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
 /* ── Syntax tokens ────────────────────────────────────────────────────────────────── */
 /*
  * The classes the highlighter writes into a fenced block and a read's body. Colour only: the
@@ -1362,7 +1438,10 @@ body.hx-details-collapsed .hx-side-details {
 .hx-model {
   position: relative;
   padding: 0;
-  font-family: var(--hx-mono);
+  /* A model change is a station on the spine, but the announcement itself is prose —
+     "changed from X to Y" reads as a sentence, not shell output. The mono face stays on
+     the tool rows and code blocks where it belongs. */
+  font-family: inherit;
 }
 
 .hx-model-head {
@@ -1607,6 +1686,20 @@ body.hx-details-collapsed .hx-side-details {
   margin-top: 4px;
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+/* The token point where Pi's auto-compaction fires, kept as its own line under the context
+   meter. The figure is a threshold, not a reading, so it stays visible even before the first
+   measured turn gives the meter a percentage. */
+.hx-context-compacts {
+  margin-top: 3px;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.hx-context-compacts[hidden] {
+  display: none;
 }
 
 /* The routed row's quota, below context. It uses the same window vocabulary as the Router
@@ -2293,6 +2386,32 @@ body.hx-details-collapsed .hx-side-details {
   border: 1px solid var(--border);
 }
 
+/* The slope control is the router page's selector, moved here when slope became a
+   per-conversation setting: the same 6px track, the same accent thumb with its 1px ring, and
+   the same 2px hairline notches (painted into --slope-notches by paintSlopeNotches). Only the
+   width is the composer's — the control sits in the bar, not under a plot. The thinking slider
+   keeps its 14px dot; these rules are scoped to the slope one so the two do not bleed. */
+.hx-composer-thinking #hx-slope-slider {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface-alt);
+}
+
+.hx-composer-thinking #hx-slope-slider::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--border);
+  margin-top: -3px;
+}
+
+.hx-composer-thinking #hx-slope-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  background: var(--accent);
+  border: 1px solid var(--border);
+}
+
 .hx-composer-thinking #hx-thinking-slider::-webkit-slider-runnable-track {
   height: 6px;
   border-radius: 3px;
@@ -2374,13 +2493,15 @@ body.hx-details-collapsed .hx-side-details {
   bottom: calc(100% + 10px);
   right: -8px;
   z-index: 40;
-  width: 258px;
-  padding: 8px 9px 6px;
+  width: 340px;
+  padding: 9px 11px 8px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--surface-alt);
   box-shadow: 0 12px 30px rgb(0 0 0 / 28%);
-  pointer-events: none;
+  /* The panel is a tooltip over the slider, but the two edge lines inside it are controls:
+     the router plot's minimum selectors, moved here. So it takes the pointer while open. */
+  pointer-events: auto;
 }
 
 .hx-slope-pop svg {
@@ -2422,26 +2543,11 @@ body.hx-details-collapsed .hx-side-details {
   font-size: 8px;
 }
 
-.hx-slope-pop-cap {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  margin-top: 3px;
-  font-size: 0.68rem;
-  color: var(--text-muted);
-}
-
-.hx-slope-pop-pct {
-  color: var(--text);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
 .hx-slope-pop-pick {
-  margin-left: auto;
-  max-width: 168px;
+  margin-top: 3px;
   overflow: hidden;
   color: var(--text-dim);
+  font-size: 0.68rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2450,6 +2556,87 @@ body.hx-details-collapsed .hx-side-details {
   margin: 0;
   font-size: 0.68rem;
   color: var(--text-muted);
+}
+
+/* The router plot's grid, ticks and edge lines, at the popup's scale. */
+.hx-slope-pop svg {
+  touch-action: none;
+}
+
+.hx-slope-grid {
+  stroke: var(--border);
+  stroke-opacity: 0.45;
+  stroke-width: 1;
+}
+
+.hx-slope-tick {
+  fill: var(--text-muted);
+  font-size: 7.5px;
+}
+
+.hx-slope-min {
+  stroke: var(--accent, #4c8dff);
+  stroke-opacity: 0.28;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+.hx-slope-min.is-set {
+  stroke-opacity: 0.9;
+}
+
+/* A 1px line is not something a hand can catch: the visible rule is backed by a fat
+   transparent twin that owns the pointer. */
+.hx-slope-min-hit {
+  stroke: transparent;
+  stroke-width: 12;
+  cursor: ns-resize;
+}
+
+.hx-slope-min-hit[data-sel-drag='minSpeed'] {
+  cursor: ew-resize;
+}
+
+.hx-slope-min-label {
+  fill: var(--accent, #4c8dff);
+  font-size: 7.5px;
+  paint-order: stroke;
+  stroke: var(--surface-alt);
+  stroke-width: 2.5;
+}
+
+.hx-slope-ring {
+  fill: none;
+  stroke: var(--accent, #4c8dff);
+  stroke-width: 1.4;
+}
+
+/* Names beside the dots, haloed so a grid line never cuts through the text. The pick is the
+   accent one; the rest are the rows the plot would otherwise leave anonymous. */
+.hx-slope-label {
+  fill: var(--text);
+  font-size: 8px;
+  paint-order: stroke;
+  stroke: var(--surface-alt);
+  stroke-width: 2;
+}
+
+/* Below a minimum: still on the field, but out of the running at this setting. Declared after
+   .hx-slope-dot-idle so it wins for a row that is both inactive and below a minimum. */
+.hx-slope-dot-muted {
+  fill-opacity: 0.25;
+}
+
+.hx-slope-pop-mins {
+  margin-top: 2px;
+  font-size: 0.64rem;
+  color: var(--text-muted);
+}
+
+.hx-slope-pop-hint {
+  margin-top: 2px;
+  font-size: 0.62rem;
+  color: var(--text-dim);
 }
 
 .hx-composer-thinking #hx-thinking-level {

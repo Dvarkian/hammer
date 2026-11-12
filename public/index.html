@@ -191,6 +191,7 @@
               <span id="hx-usage-fill" style="width:0%"></span>
             </div>
             <div class="hx-context-note" id="hx-context-note" hidden></div>
+            <div class="hx-context-compacts" id="hx-context-compacts" hidden></div>
           </div>
           <!-- The routed model's quota, using the same windows as the Router table's Quota
                column. It is separate from context: context is this conversation's fill, while
@@ -201,6 +202,14 @@
               <span class="hx-meter-value" id="hx-quota-model">no model</span>
             </div>
             <div class="hx-quota-windows" id="hx-quota-windows">
+              <div class="hx-quota-empty">No model routed yet.</div>
+            </div>
+          </div>
+          <div class="hx-meter hx-quota-meter hx-rate-meter" hidden>
+            <div class="hx-meter-head">
+              <span class="hx-meter-label">Rate limit</span>
+            </div>
+            <div class="hx-quota-windows" id="hx-rate-windows">
               <div class="hx-quota-empty">No model routed yet.</div>
             </div>
           </div>
@@ -286,13 +295,6 @@
         </div>
         </div>
 
-        <div class="kpi-card topology-card scatter-card">
-          <div class="scatter-title">
-            <div class="kpi-label" style="margin:0;">Intelligence vs Speed</div>
-            <span class="kpi-value is-loading" id="speed-intell-count" style="font-size:0.82rem; margin-left:auto;"></span>
-          </div>
-          <svg id="speed-intell-svg" preserveAspectRatio="xMidYMid meet"></svg>
-        </div>
       </div>
     </div>
 
@@ -359,7 +361,7 @@
               <th class="text-right" title="Average tokens per second across real requests">Tok/s</th>
               <th id="th-usage" title="Tokens over time for this model+provider row; each column's area is the tokens it accounts for, and idle gaps are collapsed">Usage</th>
               <th id="th-quota" title="Requests and token quota windows for this endpoint: usage against each published or observed limit, the total allowance per window, the remainder, and when the window resets. Every known minute/day/week/month window is shown.">Quota</th>
-              <th id="th-rate-limit" title="Rate limit reported for this endpoint. The column is in place ahead of the data: nothing fills it yet.">Rate limit</th>
+              <th id="th-rate-limit" title="Throttle windows for this endpoint: the requests and tokens the provider reports per minute or hour, drawn as a bar against that window. Every row shows a bar, or ∞ when no rate limit is published or has been observed.">Rate limit</th>
               <th id="th-ctx"
                 title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
               <th id="th-status" title="Model health from pings and tests">Status</th>
@@ -384,7 +386,7 @@
                   <th class="text-right">Tok/s</th>
                   <th>Usage</th>
                   <th id="th-graveyard-quota" title="Requests and token quota windows observed for this unavailable endpoint. Rows with no observed refusal link to the provider's live project limits.">Quota</th>
-                  <th id="th-graveyard-rate-limit" title="Rate limit reported for this unavailable endpoint. The column is in place ahead of the data: nothing fills it yet.">Rate limit</th>
+                  <th id="th-graveyard-rate-limit" title="Throttle windows observed for this unavailable endpoint, drawn as a bar against the window. Rows with no observed rate limit show ∞.">Rate limit</th>
                   <th>Context</th>
                   <th>Status</th>
                   <th>Response</th>

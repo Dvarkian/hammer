@@ -316,7 +316,7 @@
        on narrow ones. */
     .plots-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: 1fr;
       gap: 18px;
       align-items: stretch;
     }
@@ -327,16 +327,7 @@
       }
     }
 
-    #speed-intell-svg {
-      opacity: 1;
-      pointer-events: all;
-      cursor: crosshair;
-    }
 
-    /* Slope-line selector: threshold lines are draggable via fat invisible hit
-       lines that carry a data-sel-drag attribute. */
-    [data-sel-drag="minIntell"] { cursor: ns-resize; }
-    [data-sel-drag="minSpeed"] { cursor: ew-resize; }
 
     .kpi-content {
       position: relative;
@@ -967,6 +958,46 @@
       max-width: 300px;
       white-space: normal;
       vertical-align: top;
+    }
+
+    /* The two limit columns share one bar vocabulary: a throttle window and a capacity
+       window are drawn by the same markup, so the only difference a reader sees is the
+       column they sit in. */
+    .rate-limit-cell {
+      min-width: 190px;
+      max-width: 280px;
+      white-space: normal;
+      vertical-align: top;
+    }
+
+    .provider-quota-cell .quota-row-windows,
+    .provider-limits-cell .quota-row-windows {
+      gap: 6px;
+    }
+
+    .quota-row-infinity .quota-row-pct {
+      font-size: 1.05rem;
+      line-height: 1;
+      color: var(--text-muted);
+    }
+
+    /* An estimated ceiling is drawn with the same bar but never passed off as a published
+       number: the label carries EST and the fill is softened. */
+    .quota-row-window.is-estimated .quota-row-period {
+      color: var(--accent);
+    }
+
+    .quota-row-window.is-estimated .quota-row-fill {
+      opacity: 0.62;
+    }
+
+    .quota-row-unknown-limit .quota-row-pct {
+      font-size: 0.62rem;
+      color: var(--text-muted);
+    }
+
+    .quota-row-infinity .quota-row-period {
+      color: var(--text-muted);
     }
 
     .quota-row-windows {
@@ -2407,107 +2438,6 @@
       line-height: 1.4;
     }
 
-    /* Intelligence-vs-Speed card: the title and the slope selector live in
-       their own strips above/below the plot so no control overlaps the
-       scatter itself. */
-    .scatter-card {
-      display: flex;
-      flex-direction: column;
-      padding: 0;
-      /* Keep the title, plot, and control strips usable even where the generic
-         .kpi-card min-height is overridden for small screens. */
-      min-height: 240px;
-    }
-    .scatter-card .scatter-title {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 14px 20px 8px;
-      flex-shrink: 0;
-    }
-    .scatter-card #speed-intell-svg {
-      position: relative;
-      /* flex-basis 0, not auto. The scatter plot writes its viewBox from this element's own
-         measured height, and an SVG with a viewBox has that viewBox's aspect ratio as its
-         *intrinsic* height — so with an automatic base size the plot's own output became the
-         thing that sized it: each redraw made the element (and with it the whole KPI row) taller,
-         which the next redraw wrote into the viewBox, and a slow loader could leave the two plots
-         stretched thousands of pixels down the page. A zero basis takes the element's height from
-         the space it is given and nothing else. */
-      flex: 1 1 0;
-      width: 100%;
-      /* Floor for stacked/narrow layouts, where nothing stretches the card and
-         the SVG would otherwise sit at its 150px default: the plot keeps the
-         height the removed hint/pick rows used to take. Wide screens stretch
-         the card to match the topology card and flex fills the rest. */
-      min-height: 200px;
-      opacity: 1;
-      pointer-events: all;
-      cursor: crosshair;
-    }
-    .scatter-controls {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      flex-shrink: 0;
-      padding: 10px 20px 12px;
-      border-top: 1px solid var(--border);
-      background: var(--card);
-    }
-
-    /* Slope selector: notch ticks mark the slider positions furthest from any model
-       changeover — each notch sits in the middle of a model-selection region, as far
-       from a handoff as possible. The positions are data-dependent, so JS paints them
-       into the --slope-notches custom property as a gradient of 2px hairlines, which
-       the track rules read as their background-image. (A datalist cannot be used:
-       -webkit-appearance:none removes the native ticks.) The WebKit and Firefox track
-       rules stay separate — a selector list mixing the two is invalid in Chromium and
-       the rule would be dropped whole. */
-    #sel-slope-slider {
-      -webkit-appearance: none;
-      appearance: none;
-      height: 6px;
-      border-radius: 3px;
-      background: var(--surface-alt);
-      border: none;
-      outline: none;
-      margin: 0;
-      padding: 0;
-    }
-    #sel-slope-slider::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-      background: var(--accent);
-      cursor: pointer;
-      box-shadow: 0 0 0 1px var(--border);
-      margin-top: -3px;
-    }
-    #sel-slope-slider::-moz-range-thumb {
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-      background: var(--accent);
-      cursor: pointer;
-      border: 1px solid var(--border);
-    }
-    #sel-slope-slider::-webkit-slider-runnable-track {
-      height: 6px;
-      border-radius: 3px;
-      background-color: var(--surface-alt);
-      border: none;
-      background-image: var(--slope-notches, none);
-    }
-    #sel-slope-slider::-moz-range-track {
-      height: 6px;
-      border-radius: 3px;
-      background-color: var(--surface-alt);
-      border: none;
-      background-image: var(--slope-notches, none);
-    }
 
     /* ── The loading shell ───────────────────────────────────────────────────────────────
        A dashboard that is still loading used to be indistinguishable from a dashboard that
@@ -2709,10 +2639,12 @@
       /* Provider hue is applied per-rect from JS; this rule only carries the shared look. */
       shape-rendering: crispEdges;
     }
-    .usage-sparkline-cell {
+    .usage-sparkline-cell,
+    .provider-usage-cell {
       width: 96px;
       min-width: 96px;
       flex-shrink: 0;
+      vertical-align: top;
     }
     .usage-sparkline {
       width: 96px;

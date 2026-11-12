@@ -107,6 +107,7 @@ import {
   lazyDiscoveryCandidates,
   markBazaarLinkPaidModels,
   markOrcaRouterPaidModels,
+  markRequestyPaidModels,
   markTokenHarborPaidModels,
   providerDiscoveryNeedsCredential,
   resolveDiscoveryModelsUrl,
@@ -1546,6 +1547,39 @@ test("Token Harbor's `:free` ids are the free tier, and the paid twin bills the 
   assert.equal(provider.auth.envVar, 'TOKENHARBOR_API_KEY')
 })
 
+test('Requesty prices its free tier at zero and marks every other id Paid', () => {
+  // Requesty publishes no `:free` suffix: the pricing column is the marker. Both prices must
+  // be zero — a zero input price with a metered output is still a bill — and a record that
+  // omits pricing cannot be assumed free. Everything outside the zero set is skipped by the
+  // probe, so an 800-row catalogue does not spend a request to rediscover its 402.
+  const records = [
+    { id: 'google/gemma-4-31b-it', input_price: 0, output_price: 0 },
+    { id: 'novita/ling-3.1-flash', input_price: 0, output_price: 0 },
+    { id: 'anthropic/claude-fable-5.2', input_price: 0.000008, output_price: 0.00004 },
+    { id: 'half/free-input-paid-output', input_price: 0, output_price: 0.000001 },
+    { id: 'unpriced/model' },
+  ]
+  const models = records.map((record) => ({ modelId: record.id }))
+  markRequestyPaidModels(models, records)
+  const paid = Object.fromEntries(models.map((model) => [model.modelId, model.paymentRequired]))
+  assert.deepEqual(paid, {
+    'google/gemma-4-31b-it': false,
+    'novita/ling-3.1-flash': false,
+    'anthropic/claude-fable-5.2': true,
+    'half/free-input-paid-output': true,
+    'unpriced/model': true,
+  })
+  // The raw catalogue records reach the marker before the merge, which is what turns the
+  // pricing into `catalogPaid` on the live row.
+  // An empty catalogue is a failed fetch, not an all-paid catalogue: leave the existing rows
+  // untouched so a momentary outage cannot relabel the free tier as Paid.
+  const untouched = [{ modelId: 'google/gemma-4-31b-it' }]
+  markRequestyPaidModels(untouched, [])
+  assert.equal(untouched[0].paymentRequired, undefined)
+  const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+  assert.match(server, /markRequestyPaidModels\(models, catalogRecords\)/)
+})
+
 test("Puter's driver RPC envelope is built and translated back to OpenAI", async () => {
   // `/puterai/openai/v1` needs a paid plan, so the free path is the `ai-chat` driver: the
   // arguments ride one level down in the body and the reply is `{success, result}` rather
@@ -2955,7 +2989,7 @@ test('the quota table is read through the registry, and sources.js no longer shi
   // Records travel whole: the window and scope the dashboard reads come off the descriptor,
   // not from a summary reconstructed at the call site.
   assert.equal(table['github-copilot'].window, 'month')
-  assert.match(table.nvidia.source, /Provider-reported limits only/)
+  assert.match(table.nvidia.source, /40 requests\/minute/)
 
   // And the old home is gone, so there is one source rather than two that can disagree.
   const sourcesFile = readFileSync(new URL('../sources.js', import.meta.url), 'utf8')
@@ -3058,9 +3092,17 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /const ttftCell = row\.cells\[3\];/)
   assert.match(js, /const tpsCell = row\.cells\[4\];/)
   // The rate-limit column sits between quota and context in the header and in every row builder
-  // (model heading, provider row, graveyard row).
+  // (model heading, provider row, graveyard row). It is filled, not empty: the throttle counters
+  // and bench state render into it from the row's rateLimit half.
   assert.match(table, /id="th-quota"[^]*?<th id="th-rate-limit"/)
-  assert.equal((js.match(/<td class="rate-limit-cell"><\/td>/g) || []).length, 3)
+  assert.equal((js.match(/<td class="rate-limit-cell"><\/td>/g) || []).length, 0)
+  assert.match(js, /function rateLimitCellInnerHTML\(m\)/)
+  assert.match(js, /class="rate-limit-cell">\$\{rateLimitCellInnerHTML\(m\)\}/)
+  assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
+  assert.match(js, /\$\{rateLimitCell\(m\)\}/)
+  // The refresh path keeps the throttle column in step with the quota column beside it.
+  assert.match(js, /const rateLimitCellEl = row\.cells\[7\];/)
+  assert.match(js, /rateLimitCellEl\.innerHTML = rateLimitCellInnerHTML\(m\)/)
 })
 
 test('the brand map names Beam, GPTFree and ALLaM', () => {

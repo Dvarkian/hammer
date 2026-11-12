@@ -15,6 +15,33 @@ const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8'
 const modelsRoute = readFileSync(new URL('../lib/http/routes/models.js', import.meta.url), 'utf8')
 const proxyRoute = readFileSync(new URL('../lib/http/routes/proxy.js', import.meta.url), 'utf8')
 
+test('the providers tables put Rate limit directly beside Quota', () => {
+  for (const id of ['active-providers-table', 'setup-providers-table']) {
+    const start = indexHtml.indexOf(`id="${id}"`)
+    assert.ok(start > 0, `${id} exists`)
+    const header = indexHtml.slice(start, indexHtml.indexOf('</thead>', start))
+    assert.match(
+      header,
+      /Credentials<\/th>\s*<th[^>]*>Usage<\/th>\s*<th[^>]*>Quota<\/th>\s*<th[^>]*>Rate limit<\/th>\s*<th[^>]*>Latest error<\/th>/,
+    )
+  }
+  assert.equal((dashboard.match(/\$\{providerUsageCell\}/g) || []).length, 7)
+  // Every provider row template writes the same three cells in that same order: the four
+  // account-specific branches, Devin, and the generic row.
+  assert.match(
+    dashboard,
+    /<td class="provider-quota-cell">\$\{providerQuotaHtml\}<\/td>\s*<td class="provider-limits-cell">\$\{rateLimitHtml\}<\/td>\s*<td class="provider-error-cell">\$\{providerErrorHtml\}<\/td>/,
+  )
+  assert.doesNotMatch(
+    dashboard,
+    /<td class="provider-quota-cell">\$\{providerQuotaHtml\}<\/td>\s*<td class="provider-error-cell">\$\{providerErrorHtml\}<\/td>/,
+  )
+  assert.equal(
+    (dashboard.match(/<td class="provider-limits-cell">\$\{rateLimitHtml\}<\/td>/g) || []).length,
+    7,
+  )
+})
+
 test('the UI opens only after imported-provider startup discovery is awaited', () => {
   const discovery = server.indexOf('const discoverySettled = await Promise.allSettled')
   const listen = server.indexOf('const httpServer = app.listen')
@@ -99,10 +126,13 @@ test('Token Harbor free-tier headers become a percent-only weekly window', () =>
   assert.equal(relative.freeResetAt, now + 3600_000)
 
   // Both response paths capture the headers, and both UI surfaces render the percentage.
+  // The allowance is capacity, so the UI reads it off the quota half (with the legacy
+  // rateLimit read kept for rows persisted before the split).
   assert.match(server, /parseTokenHarborFreeTierHeaders\(rl\)/)
   assert.match(server, /parseTokenHarborFreeTierHeaders\(headers\)/)
-  assert.match(dashboard, /rateLimit\.freeUsedPercent/)
-  assert.match(harness, /rateLimit\.freeUsedPercent/)
+  assert.match(dashboard, /creditSource\.freeUsedPercent/)
+  assert.match(dashboard, /quota\.freeUsedPercent/) // via creditSource = m.quota || m.rateLimit
+  assert.match(harness, /freeUsedPercent/)
 
   // Token Harbor states the allowance only on a non-streamed answer, and the proxy forces
   // SSE upstream — so the free rows need a check of their own or the percentage never lands.
@@ -167,12 +197,35 @@ test('the model table shows a quota window for every endpoint', () => {
   assert.match(indexHtml, /<tbody id="table-body"/)
   assert.match(dashboard, /function quotaRowViews\(m\)/)
   assert.match(dashboard, /function quotaRowWindowHtml\(w\)/)
-  // A multi-provider model heading grosses every provider's windows; its provider rows
-  // each carry their own stack.
+  // A multi-provider model heading reports capacity the router can use now; provider rows
+  // each carry their own stack. A benched or down provider must not paint its 100% window
+  // across a model that still has an up provider with allowance. When nothing is usable the
+  // whole group remains visible so the heading can explain what is blocking it.
   assert.match(dashboard, /\$\{quotaGroupCell\(g\)\}/)
   assert.match(dashboard, /\$\{quotaRowCell\(m\)\}/)
   assert.match(dashboard, /function quotaGroupViews\(members\)/)
-  assert.match(dashboard, /Gross quota across/)
+  assert.match(dashboard, /Quota across/)
+  assert.match(dashboard, /function groupCapacityMembers\(members\)/)
+  assert.match(dashboard, /const usable = all\.filter\(isRowUsable\)/)
+  assert.match(dashboard, /return usable\.length > 0 \? usable : all/)
+  assert.match(dashboard, /const capacityMembers = groupCapacityMembers\(members\)/)
+  assert.match(dashboard, /function quotaWindowExhausted\(window\)/)
+  assert.match(dashboard, /function quotaGroupCapacityWindows\(windows\)/)
+  assert.match(
+    dashboard,
+    /const windows = quotaGroupCapacityWindows\(quotaGroupViews\(capacityMembers\)\)/,
+  )
+  assert.match(dashboard, /quotaGroupProviderCount\(capacityMembers\)/)
+  assert.match(dashboard, /usable provider/)
+  assert.doesNotMatch(dashboard, /view\.estimated \? 'estimated' : 'published'/)
+  assert.match(
+    dashboard,
+    /const authoritative = views\.every\(\(view\) => view\.estimated !== true\)/,
+  )
+  assert.match(dashboard, /const tightestView = views\.reduce/)
+  assert.match(dashboard, /tightest across \$\{views\.length\}/)
+  assert.match(dashboard, /const mixedEstimate = windows\.some\(/)
+  assert.match(dashboard, /window\.estimated === true \|\| window\.mixed === true/)
   assert.match(dashboard, /provider\$\{providers === 1 \? '' : 's'\} · \$\{basis\}/)
   assert.match(
     dashboard,
@@ -185,13 +238,16 @@ test('the model table shows a quota window for every endpoint', () => {
   assert.match(dashboard, /const perModel = view\.scope === 'model'/)
   assert.match(dashboard, /account:\$\{providerKey\}/)
   assert.match(dashboard, /quotaGroupProviderCount\(members\)/)
-  assert.match(dashboard, /shared by \$\{view\.rows\} rows/)
+  assert.match(dashboard, /shared by \$\{rows\} rows/)
   // Google publishes only a remaining fraction, which cannot be added up: a heading over
   // those windows reports the tightest allowance instead of blanking back to "usage not
   // reported" while every row beneath it shows a number.
-  assert.match(dashboard, /Math\.max\(current\.usedPercent, view\.usedPercent\)/)
+  // Percentages are not addable: the gross reports the tightest fraction it saw.
+  assert.match(dashboard, /const fractions = views\.map\(groupTightness\)/)
   assert.match(dashboard, /highest use across/)
-  assert.match(dashboard, /: \(view\.usedPercent \?\? null\)/)
+  // Different reset clocks survive the gross as a warning rather than one countdown.
+  assert.match(dashboard, /resets vary/)
+  assert.match(dashboard, /const rolling =\s*\n\s*view\.period === 'rolling'/)
   assert.match(dashboard, /m\?\.quotaWindows/)
   assert.match(modelsRoute, /quotaWindows: \[[\s\S]{0,200}?extractQuotaWindows\(/)
   assert.match(dashboard, /quotaRowCellInnerHTML\(m\)/)
@@ -276,11 +332,14 @@ test("hammer's own rows carry the roster's published allowance", () => {
 test("a vendor-corrected allowance replaces the roster's figure", () => {
   const llm7 = providerQuotaTable().llm7
   assert.equal(llm7.steadyTokensPerMonth, null)
-  assert.equal(llm7.limits.length, 1)
   assert.deepEqual(
     { metric: llm7.limits[0].metric, limit: llm7.limits[0].limit, period: llm7.limits[0].period },
     { metric: 'tokens', limit: 100_000, period: 'day' },
   )
+  // The corrected daily cap leads; the published minute/hour request ceilings follow it.
+  assert.equal(llm7.limits.length, 3)
+  assert.ok(llm7.limits.some((limit) => limit.metric === 'requests' && limit.period === 'minute'))
+  assert.ok(llm7.limits.some((limit) => limit.metric === 'requests' && limit.period === 'hour'))
   assert.match(llm7.numericSource, /LLM7 limits doc/)
   assert.equal(llm7.sourceUrl, 'https://docs.llm7.io/limits')
   // A provider with no correction keeps both the roster's figure and its attribution.
@@ -316,12 +375,23 @@ test("a published figure is attributed without displacing the provider's own cit
   assert.match(groq.numericSource, /OmniRoute free-tier roster/)
   // The link still answers "where do I read about this plan?" — it is the provider's page.
   assert.equal(groq.sourceUrl, 'https://console.groq.com/docs/rate-limits')
-  assert.equal(groq.limits.length, 1)
+  // The free-tier request ceilings sit beside the roster's monthly token grant: the
+  // catalog states 30 requests/minute and 1,000/day, while the month figure keeps its
+  // own attribution.
+  assert.equal(groq.limits.length, 3)
+  const monthly = groq.limits.find((limit) => limit.metric === 'tokens' && limit.period === 'month')
   assert.deepEqual(
-    { metric: groq.limits[0].metric, limit: groq.limits[0].limit, period: groq.limits[0].period },
+    { metric: monthly.metric, limit: monthly.limit, period: monthly.period },
     { metric: 'tokens', limit: 15_000_000, period: 'month' },
   )
-  assert.match(groq.limits[0].source, /OmniRoute free-tier roster/)
+  assert.match(monthly.source, /OmniRoute free-tier roster/)
+  assert.ok(groq.limits.some((limit) => limit.metric === 'requests' && limit.period === 'minute'))
+  // ∞ is a statement, not a default: exactly one provider record is allowed to make it.
+  assert.equal(providerQuotaTable().gptfree.unlimited, true)
+  assert.equal(
+    Object.values(providerQuotaTable()).filter((quota) => quota.unlimited === true).length,
+    1,
+  )
 })
 
 // The hosted Ollama plan is a monthly grant; a local Ollama server is bound by the machine it
@@ -445,6 +515,14 @@ test('an Antigravity model is not exhausted while another account has allowance'
   assert.ok(dashboard.includes('hasAlternativeAntigravityQuota(m)'))
 })
 
+test('an exhausted weekly allowance supplies the countdown over a shorter retry header', () => {
+  // Token Harbor's free-tier 429 carries retry-after: 3600 while the body says the weekly
+  // allowance returns days later. Both are real statements, but only the allowance reset can
+  // reopen the row; the dashboard must not count down one hour and then re-bench it.
+  assert.match(dashboard, /const exhaustedQuotaResets =/)
+  assert.match(dashboard, /\.\.\.exhaustedQuotaResets/)
+})
+
 test("a clock's countdown also follows a reset the body states in words", () => {
   // A row kept a bare clock unless the response said "retry in Ns" or carried an
   // X-RateLimit-Reset header. Antigravity's 429 says "Resets in 161h41m31s": the same
@@ -486,7 +564,8 @@ test('plot colours come from the model mark, not the provider', () => {
   // A monochrome mark has no colour to lend: black or white would vanish against the plot.
   assert.ok(dashboard.includes('if (lum < 0.12 || lum > 0.9) return null'))
   // Every plot that used to paint a provider hue now prefers the model's own colour.
-  assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 72% 55%)`'))
+  // The scatter that read the mark's accent is gone: the slope plot lives in the composer
+  // popup now, where each dot is hued by provider because there are no model marks to read.
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 65% 55%)`'))
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 70% 55%)`'))
 })

@@ -1176,6 +1176,13 @@
       }
       const ctx = active()
       if (ctx?.sessionFile) void publishSessionUsage(ctx)
+      // The outline rail was measured at 0px while this view was display:none, so its last
+      // paint bailed on an empty track and left it blank: a conversation restored while the
+      // app was closed on the router view came back with no notches. Its rows are already
+      // mounted, so a repaint is all it needs — and the column has a real width now, so a
+      // thought that wraps differently can fold.
+      scheduleMinimap()
+      scheduleThoughtFolds()
     }
   }
 
@@ -1657,6 +1664,7 @@
                 contextTokens: Number.isFinite(Number(row.contextTokens))
                   ? Number(row.contextTokens)
                   : null,
+                contextBound: row.contextBound || null,
                 knownQuota: row.knownQuota || null,
                 quotaWindows: Array.isArray(row.quotaWindows) ? row.quotaWindows : [],
                 providerUsage: row.providerUsage || null,
@@ -2371,13 +2379,44 @@
   /** The row a click jumped to, kept just long enough to flash it. */
   let minimapFlashTimer = 0
 
+  /** Frames left to retry a paint the layout was not ready for. */
+  let minimapRetries = 0
+
+  /**
+   * About two seconds of frames: long enough for a hidden pane to be laid out, short enough
+   * that a rail which is genuinely display:none (below 960px) stops asking.
+   */
+  const MINIMAP_RETRY_LIMIT = 120
+
   /** Coalesces paint requests: streaming appends many rows a second, the rail needs one frame. */
   function scheduleMinimap() {
+    // A real change — a row mounted, a resize, the view coming back — restores the budget.
+    minimapRetries = 0
+    queueMinimapFrame()
+  }
+
+  /**
+   * Requests one paint frame without touching the retry budget, so a paint that bailed for an
+   * unsized track can ask again next frame without resetting its own allowance.
+   */
+  function queueMinimapFrame() {
     if (minimapFrame) return
     minimapFrame = requestAnimationFrame(() => {
       minimapFrame = 0
       renderMinimap()
     })
+  }
+
+  /**
+   * Retries a paint that measured a 0px track, rather than dropping it for the rest of the
+   * session. The track is 0 while the rail is display:none — a narrow window, or the agent view
+   * off screen because the app was restarted on the router view — and a dropped paint there used
+   * to leave a restored conversation with no notches until a resize or the next turn.
+   */
+  function scheduleMinimapRetry() {
+    if (minimapRetries >= MINIMAP_RETRY_LIMIT) return
+    minimapRetries += 1
+    queueMinimapFrame()
   }
 
   /** The excerpt a tooltip (and nothing else) shows for one row. */
@@ -2448,8 +2487,9 @@
     // the height check below still skips the narrow layout.
     rail.hidden = false
     // Below 960px the rail is display:none, so it has no height to measure and nothing to
-    // draw: measuring a 0px track maps every row onto the same tick.
-    if (!rail.clientHeight) return
+    // draw: measuring a 0px track maps every row onto the same tick. An off-screen agent view
+    // is the same case; retried rather than dropped (see scheduleMinimapRetry).
+    if (!rail.clientHeight) return scheduleMinimapRetry()
 
     // Measured geometry first, all reads before any writes so the whole pass is one layout.
     const transcriptHeight = Math.max(transcript.scrollHeight, 1)
@@ -3222,17 +3262,16 @@
     if (slider && String(slider.value) !== String(shown)) slider.value = String(shown)
   }
 
-  /** The thumb's width in px; the thinking slider's track is sized for the same dot. */
-  const SLOPE_THUMB_PX = 14
+  /** The slope thumb's width in px, matching the router page selector it was copied from. */
+  const SLOPE_THUMB_PX = 12
   /** The CSS width of a composer slider, used when the control has not been laid out yet. */
   const SLOPE_TRACK_PX = 88
 
   /**
    * Where a slider value puts the thumb's *centre* on the track, as a percentage of its width.
-   * The thumb is 14px wide on an 88px track, so its centre travels 7px→81px while the value
-   * travels 0→100: that is why the thinking slider's quarters read 8/36/64/92%, and why a
-   * hairline painted at the raw percentage would sit beside the dot that is supposed to rest
-   * on it. `width` is the measured track, or 0 before layout.
+   * The slope thumb is 12px wide on an 88px track, so its centre travels 6px→82px while the
+   * value travels 0→100: a hairline painted at the raw percentage would sit beside the dot that
+   * is supposed to rest on it. `width` is the measured track, or 0 before layout.
    */
   function thumbCentrePercent(percent, width) {
     const span = width > SLOPE_THUMB_PX ? width : SLOPE_TRACK_PX
@@ -3384,15 +3423,74 @@
     return base > 0 ? base * SLOPE_PLOT_HEADROOM : null
   }
 
+  /**
+   * A stable hue per provider, the same function the router page's scatter uses: two providers
+   * offering the same model have to be told apart at a glance in both pictures, or the popup is
+   * showing a field the page beside it does not.
+   */
+  function slopePlotHue(providerKey) {
+    let h = 0
+    for (const ch of String(providerKey || '')) h = ((h << 5) - h + ch.charCodeAt(0)) | 0
+    return Math.abs(h) % 360
+  }
+
+  /** How far past the field a row may sit before the axis stops calling that speed a scale. */
+  const SLOPE_PLOT_OUTLIER_FACTOR = 2
+
+  /**
+   * The router's own minimums, mirrored so the popup filters the field the way the router does.
+   * They belong to the router, not to one conversation, which is why they are read from and
+   * written back to /api/selector while the slope itself stays per-conversation.
+   */
+  let slopeMinima = { minSpeed: null, minIntell: null }
+  /** Extents from the last draw, so a dragged line can be turned back into a data value. */
+  let slopePlotScales = null
+  let slopeMinimaDrag = null
+  let slopeMinimaSaveTimer = null
+
+  /** The router plot's number formats, so both pictures label an axis the same way. */
+  const fmtSlopeSpeed = (v) =>
+    v >= 1000
+      ? v.toFixed(0)
+      : v >= 1
+        ? v.toPrecision(3).replace(/\.?0+$/, '')
+        : v.toPrecision(2).replace(/\.?0+$/, '')
+  const fmtSlopeIntell = (v) =>
+    v >= 100 ? String(Math.round(v)) : Number.isInteger(v) ? String(v) : v.toFixed(1)
+
+  /**
+   * The axis maximum the field supports, plus how many rows sit past it — the router plot's rule,
+   * so one very fast row cannot flatten every other dot in the popup either. A cut only counts
+   * while the rows above the gap stay a strict minority: a 2x ratio between two small speeds is
+   * ordinary jitter, not an outlier.
+   */
+  function slopeAxisLimit(speeds) {
+    const sorted = speeds.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => b - a)
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i - 1] > sorted[i] * SLOPE_PLOT_OUTLIER_FACTOR) {
+        if (i >= sorted.length - i) break
+        return { limit: sorted[i], offScale: i }
+      }
+    }
+    return { limit: sorted[0] ?? 0, offScale: 0 }
+  }
+
+  /** A row clearing the router's minimums. An unset minimum imposes nothing. */
+  function pointClearsMinimums(point) {
+    if (slopeMinima.minSpeed != null && point.speed < slopeMinima.minSpeed) return false
+    if (slopeMinima.minIntell != null && point.intell < slopeMinima.minIntell) return false
+    return true
+  }
+
   /** The plot, as markup: dots, the line this slope lowers, and the row it lands on. */
   function slopePlotMarkup(percent) {
     const points = slopePlotPoints
     if (!points.length) {
       return '<p class="hx-slope-pop-empty">No measured model to plot yet.</p>'
     }
-    const W = 236
-    const H = 128
-    const pad = { top: 14, right: 10, bottom: 18, left: 10 }
+    const W = 340
+    const H = 214
+    const pad = { top: 18, right: 14, bottom: 28, left: 32 }
     const plotW = W - pad.left - pad.right
     const plotH = H - pad.top - pad.bottom
     let xMin = Math.min(...points.map((point) => point.speed))
@@ -3402,6 +3500,10 @@
       xMin -= span
       xMax += span
     }
+    // A row far faster than the rest rests on the edge with an arrow instead of stretching the
+    // axis until every other dot collapses into the left margin — the router plot's rule.
+    const { limit, offScale } = slopeAxisLimit(points.map((point) => point.speed))
+    if (offScale > 0) xMax = Math.min(xMax, limit)
     const xPad = (xMax - xMin) * 0.06
     xMin = Math.max(0, xMin - xPad)
     xMax += xPad
@@ -3421,48 +3523,182 @@
     // no slope to speak of, so the field is drawn and the line is left off.
     const routable = points.filter((point) => point.routable)
     const field = routable.length >= 2 ? routable : points
-    const ceiling = slopePlotCeiling(field)
+    // The router filters this same field by its minimums before it picks, so the popup has to
+    // as well: a line lowered onto rows the router will not consider names a model that will
+    // not answer. With nothing clearing the minimums the router falls back to its ranking, and
+    // the caption says so rather than inventing a pick.
+    const eligible = field.filter((point) => pointClearsMinimums(point))
+    const ceiling = slopePlotCeiling(eligible)
     const slope = ceiling ? (percent / 100) * ceiling : 0
     // The line is a constant score: intelligence + slope × speed. The row on it with the
     // highest score is the router's pick at this slope, which is what the caption names.
-    let pick = field[0]
+    // The pick is the row that clears the minimums and sits highest on `intelligence + slope ×
+    // speed` — the same argmax the router computes.
+    let pick = null
     let best = -Infinity
-    for (const point of field) {
+    for (const point of eligible) {
       const value = point.intell + slope * point.speed
       if (value > best) {
         best = value
         pick = point
       }
     }
-    const line = ceiling
-      ? `<line class="hx-slope-line" x1="${xOf(xMin).toFixed(1)}" y1="${yOf(best - slope * xMin).toFixed(1)}" x2="${xOf(xMax).toFixed(1)}" y2="${yOf(best - slope * xMax).toFixed(1)}"/>`
-      : ''
+    // The line is a constant score, lowered until it touches the pick, and truly vertical at
+    // 100% where the router's rule picks the fastest eligible row. Drawing it through the pick
+    // is what makes the picture say which row the line lands on.
+    const atMax = percent >= 100
+    const line = !ceiling
+      ? ''
+      : pick && atMax
+        ? `<line class="hx-slope-line" x1="${xOf(pick.speed).toFixed(1)}" y1="${pad.top}" x2="${xOf(pick.speed).toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>`
+        : pick
+          ? `<line class="hx-slope-line" x1="${xOf(xMin).toFixed(1)}" y1="${yOf(pick.intell + slope * (pick.speed - xMin)).toFixed(1)}" x2="${xOf(xMax).toFixed(1)}" y2="${yOf(pick.intell + slope * (pick.speed - xMax)).toFixed(1)}"/>`
+          : ''
+    // The router plot's dot vocabulary, in miniature: a routable row is a provider-hued disc, a
+    // row the router will not use is a smaller mark in the same hue, and the pick wears an accent
+    // ring. A row below a minimum keeps its place but fades — it is still on the field, it just
+    // cannot win at this setting.
     const dots = points
       .map((point) => {
-        const isPick = point === pick
-        // A row the router will not use keeps its place but gives up its bulk: the field stays
-        // whole, and the rows that can actually win are the ones the eye lands on.
-        const cls = isPick
-          ? 'hx-slope-dot hx-slope-dot-pick'
-          : point.routable
-            ? 'hx-slope-dot'
-            : 'hx-slope-dot hx-slope-dot-idle'
-        return `<circle class="${cls}" cx="${xOf(point.speed).toFixed(1)}" cy="${yOf(point.intell).toFixed(1)}" r="${isPick ? 3 : 1.9}"><title>${escapeHtml(point.label)} · ${Math.round(point.intell)} intelligence</title></circle>`
+        const isPick = pick && point === pick
+        const clears = pointClearsMinimums(point)
+        const offAxis = point.speed > xMax
+        const r = isPick ? 3.4 : point.routable ? 2.4 : 1.3
+        const cls = [
+          'hx-slope-dot',
+          isPick ? 'hx-slope-dot-pick' : '',
+          point.routable ? '' : 'hx-slope-dot-idle',
+          clears ? '' : 'hx-slope-dot-muted',
+        ]
+          .filter(Boolean)
+          .join(' ')
+        // Coloured the way the router page's scatter colours its dots — one stable hue per
+        // provider — so the two views of the same rows agree dot for dot. The pick keeps the
+        // accent and its ring: it is the one thing that answers what this slope does.
+        const fill = isPick ? '' : ` style="fill:hsl(${slopePlotHue(point.providerKey)} 62% 58%)"`
+        const ring = isPick
+          ? `<circle class="hx-slope-ring" cx="${xOf(point.speed).toFixed(1)}" cy="${yOf(point.intell).toFixed(1)}" r="${(r + 3).toFixed(1)}"/>`
+          : ''
+        // A row past the axis cap is drawn at the edge with an arrow: its position is capped,
+        // its speed is not.
+        const arrow = offAxis
+          ? `<text class="hx-slope-axis" x="${Math.min(xOf(point.speed) + r + 1, pad.left + plotW - 2).toFixed(1)}" y="${(yOf(point.intell) + 3).toFixed(1)}">➤</text>`
+          : ''
+        return (
+          `<circle class="${cls}" cx="${xOf(point.speed).toFixed(1)}" cy="${yOf(point.intell).toFixed(1)}" r="${r}"${fill}>` +
+          `<title>${escapeHtml(point.label)} · ${Math.round(point.intell)} intelligence · ${fmtSlopeSpeed(point.speed)} tok/s${clears ? '' : ' · below the minimums'}</title></circle>` +
+          ring +
+          arrow
+        )
       })
       .join('')
+    // The extents are kept for the drag handlers: a line being moved has to turn a pixel back
+    // into the value it names.
+    slopePlotScales = { pad, plotW, plotH, xMin, xMax, xSpan, yMin, yMax, ySpan }
+    // The router plot's grid and its tick labels, so the popup's axes say what its dots mean.
+    const grid = [0, 1, 2, 3, 4]
+      .map((i) => {
+        const gx = pad.left + (i / 4) * plotW
+        const gy = pad.top + (i / 4) * plotH
+        return (
+          `<line class="hx-slope-grid" x1="${gx.toFixed(1)}" y1="${pad.top}" x2="${gx.toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>` +
+          `<line class="hx-slope-grid" x1="${pad.left}" y1="${gy.toFixed(1)}" x2="${(pad.left + plotW).toFixed(1)}" y2="${gy.toFixed(1)}"/>` +
+          `<text class="hx-slope-tick" x="${gx.toFixed(1)}" y="${(pad.top + plotH + 11).toFixed(1)}" text-anchor="middle">${fmtSlopeSpeed(xMin + (i / 4) * xSpan)}${offScale > 0 && i === 4 ? ' ➤' : ''}</text>` +
+          `<text class="hx-slope-tick" x="${(pad.left - 5).toFixed(1)}" y="${(gy + 3).toFixed(1)}" text-anchor="end">${fmtSlopeIntell(yMax - (i / 4) * ySpan)}</text>`
+        )
+      })
+      .join('')
+    // The two minimums, drawn where the router applies them: on the floor and at the left edge
+    // while unset (a faint affordance, no label), wherever they are set once they carry one. The
+    // fat transparent twins are the drag targets — a 1px line is not something a hand can catch.
+    const minIntellSet = slopeMinima.minIntell != null
+    const minIntellValue = minIntellSet ? Math.min(Math.max(slopeMinima.minIntell, yMin), yMax) : yMin
+    const minIntellY = yOf(minIntellValue)
+    const minSpeedSet = slopeMinima.minSpeed != null
+    const minSpeedValue = minSpeedSet ? Math.min(Math.max(slopeMinima.minSpeed, xMin), xMax) : xMin
+    const minSpeedX = xOf(minSpeedValue)
+    const minima =
+      `<line class="hx-slope-min${minIntellSet ? ' is-set' : ''}" x1="${pad.left}" y1="${minIntellY.toFixed(1)}" x2="${(pad.left + plotW).toFixed(1)}" y2="${minIntellY.toFixed(1)}"/>` +
+      `<line class="hx-slope-min-hit" data-sel-drag="minIntell" x1="${pad.left}" y1="${minIntellY.toFixed(1)}" x2="${(pad.left + plotW).toFixed(1)}" y2="${minIntellY.toFixed(1)}"/>` +
+      `<line class="hx-slope-min${minSpeedSet ? ' is-set' : ''}" x1="${minSpeedX.toFixed(1)}" y1="${pad.top}" x2="${minSpeedX.toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>` +
+      `<line class="hx-slope-min-hit" data-sel-drag="minSpeed" x1="${minSpeedX.toFixed(1)}" y1="${pad.top}" x2="${minSpeedX.toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>` +
+      (minIntellSet
+        ? `<text class="hx-slope-min-label" x="${(pad.left + plotW - 3).toFixed(1)}" y="${Math.min(Math.max(minIntellY - 4, pad.top + 12), pad.top + plotH - 2).toFixed(1)}" text-anchor="end">min ${fmtSlopeIntell(minIntellValue)}</text>`
+        : '') +
+      (minSpeedSet
+        ? `<text class="hx-slope-min-label" x="${Math.min(Math.max(minSpeedX + 3, pad.left + 2), pad.left + plotW - 40).toFixed(1)}" y="${(pad.top + plotH - 5).toFixed(1)}">min ${fmtSlopeSpeed(minSpeedValue)}</text>`
+        : '')
+    // The router plot's labels, at the popup's scale: the pick always, then the smartest and the
+    // fastest, then the rest by height, each dropped rather than allowed to collide with a dot or
+    // another label. Hovering still names every row, so a dropped label hides nothing.
+    const maxLabels = Math.min(6, points.length)
+    const smartest = Math.max(...points.map((point) => point.intell))
+    const fastest = Math.max(...points.map((point) => point.speed))
+    const rank = (point) =>
+      (pick && point === pick ? 1000 : 0) +
+      (point.intell >= smartest ? 200 : 0) +
+      (point.speed >= fastest ? 200 : 0) +
+      (point.routable ? 0 : -400) +
+      ((point.intell - yMin) / ySpan) * 100
+    const occupied = points.map((point) => ({
+      x0: xOf(point.speed) - 4,
+      x1: xOf(point.speed) + 4,
+      y0: yOf(point.intell) - 4,
+      y1: yOf(point.intell) + 4,
+    }))
+    const collides = (a, b) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+    const placedLabels = []
+    for (const point of points.slice().sort((a, b) => rank(b) - rank(a))) {
+      if (placedLabels.length >= maxLabels) break
+      const text = point.label.length > 16 ? `${point.label.slice(0, 15)}…` : point.label
+      const w = text.length * 4.2
+      const cx = xOf(point.speed)
+      const cy = yOf(point.intell)
+      const rectFor = (right) =>
+        right
+          ? { x0: cx + 4, x1: cx + 4 + w, y0: cy - 4, y1: cy + 4, right }
+          : { x0: cx - 4 - w, x1: cx - 4, y0: cy - 4, y1: cy + 4, right }
+      const fits = (rect) =>
+        rect.x0 >= pad.left + 1 &&
+        rect.x1 <= pad.left + plotW - 1 &&
+        !placedLabels.some((placed) => collides(placed.rect, rect)) &&
+        !occupied.some((dot) => collides(dot, rect))
+      const isPick = pick && point === pick
+      let rect = fits(rectFor(true)) ? rectFor(true) : fits(rectFor(false)) ? rectFor(false) : null
+      // The pick keeps its name even in a crowded plot: the roomier side, clamped inside the frame.
+      if (!rect && isPick) rect = rectFor(cx < pad.left + plotW / 2)
+      if (!rect) continue
+      placedLabels.push({ rect, text, cx, cy, isPick, right: rect.right })
+    }
+    const labelMarkup = placedLabels
+      .map(
+        (label) =>
+          `<text class="hx-slope-label${label.isPick ? ' is-pick' : ''}" x="${(label.right ? label.rect.x0 : label.rect.x1).toFixed(1)}" y="${(label.cy + 2.5).toFixed(1)}" text-anchor="${label.right ? 'start' : 'end'}">${escapeHtml(label.text)}</text>`,
+      )
+      .join('')
     const svg =
-      `<svg viewBox="0 0 ${W} ${H}" role="presentation" aria-hidden="true">` +
+      `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Intelligence against speed, smarter upward and faster rightward">` +
       `<defs><clipPath id="hx-slope-clip"><rect x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"/></clipPath></defs>` +
       `<rect class="hx-slope-frame" x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"/>` +
-      `<g clip-path="url(#hx-slope-clip)">${line}${dots}</g>` +
-      `<text class="hx-slope-axis" x="${pad.left}" y="${pad.top - 4}">smarter ↑</text>` +
-      `<text class="hx-slope-axis" x="${W - pad.right}" y="${H - 5}" text-anchor="end">faster →</text>` +
+      grid +
+      `<g clip-path="url(#hx-slope-clip)">${line}${dots}${labelMarkup}</g>` +
+      minima +
       `</svg>`
-    const label = pick.label.length > 26 ? `${pick.label.slice(0, 25)}…` : pick.label
+    // Neither the pick's name nor its percentage is printed here: the composer bar under the text
+    // field names the model, and the readout beside the slider carries the percentage the thumb
+    // is on. The one message that stays is the case neither of them can explain.
+    const pickNote = pick ? '' : `<div class="hx-slope-pop-pick">nothing clears the minimums</div>`
+    const minimums = [
+      minSpeedSet ? `min ${fmtSlopeSpeed(minSpeedValue)} tok/s` : '',
+      minIntellSet ? `min ${fmtSlopeIntell(minIntellValue)} int` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
     return (
       svg +
-      `<div class="hx-slope-pop-cap"><span class="hx-slope-pop-pct">${percent}%</span>` +
-      `<span class="hx-slope-pop-pick">${escapeHtml(label)}</span></div>`
+      pickNote +
+      (minimums ? `<div class="hx-slope-pop-mins">${escapeHtml(minimums)}</div>` : '') +
+      `<div class="hx-slope-pop-hint">drag the edge lines to set minimums</div>`
     )
   }
 
@@ -3500,6 +3736,80 @@
     }
     if (delayMs > 0) slopePlotHideTimer = setTimeout(hide, delayMs)
     else hide()
+  }
+
+  /** Turns a pointer position inside the plot back into the minimum the line sits at. */
+  function applySlopeMinimaDrag(event) {
+    const svg = $('hx-slope-pop')?.querySelector('svg')
+    const scales = slopePlotScales
+    if (!svg || !scales) return
+    let point = null
+    try {
+      const ctm = svg.getScreenCTM?.()
+      if (ctm) point = new DOMPoint(event.clientX, event.clientY).matrixTransform(ctm.inverse())
+    } catch {
+      point = null
+    }
+    if (!point) return
+    if (slopeMinimaDrag === 'minSpeed') {
+      const ratio = (point.x - scales.pad.left) / scales.plotW
+      // Past the edge of the plot is the way back to "no minimum": an unset line rests on the
+      // axis, so dragging it off the axis clears it rather than pinning a floor at zero.
+      slopeMinima.minSpeed =
+        ratio <= 0.005 ? null : Math.max(0, Math.round((scales.xMin + ratio * scales.xSpan) * 10) / 10)
+    } else {
+      const ratio = (scales.pad.top + scales.plotH - point.y) / scales.plotH
+      slopeMinima.minIntell =
+        ratio <= 0.005 ? null : Math.max(0, Math.round((scales.yMin + ratio * scales.ySpan) * 10) / 10)
+    }
+    renderSlopePlot(Number($('hx-slope-slider')?.value ?? 4))
+  }
+
+  /**
+   * Saves the minimums on the router, which owns them: they describe the field the line chooses
+   * from, not one conversation. `slope` is deliberately not sent — the popup never read the
+   * router page's slider, and posting one would overwrite a setting the user did not touch.
+   */
+  function saveSlopeMinima() {
+    if (slopeMinimaSaveTimer) clearTimeout(slopeMinimaSaveTimer)
+    slopeMinimaSaveTimer = setTimeout(async () => {
+      slopeMinimaSaveTimer = null
+      try {
+        const res = await fetch('/api/selector', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            minSpeed: slopeMinima.minSpeed,
+            minIntell: slopeMinima.minIntell,
+          }),
+        })
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}))
+          throw new Error(body.error || 'Could not save the minimums (' + res.status + ').')
+        }
+        // The table's lit row is the router's pick at these minimums, so re-read it.
+        void loadKnownTtfts()
+      } catch (err) {
+        setHint((err && err.message) || 'Could not save the minimums.', 'error', active())
+      }
+    }, 250)
+  }
+
+  /** Reads the minimums the router already applies, so the lines start where routing is. */
+  async function loadSlopeMinima() {
+    try {
+      const res = await fetch('/api/selector')
+      if (!res.ok) return
+      const sel = await res.json()
+      const num = (value) => {
+        const n = Number(value)
+        return value != null && Number.isFinite(n) && n >= 0 ? n : null
+      }
+      slopeMinima = { minSpeed: num(sel.minSpeed), minIntell: num(sel.minIntell) }
+      if (!$('hx-slope-pop')?.hidden) renderSlopePlot(Number($('hx-slope-slider')?.value ?? 4))
+    } catch {
+      // The field still draws without them; the lines simply rest on their axes.
+    }
   }
 
   let slopeSaveTimer = null
@@ -3788,16 +4098,17 @@
     const resolved = Number(routed.contextTokens)
     if (Number.isFinite(resolved) && resolved > 0) return Math.round(resolved)
     const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
-    // The table's numeric figure fills the gap the resolved bound leaves: a lower bound
-    // learned from real traffic ("\u003e238k") is a number there, while the router's own
-    // ceiling is deliberately only an upper bound and is null here.
+    // Prefer a real upper bound from the table. A row learned only from successful prompts
+    // can show ">2.3k": that is a lower bound, and using it as the denominator turned a
+    // 39k context into "100% of 2.3k".
+    const max = Number(row?.contextBound?.max)
+    if (Number.isFinite(max) && max > 0) return Math.round(max)
+    const label = String(row?.context || '')
+    // A bound such as ">238k" is not a denominator. An exact table figure is the fallback
+    // for a page that has the routed pick but no resolved bound on it.
+    if (!label || /[<>≤≥]/.test(label)) return 0
     const known = Number(row?.contextTokens)
     if (Number.isFinite(known) && known > 0) return Math.round(known)
-    const label = String(row?.context || '')
-    // A bound such as ">238k" is not a denominator: using it would make the bar look safer
-    // than the model's real limit. An exact table figure is the fallback for a page that has
-    // the routed pick but no resolved bound on it.
-    if (!label || /[<>≤≥]/.test(label)) return 0
     const match = label.replace(/,/g, '').match(/([\d.]+)\s*([kKmM])?/)
     const value = Number(match?.[1])
     if (!Number.isFinite(value) || value <= 0) return 0
@@ -3917,17 +4228,18 @@
 
   function renderContext(bar, usage, compact, fallbackWindow = 0) {
     const note = $('hx-context-note')
+    const compactsAt = $('hx-context-compacts')
     const fill = bar?.firstElementChild || null
     // `contextUsage` is pi's figure (it may also ride along on a live usage frame);
     // `usage.contextWindow` is the flat estimate a bare per-message count would give.
     const context = usage.contextUsage || null
     // The model's own window is the limit the models table reports for the routed row, and it
-    // is what the router compacts against (see lib/pi/bridge.js). Pi's figure is only the alias
-    // declaration, kept as a cap: it used to be a fixed 131k, which put "131k" in this meter
-    // beside "1M" in the table for the very same pick.
-    const piWindow = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
+    // is what the router compacts against (see lib/pi/bridge.js). Pi's `contextUsage` window
+    // records what the bridge measured against at the last message, so it can still name the
+    // previous model after a fallback; keep it only for a route with no bound.
+    const measuredWindow = Number(context?.contextWindow) || Number(usage.contextWindow) || 0
     const routedWindow = Number(fallbackWindow) || 0
-    const window_ = routedWindow || piWindow
+    const window_ = routedWindow || measuredWindow
     if (window_ <= 0) {
       // No window declared: the turn-share bar, kept and labelled for what it actually is.
       if (bar) {
@@ -3946,6 +4258,11 @@
         note.hidden = true
         note.textContent = ''
       }
+      if (compactsAt) {
+        compactsAt.hidden = true
+        compactsAt.textContent = ''
+        compactsAt.removeAttribute('title')
+      }
       return
     }
     const used = Number(context?.tokens)
@@ -3954,21 +4271,39 @@
     // bridge guessed must not read like one Pi vouched for.
     const estimated = context?.estimated === true
     // Pi reserves room for the reply: it compacts at `window - reserve`, which is why a
-    // meter filled to 100% is a meter that has already compacted. The reserve is Pi's launch
-    // setting (`pi.compaction.reserveTokens`), so a configured one wins; 16384 is Pi's own
-    // default, and the fallback for a status that does not carry the setting.
-    const configuredReserve = Number(state.status?.compactionReserveTokens)
+    // meter filled to 100% is a meter that has already compacted. The server publishes the
+    // reserve actually in force, because a small routed window or a prompt-cap bound changes
+    // it. The launch setting is only a fallback for an older status payload.
+    const status = active()?.status || state.status
+    const publishedReserve = Number(status?.compactionReserve)
+    const configuredReserve = Number(status?.compactionReserveTokens)
     const RESERVE =
-      Number.isFinite(configuredReserve) && configuredReserve > 0 ? configuredReserve : 16384
+      Number.isFinite(publishedReserve) && publishedReserve > 0
+        ? publishedReserve
+        : Number.isFinite(configuredReserve) && configuredReserve > 0
+          ? configuredReserve
+          : 16384
     // Auto-compaction switched off is a wall Pi will walk straight past, so the meter must not
     // draw a trigger for it. `null` is Pi not reporting the switch, which is not off.
-    const autoCompactionOff = state.status?.autoCompactionEnabled === false
-    // Where pi actually compacts: the tighter of its alias ceiling and the routed model's
-    // window. A model with more room than the alias still stops at the alias, so the tick and
-    // the note say so rather than letting a 1M bar hide a 131k wall.
-    const limits = [piWindow, routedWindow].filter((value) => value > 0)
-    const ceiling = limits.length ? Math.min(...limits) : window_
+    const autoCompactionOff = status?.autoCompactionEnabled === false
+    // Where the bridge actually compacts: against the routed window it reports now. Do not
+    // min this with `measuredWindow`; after a fallback that figure can be the previous model's
+    // window, which drew a 24k trigger under a 262k meter.
+    const ceiling = window_
     const trigger = Math.max(0, ceiling - RESERVE)
+    // A threshold is a fact about the window, not about this turn's usage: it can be shown
+    // before Pi has measured anything. With auto-compaction off there is no wall to describe,
+    // so the line stays hidden, matching the trigger tick's own rule.
+    if (compactsAt) {
+      const show = !autoCompactionOff && trigger > 0
+      compactsAt.hidden = !show
+      compactsAt.textContent = show ? `Compacts at ${compact(trigger)} tokens` : ''
+      if (show) {
+        compactsAt.title = `Pi compacts when the context passes ${Math.round(trigger).toLocaleString()} tokens (${Math.round(ceiling).toLocaleString()} window minus ${Math.round(RESERVE).toLocaleString()} reserved for the reply).`
+      } else {
+        compactsAt.removeAttribute('title')
+      }
+    }
     const pct = measured ? Math.max(0, Math.min(100, (used / window_) * 100)) : null
     if (bar) {
       bar.classList.add('is-context')
@@ -3997,11 +4332,7 @@
         note.textContent = `~${compact(used)} of ${compact(window_)} · estimating while it answers`
       } else {
         const left = Math.max(0, window_ - used)
-        const compacts =
-          !autoCompactionOff && ceiling < window_ && trigger > 0
-            ? ` · compacts at ${compact(trigger)}`
-            : ''
-        note.textContent = `${compact(used)} of ${compact(window_)} · ${compactFloor(left)} free${compacts}`
+        note.textContent = `${compact(used)} of ${compact(window_)} · ${compactFloor(left)} free`
       }
     }
   }
@@ -4130,6 +4461,7 @@
     unavailable,
     usedPercent,
     percentOnly,
+    kind,
   }) {
     const normalizedMetric =
       metric === 'requests' ? 'requests' : metric === 'credits' ? 'credits' : 'tokens'
@@ -4166,6 +4498,7 @@
       return null
     }
     return {
+      kind: kind || (period === 'minute' || period === 'hour' ? 'rate-limit' : 'quota'),
       period,
       metric: normalizedMetric,
       rawWindow,
@@ -4267,6 +4600,7 @@
       if (capacity.creditLimit != null || capacity.creditRemaining != null) {
         add(
           railQuotaWindow({
+            kind: 'quota',
             period: 'lifetime',
             metric: 'credits',
             rawWindow: 'account credit',
@@ -4306,6 +4640,7 @@
       if (rateLimit?.limitTokens != null || rateLimit?.remainingTokens != null) {
         add(
           railQuotaWindow({
+            kind: 'rate-limit',
             period: 'window',
             metric: 'tokens',
             rawWindow: 'last response',
@@ -4323,6 +4658,7 @@
       if (rateLimit?.limitRequests != null || rateLimit?.remainingRequests != null) {
         add(
           railQuotaWindow({
+            kind: 'rate-limit',
             period: 'window',
             metric: 'requests',
             rawWindow: 'last response',
@@ -4342,6 +4678,7 @@
     for (const observed of Array.isArray(row?.quotaWindows) ? row.quotaWindows : []) {
       add(
         railQuotaWindow({
+          kind: observed.kind,
           period: railQuotaPeriod(observed.period || observed.rawWindow),
           metric: observed.metric,
           rawWindow: observed.rawWindow,
@@ -4488,15 +4825,33 @@
 
   function renderQuota(ctx = active()) {
     const list = $('hx-quota-windows')
+    const rateList = $('hx-rate-windows')
+    const rateMeter = rateList?.closest('.hx-meter') || null
     const modelEl = $('hx-quota-model')
     const routed = ctx?.routedModel
     if (!list) return
+    // Both meters answer with a bar or ∞. Nothing here is a dash or a link: the routed row
+    // is either under a window this endpoint named, or it is not limited by one.
+    const paint = (windows) => {
+      const quota = windows.filter((window) => window.kind !== 'rate-limit')
+      const throttles = windows.filter((window) => window.kind === 'rate-limit')
+      const empty = (kind) =>
+        `<div class="hx-quota-empty">∞ ${kind === 'rate-limit' ? 'no rate limit reported' : 'no quota limit reported'}</div>`
+      list.innerHTML = quota.length ? quota.map(railQuotaWindowHtml).join('') : empty('quota')
+      if (rateList) {
+        rateList.innerHTML = throttles.length
+          ? throttles.map(railQuotaWindowHtml).join('')
+          : empty('rate-limit')
+      }
+    }
+    if (rateMeter) rateMeter.hidden = !routed
     if (!routed) {
       if (modelEl) {
         modelEl.textContent = 'no model'
         modelEl.title = ''
       }
       list.innerHTML = '<div class="hx-quota-empty">No model routed yet.</div>'
+      if (rateList) rateList.innerHTML = '<div class="hx-quota-empty">No model routed yet.</div>'
       return
     }
     const label = printableModelName(routed.label || routed.modelId || routed.realModelId || 'model')
@@ -4507,19 +4862,17 @@
     const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
     if (!row) {
       if (Date.now() < ttftFreshUntil) {
-        list.innerHTML = '<div class="hx-quota-empty">No quota is reported for this model.</div>'
+        paint([])
       } else {
         list.innerHTML = '<div class="hx-quota-empty">Reading quota…</div>'
+        if (rateList) rateList.innerHTML = '<div class="hx-quota-empty">Reading quota…</div>'
         void loadKnownTtfts().then(() => {
           if (ctx === active()) renderQuota(ctx)
         })
       }
       return
     }
-    const windows = railQuotaWindows(row)
-    list.innerHTML = windows.length
-      ? windows.map(railQuotaWindowHtml).join('')
-      : '<div class="hx-quota-empty">No quota is reported for this model.</div>'
+    paint(railQuotaWindows(row))
   }
 
   async function refreshStatus(console = active()) {
@@ -5135,7 +5488,14 @@
       })
       const data = await res.json().catch(() => {})
       if (!res.ok) throw new Error(data?.error || `Could not change auto-compaction (${res.status}).`)
+      // The server reads the switch back from Pi; use that answer rather than the provisional
+      // pressed state, so the compaction panel and the context note agree immediately.
+      if (console.status && Object.prototype.hasOwnProperty.call(data, 'reported')) {
+        console.status = { ...console.status, autoCompactionEnabled: data.reported }
+        if (console === active()) state.status = console.status
+      }
       renderCompactionPanel(console)
+      if (console === active()) renderUsage(console)
       setHint(
         data?.reported == null
           ? 'Auto-compaction is not reported by this Pi.'
@@ -5654,7 +6014,6 @@
       activate(open)
       return
     }
-    setHint('Opening that conversation…')
     try {
       const remote = await findInstanceFor(file)
       if (remote) {
@@ -5968,8 +6327,52 @@
       slopeSlider.blur()
     })
     window.addEventListener('pointerup', () => {
-      if ($('hx-slope-pop') && !$('hx-slope-pop').hidden) hideSlopePlot(900)
+      const pop = $('hx-slope-pop')
+      if (!pop || pop.hidden) return
+      // A minimum is being dragged, or the pointer is on the panel reading it: leave it up.
+      if (slopeMinimaDrag || pop.matches(':hover')) return
+      hideSlopePlot(900)
     })
+    // The minimums are the router plot's edge lines, moved in here: while the panel is open it
+    // takes the pointer, so the two lines can be dragged to say which rows the slope may choose
+    // from. They are saved on the router, where they already live.
+    const slopePop = $('hx-slope-pop')
+    slopePop?.addEventListener('pointerdown', (event) => {
+      const handle = event.target instanceof Element ? event.target.closest('[data-sel-drag]') : null
+      if (!handle) return
+      event.preventDefault()
+      slopeMinimaDrag = handle.getAttribute('data-sel-drag')
+      // Capture keeps the drag alive when the pointer leaves the panel. A released pointer throws
+      // here, and losing capture is not worth losing the drag over.
+      try {
+        slopePop.setPointerCapture(event.pointerId)
+      } catch {
+        /* no capture, still draggable */
+      }
+      showSlopePlot(Number(slopeSlider?.value ?? 4))
+    })
+    slopePop?.addEventListener('pointermove', (event) => {
+      if (slopeMinimaDrag) applySlopeMinimaDrag(event)
+    })
+    const endMinimaDrag = () => {
+      if (!slopeMinimaDrag) return
+      slopeMinimaDrag = null
+      saveSlopeMinima()
+    }
+    slopePop?.addEventListener('pointerup', endMinimaDrag)
+    slopePop?.addEventListener('pointercancel', endMinimaDrag)
+    // Hovering the panel keeps it open; leaving it folds away the way letting go of the thumb does.
+    slopePop?.addEventListener('pointerenter', () => {
+      if (slopePlotHideTimer) {
+        clearTimeout(slopePlotHideTimer)
+        slopePlotHideTimer = null
+      }
+    })
+    slopePop?.addEventListener('pointerleave', () => {
+      if (!slopeMinimaDrag) hideSlopePlot(300)
+    })
+    // The router owns the minimums, so the lines start where routing already is.
+    void loadSlopeMinima()
     // The notches come from the model table, which may not have been read yet.
     void loadKnownTtfts()
 

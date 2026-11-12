@@ -394,37 +394,16 @@ test('a live fallback is painted across the dashboard before the next snapshot',
   assert.match(dashboard, /m\.providerKey === bestProviderKey/)
 })
 
-test('the scatter renders a full-size dot only for a currently routable row', () => {
+test('the slope plot lives in the composer popup, not on the router page', () => {
   const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
-  const pointsStart = dashboard.indexOf('function drawScatterPoints(')
-  const pointsEnd = dashboard.indexOf('function drawScatterLabels(', pointsStart)
-  assert.ok(pointsStart >= 0 && pointsEnd > pointsStart, 'the scatter point renderer must exist')
-
-  const points = dashboard.slice(pointsStart, pointsEnd)
-  assert.match(points, /const routable = isRoutableRow\(r\)/)
-  assert.match(points, /svgEl\('circle', routable \? \{/)
-  // The mini dot for an inactive row keeps the model-mark accent; size alone marks it as
-  // unavailable, rather than recolouring it to the verdict tint and losing the model identity.
-  assert.match(points, /fill: accent \|\| verdictColor, 'fill-opacity': 0\.75/)
-  assert.match(points, /const accent = modelAccent\(r\.m\)/)
-  assert.doesNotMatch(points, /const up = isRowUp\(r\.m\)/)
-  assert.match(dashboard, /if \(!isRoutableRow\(r\)\) p -= 400/)
-
-  // A live failure or provider bench often changes no speed or intelligence number.
-  // The redraw guard must therefore include both the displayed verdict and the server's
-  // routing decision, or the prior full-size SVG survives the health transition.
-  assert.match(dashboard, /\|v=\$\{rowVerdict\(r\.m\)\}\|route=\$\{routing\}/)
-  assert.match(
-    dashboard,
-    /const routing = typeof r\.m\.routingEligible === 'boolean' \? r\.m\.routingEligible : 'legacy'/,
-  )
-
-  // Verdict windows can expire on their own, without a fetch. The existing one-second
-  // status ticker re-evaluates the guarded draw so that transition is rendered promptly.
-  const tickerStart = dashboard.indexOf('function updateRateLimitCountdowns()')
-  const tickerEnd = dashboard.indexOf('setInterval(updateRateLimitCountdowns', tickerStart)
-  assert.ok(tickerStart >= 0 && tickerEnd > tickerStart, 'the status ticker must exist')
-  assert.match(dashboard.slice(tickerStart, tickerEnd), /drawSpeedIntellScatter\(allModels\)/)
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  // Removing the card is the point: the plot, its dots and its minimums are the composer's
+  // now, and a second copy on the router page would be a second thing to keep in step.
+  assert.doesNotMatch(html, /speed-intell-svg|speed-intell-count/)
+  assert.doesNotMatch(dashboard, /drawSpeedIntellScatter|drawScatterPoints|drawSelectorOverlay/)
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.match(harness, /function slopePlotMarkup\(percent\)/)
+  assert.match(harness, /const SLOPE_PLOT_REFERENCE_TOKENS = 500/)
 })
 
 test('the request path resolves a pin after discovery and retains the final family failure', () => {
