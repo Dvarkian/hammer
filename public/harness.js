@@ -6379,20 +6379,13 @@
     // The outline rail on the transcript's right edge. Bound once; renderMinimap repaints it.
     bindMinimap()
 
-    // The inspector is the same control at every width: a column on a wide window, a drawer
-    // below 960px. Toggling it goes through the same function as the header's icon so the two
-    // buttons can never disagree about whether it is open.
-    $('hx-details')?.addEventListener('click', (event) => {
-      event.stopPropagation()
-      toggleSidebar('details')
-    })
     document.addEventListener('click', (event) => {
       if (!document.body.classList.contains('hx-drawer-open')) {
         if (!document.body.classList.contains('hx-sessions-drawer-open')) return
       }
       // A click inside the open drawer, or on the button that toggles it, is not a dismissal.
       if (event.target.closest('.hx-side')) return
-      if (event.target.closest('#hx-details, #hx-toggle-details, #hx-toggle-sessions')) return
+      if (event.target.closest('#hx-toggle-details, #hx-toggle-sessions')) return
       closeDrawers()
     })
     document.addEventListener('keydown', (event) => {

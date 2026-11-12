@@ -203,10 +203,6 @@ body[data-view='router'] .container {
   flex: none;
 }
 
-.hx-details-btn {
-  display: none;
-}
-
 /* ── View switch ───────────────────────────────────────────────────────────────────── */
 
 /* The switch rides in the app bar, so it is a row of pills with no rule of its own: the bar's
@@ -3172,10 +3168,6 @@ body.hx-details-collapsed .hx-side-details {
   body.hx-sessions-collapsed .hx-side-sessions,
   body.hx-details-collapsed .hx-side-details {
     display: flex;
-  }
-
-  .hx-details-btn {
-    display: inline-flex;
   }
 
   .hx-side {
