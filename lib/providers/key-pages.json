@@ -96,12 +96,6 @@
       "httpStatus": null,
       "note": "Timed out from this environment."
     },
-    "friendliai": {
-      "url": "https://suite.friendli.ai/",
-      "evidence": "Friendli Suite; Settings then API Keys",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "iflytek": {
       "url": "https://console.xfyun.cn/",
       "evidence": "iFlytek open platform console; API keys",

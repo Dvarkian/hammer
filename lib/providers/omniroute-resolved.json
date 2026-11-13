@@ -430,20 +430,6 @@
       "activation": "staged",
       "reason": "Duck.ai answers `duckchat/v1/chat` only to a client that passes its anti-automation attestation. `x-vqd-hash-1` carries an obfuscated async function (verified live 2026-09-22) that reads `navigator.webdriver` and `navigator.userAgent`, builds DOM nodes (`document.createElement`, an iframe's `srcdoc`/`contentWindow`) and enumerates `Object.keys(window)` against `window.top`, and expects back hashes plus a `meta` naming duck.ai in a forged Error stack — so answering it means impersonating a real browser to pass an anti-abuse check. Declined rather than pending: there is no legitimate client that talks to this endpoint"
     },
-    "friendliai": {
-      "activation": "active",
-      "chatUrl": "https://api.friendli.ai/serverless/v1/chat/completions",
-      "modelsUrl": "https://api.friendli.ai/serverless/v1/models",
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "iflytek": {
       "activation": "active",
       "chatUrl": "https://spark-api-open.xf-yun.com/v1/chat/completions",

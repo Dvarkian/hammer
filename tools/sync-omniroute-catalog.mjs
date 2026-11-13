@@ -147,6 +147,12 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // row was ToS `avoid` (personal use; no resale or sublicensing).
   'coze',
   'bytez',
+  // `friendliai` (2026-11-13): the key authenticates — `/serverless/v1/models` lists five
+  // models — but every completion is refused with HTTP 403 "Your team has no remaining
+  // credits. Please purchase credits at https://friendli.ai/suite to continue." on every id
+  // (GLM-5.3, GLM-5.3-Flash, gemma-4-31B-it). Credits are prepaid with no free allowance, so
+  // no key can make it serve, and the roster row was already ToS `avoid` ("terms explicitly
+  // prohibit use as a proxy and third-party access"). Removed on request.
   // `bytez` (2026-11-08): the API answers, the catalogue does not. `/models/v2/list/models`
   // returns HTTP 500 `Expected parameter(s): modelId` (and `{ output: [] }` when a `modelId` is
   // supplied), every model id tried — including the documented `Qwen/Qwen3-4B` and

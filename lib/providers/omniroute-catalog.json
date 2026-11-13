@@ -152,13 +152,6 @@
       "note": "Duck.ai terms prohibit automated querying and building AI services on it."
     },
     {
-      "key": "friendliai",
-      "access": "keyless",
-      "tos": "avoid",
-      "modelCount": 2,
-      "note": "Terms explicitly prohibit use as a proxy and third-party access."
-    },
-    {
       "key": "iflytek",
       "access": "keyless",
       "tos": "avoid",
