@@ -1764,16 +1764,9 @@ body.hx-details-collapsed .hx-side-details {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
-  padding-left: 8px;
-  border-left: 2px solid var(--border-subtle);
-}
-
-.hx-quota-account.is-serving {
-  border-left-color: var(--accent);
 }
 
 .hx-quota-account.is-exhausted {
-  border-left-color: var(--status-error-border);
   opacity: 0.85;
 }
 

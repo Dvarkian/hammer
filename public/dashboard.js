@@ -4614,10 +4614,8 @@
     }
 
     function quotaUnknownHtml(kind) {
-      const throttle = kind === 'rate-limit';
-      const label = throttle ? 'RATE LIMIT' : 'QUOTA';
       return `<div class="quota-row-window quota-row-unknown-limit" data-quota-kind="${kind}" title="No limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.">
-        <div class="quota-row-head"><span class="quota-row-period">${label}</span><span class="quota-row-pct">limit not published</span></div>
+        <div class="quota-row-head"><span class="quota-row-pct">limit not published</span></div>
         <div class="quota-row-track quota-row-track-unknown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="quota-row-fill quota-row-fill-unknown" style="width:0%"></div></div>
         <div class="quota-row-meta">no usage recorded yet</div>
       </div>`;

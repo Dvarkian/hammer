@@ -29,6 +29,11 @@ test('transport-shaped failures read as retryable', () => {
     // decides whether to continue the turn from this text, so it must read as transport.
     'Stream interrupted before the agent answered',
     'Upstream stream stalled (idle timeout).',
+    // A refusal that names nothing. pi-ai renders an error response with an empty body as
+    // "<status> status code (no body)"; observed live on 2026-11-13, twice in one session, and
+    // each one ended a turn that then waited for a Continue nobody typed.
+    '400 status code (no body)',
+    '429 status code (no body)',
   ]) {
     assert.equal(isTransportStreamFailure(text), true, JSON.stringify(text))
   }
@@ -39,6 +44,8 @@ test('a numeric or object status outranks the body text', () => {
   // relay hands over plain numbers as often as wrapped ones.
   assert.equal(isTransportStreamFailure(503), true)
   assert.equal(isTransportStreamFailure({ status: 502, message: 'anything' }), true)
+  // A spent window belongs to the account, not the request: the next candidate has its own.
+  assert.equal(isTransportStreamFailure(429), true)
   assert.equal(isTransportStreamFailure(400), false)
 })
 

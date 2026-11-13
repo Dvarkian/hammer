@@ -3016,6 +3016,32 @@ test('a turn that ended while Hammer was restarting is continued from the replay
   }
 })
 
+test('a turn that ended on a refusal that names nothing is continued', async () => {
+  // Pi renders an error response with an empty body as "<status> status code (no body)": its
+  // SDK found no `error` member, so the status is all that survives. Nothing was said about the
+  // request, so no verdict was stated — but the turn was being handed back to the user anyway,
+  // and the console sat waiting for a Continue nobody types. Observed live 2026-11-13 in one
+  // session: a 400, then a 429, each ending its turn the same way.
+  for (const errorMessage of ['400 status code (no body)', '429 status code (no body)']) {
+    const bridge = new PiBridge({ autoContinueBaseMs: 1 })
+    try {
+      /** @type {Array<{ message: string, options: any }>} */
+      const prompts = []
+      bridge.prompt = async (message, options) => {
+        prompts.push({ message, options })
+        return { data: {} }
+      }
+      bridge.track({ type: 'agent_start' })
+      endFailedTurn(bridge, errorMessage)
+      await waitFor(() => prompts.length === 1)
+      assert.match(prompts[0].message, /Repeat your last action/, errorMessage)
+      assert.equal(prompts[0].options.queueMode, 'followUp')
+    } finally {
+      bridge.dispose()
+    }
+  }
+})
+
 test('a replay that already prompted after its settle is not continued again', async () => {
   // The old router may have sent the continuation before it died. That prompt puts a user
   // message and a new agent_start after the settle, which is what marks the turn as handled.
