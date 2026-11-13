@@ -154,6 +154,12 @@ test('the slope line turns evenly to vertical instead of snapping at the top', (
     /const screenAngle = \(clampedPct \/ 100\) \* \(\(SLOPE_LINE_MAX_ANGLE_DEG \* Math\.PI\) \/ 180\)/,
   )
   assert.match(harness, /function slopeLineSegment\(px, py, screenSlope, pad, plotW, plotH\)/)
+  // A contour of `intelligence + slope × speed` falls as speed rises: on screen that is
+  // y *increasing* with x. Drawing it the other way put the line above the rows it was
+  // supposed to lean over.
+  assert.match(harness, /y1: py \+ screenSlope \* tMin/)
+  assert.match(harness, /y2: py \+ screenSlope \* tMax/)
+  assert.doesNotMatch(harness, /y1: py - screenSlope \* tMin/)
   assert.doesNotMatch(harness, /const atMax = percent >= 100/)
 })
 

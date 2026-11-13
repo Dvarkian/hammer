@@ -3712,6 +3712,11 @@
   /**
    * The part of a line through a pixel point that lies inside the plot box.
    *
+   * The line is a contour of `intelligence + slope × speed`: as speed rises the score it holds
+   * falls, so on the screen it descends to the right — the way this plot has always drawn it,
+   * and the direction that makes "steeper" mean "faster is worth more". Screen y grows
+   * downward, so descending means y *increases* with x.
+   *
    * The line turns through the whole quadrant, so its ends leave the viewBox long before the
    * track ends; clipping to the box keeps every frame inside the picture instead of letting a
    * steep line's endpoints run thousands of pixels off it.
@@ -3725,18 +3730,18 @@
       const y = Math.max(top, Math.min(bottom, py))
       return { x1: left, y1: y, x2: right, y2: y }
     }
-    // Parameterise as x = px + t, y = py - screenSlope · t, and keep what falls in the box.
-    let tMin = Math.max(left - px, (py - bottom) / screenSlope)
-    let tMax = Math.min(right - px, (py - top) / screenSlope)
+    // x = px + t, y = py + screenSlope · t, kept to the part inside the box.
+    let tMin = Math.max(left - px, (top - py) / screenSlope)
+    let tMax = Math.min(right - px, (bottom - py) / screenSlope)
     if (!(tMax > tMin)) {
       tMin = 0
       tMax = 0
     }
     return {
       x1: px + tMin,
-      y1: py - screenSlope * tMin,
+      y1: py + screenSlope * tMin,
       x2: px + tMax,
-      y2: py - screenSlope * tMax,
+      y2: py + screenSlope * tMax,
     }
   }
 
@@ -5312,9 +5317,9 @@
     }${window.estimated ? ' is-estimated' : ''}" title="${escapeHtml(
       titleParts.filter(Boolean).join(' · '),
     )}">
-      <div class="hx-quota-head"><span class="hx-quota-period">${escapeHtml(
-        periodLabel,
-      )}</span><span class="hx-quota-pct">${escapeHtml(percentText)}</span></div>
+      <div class="hx-quota-head"><span class="hx-quota-pct">${escapeHtml(
+        percentText,
+      )}</span></div>
       <div class="hx-quota-track${
         (window.unavailable && !window.percentOnly) || window.usedPercent == null
           ? ' hx-quota-track-unknown'
