@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  aggregatorBareModelId,
   attachLMArenaBoards,
   buildOpenRouterQualityIndex,
   combinePredictions,
@@ -1177,4 +1178,91 @@ test('the routing score is a bounded, monotone position in the measured distribu
   const high = scoreForAa(46, aaValues)
   assert.ok(low < high)
   assert.ok(low >= 0.05 && high <= 0.95)
+})
+
+// ── Aggregator wrappers and re-spellings ──────────────────────────────────────────────
+
+test('a relay wrapper is not part of the model and comes off before anything is looked up', () => {
+  // The g4f catalog names the server instance that answered, the route that owns it, the
+  // upstream host and the chat client it was scraped through. None of it names the model, and
+  // left in place it matched no benchmark at all — which is how a rated model served through a
+  // relay showed a dash.
+  const rows = [
+    ['srv_mp1v9cyha31b95fa8c9a:z-ai/glm-4.6v-flash', 'z-ai/glm-4.6v-flash'],
+    ['srv_mrgy0nmbc8a86c407f17:models/gemini-4-hydrogen', 'gemini-4-hydrogen'],
+    ['pa:0538ffd9:jailgpt', 'jailgpt'],
+    ['@cf/qwen/qwen2.5-coder-32b-instruct', 'qwen2.5-coder-32b-instruct'],
+    ['community/YoannDev90/vercel-nemotron:free', 'vercel-nemotron'],
+    ['Qwen:qwen3-coder-plus', 'qwen3-coder-plus'],
+    ['poe/DeepSeek-V4.1-Flash-T', 'DeepSeek-V4.1-Flash'],
+    ['deepseek-coder-v2:latest', 'deepseek-coder-v2'],
+    ['plain-model-1.0', 'plain-model-1.0'],
+  ]
+  for (const [id, bare] of rows) {
+    assert.equal(aggregatorBareModelId(id), bare, id)
+  }
+})
+
+test('a wrapped id scores exactly like the bare model it names', () => {
+  // The curated table is keyed by the model, and a wrapper used to hide it: the same launch-post
+  // figure Google published for Gemini 4 Hydrogen was reachable only through the bare spelling.
+  const bare = resolveModelQuality({}, 'gemini-4-hydrogen')
+  assert.equal(bare.source, 'curated-aa')
+  for (const id of [
+    'models/gemini-4-hydrogen',
+    'srv_mrgy0nmbc8a86c407f17:models/gemini-4-hydrogen',
+    'google/gemini-4-hydrogen',
+  ]) {
+    const wrapped = resolveModelQuality({}, id)
+    assert.equal(wrapped.source, 'curated-aa', id)
+    assert.equal(wrapped.aa, bare.aa, id)
+  }
+})
+
+test('a re-spelled row borrows the catalog row that is its model', async () => {
+  // Relays re-spell as readily as they re-wrap: `qwen2.5-coder-32b-instruct` is published as
+  // `qwen2.5-coder-instruct-32b` (the same words in another order), and `qwen-3.8-27b` as
+  // `qwen3-8-27b` (the same version and size with the digits split differently). Both were
+  // unscored dashes before, on evidence the catalog already held.
+  const catalog = Array.from({ length: 12 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 2 }),
+  )
+  const snapshots = [
+    benchmarklistSnapshot(
+      catalog
+        .map((model, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 40 + i * 2))
+        .concat([
+          benchmarklistRow('qwen2.5-coder-instruct-32b', 'Qwen2.5 Coder 32B', 47),
+          benchmarklistRow('qwen3-8-27b', 'Qwen 3.8 27B', 44),
+          benchmarklistRow('deepseek-coder-v2-lite-instruct', 'DeepSeek Coder V2 Lite', 30),
+          benchmarklistRow('qwen3-coder', 'Qwen3 Coder', 41),
+        ]),
+    ),
+  ]
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ snapshots, next_cursor: null }) })
+  const quality = {
+    benchmarklistOnly: true,
+    benchmarklist: await buildBenchmarkListQualityIndex(catalog, { fetchImpl }),
+  }
+
+  // The wrapper and the word order both have to come off for the rated row to be found.
+  const coder = resolveModelQuality(
+    quality,
+    'srv_mtkdrhxt45fe276b15c0:@cf/qwen/qwen2.5-coder-32b-instruct',
+  )
+  assert.notEqual(coder.source, 'unscored')
+  assert.equal(coder.isEstimated, true)
+  assert.match(coder.detail, /matched catalog spelling: qwen2\.5-coder-instruct-32b/)
+
+  // The same version and size, spelled with a dot here and a dash there: the wrapper still has
+  // to come off for the row's own spelling to reach `qwen3-8-27b`.
+  const dotted = resolveModelQuality(quality, 'srv_mtcmurvv28a020e060d2:qwen-3.8-27b')
+  assert.notEqual(dotted.source, 'unscored')
+  assert.ok(dotted.aa > 0 && dotted.aa <= 100)
+
+  // A different variant is a different model and must never answer for this one: `plus` and
+  // `lite` are tiers with their own benchmarks (SWE-2 Flash against SWE-2 is the same rule).
+  assert.equal(resolveModelQuality(quality, 'Qwen:qwen3-coder-plus').source, 'unscored')
+  assert.equal(resolveModelQuality(quality, 'deepseek-coder-v2').source, 'unscored')
+  assert.equal(resolveModelQuality(quality, 'deepseek-coder-v2:latest').source, 'unscored')
 })
