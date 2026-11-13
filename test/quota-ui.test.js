@@ -685,3 +685,24 @@ test('a served request is attributed to the credential that answered it', () => 
   assert.match(server, /credentialUsageStats\.set\(/)
   assert.match(server, /CREDENTIAL_USAGE_PATH/)
 })
+
+test('a stated allowance is a quota, and only a short clock makes it a rate limit', () => {
+  // g4f answers with 500 requests and 5M tokens that reopen the next day. The header fields
+  // describe an allowance, but the cell stamped them as `kind: 'rate-limit'` with the period
+  // hardcoded, so the row carried two quotas in its Rate limit box and nothing in Quota.
+  assert.match(dashboard, /function quotaRowLimitPeriod\(resetAt, now = Date\.now\(\)\)/)
+  assert.match(dashboard, /period: quotaRowLimitPeriod\(rateLimit\.resetTokensAt \|\| retryReset\)/)
+  assert.match(
+    dashboard,
+    /period: quotaRowLimitPeriod\(rateLimit\.resetRequestsAt \|\| retryReset\)/,
+  )
+  assert.match(harness, /function railQuotaLimitPeriod\(resetAt, now = Date\.now\(\)\)/)
+  assert.match(harness, /period: railQuotaLimitPeriod\(rateLimit\.resetTokensAt \|\| retryReset\)/)
+  assert.match(
+    harness,
+    /period: railQuotaLimitPeriod\(rateLimit\.resetRequestsAt \|\| retryReset\)/,
+  )
+  // Nothing else may pin one of those counters to the throttle column.
+  assert.doesNotMatch(dashboard, /kind: 'rate-limit',\s*period: 'window'/)
+  assert.doesNotMatch(harness, /kind: 'rate-limit',\s*period: 'window'/)
+})

@@ -5001,6 +5001,22 @@
     )
   }
 
+  // A cap a response states is not automatically a throttle. g4f answers with 500 requests and
+  // 5M tokens that reopen the next day: an allowance, not a burst, and it belongs in Quota
+  // rather than Rate limit. The reset clock the response carried is the only evidence of the
+  // window, so the period is read off it — and a cap with no clock is capacity, because
+  // nothing about it says it reopens within the hour.
+  function railQuotaLimitPeriod(resetAt, now = Date.now()) {
+    const at = Number(resetAt)
+    if (!Number.isFinite(at) || at <= 0) return 'window'
+    const left = at - now
+    if (left <= 5 * 60_000) return 'minute'
+    if (left <= 6 * 3_600_000) return 'hour'
+    if (left <= 36 * 3_600_000) return 'day'
+    if (left <= 10.5 * 86_400_000) return 'week'
+    return 'month'
+  }
+
   function railQuotaResetAt(period) {
     if (period === 'day') {
       const d = new Date()
@@ -5240,8 +5256,7 @@
       if (rateLimit?.limitTokens != null || rateLimit?.remainingTokens != null) {
         add(
           railQuotaWindow({
-            kind: 'rate-limit',
-            period: 'window',
+            period: railQuotaLimitPeriod(rateLimit.resetTokensAt || retryReset),
             metric: 'tokens',
             rawWindow: 'last response',
             used:
@@ -5258,8 +5273,7 @@
       if (rateLimit?.limitRequests != null || rateLimit?.remainingRequests != null) {
         add(
           railQuotaWindow({
-            kind: 'rate-limit',
-            period: 'window',
+            period: railQuotaLimitPeriod(rateLimit.resetRequestsAt || retryReset),
             metric: 'requests',
             rawWindow: 'last response',
             used:
