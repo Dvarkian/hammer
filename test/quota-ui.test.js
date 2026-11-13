@@ -615,7 +615,9 @@ test('the model table and the rail draw one limit bar per account', () => {
   )
   // The rail's empty readings are the table's two: ∞ is a stated absence of a limit, and the
   // unknown bar is "nothing measured yet". The rail used to call both of them ∞.
-  assert.match(harness, /function railQuotaUnknownHtml\(kind\)/)
+  // The signature carries the line under the bar now: a column with no counter of its own
+  // says which counter is empty (see the test below).
+  assert.match(harness, /function railQuotaUnknownHtml\(kind, meta\)/)
   assert.match(harness, /function railQuotaUnlimitedHtml\(kind\)/)
   assert.match(harness, /const unlimited = row\?\.knownQuota\?\.unlimited === true/)
 
@@ -664,6 +666,20 @@ test('the row counter is only sent while it is today’s, and the log write leav
   // Infinity cannot cross the wire: /api/models sends null, so a filter written against
   // Infinity excluded nothing and let unmeasured rows through a gate meant to keep them out.
   assert.match(dashboard, /isRowUp\(m\) && Number\.isFinite\(m\.avg\)/)
+})
+
+test('a cell never calls a row unused when its own plot shows traffic', () => {
+  // The Google row draws one column per signed-in account. Those counters are empty (traffic
+  // is not attributed per key there) while the row's own counter — the one the plot and the
+  // row bar read — carries the requests, so the cell said "no usage recorded yet" directly
+  // beside a plot of that usage. The line now describes the counter the cell was given.
+  assert.match(dashboard, /function usageHasSamples\(usage\)/)
+  assert.match(dashboard, /function quotaUnknownHtml\(kind, \{ meta \} = \{\}\)/)
+  assert.match(dashboard, /no per-account usage recorded/)
+  assert.match(dashboard, /usage recorded · no limit published/)
+  assert.match(harness, /function railUsageHasSamples\(usage\)/)
+  assert.match(harness, /function railQuotaUnknownHtml\(kind, meta\)/)
+  assert.match(harness, /no per-account usage recorded/)
 })
 
 test('a served request is attributed to the credential that answered it', () => {

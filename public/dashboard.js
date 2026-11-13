@@ -4480,7 +4480,20 @@
       }];
     }
 
-    function accountBarHtml(account, windows, kind) {
+    /**
+     * Whether a recorded-usage bag carries anything at all.
+     *
+     * The bags are counter objects — `requestsToday`, `tokensLastHour`, … — that the client
+     * receives fully populated with zeros, so "this endpoint has never been measured" and "it
+     * was measured and carried nothing" arrive in the same shape. Only the values separate
+     * them, and a cell that guesses wrong says the opposite of what the row's own plot shows.
+     */
+    function usageHasSamples(usage) {
+      if (!usage || typeof usage !== 'object') return false;
+      return Object.values(usage).some((value) => Number.isFinite(Number(value)) && Number(value) > 0);
+    }
+
+    function accountBarHtml(account, windows, kind, meta) {
       const state = account.exhausted ? 'exhausted' : account.serving ? 'serving' : 'idle';
       const resetIn =
         account.exhausted && account.resetsInMs
@@ -4490,7 +4503,7 @@
       const title = `${account.label}${stateLabel ? ` · ${stateLabel}` : ''}${resetIn}`;
       const body = windows.length > 0
         ? `<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`
-        : quotaUnknownHtml(kind);
+        : quotaUnknownHtml(kind, { meta });
       return `<div class="quota-account-bar is-${state}" title="${escapeAttr(title)}">
         <div class="quota-account-head"><span class="quota-account-tag">A${account.index + 1}</span>${stateLabel ? `<span class="quota-account-state">${stateLabel}</span>` : ''}</div>
         ${body}
@@ -4504,6 +4517,12 @@
       const accounts = rowAccounts(m);
       if (!accounts) return null;
       const rowWindows = Array.isArray(m?.quotaWindows) ? m.quotaWindows : [];
+      // The row's counter and the account's are two different measurements: the plot and the
+      // row bar read the first, this column reads the second, and a provider whose traffic is
+      // not attributed per key (Google's signed-in accounts are one) leaves the second empty
+      // while the first is busy.
+      const rowHasUsage =
+        usageHasSamples(m?.recordedUsage) || usageHasSamples(m?.providerRecordedUsage);
       const columns = accounts.map((account) => {
         // Only the windows that describe *this* account. A provider that reports per key
         // stamps the key's index on the window it reported; an endpoint-scoped window — a
@@ -4529,7 +4548,11 @@
         }).filter((window) =>
           kind === 'rate-limit' ? window.kind === 'rate-limit' : window.kind !== 'rate-limit',
         );
-        return accountBarHtml(account, windows, kind);
+        const accountHasUsage =
+          usageHasSamples(account.usage) || usageHasSamples(account.usageAcrossModels);
+        const meta =
+          rowHasUsage && !accountHasUsage ? 'no per-account usage recorded' : undefined;
+        return accountBarHtml(account, windows, kind, meta);
       });
       return `<div class="quota-row-accounts" data-quota-accounts="${columns.length}">${columns.join('')}</div>`;
     }
@@ -4595,7 +4618,14 @@
       // beside it, even when the provider published it as a nominal allowance.
       const windows = quotaRowViews(m).filter((window) => window.kind !== 'rate-limit');
       if (windows.length === 0) {
-        return m?.knownQuota?.unlimited === true ? quotaUnlimitedHtml('quota') : quotaUnknownHtml('quota');
+        if (m?.knownQuota?.unlimited === true) return quotaUnlimitedHtml('quota');
+        // A row with traffic and no published limit is "limit not published" — not "no usage
+        // recorded", which contradicted the usage plot in the same row.
+        return quotaUnknownHtml('quota', {
+          meta: usageHasSamples(m?.recordedUsage) || usageHasSamples(m?.providerRecordedUsage)
+            ? 'usage recorded · no limit published'
+            : undefined,
+        });
       }
       return quotaRowWindowsHtml(windows, opts);
     }
@@ -4617,11 +4647,16 @@
       </div>`;
     }
 
-    function quotaUnknownHtml(kind) {
+    function quotaUnknownHtml(kind, { meta } = {}) {
+      // The last line describes the *counter this cell was given*, not the row's traffic. A
+      // pooled provider draws one column per account, and an account whose own counter has no
+      // samples says so rather than repeating "no usage recorded yet" beside a plot of the
+      // row's traffic — which is what the two surfaces said together on the Google row.
+      const line = meta || 'no usage recorded yet';
       return `<div class="quota-row-window quota-row-unknown-limit" data-quota-kind="${kind}" title="No limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.">
         <div class="quota-row-head"><span class="quota-row-pct">limit not published</span></div>
         <div class="quota-row-track quota-row-track-unknown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="quota-row-fill quota-row-fill-unknown" style="width:0%"></div></div>
-        <div class="quota-row-meta">no usage recorded yet</div>
+        <div class="quota-row-meta">${line}</div>
       </div>`;
     }
 
@@ -4663,7 +4698,11 @@
       if (windows.length === 0) {
         const empty = m?.knownQuota?.unlimited === true
           ? quotaUnlimitedHtml('rate-limit')
-          : quotaUnknownHtml('rate-limit');
+          : quotaUnknownHtml('rate-limit', {
+              meta: usageHasSamples(m?.recordedUsage) || usageHasSamples(m?.providerRecordedUsage)
+                ? 'usage recorded · no limit published'
+                : undefined,
+            });
         return `<div class="rl-cell">${bench}${empty}</div>`;
       }
       return `<div class="rl-cell">${bench}<div class="quota-row-windows">${windows.map((window) => quotaRowWindowHtml(window)).join('')}</div></div>`;

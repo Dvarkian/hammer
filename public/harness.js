@@ -5276,7 +5276,20 @@
     </div>`
   }
 
-  function railQuotaUnknownHtml(kind) {
+  /**
+   * Whether a recorded-usage bag carries anything at all.
+   *
+   * The bags arrive fully populated with zeros, so "never measured" and "measured, carried
+   * nothing" look the same on the wire; only the values tell them apart. A pooled provider
+   * draws one column per account, and an account whose counter is empty beside a row that has
+   * traffic must not repeat "no usage recorded yet" under a plot of that traffic.
+   */
+  function railUsageHasSamples(usage) {
+    if (!usage || typeof usage !== 'object') return false
+    return Object.values(usage).some((value) => Number.isFinite(Number(value)) && Number(value) > 0)
+  }
+
+  function railQuotaUnknownHtml(kind, meta) {
     const throttle = kind === 'rate-limit'
     const title = throttle
       ? 'No rate limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.'
@@ -5284,7 +5297,7 @@
     return `<div class="hx-quota-window" title="${escapeHtml(title)}">
       <div class="hx-quota-head"><span class="hx-quota-pct">limit not published</span></div>
       <div class="hx-quota-track hx-quota-track-unknown" role="progressbar" aria-label="${throttle ? 'Rate limit' : 'Quota'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="hx-quota-fill hx-quota-fill-unknown" style="width:0%"></div></div>
-      <div class="hx-quota-meta">no usage recorded yet</div>
+      <div class="hx-quota-meta">${meta || 'no usage recorded yet'}</div>
     </div>`
   }
 
@@ -5339,6 +5352,9 @@
         label: account?.label ? String(account.label) : `Account ${i + 1}`,
         serving: account?.serving === true,
         exhausted: account?.exhausted === true,
+        // This account's own counter, so an empty column can say which counter is empty.
+        hasUsage:
+          railUsageHasSamples(account?.usage) || railUsageHasSamples(account?.usageAcrossModels),
         windows: railQuotaWindows({
           ...row,
           rateLimit: account?.rateLimit || null,
@@ -5405,7 +5421,12 @@
       // A provider that says "no limit" gets ∞ and one that has not been measured gets the
       // unknown bar — the same two readings the table's cells make.
       const unlimited = row?.knownQuota?.unlimited === true
-      const empty = (kind) => (unlimited ? railQuotaUnlimitedHtml(kind) : railQuotaUnknownHtml(kind))
+      // Whether the row itself has traffic: an account column with no counter of its own says
+      // that, instead of claiming nothing has been recorded while the row's plot shows it was.
+      const rowHasUsage =
+        railUsageHasSamples(row?.recordedUsage) || railUsageHasSamples(row?.providerRecordedUsage)
+      const empty = (kind, meta) =>
+        unlimited ? railQuotaUnlimitedHtml(kind) : railQuotaUnknownHtml(kind, meta)
       // A pooled provider draws a column per credential. A single-credential provider has one
       // account, which is the row bar itself, so it keeps the plain list.
       const accountColumn = (kind) => {
@@ -5425,7 +5446,10 @@
             }</div>${
               accountWindows.length
                 ? accountWindows.map(railQuotaWindowHtml).join('')
-                : empty(kind)
+                : empty(
+                    kind,
+                    rowHasUsage && !account.hasUsage ? 'no per-account usage recorded' : undefined,
+                  )
             }</div>`
           })
           .join('')}</div>`
@@ -5434,7 +5458,10 @@
         accountColumn(kind) ||
         (windowsForKind.length
           ? windowsForKind.map(railQuotaWindowHtml).join('')
-          : empty(kind))
+          : empty(
+              kind,
+              rowHasUsage ? 'usage recorded · no limit published' : undefined,
+            ))
       list.innerHTML = body('quota', quota)
       if (rateList) rateList.innerHTML = body('rate-limit', throttles)
     }
