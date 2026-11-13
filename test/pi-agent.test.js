@@ -173,6 +173,31 @@ test('a prompt sent during a run is steered, which is what Pi requires', async (
   }
 })
 
+test('a prompt sent during a compaction is queued, not fired into the summary', async () => {
+  // Compaction is not a turn — `isStreaming` stays false — but the agent is still working:
+  // Pi is mid-summary and a bare prompt would land on top of it. The queue behaviour that
+  // applies to a running turn applies here too, so the message waits its turn.
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
+  try {
+    /** @type {any[]} */
+    const sent = []
+    bridge.send = async (command) => {
+      sent.push(command)
+      return { data: { disposition: command.streamingBehavior ? 'queued' : 'started' } }
+    }
+    bridge.state.isStreaming = false
+    bridge.state.isCompacting = true
+
+    const record = await bridge.prompt('while it compacts', { queueMode: 'followUp' })
+    assert.deepEqual(sent, [
+      { type: 'prompt', message: 'while it compacts', streamingBehavior: 'followUp' },
+    ])
+    assert.equal(record.data.disposition, 'queued')
+  } finally {
+    bridge.dispose()
+  }
+})
+
 test('a prompt refused for streaming is retried as a steer rather than surfaced', async () => {
   const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: tmpdir() })
   try {
@@ -239,6 +264,38 @@ test('a queued follow-up runs as its own turn once the current one settles', asy
       await waitFor(() => bridge.status().pendingMessages === 0)
       assert.equal(bridge.status().queuedFollowUp.length, 0)
     })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a prompt sent while a compaction runs is queued for after it', async () => {
+  // The whole point of the feature: a compaction is not a turn, so `isStreaming` is false and
+  // the old code sent the prompt bare — which Pi reads as a new turn landing on top of the
+  // summary being written. With the delay the fake holds `isCompacting` open, the prompt must
+  // carry `streamingBehavior` and land in the follow-up queue Pi drains once the work settles.
+  const { bridge, commands } = makeFake()
+  try {
+    // A session id of its own: the queue store is module state, and the default 'session-1'
+    // would leak this test's held message into the next test's restored queue.
+    await withEnv(
+      { FAKE_PI_COMPACT_DELAY_MS: '300', FAKE_PI_SESSION_ID: 'compact-queue-test' },
+      async () => {
+        const compacted = bridge.runCommand('compact')
+        // Wait until the bridge has seen compaction_start, so isCompacting is true.
+        await waitFor(() => bridge.status().isCompacting === true)
+
+        const held = await bridge.prompt('after the compaction', { queueMode: 'followUp' })
+        assert.equal(held.data.disposition, 'queued')
+        await waitFor(() => bridge.status().queuedFollowUp.includes('after the compaction'))
+
+        await compacted
+        await waitFor(() => bridge.status().isCompacting === false)
+        // The queued message is still held: nothing has settled a turn for it to follow yet.
+        assert.ok(bridge.status().queuedFollowUp.includes('after the compaction'))
+        assert.ok(commands().some((line) => line === 'prompt:followUp'))
+      },
+    )
   } finally {
     bridge.dispose()
   }

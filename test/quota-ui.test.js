@@ -204,7 +204,6 @@ test('the model table shows a quota window for every endpoint', () => {
   assert.match(dashboard, /\$\{quotaGroupCell\(g\)\}/)
   assert.match(dashboard, /\$\{quotaRowCell\(m\)\}/)
   assert.match(dashboard, /function quotaGroupViews\(members\)/)
-  assert.match(dashboard, /Quota across/)
   assert.match(dashboard, /function groupCapacityMembers\(members\)/)
   assert.match(dashboard, /const usable = all\.filter\(isRowUsable\)/)
   assert.match(dashboard, /return usable\.length > 0 \? usable : all/)
@@ -215,8 +214,6 @@ test('the model table shows a quota window for every endpoint', () => {
     dashboard,
     /const windows = quotaGroupCapacityWindows\(quotaGroupViews\(capacityMembers\)\)/,
   )
-  assert.match(dashboard, /quotaGroupProviderCount\(capacityMembers\)/)
-  assert.match(dashboard, /usable provider/)
   assert.doesNotMatch(dashboard, /view\.estimated \? 'estimated' : 'published'/)
   assert.match(
     dashboard,
@@ -224,14 +221,12 @@ test('the model table shows a quota window for every endpoint', () => {
   )
   assert.match(dashboard, /const tightestView = views\.reduce/)
   assert.match(dashboard, /tightest across \$\{views\.length\}/)
-  assert.match(dashboard, /const mixedEstimate = windows\.some\(/)
-  assert.match(dashboard, /window\.estimated === true \|\| window\.mixed === true/)
-  assert.match(dashboard, /provider\$\{providers === 1 \? '' : 's'\} · \$\{basis\}/)
-  assert.match(
-    dashboard,
-    /const basis =\s*\n\s*windows\.length > 0 && windows\.every\(\(window\) => window\.percentOnly\)/,
-  )
-  assert.match(dashboard, /\? 'least left'/)
+  // The provider-count label and its gross/tightest basis were removed from the cell: the
+  // windows themselves carry the reading, and the meta line already names the unit.
+  assert.doesNotMatch(dashboard, /provider\$\{providers === 1 \? '' : 's'\} · \$\{basis\}/)
+  assert.doesNotMatch(dashboard, /const basis =/)
+  assert.doesNotMatch(dashboard, /const mixedEstimate = windows\.some\(/)
+  assert.doesNotMatch(dashboard, /window\.estimated === true \|\| window\.mixed === true/)
   // A heading totals allowances, not rows: an account-scoped limit (KiloCode's 200 requests/hour
   // pool, whose recorded usage is already provider-wide) must count once however many of that
   // provider's models sit under the heading, while a model-scoped limit adds up per model.

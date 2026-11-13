@@ -1744,11 +1744,6 @@ body.hx-details-collapsed .hx-side-details {
   gap: 8px;
 }
 
-.hx-quota-window + .hx-quota-window {
-  padding-top: 7px;
-  border-top: 1px solid var(--border-subtle);
-}
-
 /* One column per credential for a pooled provider, the same shape the Router table uses: the
    rail answers per account, so side by side is the only arrangement that keeps the columns
    comparable without implying one account's windows belong to the other. */
@@ -1800,13 +1795,9 @@ body.hx-details-collapsed .hx-side-details {
   opacity: 0.72;
 }
 
-/* An estimated ceiling keeps its bar but is never passed off as a published number: the label
-   carries EST and the fill is softened, the same two tells the Router table's Quota column
+/* An estimated ceiling keeps its bar but is never passed off as a published number: the meta
+   line carries EST and the fill is softened, the same two tells the Router table's Quota column
    uses. One rule for one fact, so an inferred limit looks inferred wherever it is drawn. */
-.hx-quota-window.is-estimated .hx-quota-period {
-  color: var(--accent);
-}
-
 .hx-quota-window.is-estimated .hx-quota-fill {
   opacity: 0.62;
 }
@@ -1814,16 +1805,9 @@ body.hx-details-collapsed .hx-side-details {
 .hx-quota-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   line-height: 1.2;
-}
-
-.hx-quota-period {
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
 }
 
 .hx-quota-pct {

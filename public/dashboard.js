@@ -455,6 +455,11 @@
 
     let currentBestModelId = null;  // routed 'best' row from /api/models (pin > slope > intelligence)
     let currentBestProviderKey = null;
+    // The two superlatives the Speed/INT columns badge: the fastest and the smartest row among
+    // the models that could take a request right now (isRowUsable). Recomputed with every
+    // snapshot, so the tags always describe the catalog as it stands, not a stale pick.
+    let fastestRowKey = null;
+    let smartestGroupKey = null;
     // Every conversation's own pick, from /api/models. Several conversations can be answering on
     // different models, so more than one table row is lit at a time.
     let activePickRows = [];
@@ -978,6 +983,7 @@
         // point of use by rateLimitEvidence(). Re-deriving it into the field here would
         // feed a snapshot back into the rule that produced it.
         allModels = data.models.map(m => ({ ...m, qos: m.qos || 0 }));
+        computeSpeedLeaders(allModels);
 
         // Relay-backed entries may report a real upstream model in every response. When
         // the router captures one that differs from the catalog id, show it as the model's
@@ -3895,6 +3901,7 @@
       let minTtft = null, maxTps = null, bestCtx = null;
       let bestCtxMember = null;
       let bestIntellMember = members[0];
+      let speedMember = null;
       const upCount = members.filter(isRowUp).length;
       for (const m of members) {
         // Intelligence rates the model, not a provider, so it is read from every row:
@@ -3908,12 +3915,18 @@
         if (q > bestQos) bestQos = q;
         const memberTtft = rowTtft(m);
         const memberTps = rowTps(m);
-        if (memberTtft != null && (minTtft === null || memberTtft < minTtft)) minTtft = memberTtft;
+        if (memberTtft != null && (minTtft === null || memberTtft < minTtft)) {
+          minTtft = memberTtft;
+          speedMember = m;
+        }
         if (memberTps != null && (maxTps === null || memberTps > maxTps)) maxTps = memberTps;
         const ctx = m.contextTokens;
         if (ctx != null && (bestCtx === null || ctx > bestCtx)) { bestCtx = ctx; bestCtxMember = m; }
       }
-      return { bestQos, bestIntell, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember };
+      // The heading's speed tag reads the member its speed figures came from: the fastest
+      // TTFT among the measured rows, so the tag and the tooltip describe the same endpoint.
+      if (!speedMember) speedMember = measured.find((m) => rowTps(m) != null) || bestIntellMember;
+      return { bestQos, bestIntell, minTtft, maxTps, bestCtx, upCount, usable, bestIntellMember, bestCtxMember, speedMember };
     }
 
     /** A stealth preview: relayed under a code name, with no lab to draw a mark for. */
@@ -4346,8 +4359,7 @@
     function quotaRowWindowHtml(w) {
       const noFreeTier = w.unavailable && !w.percentOnly && w.period === 'window';
       const periodLabel = noFreeTier ? 'FREE TIER' : quotaRowPeriodLabel(w.period, w.rawWindow);
-      const displayedLabel = w.estimated ? `${periodLabel} · EST` : periodLabel;
-      const unit = w.metric === 'requests' ? 'requests' : w.metric === 'credits' ? 'credits' : 'tokens';
+      const unit = w.metric === 'requests' ? 'req' : w.metric === 'credits' ? 'credits' : 'tok';
       const remainingPercent = (w.unavailable && !w.percentOnly) || w.usedPercent == null ? null : 100 - Math.min(100, w.usedPercent);
       const totalText = noFreeTier
         ? 'not included'
@@ -4395,7 +4407,7 @@
         ? w.detail
         : [totalText, remainingText, resetText].filter(Boolean).join(' · ');
       return `<div class="quota-row-window${w.stale ? ' is-stale' : ''}${w.unavailable ? ' is-unavailable' : ''}${w.estimated ? ' is-estimated' : ''}" data-quota-period="${escapeAttr(w.period)}" data-quota-metric="${escapeAttr(w.metric || 'tokens')}" data-quota-unavailable="${w.unavailable ? 'true' : 'false'}" data-quota-used-percent="${w.usedPercent == null ? '' : w.usedPercent.toFixed(2)}" title="${escapeAttr(titleParts.join(' · '))}">
-        <div class="quota-row-head"><span class="quota-row-period">${escapeHtml(displayedLabel)}</span><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
+        <div class="quota-row-head"><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
         <div class="quota-row-track${(zeroAllowance || w.usedPercent != null) ? '' : ' quota-row-track-unknown'}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${zeroAllowance ? 100 : w.usedPercent == null ? '' : Math.round(Math.min(100, w.usedPercent))}" aria-label="${escapeAttr(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeAttr(percentText)}"><div class="quota-row-fill quota-row-fill-${tone}" style="width:${barWidth.toFixed(2)}%"></div></div>
         <div class="quota-row-meta">${escapeHtml(meta)}</div>
       </div>`;
@@ -4405,10 +4417,7 @@
       if (windows.length === 0) {
         return `<div class="quota-row-empty" title="${escapeAttr(opts.emptyTitle || 'No quota is reported for this endpoint yet.')}">—</div>`;
       }
-      const provider = opts.providerLabel
-        ? `<div class="quota-row-provider" title="${escapeAttr(opts.providerTitle || opts.providerLabel)}">${escapeHtml(opts.providerLabel)}</div>`
-        : '';
-      return `${provider}<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`;
+      return `<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`;
     }
 
     // ── Account bars ─────────────────────────────────────────────────────────
@@ -5086,35 +5095,14 @@
         return `<td class="quota-cell">${quotaRowCellInnerHTML(members[0])}</td>`;
       }
       const capacityMembers = groupCapacityMembers(members);
-      const limitedToUsable = capacityMembers.length !== members.length;
       // An exhausted window on a provider that cannot route is not the group's verdict while
       // a usable sibling still has allowance. Keep it on the provider row, not the heading.
       const windows = quotaGroupCapacityWindows(quotaGroupViews(capacityMembers));
-      // Percent-only allowances have no total to gross, so the heading reports the tightest of
-      // them and says so, rather than labelling summed capacity it does not have.
-      const mixedPercent =
-        windows.some((window) => window.percentOnly) &&
-        !windows.every((window) => window.percentOnly);
-      const mixedEstimate = windows.some(
-        (window) => window.estimated === true || window.mixed === true,
-      );
-      const basis =
-        windows.length > 0 && windows.every((window) => window.percentOnly)
-          ? 'least left'
-          : mixedPercent || mixedEstimate
-            ? 'tightest'
-            : 'gross';
       if (windows.length === 0) {
         const empty = groupsUnlimited(capacityMembers) ? quotaUnlimitedHtml('quota') : quotaUnknownHtml('quota');
         return `<td class="quota-cell">${empty}</td>`;
       }
-      const providers = quotaGroupProviderCount(capacityMembers);
-      const providerTitle = limitedToUsable
-        ? `Quota across the ${providers} usable provider${providers === 1 ? '' : 's'} serving this model. Providers that are benched or down right now are left out. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row. The label says whether the bars are a gross or the tightest reading.`
-        : `Quota across the ${providers} provider${providers === 1 ? '' : 's'} serving this model. An account-scoped limit counts once however many of its rows are listed; a per-model limit counts per row. The label says whether the bars are a gross or the tightest reading.`;
       return `<td class="quota-cell">${quotaRowWindowsHtml(windows, {
-        providerLabel: `${providers} ${limitedToUsable ? 'usable ' : ''}provider${providers === 1 ? '' : 's'} · ${basis}`,
-        providerTitle,
         emptyTitle: 'No quota is reported for these providers yet.',
       })}</td>`;
     }
@@ -5156,23 +5144,29 @@
           <td>
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${emoji}${escapeHtml(cleanHeadingModelName(g.label))}</span>
+              <span class="status-slot">${groupStatusHtml}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
-          <td><div style="font-weight: 600;">${(() => {
+          <td><div style="font-weight: 600; display:flex; align-items:center; gap:6px;">${(() => {
             const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
             // The rating describes the model rather than any one provider, so it stays
             // readable when nothing is available — but beside a "0/N providers" subtitle
             // it must not read as live capacity, so it is muted and labelled for what it
             // is. Every measured cell next to it is blank by then (see getGroupSummary).
-            return s.usable.length === 0
+            const ratingHtml = s.usable.length === 0
               ? `<span style="opacity:0.55;" title="No provider available — this is the model's rating, not a live measurement">${rating}</span>`
               : rating;
+            // The superlative sits beside the rating it crowns: the smartest model that could
+            // take a request right now, out of the same usable set the router chooses from.
+            const smartest = g.key === smartestGroupKey
+              ? `<span class="onboard-pill speed-tag smartest" title="Smartest of the models that can serve right now">Smartest</span>`
+              : '';
+            return `${ratingHtml}${smartest}`;
           })()}</div></td>
-          ${formatTtftCell(s.minTtft, 'ttft')}
-          ${formatTpsCell(s.maxTps, 'tok/s')}
+          ${speedTagCell(s.speedMember?.verdict, s.minTtft, s.maxTps, s.speedMember ? rowTtftLabel(s.speedMember) : 'ttft', s.speedMember != null && getModelRowKey(s.speedMember) === fastestRowKey)}
           <!-- Combined usage of every provider under this heading. The heading row is the
                one row that stays on screen when a group is collapsed, so it is where the
                sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
@@ -5183,7 +5177,6 @@
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
-          <td>${groupStatusHtml}</td>
           <td>${(() => {
             // Group response: the most recent test across every provider under this
             // heading, judged against the row it came from (see groupLastResponse)
@@ -5417,9 +5410,9 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds) — col 8, after quota (col 6) and
-      // the rate-limit column (col 7); the logo column leads the row.
-      const ctxCell = row.cells[8];
+      // Update context window (known limit or observed bounds) — col 7, after quota (col 5) and
+      // the rate-limit column (col 6); the logo column leads the row.
+      const ctxCell = row.cells[7];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -5429,42 +5422,37 @@
       const intellCell = row.cells[2];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // Usage sparkline (col 5); never clobber an in-flight test.
-      const usageCell = row.cells[5];
+      // Usage sparkline (col 4); never clobber an in-flight test.
+      const usageCell = row.cells[4];
       if (usageCell) {
         usageCell.className = 'usage-sparkline-cell';
         usageCell.id = `usage-cell-${getModelRowKey(m)}`;
         drawUsageSparklineInto(usageCell, getModelRowKey(m));
       }
-      // Quota (col 6) is rebuilt on every refresh: a published window counts down on the
+      // Quota (col 5) is rebuilt on every refresh: a published window counts down on the
       // clock, and observed rate-limit windows arrive with new traffic.
-      const quotaCell = row.cells[6];
+      const quotaCell = row.cells[5];
       if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
-      // Rate limit (col 7) is rebuilt alongside it: the throttle counters and bench state
+      // Rate limit (col 6) is rebuilt alongside it: the throttle counters and bench state
       // change with every response, just as the quota windows do.
-      const rateLimitCellEl = row.cells[7];
+      const rateLimitCellEl = row.cells[6];
       if (rateLimitCellEl) rateLimitCellEl.innerHTML = rateLimitCellInnerHTML(m);
-      // Update status cell (col 9) and response cell (col 10); never clobber an in-flight test
-      const statusCell = row.cells[9];
+      // Update the status that trails the model name (it lives in the Model cell, col 1, now
+      // that the Status column is gone) and the response cell (col 8, which moved up one);
+      // never clobber an in-flight test.
+      const statusCell = modelCell.querySelector('.status-slot');
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[10];
+      const responseCell = row.cells[8];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
       }
 
-      // Update TTFT and tokens/sec (real usage stats)
-      const displayTtft = rowTtft(m);
-      const displayTps = rowTps(m);
-      const ttftCell = row.cells[3];
-      ttftCell.innerHTML = displayTtft != null
-        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(displayTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowTtftLabel(m)}</div>`
-        : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-      const tpsCell = row.cells[4];
-      tpsCell.innerHTML = displayTps != null
-        ? `<div style="font-size:0.82rem;">${displayTps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
-        : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
+      // Update the Speed tag (col 3): the verdict pill plus the tooltip's ttft/tok/s, rebuilt
+      // on every refresh because both the verdict and the measurements move with traffic.
+      const speedCell = row.cells[3];
+      if (speedCell) speedCell.innerHTML = speedTagInner(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey);
     }
 
     // Formats a raw token count like the catalog's context strings: "128k", "1.5M", "32000".
@@ -5520,6 +5508,45 @@
           ${tps != null ? `<div style="font-size:0.82rem;">${tps}</div><div style="font-size:0.7rem; color:var(--text-muted);">${sub}</div>` : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>'}
         </div>
       </td>`;
+    }
+
+    // The Speed column's tag: the same verdict pill the provider setup popup lists, so a model
+    // reads the same colour and word in both places. The verdict is the server's own
+    // getVerdict() answer carried on the row (`m.verdict`), not a second opinion computed here.
+    // The tooltip carries the measurements the TTFT and Tok/s columns used to print.
+    function speedTagClass(verdict) {
+      const v = String(verdict || '').toLowerCase();
+      if (v === 'very fast' || v === 'fast' || v === 'normal') return 'up';
+      if (v === 'slow' || v === 'very slow') return 'slow';
+      if (v === 'unstable') return 'unstable';
+      return 'down';
+    }
+
+    function speedTagTitle(ttft, tps, ttftLabel = 'ttft') {
+      const parts = [];
+      parts.push(`TTFT ${ttft != null ? formatSecondsFromMs(ttft) : '—'}${ttftLabel === 'avg' ? ' avg' : ''}`);
+      parts.push(`tok/s ${tps != null ? tps : '—'}`);
+      return parts.join(' · ');
+    }
+
+    function speedTagInner(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false) {
+      const label = String(verdict || '').trim();
+      const title = speedTagTitle(ttft, tps, ttftLabel);
+      // The superlative outranks the band: the fastest row that could take a request right now
+      // says so, whatever its measured tag would have been.
+      if (fastest) {
+        return `<span class="onboard-pill speed-tag fastest" title="Fastest of the models that can serve right now — ${escapeAttr(title)}">Fastest</span>`;
+      }
+      // 'Not Active' is not a speed: a row with no measurement at all shows a dash, not a red
+      // pill that would read as a verdict on how fast it is.
+      if (!label || label === 'Not Active') {
+        return `<span class="speed-tag-none" title="${escapeAttr(title)}">—</span>`;
+      }
+      return `<span class="onboard-pill speed-tag ${speedTagClass(verdict)}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
+    }
+
+    function speedTagCell(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false) {
+      return `<td class="text-right">${speedTagInner(verdict, ttft, tps, ttftLabel, fastest)}</td>`;
     }
 
     // The test response a model heading should show, plus the row it came from (so the
@@ -6011,6 +6038,52 @@
       return isRowUp(m) && m.routingEligible !== false;
     }
 
+    // The router's own speed number for a row, with a client-side recomputation for a payload
+    // that predates the field: N / (ttft + N / tok-per-s) at the same reference length the
+    // server scores (SPEED_REFERENCE_TOKENS = 500). Higher is faster.
+    function rowRoutingSpeed(m) {
+      const sent = Number(m?.routingSpeed);
+      if (Number.isFinite(sent) && sent > 0) return sent;
+      const ttft = rowTtft(m);
+      const tps = rowTps(m);
+      if (ttft == null || !Number.isFinite(ttft) || ttft < 0) return null;
+      if (tps == null || !Number.isFinite(tps) || tps <= 0) return null;
+      return 500 / (ttft / 1000 + 500 / tps);
+    }
+
+    // The router's own intelligence number for a row: AA's index when there is one, else the
+    // local score on the same 0-100 scale. Higher is smarter.
+    function rowRoutingIntelligence(m) {
+      const sent = Number(m?.routingIntell);
+      if (Number.isFinite(sent) && sent > 0) return sent;
+      const aa = Number(m?.aa);
+      if (Number.isFinite(aa) && aa > 0) return aa;
+      const intell = Number(m?.intell) * 100;
+      return Number.isFinite(intell) && intell > 0 ? intell : null;
+    }
+
+    // Picks the two rows the Speed and INT columns badge. Candidates are the rows that could
+    // take a request right now — the same set the router would choose from — so 'Fastest' and
+    // 'Smartest' always name something the table says is live. Ties break on row order, which
+    // is the catalog's own stable order.
+    function computeSpeedLeaders(models) {
+      let fastest = null;
+      let smartest = null;
+      for (const m of models || []) {
+        if (!m || !isRowUsable(m)) continue;
+        const speed = rowRoutingSpeed(m);
+        if (speed != null && (fastest == null || speed > fastest.speed)) {
+          fastest = { key: getModelRowKey(m), speed };
+        }
+        const intell = rowRoutingIntelligence(m);
+        if (intell != null && (smartest == null || intell > smartest.intell)) {
+          smartest = { key: m.modelGroupId || getModelGroupKey(m), intell };
+        }
+      }
+      fastestRowKey = fastest ? fastest.key : null;
+      smartestGroupKey = smartest ? smartest.key : null;
+    }
+
     // The verdicts in the order a model heading prefers them when nothing is up: the
     // states that come back on their own first, then the ones the user has to fix.
     const VERDICT_RECOVERABILITY = [
@@ -6448,16 +6521,8 @@
     function updateVisibleMetrics(model, rowKey = getModelRowKey(model)) {
       const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
       if (!row) return;
-      const ttftCell = row.cells[3];
-      const tpsCell = row.cells[4];
-      const visibleTtft = rowTtft(model);
-      const visibleTps = rowTps(model);
-      if (ttftCell) ttftCell.innerHTML = visibleTtft != null
-        ? `<div style="font-size:0.82rem;">${formatSecondsFromMs(visibleTtft)}</div><div style="font-size:0.7rem; color:var(--text-muted);">${rowKey.startsWith('g:') ? 'ttft' : rowTtftLabel(model)}</div>`
-        : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
-      if (tpsCell) tpsCell.innerHTML = visibleTps != null
-        ? `<div style="font-size:0.82rem;">${visibleTps}</div><div style="font-size:0.7rem; color:var(--text-muted);">tok/s</div>`
-        : '<span style="font-size: 0.75rem; color: var(--text-muted);">—</span>';
+      const speedCell = row.cells[3];
+      if (speedCell) speedCell.innerHTML = speedTagInner(model.verdict, rowTtft(model), rowTps(model), rowKey.startsWith('g:') ? 'ttft' : rowTtftLabel(model), rowKey === fastestRowKey);
     }
 
     // Paints a Test outcome into its Response cell, for both the result and the failure path.
@@ -6496,7 +6561,7 @@
       cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
       const tr = cell.closest('tr');
       tr?.classList.add('row-testing');
-      const statusCell = tr && tr.cells[9];
+      const statusCell = tr && tr.cells[1] && tr.cells[1].querySelector('.status-slot');
       if (statusCell) {
         statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
       }
@@ -7164,7 +7229,9 @@
         // window, and disagreeing with the rows whose reset time was already gone. One
         // formatter decides what a status cell says, here as everywhere else.
         const model = modelFor(el);
-        const cell = el.closest('td');
+        // The status lives in the Model cell beside the name, so the slot — not the td — is
+        // what gets repainted; a bare td would take the model's name with it.
+        const cell = el.closest('.status-slot') || el.closest('td');
         if (cell && model) {
           cell.innerHTML = `<div style="display:flex;align-items:center; gap:6px;">${statusCellHTML(model)}</div>`;
         } else {
@@ -7396,20 +7463,19 @@
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
               <span style="font-weight: 600;" title="${escapeHtml(providerRowLabel(m))}">${escapeHtml(providerRowLabel(m))}</span>
+              <span class="status-slot">${statusCellHTML(m)}</span>
               <button type="button" class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" data-pin-model="${escapeAttr(m.modelId)}" data-pin-provider="${escapeAttr(m.providerKey)}" title="${isPinnedRow ? 'Unpin exact provider row' : 'Pin exact provider row'}">📌</button>
             </div>
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
-          ${formatTtftCell(rowTtft(m), rowTtftLabel(m))}
-          ${formatTpsCell(rowTps(m), 'tok/s')}
+          ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey)}
           <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
           ${quotaRowCell(m)}
           ${rateLimitCell(m)}
           <td>
             <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
           </td>
-          <td><div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div></td>
           <td>${responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status })}</td>
         `;
       bindPinButton(tr.querySelector('.pin-row-btn'), {
@@ -7419,7 +7485,7 @@
       });
       // The usage cell is filled here rather than by id, because the row is not in the
       // document yet: getElementById cannot see it until reconcileTable attaches it.
-      drawUsageSparklineInto(tr.cells[5], rowKey);
+      drawUsageSparklineInto(tr.cells[4], rowKey);
       return tr;
     }
 
@@ -7894,9 +7960,8 @@
     // status dot in the table.
     function onboardPillClass(verdict) {
       const v = String(verdict || '').toLowerCase();
-      if (v === 'perfect' || v === 'normal') return 'up';
+      if (v === 'very fast' || v === 'fast' || v === 'normal') return 'up';
       if (v === 'slow' || v === 'very slow') return 'slow';
-      if (v === 'overloaded') return 'limited';
       if (v === 'unstable') return 'unstable';
       return 'down';
     }

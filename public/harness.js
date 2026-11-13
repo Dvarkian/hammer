@@ -6119,7 +6119,7 @@
     })
   }
 
-  async function sendPrompt(mode = 'steer') {
+  async function sendPrompt(mode = 'followUp') {
     const input = $('hx-input')
     const console = active()
     if (!input || !console || console.sending) return
@@ -6319,7 +6319,9 @@
       delete button.dataset.working
       button.textContent = button.dataset.idleLabel || 'Compact now'
     }
-    setHint('Compacting the context…', null, console)
+    // No hint while it runs: the compaction row in the transcript already says
+    // "Compacting the context…", and saying it twice — once there, once beside the composer —
+    // reads as two things happening. The button's own "Compacting…" label carries the wait.
     try {
       const res = await fetch(consoleApi(console, '/compact'), {
         method: 'POST',
@@ -7138,8 +7140,9 @@
     $('hx-composer')?.addEventListener('submit', (event) => {
       event.preventDefault()
       // The button that submitted says how the message is delivered. Enter takes the default,
-      // which is the primary action: into the turn if one is running, otherwise a new one.
-      sendPrompt(event.submitter?.dataset?.queueMode === 'followUp' ? 'followUp' : 'steer')
+      // which is the primary action: queued for the next turn if one is running, otherwise a
+      // new one. Steer stays available as its own button for the reader who wants it now.
+      sendPrompt(event.submitter?.dataset?.queueMode === 'steer' ? 'steer' : 'followUp')
     })
 
     const input = $('hx-input')
@@ -7539,7 +7542,6 @@
   // The page is a classic script and its markup already uses inline handlers (the router's
   // own buttons do), so the two the shell calls by name live on the window.
   window.harnessShow = showView
-  window.harnessReloadSessions = () => loadSessions()
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init)

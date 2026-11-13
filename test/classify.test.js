@@ -273,6 +273,27 @@ test('a model id the provider does not recognise is dead', () => {
   )
 })
 
+test('a requested model id the gateway does not list is dead', () => {
+  // KiloCode's gateway answers a chat call for an id it never published with HTTP 400 and
+  // "The requested model 'X' does not exist. Please use an exact model id as listed on
+  // /api/gateway/models." The quoted id sits between "model" and "does not exist", so the
+  // adjacent-words tombstone rule misses it; the advice to use an exact catalog id is the same
+  // statement, worded as guidance. No window can make that id servable.
+  const kiloErr =
+    "The requested model 'apodex/apodex-1.1-mini:free' does not exist. Please use an exact model id as listed on /api/gateway/models. If this is a newly released model, please try again in a few minutes."
+  assert.equal(isDeadModelError(kiloErr, 400), true)
+  assert.equal(isDeadModelError(kiloErr, 404), true)
+  assert.equal(resolveRefusalVerdict(kiloErr, 400), 'dead')
+  // The Groq access phrasing is still incompatible, not dead: "does not exist or you do not
+  // have access to it" is a statement about this caller's access, not a catalog tombstone.
+  const groqErr =
+    'The model `canopy labs orpheus v1 english` does not exist or you do not have access to it.'
+  assert.equal(isDeadModelError(groqErr, 404), false)
+  assert.equal(isIncompatibleModelError(groqErr, 404), true)
+  // A model that is merely unsupported is not a tombstone either.
+  assert.equal(isDeadModelError('The requested model is not supported.', 400), false)
+})
+
 test('a bare Not Found or an unrecognised id is a tombstone', () => {
   // A gateway with no route for the id answers with nothing but the status line, and a relay
   // says the same thing in words: "please check the model you provided" (live 2026-11-10 on

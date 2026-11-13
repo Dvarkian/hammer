@@ -12,6 +12,8 @@
  *   FAKE_PI_EXIT_ON=<type>        exit with code 4 on that command, leaving its caller waiting
  *   FAKE_PI_CANCEL_RESET=1        refuse `new_session`, as an extension handler may
  *   FAKE_PI_SETTLE_DELAY_MS=<ms>  hold the run open this long, so a UI can be seen mid-run
+ *   FAKE_PI_COMPACT_DELAY_MS=<ms> hold a compaction in flight this long, so a prompt can be
+ *                                  queued while the summary is still being written
  *   FAKE_PI_SESSION_STATS=<json>  the `get_session_stats` payload (default: 42 total tokens)
  *   FAKE_PI_MESSAGE_USAGE=<json>  usage object attached to the assistant `message_end`
  *   FAKE_PI_END_ERROR=<text>      end each turn with this provider error instead of an answer
@@ -263,11 +265,19 @@ function handle(command) {
       }
       // In flight, then done, with the response last: the same order the real agent uses, so
       // a bridge that waits for the answer still sees both records on its event stream.
+      // FAKE_PI_COMPACT_DELAY_MS holds the in-flight window open so a test can send a prompt
+      // (or read get_state) while the summary is still being written — the shape a real
+      // compaction has for the seconds it takes a model to write it.
+      const delay = Number(process.env.FAKE_PI_COMPACT_DELAY_MS || 0)
       compacting = true
       write({ type: 'compaction_start', reason: 'manual' })
-      write({ type: 'compaction_end', reason: 'manual', result })
-      compacting = false
-      respond(command, result)
+      const finish = () => {
+        compacting = false
+        write({ type: 'compaction_end', reason: 'manual', result })
+        respond(command, result)
+      }
+      if (Number.isFinite(delay) && delay > 0) setTimeout(finish, delay)
+      else finish()
       return
     }
 

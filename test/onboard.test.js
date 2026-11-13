@@ -8,7 +8,7 @@ import {
   sortOnboardResults,
   summarizeOnboardResults,
 } from '../lib/provider-onboard.js'
-import { VERDICT_ORDER } from '../lib/utils.js'
+import { getVerdict, VERDICT_ORDER } from '../lib/utils.js'
 
 const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
@@ -18,8 +18,9 @@ test('onboarding orders models by the same verdict vocabulary the table uses', (
   // The popup and the table must agree on what "current status" means, so the order is the
   // shared VERDICT_ORDER rather than a list invented for the popup.
   assert.ok(VERDICT_ORDER.length > 0)
-  assert.equal(onboardVerdictRank('Perfect'), 0)
-  assert.equal(onboardVerdictRank('Normal'), 1)
+  assert.equal(onboardVerdictRank('Very Fast'), 0)
+  assert.equal(onboardVerdictRank('Fast'), 1)
+  assert.equal(onboardVerdictRank('Normal'), 2)
   assert.ok(onboardVerdictRank('Not Active') > onboardVerdictRank('Slow'))
   // A verdict the shared order does not know sorts after every known one: no verdict is the least
   // informative, not the healthiest.
@@ -30,8 +31,8 @@ test('onboarding orders models by the same verdict vocabulary the table uses', (
 test('onboarding sorts healthy first, then by name', () => {
   const rows = [
     { modelId: 'zeta', label: 'Zeta', verdict: 'Not Active' },
-    { modelId: 'beta', label: 'Beta', verdict: 'Perfect' },
-    { modelId: 'alpha', label: 'Alpha', verdict: 'Perfect' },
+    { modelId: 'beta', label: 'Beta', verdict: 'Fast' },
+    { modelId: 'alpha', label: 'Alpha', verdict: 'Very Fast' },
     { modelId: 'mid', label: 'Mid', verdict: 'Slow' },
   ]
   const sorted = sortOnboardResults(rows)
@@ -45,16 +46,102 @@ test('onboarding sorts healthy first, then by name', () => {
 
 test('onboarding summarizes how many models can serve right now', () => {
   const summary = summarizeOnboardResults([
-    { verdict: 'Perfect' },
+    { verdict: 'Very Fast' },
     { verdict: 'Normal' },
     { verdict: 'Slow' },
     { verdict: 'Not Active' },
     { verdict: 'Not Active' },
   ])
   assert.equal(summary.total, 5)
-  // Perfect, Normal and Slow all answered, so all three can serve; a Not Active row cannot.
+  // Very Fast, Normal and Slow all answered, so all three can serve; a Not Active row cannot.
   assert.equal(summary.ready, 3)
   assert.equal(summary.byVerdict['Not Active'], 2)
+})
+
+test('the speed verdicts band average ping latency into Very Fast through Very Slow', () => {
+  // The bands the Speed column and the onboarding popup both read. 'Unstable' is not a speed:
+  // it is reserved for repeated recent failures (see the failure-evidence test below), so every
+  // successful-ping average lands on a speed tag however slow it is.
+  const row = (ms) => ({
+    status: 'up',
+    httpCode: null,
+    pings: [{ code: '200', ms, ts: Date.now() }],
+  })
+  assert.equal(getVerdict(row(50)), 'Very Fast')
+  assert.equal(getVerdict(row(199)), 'Very Fast')
+  assert.equal(getVerdict(row(200)), 'Fast')
+  assert.equal(getVerdict(row(599)), 'Fast')
+  assert.equal(getVerdict(row(600)), 'Normal')
+  assert.equal(getVerdict(row(999)), 'Normal')
+  assert.equal(getVerdict(row(1000)), 'Slow')
+  assert.equal(getVerdict(row(2999)), 'Slow')
+  assert.equal(getVerdict(row(3000)), 'Very Slow')
+  assert.equal(getVerdict(row(9999)), 'Very Slow')
+  // A 30-second average is slow, not unstable: speed and reliability are different statements.
+  assert.equal(getVerdict(row(30000)), 'Very Slow')
+  // No successful ping in the window falls back to the persisted usage figures — the estimate
+  // is what keeps a tag alive across a restart, and it applies to a row that is not currently
+  // active too, because the tag reports speed, not health.
+  assert.equal(getVerdict({ status: 'up', pings: [] }), 'Not Active')
+  assert.equal(
+    getVerdict({ status: 'up', pings: [], ttft: 250, tps: 40, speedTokens: 200 }),
+    'Fast',
+  )
+  assert.equal(getVerdict({ status: 'down', pings: [], ttft: 100 }), 'Very Fast')
+  assert.equal(getVerdict({ status: 'noauth', pings: [], ttft: 5000 }), 'Very Slow')
+  // The estimate needs a ttft to stand on: tok/s alone says nothing about latency.
+  assert.equal(getVerdict({ status: 'up', pings: [], tps: 40, speedTokens: 200 }), 'Not Active')
+  // 'Perfect' is no longer a verdict: it must not appear in the shared order the popup sorts by.
+  assert.equal(VERDICT_ORDER.includes('Perfect'), false)
+  // Neither is 'Overloaded': a 429 is a statement about the account, not the model's speed, so
+  // the row keeps reporting the last speed it measured instead of losing its tag.
+  assert.equal(VERDICT_ORDER.includes('Overloaded'), false)
+  assert.equal(
+    getVerdict({
+      status: 'rate-limited',
+      httpCode: '429',
+      pings: [{ code: '200', ms: 250, ts: Date.now() }],
+    }),
+    'Fast',
+  )
+  assert.equal(
+    getVerdict({ status: 'rate-limited', httpCode: '429', pings: [], ttft: 5000 }),
+    'Very Slow',
+  )
+  // With no measurement at all a refused row has no speed to report, same as any other row.
+  assert.equal(getVerdict({ status: 'rate-limited', httpCode: '429', pings: [] }), 'Not Active')
+})
+
+test('unstable takes repeated recent failures, not one blip or a slow average', () => {
+  const now = Date.now()
+  const ping = (code, ms = 100) => ({ code, ms, ts: now })
+  // Up before, then failures at the tail: two or more in the last five is unstable.
+  assert.equal(
+    getVerdict({
+      status: 'down',
+      pings: [ping('200'), ping('200'), ping('ERR'), ping('000')],
+    }),
+    'Unstable',
+  )
+  // A single failure after a healthy run is a blip, not instability — and the row still shows
+  // its speed, because the tag reports how fast it is, not whether it is answering right now.
+  assert.equal(
+    getVerdict({
+      status: 'down',
+      pings: [ping('200'), ping('200'), ping('200'), ping('ERR')],
+    }),
+    'Very Fast',
+  )
+  // Never having answered and nothing saved is Not Active, not Unstable.
+  assert.equal(getVerdict({ status: 'down', pings: [ping('ERR'), ping('ERR')] }), 'Not Active')
+  // A timeout with the same repeated-failure shape reads the same way.
+  assert.equal(
+    getVerdict({
+      status: 'timeout',
+      pings: [ping('200'), ping('ERR'), ping('ERR'), ping('ERR')],
+    }),
+    'Unstable',
+  )
 })
 
 test('a finished run is cancelled, empty, partial, or done', () => {

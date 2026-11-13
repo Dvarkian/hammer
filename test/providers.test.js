@@ -3080,17 +3080,30 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(css, /\.model-logo-img \{/)
 
   // Everything after the logo shifted by one, and each added column shifts the trailing cells
-  // again — the quota column first, then the rate-limit column beside it. A stale index writes
-  // context into the status cell and blanks the response, which is worse than no column at all.
+  // again — the quota column first, then the rate-limit column beside it, and the Speed column
+  // replaced the old TTFT/Tok/s pair. A stale index writes context into the wrong cell and
+  // blanks the response, which is worse than no column at all.
   assert.match(js, /const modelCell = row\.cells\[1\];/)
   assert.match(js, /const intellCell = row\.cells\[2\];/)
-  assert.match(js, /const usageCell = row\.cells\[5\];/)
-  assert.match(js, /const quotaCell = row\.cells\[6\];/)
-  assert.match(js, /const ctxCell = row\.cells\[8\];/)
-  assert.match(js, /const statusCell = row\.cells\[9\];/)
-  assert.match(js, /const responseCell = row\.cells\[10\];/)
-  assert.match(js, /const ttftCell = row\.cells\[3\];/)
-  assert.match(js, /const tpsCell = row\.cells\[4\];/)
+  assert.match(js, /const speedCell = row\.cells\[3\];/)
+  assert.match(js, /const usageCell = row\.cells\[4\];/)
+  assert.match(js, /const quotaCell = row\.cells\[5\];/)
+  assert.match(js, /const ctxCell = row\.cells\[7\];/)
+  // Status no longer owns a column: its verdict trails the model name inside the Model cell,
+  // in a slot every repaint path targets by class, so the name is never overwritten and the
+  // response column that followed Status takes the last index.
+  assert.equal(/id="th-status"/.test(table), false)
+  assert.match(table, /id="th-ctx"[^]*?<th title="Click Test[^]*?>Response<\/th>/)
+  assert.match(js, /class="status-slot">\$\{groupStatusHtml\}/)
+  assert.match(js, /class="status-slot">\$\{statusCellHTML\(m\)\}/)
+  assert.match(js, /const statusCell = modelCell\.querySelector\('\.status-slot'\);/)
+  assert.match(js, /const responseCell = row\.cells\[8\];/)
+  // The Speed column is one cell carrying the provider-setup popup's verdict pill; the
+  // measurements the TTFT and Tok/s columns printed moved into its tooltip.
+  assert.match(js, /function speedTagInner\(verdict, ttft, tps, ttftLabel/)
+  assert.match(js, /class="onboard-pill speed-tag/)
+  assert.match(js, /\$\{speedTagCell\(m\.verdict, rowTtft\(m\), rowTps\(m\)/)
+  assert.match(js, /\$\{speedTagCell\(s\.speedMember\?\.verdict, s\.minTtft, s\.maxTps/)
   // The rate-limit column sits between quota and context in the header and in every row builder
   // (model heading, provider row, graveyard row). It is filled, not empty: the throttle counters
   // and bench state render into it from the row's rateLimit half.
@@ -3101,8 +3114,55 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
   assert.match(js, /\$\{rateLimitCell\(m\)\}/)
   // The refresh path keeps the throttle column in step with the quota column beside it.
-  assert.match(js, /const rateLimitCellEl = row\.cells\[7\];/)
+  assert.match(js, /const rateLimitCellEl = row\.cells\[6\];/)
   assert.match(js, /rateLimitCellEl\.innerHTML = rateLimitCellInnerHTML\(m\)/)
+})
+
+test('the Speed column verdict survives a restart like the ttft/tok/s figures do', () => {
+  const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
+
+  // The tag is getVerdict() over r.pings, and pings were memory-only: a restart rebuilt them
+  // empty and every row read 'Not Active' until the next probe cycle. They now ride the same
+  // usage file the speed figures already persist on, written by both paths that record one —
+  // the probe and a served request — and restored at startup filtered to the window getAvg()
+  // reads, so a stale '200' cannot make a dead row look recently alive.
+  assert.match(server, /pings: r\.pings\.slice\(\)/)
+  assert.match(server, /pings: best\.pings\.slice\(\)/)
+  assert.match(server, /Array\.isArray\(entry\.pings\)/)
+  assert.match(server, /now - Number\(ping\.ts\) <= DEFAULT_PING_WINDOW_MS/)
+  // The restore must run after the bench logic in the same loop: that logic decides whether a
+  // persisted bench still stands by asking whether *this session's* probes spoke for the row,
+  // and restored pings would answer yes for every row that ever passed.
+  const restoreAt = server.indexOf('Array.isArray(entry.pings)')
+  const benchAt = server.indexOf('pingsSpokeForRow')
+  assert.ok(restoreAt > benchAt, 'pings are restored after the bench-supersede check')
+})
+
+test('the table badges the fastest and smartest rows that could serve right now', () => {
+  const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+
+  // The candidates are the usable rows — the same set the router would pick from — so the
+  // superlatives can never name a model the table itself shows as unable to serve.
+  assert.match(js, /function computeSpeedLeaders\(models\)/)
+  assert.match(js, /if \(!m \|\| !isRowUsable\(m\)\) continue/)
+  assert.match(js, /computeSpeedLeaders\(allModels\)/)
+  // Speed uses the router's own number (routingSpeed, recomputed from ttft/tok/s when the
+  // payload predates it); intelligence uses routingIntell with the same aa/intell fallback
+  // computeRowIntelligence applies.
+  assert.match(js, /function rowRoutingSpeed\(m\)/)
+  assert.match(js, /function rowRoutingIntelligence\(m\)/)
+  assert.match(js, /Number\(m\?\.routingSpeed\)/)
+  assert.match(js, /Number\(m\?\.routingIntell\)/)
+  // The Fastest tag replaces the speed band on the one row that wins it, in the heading and
+  // the provider row and both repaint paths; Smartest sits beside the INT rating on the
+  // model's heading, the only cell that carries the model-level number.
+  assert.match(js, /speed-tag fastest/)
+  assert.match(js, /speed-tag smartest/)
+  assert.match(js, /getModelRowKey\(s\.speedMember\) === fastestRowKey/)
+  assert.match(js, /getModelRowKey\(m\) === fastestRowKey/)
+  assert.match(js, /g\.key === smartestGroupKey/)
+  assert.match(css, /\.speed-tag\.fastest,[\s\S]*?\.speed-tag\.smartest/)
 })
 
 test('the brand map names Beam, GPTFree and ALLaM', () => {

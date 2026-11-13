@@ -920,6 +920,15 @@
       flex: 0 1 auto;
     }
 
+    /* The verdict that used to own a Status column now trails the model name inside the Model
+       cell: it rides that row's flex line instead of a cell of its own, and never squeezes the
+       name it sits beside. */
+    .status-slot {
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+    }
+
     /* Status and response values may contain provider errors, so they wrap instead of pushing the
        table wider. The aggressive breaking belongs to the *cells*, which have to fit an error
        message into whatever width the column ends up with: a header only names its column, and
@@ -982,11 +991,7 @@
     }
 
     /* An estimated ceiling is drawn with the same bar but never passed off as a published
-       number: the label carries EST and the fill is softened. */
-    .quota-row-window.is-estimated .quota-row-period {
-      color: var(--accent);
-    }
-
+       number: the meta line carries EST and the fill is softened. */
     .quota-row-window.is-estimated .quota-row-fill {
       opacity: 0.62;
     }
@@ -1050,11 +1055,6 @@
       color: var(--status-error-text);
     }
 
-    .quota-row-window + .quota-row-window {
-      padding-top: 6px;
-      border-top: 1px solid var(--border);
-    }
-
     .quota-row-window.is-stale {
       opacity: 0.65;
     }
@@ -1079,6 +1079,7 @@
     }
 
     .quota-row-pct {
+      margin-left: auto;
       font-size: 0.68rem;
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
@@ -1117,16 +1118,6 @@
       color: var(--text-muted);
       white-space: normal;
       overflow-wrap: anywhere;
-    }
-
-    .quota-row-provider {
-      font-size: 0.65rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      margin-bottom: 3px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
     }
 
     .quota-row-note {
@@ -1702,6 +1693,19 @@
     .onboard-pill.limited { background: var(--status-warning-bg); border-color: var(--status-warning-border); color: var(--status-warning-text); }
     .onboard-pill.unstable { background: var(--status-warning-bg); border-color: var(--status-warning-border); color: var(--status-warning-text); }
     .onboard-pill.down { background: var(--status-error-bg); border-color: var(--status-error-border); color: var(--status-error-text); }
+
+    /* The same pill in the model table's Speed column: a table cell is not a flex row, so the
+       tag takes its own line box instead of the popup row's flex sizing. */
+    .speed-tag { display: inline-block; }
+    .speed-tag-none { color: var(--text-muted); font-size: 0.75rem; }
+    /* The two superlatives share one gold so they read as the same kind of mark: a badge for
+       the row that wins a column outright, not another verdict band. */
+    .speed-tag.fastest,
+    .speed-tag.smartest {
+      background: var(--status-warning-bg);
+      border-color: var(--status-warning-border);
+      color: var(--status-warning-text);
+    }
 
     .onboard-actions {
       display: flex;
