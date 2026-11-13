@@ -184,6 +184,11 @@ test('the composer saves the slope for its own conversation', () => {
   assert.match(harness, /const key = routedModelKey\(data\.routedModel\)/)
   assert.match(harness, /ctx\.answeredModel = null/)
   assert.match(harness, /paintModelLabel\(ctx, ctx\.status\?\.model\)\n\s*renderQuota\(ctx\)/)
+  // Cleared whether or not the pick moved: a slope the router resolves to the same model still
+  // ends the previous answer's claim on the strip and the rail, which otherwise kept naming the
+  // answered model until the next answer arrived.
+  const savedPick = harness.slice(harness.indexOf('const key = routedModelKey(data.routedModel)'))
+  assert.match(savedPick.slice(0, savedPick.indexOf('if (changed)')), /ctx\.answeredModel = null/)
 })
 
 test("routing reads the slope of the request's conversation", () => {

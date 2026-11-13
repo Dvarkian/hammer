@@ -4172,16 +4172,20 @@
         const changed = key !== ctx.routedModelKey
         ctx.routedModel = data.routedModel
         ctx.routedModelKey = key
-        if (changed) {
-          ctx.answeredModel = null
-          quotaMissLookup = { key: null, at: 0 }
-          void loadKnownTtfts({ force: true }).then(() => {
-            if (ctx === active()) renderQuota(ctx)
-          })
-        }
+        // Whether or not the pick moved: the user has just chosen the model dimension, so the
+        // last answer no longer speaks for the strip or the rail. Clearing it only on a changed
+        // key left both naming the answered model for as long as the router resolved a new
+        // slope to the same pick — which is most of the slider — until the next answer arrived.
+        ctx.answeredModel = null
+        quotaMissLookup = { key: null, at: 0 }
         if (ctx === active()) {
           paintModelLabel(ctx, ctx.status?.model)
           renderQuota(ctx)
+        }
+        if (changed) {
+          void loadKnownTtfts({ force: true }).then(() => {
+            if (ctx === active()) renderQuota(ctx)
+          })
         }
       }
       // The models table now lights one row per conversation, so its pick is stale after this.
