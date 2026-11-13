@@ -774,8 +774,8 @@ body.hx-details-collapsed .hx-side-details {
   stroke-linejoin: round;
 }
 
-/* The head states what the thought cost, in the same register as a tool's "done · 1.2s":
-   measured streaming time and the reasoning tokens the provider reported for the message. */
+/* The head states what the thought cost, in the same register as a tool's "1.2s": measured
+   streaming time and the reasoning tokens the provider reported for the message. */
 .hx-thinking-label {
   flex: 1;
   min-width: 0;
@@ -1197,7 +1197,8 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 /* A finished call stays on the spine: its state is maroon like the rail and the mark, not a
-   green that reads as a separate verdict floating beside the line. */
+   green that reads as a separate verdict floating beside the line. The label carries only the
+   timing — the row's own colour already says the call ended. */
 .hx-tool.ok .hx-tool-state {
   color: var(--accent);
 }
@@ -1610,6 +1611,16 @@ body.hx-details-collapsed .hx-side-details {
   line-height: 1.6;
 }
 
+/* A heading inside a summary is a signpost in past context, not one of the transcript's own
+   headings. It keeps its weight and the size step above the prose, and takes that prose's colour:
+   a kept summary is quoted rather than said, and white here read as the transcript speaking again
+   — which is the one thing this block is not. `inherit` rather than a token, because the grey is
+   whatever the surrounding text uses in that place. */
+.hx-compaction-kept :is(.hx-h1, .hx-h2, .hx-h3, .hx-h4, .hx-h5, .hx-h6),
+.hx-compaction-stream :is(.hx-h1, .hx-h2, .hx-h3, .hx-h4, .hx-h5, .hx-h6) {
+  color: inherit;
+}
+
 /* ── Context meter ──────────────────────────────────────────────────────────────────── */
 
 /*
@@ -1678,6 +1689,17 @@ body.hx-details-collapsed .hx-side-details {
   background: var(--status-error-text);
 }
 
+/* Past the window, not full at it. A hatched fill says the bar is no longer a share — the
+   context is larger than the number it is drawn against — instead of a solid 100% that reads
+   as a measurement exactly at the limit. */
+.hx-usage-bar.is-context.is-over > span {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--status-error-text) 0 4px,
+    transparent 4px 8px
+  );
+}
+
 .hx-context-note {
   margin-top: 4px;
   font-size: 0.7rem;
@@ -1705,6 +1727,15 @@ body.hx-details-collapsed .hx-side-details {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* Under the rate limit readout: the quota figures end here, and the conversation's own plot
+   begins below. Same hairline weight as the meters' own tops, so the rail still reads as one
+   column of facts rather than as a stack of cards. */
+.hx-rail-sep {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
+  margin: 14px 0 12px;
+}
+
 .hx-quota-windows {
   display: flex;
   flex-direction: column;
@@ -1716,12 +1747,73 @@ body.hx-details-collapsed .hx-side-details {
   border-top: 1px solid var(--border-subtle);
 }
 
+/* One column per credential for a pooled provider, the same shape the Router table uses: the
+   rail answers per account, so side by side is the only arrangement that keeps the columns
+   comparable without implying one account's windows belong to the other. */
+.hx-quota-account-list {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.hx-quota-account {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-subtle);
+}
+
+.hx-quota-account.is-serving {
+  border-left-color: var(--accent);
+}
+
+.hx-quota-account.is-exhausted {
+  border-left-color: var(--status-error-border);
+  opacity: 0.85;
+}
+
+.hx-quota-account-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.6rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hx-quota-account-tag {
+  font-weight: 700;
+  color: var(--text-muted);
+}
+
+.hx-quota-account-state {
+  color: var(--accent);
+}
+
+.hx-quota-account.is-exhausted .hx-quota-account-state {
+  color: var(--status-error-text);
+}
+
 .hx-quota-window.is-stale {
   opacity: 0.65;
 }
 
 .hx-quota-window.is-unavailable {
   opacity: 0.72;
+}
+
+/* An estimated ceiling keeps its bar but is never passed off as a published number: the label
+   carries EST and the fill is softened, the same two tells the Router table's Quota column
+   uses. One rule for one fact, so an inferred limit looks inferred wherever it is drawn. */
+.hx-quota-window.is-estimated .hx-quota-period {
+  color: var(--accent);
+}
+
+.hx-quota-window.is-estimated .hx-quota-fill {
+  opacity: 0.62;
 }
 
 .hx-quota-head {
@@ -1797,9 +1889,21 @@ body.hx-details-collapsed .hx-side-details {
   display: none;
 }
 
+/* Compaction lives inside the context meter, right under its "Compacts at … tokens" line:
+   the switch and the button are controls for that number, not a section of their own. */
+.hx-compaction-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.hx-compaction-inline .hx-kv {
+  margin: 0;
+}
+
 #hx-compaction-panel .hx-btn[data-compaction-now] {
   width: 100%;
-  margin-top: 8px;
 }
 
 /* A compaction in flight reads as work being done, not as an unavailable control: the
@@ -1808,10 +1912,6 @@ body.hx-details-collapsed .hx-side-details {
 #hx-compaction-panel .hx-btn[data-compaction-now][data-working='true'] {
   opacity: 0.85;
   cursor: progress;
-}
-
-#hx-compaction-panel .hx-kv {
-  margin: 8px 0 0;
 }
 
 #hx-compaction-panel .hx-notice[data-compaction-note] {
@@ -1916,11 +2016,12 @@ body.hx-details-collapsed .hx-side-details {
   bottom: 14px;
   width: 14px;
   z-index: 2;
-  border-left: 1px solid var(--border-subtle);
   padding: 0;
   margin: 0;
-  /* No clipping: the tooltip is a child of the rail and opens to its left, over the log.
-     The ticks themselves are placed inside the track, so nothing spills. */
+  /* No separator line on the left: the rail overlays the transcript's own right padding, so a
+     rule there read as a grey streak up the side of the rail, and the ticks and the window are
+     the rail's whole visual. No clipping either — the tooltip is a child of the rail and opens
+     to its left, over the log. The ticks are placed inside the track, so nothing spills. */
   overflow: visible;
 }
 
@@ -2268,6 +2369,70 @@ body.hx-details-collapsed .hx-side-details {
   color: var(--accent);
 }
 
+/* Per-message controls: earlier or later within its own list, rewrite in place, or drop it. They
+   sit at the quiet end of the row and come up to full weight under the pointer or the keyboard. */
+.hx-queue-list li .hx-queue-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  align-self: center;
+}
+
+.hx-queue-list li .hx-queue-act {
+  appearance: none;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.hx-queue-list li:hover .hx-queue-act {
+  opacity: 1;
+}
+
+.hx-queue-list li .hx-queue-act:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.hx-queue-list li .hx-queue-act:focus-visible {
+  opacity: 1;
+  outline: none;
+  border-color: var(--accent);
+}
+
+.hx-queue-list li .hx-queue-act:disabled {
+  opacity: 0.18;
+  cursor: default;
+}
+
+/* The row's text becomes a field where it stands, so editing never moves the message elsewhere. */
+.hx-queue-list li .hx-queue-edit {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 0.74rem;
+  color: var(--text);
+  background: var(--input-bg);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.hx-queue-list li .hx-queue-edit:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--title-glow);
+}
+
 .hx-input {
   display: block;
   width: 100%;
@@ -2298,8 +2463,9 @@ body.hx-details-collapsed .hx-side-details {
 .hx-composer-bar {
   display: flex;
   align-items: center;
-  /* The hint, the thinking control and the buttons cannot share one line in a narrow pane.
-     Wrap them instead of letting the cluster run off the right edge and hide Send. */
+  /* The slope, model and thinking controls lead the line; the hint and the buttons cannot
+     share one line in a narrow pane. Wrap them instead of letting the cluster run off the
+     right edge and hide Send. */
   flex-wrap: wrap;
   gap: 8px 10px;
   width: 100%;
@@ -2307,7 +2473,7 @@ body.hx-details-collapsed .hx-side-details {
   min-height: 28px;
 }
 
-/* Model name and thinking effort sit beside the attach icon under the text box. */
+/* The model the slope routes to, between the slope selector and the thinking slider. */
 .hx-composer-model {
   display: inline-flex;
   align-items: center;
@@ -2659,15 +2825,46 @@ body.hx-details-collapsed .hx-side-details {
   color: var(--success);
 }
 
-.hx-composer-btns {
+/* The right half of the bar: the hint and the send controls, pushed to the far edge so the
+   slope, model and thinking controls can lead the line on the left. */
+.hx-composer-right {
   margin-left: auto;
   display: flex;
   align-items: center;
-  /* Attach, the model name, the queue toggle and Send are a cluster that must stay whole.
-     Wrapped and right-aligned so it falls to its own line rather than overflowing the pane. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.hx-composer-btns {
+  display: flex;
+  align-items: center;
+  /* Attach and the send controls are a cluster that must stay whole. Wrapped and right-aligned
+     so it falls to its own line rather than overflowing the pane. */
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* One square per control. The glyphs are drawn at two sizes (12 for the attach paperclip and the
+   stop block, which reads heavier than a 14px one; 14 for steer, queue and send), and the padding
+   used to be what sized the button around them — so the bar was a row of boxes a few pixels apart
+   with no reason a reader could see. The box is the same for all of them now and the glyph sits
+   centred inside it; the send keeps the extra few pixels it had as the primary action. */
+.hx-composer-btns .hx-btn.hx-icon {
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+
+/* Send keeps the accent and its weight — those are what mark it as the primary action — but it
+   is the same square as the controls beside it. Its glyph is drawn a size up instead (16px), so
+   the arrow still reads at this size; the padding the primary button asks for elsewhere is
+   zeroed here, because the fixed box is already the size. */
+.hx-composer-btns .hx-btn.hx-primary.hx-icon {
+  padding: 0;
 }
 
 /* Controls stay outlined — they are controls — but quietly, at the weight of the text. */
@@ -2708,6 +2905,12 @@ body.hx-details-collapsed .hx-side-details {
 .hx-btn.hx-primary:hover:not(:disabled) {
   filter: brightness(1.08);
   color: #fff;
+}
+
+/* The primary action is a glyph now: it keeps the accent and its weight, without the width a
+   word used to ask for. */
+.hx-btn.hx-primary.hx-icon {
+  padding: 6px 12px;
 }
 
 /* ── Inspector rail ────────────────────────────────────────────────────────────────── */
@@ -3134,13 +3337,14 @@ body.hx-details-collapsed .hx-side-details {
   }
 
   /*
-   * The gutter shrinks to 16px, and a 14px rail plus a tooltip that opens over the transcript
-   * would swallow the last words of every row. The rail is a wide-window affordance; the
-   * transcript keeps the full width here, and the jump pill returns to the gutter it started
-   * in.
+   * The gutter shrinks to 16px, and the rail keeps its 14px width at every size: it overlays
+   * the transcript's right edge rather than taking width from the text, so it moves into the
+   * padding (flush with the pane edge, 2px of air before the text) instead of hiding. Its
+   * tooltip opens over the transcript either way, and the jump pill returns to the gutter it
+   * started in.
    */
   .hx-minimap {
-    display: none;
+    right: 0;
   }
 
   .hx-jump {

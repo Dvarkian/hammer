@@ -147,6 +147,13 @@ test('the composer saves the slope for its own conversation', () => {
   assert.match(harness, /function setSlopePercent\(percent\)/)
   assert.match(harness, /consoleApi\(ctx, '\/slope'\)/)
   assert.match(harness, /paintSlopePercent\(data\.slopePercent\)/)
+  // The slope is a model choice, so its answer carries the pick: the composer's model strip
+  // and the quota rail name the new model at once instead of waiting for the next answer.
+  const piRoute = read('lib/http/routes/pi.js')
+  assert.match(piRoute, /routedModel: routedSelection\(percent\)/)
+  assert.match(harness, /const key = routedModelKey\(data\.routedModel\)/)
+  assert.match(harness, /ctx\.answeredModel = null/)
+  assert.match(harness, /paintModelLabel\(ctx, ctx\.status\?\.model\)\n\s*renderQuota\(ctx\)/)
 })
 
 test("routing reads the slope of the request's conversation", () => {

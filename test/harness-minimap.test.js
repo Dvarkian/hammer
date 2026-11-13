@@ -140,7 +140,12 @@ test('the rail is navigable from the keyboard too', () => {
 })
 
 test('the rail stays a rail below the two-column width', () => {
-  assert.match(css, /@media \(max-width: 960px\) \{[\s\S]{0,900}\.hx-minimap \{\s*display: none;/)
+  // Narrow windows keep the rail at its full width: it overlays the transcript's right edge
+  // rather than taking width from the text, so it moves flush with the pane edge (inside the
+  // shrunken gutter's padding) instead of hiding — which read as "nothing worth mirroring"
+  // for a conversation the reader is in.
+  assert.match(css, /@media \(max-width: 960px\) \{[\s\S]{0,900}\.hx-minimap \{\s*right: 0;\s*\}/)
+  assert.doesNotMatch(css, /\.hx-minimap \{[^}]*width: 8px/)
   assert.match(
     css,
     /@media \(max-width: 960px\) \{[\s\S]{0,700}\.hx-jump \{\s*right: var\(--hx-gutter\);/,

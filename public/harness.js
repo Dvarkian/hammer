@@ -144,8 +144,6 @@
     notesSeen: new Set(),
     tools: new Map(),
     view: 'agent',
-    /** What Send does to a busy conversation: `steer` mid-run, or `followUp` next turn. */
-    queueMode: localStorage.getItem('hammer.hx.queueMode') === 'followUp' ? 'followUp' : 'steer',
   }
 
   // ── Conversations ───────────────────────────────────────────────────────────────────
@@ -232,6 +230,9 @@
     updateComposer()
     renderSessions()
     saveOpenConversations()
+    // The tabs above leave this conversation out, so it is remembered on its own: a restart has
+    // to know which one to put back in front of the reader (see LAST_KEY).
+    rememberViewed(console)
     // A console can be shown before its transcript was ever rebuilt — it is the one the rail
     // click had to activate, or the one a restart resumed mid-turn. Arm the stall check here so
     // the wait ends in the file being read rather than in an empty log.
@@ -244,8 +245,41 @@
 
   /** Where the open conversations are remembered between page loads (and restarts). */
   const OPEN_KEY = 'hammer.hx.open'
+  /** Where the conversation last on screen is remembered, whichever console held it. */
+  const LAST_KEY = 'hammer.hx.last'
   /** Where unsent composer text is remembered, one entry per conversation. */
   const DRAFT_PREFIX = 'hammer.hx.draft:'
+
+  /**
+   * Remembers the conversation on screen.
+   *
+   * `OPEN_KEY` records the tabs, which is every conversation *except* the one the page lands
+   * on: a single conversation was never a tab to reopen, so a restart had nothing to put back
+   * in front of the reader and left them on an empty console. This is that missing half,
+   * written whenever a conversation takes the screen or starts writing its file.
+   */
+  function rememberViewed(console) {
+    if (!console?.sessionFile) return
+    try {
+      localStorage.setItem(LAST_KEY, console.sessionFile)
+    } catch {
+      // A browser without storage simply does not remember.
+    }
+  }
+
+  /** The conversation the last page was showing, if it remembered one. */
+  function lastViewedFile() {
+    try {
+      return localStorage.getItem(LAST_KEY) || null
+    } catch {
+      return null
+    }
+  }
+
+  // Read once, before boot can overwrite it: the page activates its main console — a fresh,
+  // empty conversation after a restart — long before the restore pass runs, and remembering
+  // that would replace the very file the restore is meant to put back.
+  const bootLastViewed = lastViewedFile()
 
   /**
    * The storage key for one conversation's unsent text.
@@ -288,6 +322,8 @@
     }
     input.value = text
     autoGrow()
+    // A restored draft is something to send, so the send control belongs back on screen.
+    updateComposer()
   }
 
   /**
@@ -389,6 +425,33 @@
     }
   }
 
+  /**
+   * Puts a remembered conversation back on the main console.
+   *
+   * False means the file is gone (deleted while the app was closed, or never written), and the
+   * page falls back to the tabs it remembers rather than landing on nothing.
+   */
+  async function resumeOnMain(main, file) {
+    try {
+      const res = await fetch(`${API}/sessions/open`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session: file }),
+      })
+      if (!res.ok) return false
+      const data = await res.json().catch(() => ({}))
+      rememberSessionFile(main, data.sessionFile || file)
+      // What the console already rebuilt was the conversation it was on a moment ago — after a
+      // restart that is an empty one — so the file it just attached to has to be read: a
+      // rebuild is otherwise skipped as "already loaded".
+      main.historyLoaded = false
+      await restoreHistory(main)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** Reopens the conversations the last page had, each rebuilt from its own session file. */
   let restoringTabs = false
   /**
@@ -404,11 +467,27 @@
     if (restoringTabs) return
     restoringTabs = true
     const started = new Set()
-    const mainFile = state.consoles.get('main')?.sessionFile
-    // The conversation on screen when the page last saved is written last. It is the only one
-    // that should be shown: every other tab is reopened quietly beside it, so opening Hammer
-    // does not flick through each conversation before settling on one.
-    const activeFile = [...openFiles.keys()].at(-1) || null
+    // Where to land is decided before the tabs are reopened, because the remembered
+    // conversation may need the main console itself. `hammer.hx.open` writes the conversation
+    // on screen last, so its last entry is the fallback for a page from before LAST_KEY.
+    const lastFile = bootLastViewed || [...openFiles.keys()].at(-1) || null
+    let focusFile = lastFile
+    const main = state.consoles.get('main')
+    if (lastFile && main && ![...state.consoles.values()].some((ctx) => ctx.sessionFile === lastFile)) {
+      if (!main.sessionFile || (!main.items.length && !main.running)) {
+        // A restart starts a fresh agent, so main has nothing of its own to show: resuming the
+        // remembered conversation here is what puts the reader back on the one they left. A
+        // console mid-turn is not empty, whatever its transcript has rebuilt so far — switching
+        // its session under the turn would end the work the reader was watching.
+        if (await resumeOnMain(main, lastFile)) focusFile = lastFile
+      } else if (!openFiles.has(lastFile)) {
+        // Main is on a conversation of its own (a reload with a tab in front), so the
+        // remembered one comes back as a tab of its own and is focused below.
+        openFiles.set(lastFile, false)
+        saveOpenConversations()
+      }
+    }
+    const mainFile = main?.sessionFile
     for (const [file, wasRunning] of [...openFiles]) {
       if (file === mainFile || started.has(file)) continue
       started.add(file)
@@ -428,10 +507,10 @@
       }
     }
     restoreProtected.clear()
-    // Put the reader back where they left off. A tab that failed to reopen leaves the page on
-    // whatever it was already showing rather than jumping to a background conversation.
-    const onScreen = activeFile
-      ? [...state.consoles.values()].find((ctx) => ctx.sessionFile === activeFile)
+    // Put the reader back where they left off. A conversation that failed to reopen leaves the
+    // page on whatever it was already showing rather than jumping to a background one.
+    const onScreen = focusFile
+      ? [...state.consoles.values()].find((ctx) => ctx.sessionFile === focusFile)
       : null
     if (onScreen) activate(onScreen)
     restoringTabs = false
@@ -1141,6 +1220,28 @@
     else delete el.dataset.tone
   }
 
+  // The console is served from this machine, so an outage never stops the page loading: it
+  // stops the turn, at the round trip to somebody else's model. Chromium reports the link state,
+  // and the composer's hint says which silence this is — the one place a reader is already
+  // looking after a send — then clears itself the moment the link returns. It is cleared only
+  // when the offline line is still the one showing, so an outage does not wipe a message that
+  // arrived after it.
+  const OFFLINE_HINT = 'No internet connection — the agent cannot reach a model provider right now.'
+
+  function watchConnectivity() {
+    const announce = (offline) => {
+      if (offline) {
+        setHint(OFFLINE_HINT, 'error')
+        return
+      }
+      const ctx = active()
+      if (ctx && ctx.hint === OFFLINE_HINT) setHint('', null, ctx)
+    }
+    window.addEventListener('offline', () => announce(true))
+    window.addEventListener('online', () => announce(false))
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) announce(true)
+  }
+
   // ── View switch ─────────────────────────────────────────────────────────────────────
 
   /**
@@ -1603,7 +1704,7 @@
 
   // ── Waiting for the first token ────────────────────────────────────────────────
   //
-  // A tool row that reads "done" is not the agent still working: what the reader is
+  // A tool row whose head shows only a timing is not the agent still working: what the reader is
   // watching at the bottom of the log is the model, which has been handed the tool's result
   // and has not written anything yet. There is no row to stream into during that gap, so the
   // log simply stopped — and a stop is indistinguishable from a hang. The router measures
@@ -1623,6 +1724,10 @@
   /** When the table must be read again; a failed read ages out like a successful one. */
   let ttftFreshUntil = 0
   let ttftLoad = null
+  // The row a missing-table read was already made for, and when. A routed model the table does
+  // not mention must not become one fetch per status frame; after one look the answer stands
+  // for a while (see renderQuota).
+  let quotaMissLookup = { key: null, at: 0 }
   /** The composer slope slider's notches, as percentages of the data's slope ceiling. */
   let slopeNotches = []
   /** The field the popup draws: one {intelligence, speed} per routable row of /api/models. */
@@ -1635,9 +1740,11 @@
    * asks rather than inventing a number: a ring running on a guessed period would call a
    * model nobody has measured as normal.
    */
-  async function loadKnownTtfts() {
+  async function loadKnownTtfts({ force = false } = {}) {
     if (ttftLoad) return ttftLoad
-    if (Date.now() < ttftFreshUntil) return
+    // `force` is for a route change: the rail's bars belong to the model that is routed now,
+    // and the table it is drawing from may predate that model entirely.
+    if (!force && Date.now() < ttftFreshUntil) return
     ttftLoad = (async () => {
       try {
         const res = await fetch('/api/models', { cache: 'no-store' })
@@ -1766,12 +1873,17 @@
     if (Date.now() > ttftFreshUntil) void loadKnownTtfts().then(() => syncWaitBadge(ctx))
   }
 
+  /**
+   * The state a tool row's head shows while it is live. A finished call says nothing here — the
+   * row's fold, its maroon spine colour, and the duration beside this label already say it ended,
+   * and the row is not the place for a verdict.
+   */
   function toolStateLabel(item) {
     if (item.status === 'preparing') return 'preparing'
     if (item.status === 'running') return 'running'
     if (item.status === 'interrupted') return 'interrupted'
     if (item.status === 'error') return 'failed'
-    return 'done'
+    return ''
   }
 
   /**
@@ -1928,6 +2040,8 @@
   function toolMarkup(item) {
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
+    // A finished call's meta is its timing alone: the state label says nothing for it, so the
+    // separator only belongs between two live fragments.
     const meta = [toolStateLabel(item), took].filter(Boolean).join(' · ')
     // An edit whose call finished shows its diff instead of its result sentence — the change is
     // the output. A failed edit keeps the error text, which is the thing worth reading.
@@ -2483,12 +2597,9 @@
     }
     // Unhidden BEFORE measuring. The nav ships with `hidden` in the markup, and `display: none`
     // measures as a 0px track — a guard on clientHeight first would bail forever and the rail
-    // could never unhide itself. Below 960px the media query keeps it display:none anyway, so
-    // the height check below still skips the narrow layout.
+    // could never unhide itself. An off-screen agent view measures 0 for the same reason;
+    // retried rather than dropped (see scheduleMinimapRetry).
     rail.hidden = false
-    // Below 960px the rail is display:none, so it has no height to measure and nothing to
-    // draw: measuring a 0px track maps every row onto the same tick. An off-screen agent view
-    // is the same case; retried rather than dropped (see scheduleMinimapRetry).
     if (!rail.clientHeight) return scheduleMinimapRetry()
 
     // Measured geometry first, all reads before any writes so the whole pass is one layout.
@@ -3155,7 +3266,12 @@
         item.stream = ''
         item.text = compactionText(item)
         item.figures = compactionFigures(item)
-        syncTranscript({}, ctx)
+        // The row this ends is already on screen, and `syncTranscript` paints only rows it has
+        // never mounted — so asking it to sync left the compaction saying "Compacting the
+        // context…" for as long as the page stayed open: no figures, no failure, no sign it had
+        // finished, which is exactly what a compaction that did nothing looks like. Patching the
+        // row itself is what ends it. A row that was never mounted falls back to a sync inside.
+        patchCompactionItem(item, ctx)
         break
       }
       default:
@@ -3201,7 +3317,14 @@
   /** The row's sentence, which is what the notice summary shows. */
   function compactionText(item) {
     if (item.state === 'error') {
-      const why = item.error ? item.error.replace(/\s+/g, ' ').trim() : 'Pi could not compact.'
+      // Pi's own message already opens with "Compaction failed: ", and this sentence does too:
+      // the reader needs the reason once, not twice.
+      const why = item.error
+        ? item.error
+            .replace(/^compaction failed:\s*/i, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+        : 'Pi could not compact.'
       return `Compaction failed: ${why.slice(0, 300)}`
     }
     if (item.state === 'aborted') return 'Compaction was cancelled.'
@@ -3214,8 +3337,18 @@
 
   // ── Thinking effort ─────────────────────────────────────────────────────────────────
 
-  /** The levels the slider maps to, quietest first. `minimal` is left to clients that can spell it. */
-  const THINKING_CYCLE = ['off', 'low', 'medium', 'high']
+  /**
+   * The levels the slider maps to when the route cannot say what it takes: quietest first.
+   * `minimal` is left to clients that can spell it. The route's own answer replaces this (see
+   * paintThinking), so a model with no reasoning mode is not offered three steps that do nothing.
+   */
+  const THINKING_DEFAULT_LEVELS = ['off', 'low', 'medium', 'high']
+
+  /** The levels the slider is showing now: the current model's steps, or the default set. */
+  let thinkingLevels = THINKING_DEFAULT_LEVELS
+
+  /** Every level pi's own control knows, quietest first, for placing one in a shorter list. */
+  const THINKING_RANK = ['off', 'minimal', 'low', 'medium', 'high']
 
   /**
    * Maps a slider notch (0..3) to a thinking level and tells the agent. The agent declares
@@ -3245,11 +3378,71 @@
     }
   }
 
-  /** Reads the slider's notch and applies it. */
+  /** Reads the slider's notch and applies it — a step of the model on screen, not a fixed one. */
   function thinkingFromSlider() {
     const slider = $('hx-thinking-slider')
-    if (!slider) return
-    setThinkingLevel(THINKING_CYCLE[Number(slider.value)] || 'off')
+    if (!slider || slider.disabled) return
+    setThinkingLevel(thinkingLevels[Number(slider.value)] || 'off')
+  }
+
+  /**
+   * Where a level sits in the list the slider is showing.
+   *
+   * The agent's level can be one this model has no step for — a conversation moved from a
+   * model that takes `minimal` to one whose quietest real step is `low`. The control then rests
+   * on the nearest step instead of snapping to the first one, which would read as "off".
+   */
+  function thinkingPosition(levels, level) {
+    const exact = levels.indexOf(level)
+    if (exact >= 0) return exact
+    const want = THINKING_RANK.indexOf(level)
+    if (want < 0) return 0
+    let best = 0
+    let distance = Infinity
+    levels.forEach((candidate, index) => {
+      const rank = THINKING_RANK.indexOf(candidate)
+      const gap = rank < 0 ? Infinity : Math.abs(rank - want)
+      // A tie goes to the harder step: `minimal` on a list without it is nearer `low` than `off`,
+      // and a control that reads "off" while the agent holds a level is the worse lie.
+      if (gap <= distance) {
+        distance = gap
+        best = index
+      }
+    })
+    return best
+  }
+
+  /**
+   * Paints the thinking control from the route's own answer.
+   *
+   * The router reports the steps the current model and wire actually take. A control that
+   * offers four of them on a model with none is a control that lies: the level is dropped on
+   * the way out, so dragging it changes nothing. So the slider is built from exactly the
+   * reported steps — one step disables it, with the route's reason on its title — and the
+   * slider's value is the step the console is really on.
+   */
+  function paintThinking(choices, level) {
+    const levels =
+      Array.isArray(choices?.levels) && choices.levels.length
+        ? choices.levels
+        : THINKING_DEFAULT_LEVELS
+    thinkingLevels = levels
+    const inert = levels.length < 2
+    const slider = $('hx-thinking-slider')
+    if (slider) {
+      slider.min = '0'
+      slider.max = String(Math.max(0, levels.length - 1))
+      slider.step = '1'
+      slider.value = String(thinkingPosition(levels, level || 'off'))
+      slider.disabled = inert
+      slider.title = inert
+        ? `${choices?.reason || 'This model has no thinking levels.'} Nothing to choose here.`
+        : `Thinking effort — ${levels.join(', ')}. Sent in whatever form the chosen model understands.`
+    }
+    // With no step to set, the level the console holds is not going anywhere: showing `low`
+    // beside a disabled control would claim thinking this model never receives.
+    const label = $('hx-thinking-level')
+    if (label) label.textContent = inert ? 'off' : level || 'off'
   }
 
   /** Paints the conversation's slope, which the router reports with every status. */
@@ -3827,6 +4020,28 @@
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Could not change the slope (' + res.status + ').')
       paintSlopePercent(data.percent)
+      // The slope *is* a model choice the user just made, so the strip names the new pick now.
+      // Waiting for the status round trip left it showing the previous model — and waiting for
+      // an answer left it there until the next message, which is the failure this fixes. The
+      // answer the readout preferred is about the model this conversation was on until this
+      // moment, so the user's own choice supersedes it.
+      if (data.routedModel) {
+        const key = routedModelKey(data.routedModel)
+        const changed = key !== ctx.routedModelKey
+        ctx.routedModel = data.routedModel
+        ctx.routedModelKey = key
+        if (changed) {
+          ctx.answeredModel = null
+          quotaMissLookup = { key: null, at: 0 }
+          void loadKnownTtfts({ force: true }).then(() => {
+            if (ctx === active()) renderQuota(ctx)
+          })
+        }
+        if (ctx === active()) {
+          paintModelLabel(ctx, ctx.status?.model)
+          renderQuota(ctx)
+        }
+      }
       // The models table now lights one row per conversation, so its pick is stale after this.
       refreshStatus(ctx).catch(() => {})
     } catch (err) {
@@ -3908,6 +4123,12 @@
   }
 
   /**
+   * The row being edited, if one is: `{ ctx, index, text }`. It exists so an incoming
+   * `queue_update` cannot repaint the strip out from under an open field.
+   */
+  let queueEditing = null
+
+  /**
    * Adopts a queue snapshot for one conversation. Pi's `queue_update` event (and the counts
    * `get_state` carries) are the only authoritative source — a message the agent already
    * consumed leaves the queue by an event, not by anything this page could infer.
@@ -3916,62 +4137,134 @@
     if (!ctx) return
     ctx.queuedSteering = Array.isArray(steering) ? steering.map(String) : []
     ctx.queuedFollowUp = Array.isArray(followUp) ? followUp.map(String) : []
+    // An editor belongs to the row it opened on. If that row moved or is gone — Pi consumed it, or
+    // another tab rewrote the queue — the field is editing nothing, so it closes rather than
+    // saving its text onto whichever message took the position.
+    if (
+      queueEditing &&
+      (queueEditing.ctx !== ctx || queueItems(ctx)[queueEditing.index]?.text !== queueEditing.text)
+    ) {
+      queueEditing = null
+    }
     renderQueue(ctx)
+  }
+
+  /** The queue as one list: steering first, then the follow-ups, in Pi's own order. */
+  function queueItems(ctx = active()) {
+    if (!ctx) return []
+    return [
+      ...ctx.queuedSteering.map((text) => ({ text, mode: 'steer' })),
+      ...ctx.queuedFollowUp.map((text) => ({ text, mode: 'followUp' })),
+    ]
   }
 
   /** Draws the queue strip between transcript and composer, and the button's queued count. */
   function renderQueue(ctx = active()) {
     if (!ctx || ctx !== active()) return
+    // An open editor owns its row: a `queue_update` arriving mid-edit must not wipe the field out
+    // from under the caret. Saving or cancelling repaints from state.
+    if (queueEditing && queueEditing.ctx === ctx) return
     const wrap = $('hx-queue')
     const list = $('hx-queue-list')
-    const items = [
-      ...ctx.queuedSteering.map((text) => ({ text, mode: 'steer' })),
-      ...ctx.queuedFollowUp.map((text) => ({ text, mode: 'followUp' })),
-    ]
+    const items = queueItems(ctx)
     if (wrap) wrap.hidden = items.length === 0
     const count = $('hx-queue-count')
     if (count) count.textContent = String(items.length)
     if (list) {
+      // A move stays inside its own list (see the /queue route), so the ends of that list are what
+      // the arrows report as unavailable rather than the ends of the whole strip.
+      const firstOf = (mode) => items.findIndex((item) => item.mode === mode)
+      const lastOf = (mode) => items.map((item) => item.mode).lastIndexOf(mode)
       list.innerHTML = items
-        .map(
-          (item) =>
-            `<li data-queue-mode="${item.mode}"><span>${escapeHtml(clip(item.text, 200))}</span><b>${item.mode === 'followUp' ? 'next turn' : 'this turn'}</b></li>`,
-        )
+        .map((item, index) => {
+          const atTop = index === firstOf(item.mode)
+          const atBottom = index === lastOf(item.mode)
+          return [
+            `<li data-queue-mode="${item.mode}" data-queue-index="${index}">`,
+            `<span>${escapeHtml(clip(item.text, 200))}</span>`,
+            `<b>${item.mode === 'followUp' ? 'next turn' : 'this turn'}</b>`,
+            '<span class="hx-queue-actions">',
+            `<button type="button" class="hx-queue-act" data-queue-act="up" title="Move earlier" aria-label="Move this message earlier"${atTop ? ' disabled' : ''}>↑</button>`,
+            `<button type="button" class="hx-queue-act" data-queue-act="down" title="Move later" aria-label="Move this message later"${atBottom ? ' disabled' : ''}>↓</button>`,
+            '<button type="button" class="hx-queue-act" data-queue-act="edit" title="Edit this message" aria-label="Edit this message">✎</button>',
+            '<button type="button" class="hx-queue-act" data-queue-act="remove" title="Remove this message" aria-label="Remove this message">×</button>',
+            '</span>',
+            '</li>',
+          ].join('')
+        })
         .join('')
     }
-    const send = $('hx-send')
-    if (send) {
-      send.dataset.queued = items.length > 0 ? String(items.length) : ''
-    }
   }
 
-  /** What the queue button says, and what it will do when clicked. */
-  function renderQueueMode() {
-    const btn = $('hx-queue-mode')
-    if (btn) {
-      const followUp = state.queueMode === 'followUp'
-      btn.dataset.mode = state.queueMode
-      btn.title = followUp
-        ? 'Messages send while the agent works are held until the current turn finishes (click to deliver mid-turn instead)'
-        : 'Messages send while the agent works are delivered mid-turn, after its current tool call (click to hold them for the next turn instead)'
-      btn.textContent = followUp ? 'After turn' : 'Queue: steer'
+  /**
+   * Turns one queued row into a field in place, so an edit never moves the message elsewhere.
+   * Enter saves; Escape or leaving the field cancels. Either way the strip is repainted from the
+   * queue the agent reports, which is the only copy that matters.
+   */
+  function beginQueueEdit(ctx, index) {
+    const item = queueItems(ctx)[index]
+    const row = $('hx-queue-list')?.querySelector(`li[data-queue-index="${index}"]`)
+    const span = row?.querySelector('span')
+    if (!ctx || !item || !row || !span) return
+    queueEditing = { ctx, index, text: item.text }
+    const input = document.createElement('input')
+    input.type = 'text'
+    input.className = 'hx-queue-edit'
+    input.value = item.text
+    input.setAttribute('aria-label', 'Edit queued message')
+    span.replaceWith(input)
+    input.focus()
+    input.select()
+    let settled = false
+    const finish = (save) => {
+      if (settled) return
+      settled = true
+      // The queue is a row per message, and Pi's `queue_update` carries plain text: a line break
+      // here would arrive as text the sender cannot see, so it collapses to one line.
+      const text = input.value.replace(/\s+/g, ' ').trim()
+      queueEditing = null
+      renderQueue(ctx)
+      if (save && text && text !== item.text) void changeQueue('edit', index, { message: text })
     }
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        finish(true)
+      } else if (event.key === 'Escape') {
+        event.preventDefault()
+        finish(false)
+      }
+    })
+    input.addEventListener('blur', () => finish(false))
   }
 
-  function setQueueMode(mode) {
-    state.queueMode = mode === 'followUp' ? 'followUp' : 'steer'
+  /**
+   * Sends one queue change and adopts the queue that comes back.
+   *
+   * The operation and the position travel with the text the page was showing: the server checks
+   * that text against what the agent holds, so a click that raced a `queue_update` is refused and
+   * repainted instead of changing the wrong message.
+   */
+  async function changeQueue(op, index, extra = {}) {
+    const ctx = active()
+    const item = queueItems(ctx)[index]
+    if (!ctx || !item) return
     try {
-      localStorage.setItem('hammer.hx.queueMode', state.queueMode)
-    } catch {
-      // A browser without storage just does not remember the choice.
+      const res = await fetch(consoleApi(ctx, '/queue'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op, index, text: item.text, ...extra }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (Array.isArray(data.steering) || Array.isArray(data.followUp)) {
+        applyQueue(data.steering, data.followUp, ctx)
+      }
+      if (!res.ok) {
+        throw new Error(data.error || `The agent refused the queue change (${res.status}).`)
+      }
+    } catch (err) {
+      setHint(err?.message || 'Could not change the queue.', 'error', ctx)
     }
-    renderQueueMode()
-    setHint(
-      state.queueMode === 'followUp'
-        ? 'Messages sent while the agent works will be held until the current turn completes.'
-        : 'Messages sent while the agent works will be delivered mid-turn, after its current tool call.',
-      'success',
-    )
   }
 
   function routedModelKey(model) {
@@ -4019,7 +4312,6 @@
     if (!data || ctx !== active()) return
     const model = data.model
     const badgeEl = $('hx-routed-badge')
-    const thinkingEl = $('hx-thinking-level')
     // Pi calls its alias "Hammer's selected model", which names the mechanism rather than the
     // model doing the answering. The router's pick — model and the provider offering it — is what
     // the strip shows; the alias stands in only when nothing is routed at all.
@@ -4027,7 +4319,16 @@
     // and only a real change should drop the last answer's label.
     if (data.routedModel) {
       const key = routedModelKey(data.routedModel)
-      if (ctx.routedModelKey && key !== ctx.routedModelKey) ctx.answeredModel = null
+      if (ctx.routedModelKey && key !== ctx.routedModelKey) {
+        ctx.answeredModel = null
+        // A new route is a new set of limits. The cached table is up to a minute old and may
+        // not list the new row at all, so it is re-read now rather than at the next expiry:
+        // until it answers, the rail must not keep the previous model's windows on screen.
+        quotaMissLookup = { key: null, at: 0 }
+        void loadKnownTtfts({ force: true }).then(() => {
+          if (ctx === active()) renderQuota(ctx)
+        })
+      }
       ctx.routedModel = data.routedModel
       ctx.routedModelKey = key
     }
@@ -4043,16 +4344,8 @@
         ? ''
         : 'A model is named in ~/.hammer.json, so routing is bypassed for the agent.'
     }
-    if (thinkingEl) {
-      thinkingEl.textContent =
-        data.thinkingLevel && data.thinkingLevel !== 'off' ? data.thinkingLevel : 'off'
-    }
-    const slider = $('hx-thinking-slider')
-    if (slider) {
-      slider.value = String(THINKING_CYCLE.indexOf(data.thinkingLevel || 'off') >= 0
-        ? THINKING_CYCLE.indexOf(data.thinkingLevel)
-        : 0)
-    }
+    // The route names the steps its model takes; the control follows that, not a fixed four.
+    paintThinking(data.thinking, data.thinkingLevel || 'off')
     if (data.slopePercent != null) paintSlopePercent(data.slopePercent)
     paintSlopeNotches()
     if (data.cwd) {
@@ -4116,6 +4409,28 @@
     return Math.round(value * (unit === 'm' ? 1e6 : unit === 'k' ? 1e3 : 1))
   }
 
+  /**
+   * Whether the routed row's window is an exact statement rather than a floor.
+   *
+   * "At least 131k" is not a denominator. The models table prints such a bound as `>131k`, and
+   * drawing its context against that figure is what made the meter read
+   * `100% · 233k of 131k · 0 free` for a conversation the model was comfortably holding. The
+   * meter asks the same two sources the table does: the pick's own lower-bound flag, and the
+   * label the row's context column prints.
+   */
+  function routedContextWindowExact(ctx) {
+    const routed = ctx?.routedModel
+    if (!routed) return false
+    if (routed.contextLowerBoundOnly === true) return false
+    const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
+    // No row yet: the pick's resolved figure is a catalog/provider window, which is an upper
+    // bound and can be drawn against. A catalog window is not "exact" in the learned-bound
+    // sense (`contextExact`), but it is not a floor either — only a leading `>` is, and that is
+    // the label the table prints for "at least this much" (see deriveContextState).
+    if (!row) return true
+    return !String(row.context || '').startsWith('>')
+  }
+
   function renderUsage(ctx = active()) {
     if (ctx !== active()) return
     const usage = state.usage
@@ -4137,11 +4452,12 @@
     // two function scopes without a build step.
     window.hxCompact = compact
     const fallbackWindow = routedContextWindow(ctx)
+    const fallbackExact = routedContextWindowExact(ctx)
     if (!usage) {
       el.textContent = 'No tokens reported yet'
       // A fresh console can still know the context ceiling from its routed row. Painting the
       // meter here keeps the bar honest ("not measured") instead of clearing a useful limit.
-      renderContext(bar, {}, compact, fallbackWindow)
+      renderContext(bar, {}, compact, fallbackWindow, fallbackExact)
       renderQuota(ctx)
       return
     }
@@ -4159,7 +4475,7 @@
       // row of zeros that reads like the reporting is broken. Its context figure may still
       // be the only thing Pi has measured, so paint that before returning.
       el.textContent = 'No tokens reported yet'
-      renderContext(bar, usage, compact, fallbackWindow)
+      renderContext(bar, usage, compact, fallbackWindow, fallbackExact)
       renderQuota(ctx)
       return
     }
@@ -4177,7 +4493,7 @@
     el.textContent = parts.join(' · ')
     // The meter is drawn against the model's own window, not against the turn's spend: only
     // the window says how close compaction is. Both figures come from the frame.
-    renderContext(bar, usage, compact, fallbackWindow)
+    renderContext(bar, usage, compact, fallbackWindow, fallbackExact)
     // Quota is about the routed row, not this conversation. Paint it from the same table the
     // router uses, and refresh that table when its cache has aged out.
     renderQuota(ctx)
@@ -4226,7 +4542,7 @@
     if (el) el.textContent = text
   }
 
-  function renderContext(bar, usage, compact, fallbackWindow = 0) {
+  function renderContext(bar, usage, compact, fallbackWindow = 0, windowExact = true) {
     const note = $('hx-context-note')
     const compactsAt = $('hx-context-compacts')
     const fill = bar?.firstElementChild || null
@@ -4305,13 +4621,26 @@
       }
     }
     const pct = measured ? Math.max(0, Math.min(100, (used / window_) * 100)) : null
+    // A conversation already larger than the window it is drawn against has no true share:
+    // either the window is a floor the model has outgrown, or a streamed estimate overshot it.
+    // "100% · 233k of 131k · 0 free" is the reading that looked wrong, because none of those
+    // three numbers is a real measurement once the first is past the second.
+    const over = measured && used > window_
+    const shareKnown = windowExact && !over
     if (bar) {
       bar.classList.add('is-context')
       bar.classList.toggle('is-full', pct != null && pct >= 95)
+      bar.classList.toggle('is-over', over)
       bar.setAttribute('aria-valuenow', pct != null ? String(Math.round(pct)) : '')
       bar.setAttribute(
         'aria-valuetext',
-        pct != null ? `${compact(used)} of ${compact(window_)} tokens` : 'context not measured',
+        pct == null
+          ? 'context not measured'
+          : !windowExact
+            ? `${compact(used)} tokens in context, window at least ${compact(window_)}`
+            : over
+              ? `${compact(used)} tokens in context, past a window of ${compact(window_)}`
+              : `${compact(used)} of ${compact(window_)} tokens`,
       )
       // The trigger tick sits at the share of the window pi holds back for its reply.
       if (autoCompactionOff) bar.style.removeProperty('--hx-context-trigger')
@@ -4321,13 +4650,35 @@
     // Half a percent of a large window is still tokens in the context, so a measured sliver
     // says "<1%" rather than "0%" — the rounding is this page's, not Pi's.
     let share = pct == null ? 'not measured' : pct > 0 && pct < 0.5 ? '<1%' : `${Math.round(pct)}%`
-    if (estimated && pct != null && pct >= 0.5) share = `~${share}`
+    if (pct != null && !shareKnown) {
+      // Neither state gives a true percentage. A floor is exceeded by an unknown amount, so the
+      // share is only a lower bound; an overrun is past the whole window, so "100%" would claim
+      // exactly full. The tokens are measured in both, and the note names the window.
+      share = !windowExact
+        ? over
+          ? `>${compact(window_)}`
+          : pct >= 1
+            ? `\u2265${Math.round(pct)}%`
+            : // A sliver of a floor is still a sliver: "≥0%" would claim a bound on
+              // nothing, so the plain reading stands.
+              share
+        : 'over window'
+    } else if (estimated && pct != null && pct >= 0.5) {
+      share = `~${share}`
+    }
     setContextValue(share)
     if (note) {
       note.hidden = false
+      const approx = estimated ? '~' : ''
       if (!measured) {
         // Pi's own answer to "how full is it": it cannot tell until a model answers again.
         note.textContent = `context not measured · window ${compact(window_)}`
+      } else if (!windowExact) {
+        // The window is a floor, so the free space against it is not knowable; the tokens in the
+        // context are. This is the case the meter used to draw as a full bar with "0 free".
+        note.textContent = `${approx}${compact(used)} in context · window at least ${compact(window_)}`
+      } else if (over) {
+        note.textContent = `${approx}${compact(used)} of ${compact(window_)} · ${compactFloor(used - window_)} over`
       } else if (estimated) {
         note.textContent = `~${compact(used)} of ${compact(window_)} · estimating while it answers`
       } else {
@@ -4461,6 +4812,7 @@
     unavailable,
     usedPercent,
     percentOnly,
+    estimated,
     kind,
   }) {
     const normalizedMetric =
@@ -4507,6 +4859,7 @@
       used: usedValue,
       usedPercent: usedPercentValue,
       percentOnly: isPercentOnly,
+      estimated: estimated === true,
       resetAt: Number.isFinite(Number(resetAt)) && Number(resetAt) > 0 ? Number(resetAt) : null,
       detail: detail || '',
       stale: Boolean(stale),
@@ -4696,6 +5049,43 @@
       )
     }
 
+    // No published cap and no observed window: estimate a ceiling from the traffic this endpoint
+    // has carried, exactly as the Router table's Quota column does. The rail reads the same row,
+    // so it must not be the one surface that still says no limit was ever stated — the table drew
+    // an active bar for "requests this minute" and the rail beside it drew nothing.
+    //
+    // The estimator lives in dashboard.js and is handed over rather than copied: two versions of
+    // "the next round tier above the busiest traffic" would disagree the moment one was tuned.
+    // A provider that states there is no limit is not estimated against, for the same reason the
+    // table skips it: an inferred ceiling would turn ∞ back into a number the provider disclaimed.
+    const estimateCeiling =
+      typeof window.hxEstimateLimitCeiling === 'function' ? window.hxEstimateLimitCeiling : null
+    const observedUsage = row?.knownQuota?.unlimited === true ? {} : row?.recordedUsage || {}
+    if (estimateCeiling) {
+      for (const metric of ['requests', 'tokens']) {
+        for (const period of ['minute', 'hour', 'day']) {
+          const field = RAIL_QUOTA_RECORDED_FIELD[metric]?.[period]
+          if (!field) continue
+          if (windows.some((w) => w.metric === metric && w.period === period)) continue
+          const seen = Number(observedUsage[field])
+          if (!Number.isFinite(seen) || seen <= 0) continue
+          const ceiling = estimateCeiling(seen)
+          add(
+            railQuotaWindow({
+              period,
+              metric,
+              rawWindow: `estimated ${period}`,
+              used: seen,
+              total: ceiling,
+              remaining: Math.max(0, ceiling - seen),
+              detail: 'ceiling estimated from traffic Hammer has carried; no published limit',
+              estimated: true,
+            }),
+          )
+        }
+      }
+    }
+
     const sorted = windows.sort(
       (a, b) =>
         (RAIL_QUOTA_PERIOD_ORDER[a.period] ?? 9) -
@@ -4728,9 +5118,12 @@
 
   function railQuotaWindowHtml(window) {
     const noFreeTier = window.unavailable && !window.percentOnly && window.period === 'window'
-    const periodLabel = noFreeTier
+    const basePeriodLabel = noFreeTier
       ? 'FREE TIER'
       : railQuotaPeriodLabel(window.period, window.rawWindow)
+    // An estimated ceiling is labelled as one, in the table's own words: the bar is real, the
+    // number above it is a bound Hammer inferred from traffic, not something the provider said.
+    const periodLabel = window.estimated ? `${basePeriodLabel} · EST` : basePeriodLabel
     const unit = window.metric === 'requests' ? 'requests' : 'tokens'
     const remainingPercent =
       (window.unavailable && !window.percentOnly) || window.usedPercent == null
@@ -4802,7 +5195,9 @@
       : [totalText, remainingText, resetText].filter(Boolean).join(' · ')
     return `<div class="hx-quota-window${window.stale ? ' is-stale' : ''}${
       window.unavailable ? ' is-unavailable' : ''
-    }" title="${escapeHtml(titleParts.filter(Boolean).join(' · '))}">
+    }${window.estimated ? ' is-estimated' : ''}" title="${escapeHtml(
+      titleParts.filter(Boolean).join(' · '),
+    )}">
       <div class="hx-quota-head"><span class="hx-quota-period">${escapeHtml(
         periodLabel,
       )}</span><span class="hx-quota-pct">${escapeHtml(percentText)}</span></div>
@@ -4823,6 +5218,66 @@
     </div>`
   }
 
+  // One set of windows per credential, when the routed provider pools several accounts.
+  //
+  // The row's own numbers describe the pool: a per-key allowance drawn against the pool's
+  // traffic is wrong in both directions (over when another key carried the requests, under
+  // when this one is the only account serving). The API sends each account's own traffic and
+  // the windows its responses stated, so the rail answers per account exactly like the table.
+  function railQuotaAccounts(row) {
+    const accounts = Array.isArray(row?.credentials) ? row.credentials : []
+    if (accounts.length < 2) return null
+    return accounts.map((account, i) => {
+      const quota = account?.quota && typeof account.quota === 'object' ? account.quota : null
+      const remaining = quota?.remaining == null ? null : Number(quota.remaining)
+      const limit = quota?.limit == null ? null : Number(quota.limit)
+      const hasReport = Number.isFinite(remaining) || Number.isFinite(limit)
+      const reportedWindows = hasReport
+        ? [
+            {
+              kind: 'quota',
+              period: 'window',
+              metric: 'requests',
+              rawWindow: 'last response',
+              used:
+                Number.isFinite(remaining) && Number.isFinite(limit)
+                  ? Math.max(0, limit - remaining)
+                  : null,
+              limit: Number.isFinite(limit) ? limit : null,
+              remaining: Number.isFinite(remaining) ? remaining : null,
+              resetAt:
+                Number(quota.resetsInMs) > 0 ? Date.now() + Number(quota.resetsInMs) : null,
+              detail: quota.modelId ? `reported for ${quota.modelId}` : 'from the last response',
+              percentOnly: quota.percentOnly === true,
+              usedPercent:
+                quota.percentOnly === true && Number.isFinite(remaining)
+                  ? Math.max(0, 100 - remaining)
+                  : null,
+            },
+          ]
+        : []
+      return {
+        index: Number.isInteger(account?.index) ? account.index : i,
+        label: account?.label ? String(account.label) : `Account ${i + 1}`,
+        serving: account?.serving === true,
+        exhausted: account?.exhausted === true,
+        windows: railQuotaWindows({
+          ...row,
+          rateLimit: account?.rateLimit || null,
+          quota: account?.quota || null,
+          recordedUsage: account?.usage || {},
+          // An account-scoped limit is spent by all of that account's models.
+          providerRecordedUsage: account?.usageAcrossModels || account?.usage || {},
+          providerUsage: null,
+          quotaWindows: [
+            ...reportedWindows,
+            ...(Array.isArray(row?.quotaWindows) ? row.quotaWindows : []),
+          ],
+        }),
+      }
+    })
+  }
+
   function renderQuota(ctx = active()) {
     const list = $('hx-quota-windows')
     const rateList = $('hx-rate-windows')
@@ -4832,17 +5287,42 @@
     if (!list) return
     // Both meters answer with a bar or ∞. Nothing here is a dash or a link: the routed row
     // is either under a window this endpoint named, or it is not limited by one.
-    const paint = (windows) => {
+    const paint = (windows, accounts = null) => {
       const quota = windows.filter((window) => window.kind !== 'rate-limit')
       const throttles = windows.filter((window) => window.kind === 'rate-limit')
       const empty = (kind) =>
         `<div class="hx-quota-empty">∞ ${kind === 'rate-limit' ? 'no rate limit reported' : 'no quota limit reported'}</div>`
-      list.innerHTML = quota.length ? quota.map(railQuotaWindowHtml).join('') : empty('quota')
-      if (rateList) {
-        rateList.innerHTML = throttles.length
-          ? throttles.map(railQuotaWindowHtml).join('')
-          : empty('rate-limit')
+      // A pooled provider draws a column per credential. A single-credential provider has one
+      // account, which is the row bar itself, so it keeps the plain list.
+      const accountColumn = (kind) => {
+        if (!accounts || accounts.length < 2) return null
+        return `<div class="hx-quota-account-list">${accounts
+          .map((account) => {
+            const state = account.exhausted ? 'exhausted' : account.serving ? 'serving' : ''
+            const accountWindows = account.windows.filter((window) =>
+              kind === 'rate-limit' ? window.kind === 'rate-limit' : window.kind !== 'rate-limit',
+            )
+            return `<div class="hx-quota-account is-${state || 'idle'}" title="${escapeHtml(
+              account.label,
+            )}"><div class="hx-quota-account-head"><span class="hx-quota-account-tag">A${
+              account.index + 1
+            }</span>${
+              state ? `<span class="hx-quota-account-state">${state}</span>` : ''
+            }</div>${
+              accountWindows.length
+                ? accountWindows.map(railQuotaWindowHtml).join('')
+                : empty(kind)
+            }</div>`
+          })
+          .join('')}</div>`
       }
+      const body = (kind, windowsForKind) =>
+        accountColumn(kind) ||
+        (windowsForKind.length
+          ? windowsForKind.map(railQuotaWindowHtml).join('')
+          : empty(kind))
+      list.innerHTML = body('quota', quota)
+      if (rateList) rateList.innerHTML = body('rate-limit', throttles)
     }
     if (rateMeter) rateMeter.hidden = !routed
     if (!routed) {
@@ -4859,20 +5339,27 @@
       modelEl.textContent = label
       modelEl.title = [label, routed.providerName].filter(Boolean).join(' · ')
     }
-    const row = quotaRowByModel.get(`${routed.providerKey}::${routed.modelId}`)
+    const rowKey = `${routed.providerKey}::${routed.modelId}`
+    const row = quotaRowByModel.get(rowKey)
     if (!row) {
-      if (Date.now() < ttftFreshUntil) {
+      // The table does not mention this endpoint. A table read minutes ago is not evidence
+      // that the row publishes no limit — it is evidence that the row was not in that read —
+      // so the answer is fetched for this pick, once, and then allowed to stand.
+      const settled =
+        quotaMissLookup.key === rowKey && Date.now() - quotaMissLookup.at < 30_000
+      if (settled) {
         paint([])
       } else {
         list.innerHTML = '<div class="hx-quota-empty">Reading quota…</div>'
         if (rateList) rateList.innerHTML = '<div class="hx-quota-empty">Reading quota…</div>'
-        void loadKnownTtfts().then(() => {
+        void loadKnownTtfts({ force: true }).then(() => {
+          quotaMissLookup = { key: rowKey, at: Date.now() }
           if (ctx === active()) renderQuota(ctx)
         })
       }
       return
     }
-    paint(railQuotaWindows(row))
+    paint(railQuotaWindows(row), railQuotaAccounts(row))
   }
 
   async function refreshStatus(console = active()) {
@@ -4884,7 +5371,10 @@
       console.status = data
       if (data.sessionFile) rememberSessionFile(console, data.sessionFile)
       setPhase(data.phase, console)
-      setRunning(data.phase === 'busy' || Boolean(data.isStreaming), console)
+      setRunning(
+        data.phase === 'busy' || Boolean(data.isStreaming) || data.isCompacting === true,
+        console,
+      )
       renderRouting(data, console)
       if (Array.isArray(data.queuedSteering) || Array.isArray(data.queuedFollowUp)) {
         applyQueue(data.queuedSteering, data.queuedFollowUp, console)
@@ -4924,15 +5414,31 @@
   }
 
   function updateComposer() {
-    const send = $('hx-send')
     const stop = $('hx-stop')
+    const running = Boolean(state.running)
     const unavailable = Boolean(state.status && state.status.available === false)
+    const busy = Boolean(active()?.sending) || unavailable
+    // A message into a running turn is not sent, it is delivered one of two ways — so the plain
+    // send gives its place to the two buttons that say which. Nothing offers a third meaning, and
+    // nothing asks the reader to notice what a shared button would have done.
+    // Nothing to send is not a button with nothing to do. An empty box with no image staged
+    // shows no send control at all — a disabled one still asks the reader what is wrong with
+    // it — and the control appears the moment there is something to send. Stop is not part of
+    // this: it is about the turn, not the composer, and it stays while a turn runs.
+    const hasContent =
+      Boolean(($('hx-input')?.value || '').trim()) || state.attachments.length > 0
+    const send = $('hx-send')
     if (send) {
-      send.disabled = Boolean(active()?.sending) || unavailable
-      send.textContent = state.running ? (state.queueMode === 'followUp' ? 'Queue' : 'Steer') : 'Send'
+      send.disabled = busy
+      send.hidden = running || !hasContent
     }
-    if (stop) stop.hidden = !state.running
-    renderQueueMode()
+    for (const id of ['hx-send-steer', 'hx-send-queue']) {
+      const button = $(id)
+      if (!button) continue
+      button.disabled = busy
+      button.hidden = !running || !hasContent
+    }
+    if (stop) stop.hidden = !running
   }
 
   // ── The event stream ────────────────────────────────────────────────────────────────
@@ -5043,7 +5549,15 @@
     ctx.status = status
     if (status.sessionFile) rememberSessionFile(ctx, status.sessionFile)
     setPhase(status.phase, ctx)
-    setRunning(status.phase === 'busy' || Boolean(status.isStreaming), ctx)
+    // Compaction is work even though it is not a turn: pi stops the agent, spends a model call
+    // writing the summary, and says nothing for tens of seconds. Left idle, the composer offered
+    // to send into a conversation being rewritten underneath it, and the only sign anything was
+    // happening was a line in the rail. Busy gives it the shape a turn has — steer and queue
+    // instead of send, and Stop, which pi's abort routes to the compaction itself.
+    setRunning(
+      status.phase === 'busy' || Boolean(status.isStreaming) || status.isCompacting === true,
+      ctx,
+    )
     renderRouting(status, ctx)
     // The status carries pi's own queue accounting, so a page opened mid-run sees what is
     // already waiting without waiting for a fresh `queue_update`.
@@ -5224,6 +5738,8 @@
       chip.appendChild(remove)
       strip.appendChild(chip)
     }
+    // Staging or removing an image changes whether there is anything to send.
+    updateComposer()
   }
 
   /**
@@ -5250,15 +5766,14 @@
     })
   }
 
-  async function sendPrompt() {
+  async function sendPrompt(mode = 'steer') {
     const input = $('hx-input')
     const console = active()
     if (!input || !console || console.sending) return
     const text = input.value.replace(/\r\n/g, '\n').trim()
-    if (!text && state.attachments.length === 0) {
-      setHint('Type a message before sending.', 'error', console)
-      return
-    }
+    // An empty send does nothing at all. The button already looks unavailable without text, and
+    // a line of hint telling the reader to type a message only repeats that in another colour.
+    if (!text && state.attachments.length === 0) return
 
     // Slash commands are the few things a harness must do without a round trip through the
     // model: start over, stop, and compact. `/compact help` is not a compaction — it explains
@@ -5298,7 +5813,15 @@
 
     console.sending = true
     updateComposer()
-    setHint(console.running ? 'Steering the agent…' : 'Sending…', null, console)
+    setHint(
+      mode === 'followUp'
+        ? 'Queueing for the next turn…'
+        : console.running
+          ? 'Steering the agent…'
+          : 'Sending…',
+      null,
+      console,
+    )
     const control = new AbortController()
     const timer = setTimeout(() => control.abort(), PROMPT_TIMEOUT_MS)
     // The staged images go with the text; clearing them before the send means a failed send
@@ -5313,7 +5836,7 @@
         body: JSON.stringify({
           message: text,
           images: images.length ? images : undefined,
-          queueMode: state.queueMode,
+          queueMode: mode,
         }),
         signal: control.signal,
       })
@@ -5496,13 +6019,9 @@
       }
       renderCompactionPanel(console)
       if (console === active()) renderUsage(console)
-      setHint(
-        data?.reported == null
-          ? 'Auto-compaction is not reported by this Pi.'
-          : `Auto-compaction ${data.reported ? 'on' : 'off'}.`,
-        data?.reported == null ? null : 'success',
-        console,
-      )
+      // No hint line here: the panel's own switch reads the state back as "on" or "off", which
+      // is the same fact on the same screen. A pop-up only repeated it in another colour, and a
+      // pi that reports nothing simply leaves the switch hidden. Failures still speak.
     } catch (err) {
       setHint(err?.message || 'Could not change auto-compaction.', 'error', console)
     }
@@ -5563,27 +6082,6 @@
     }
   }
 
-  async function restartAgent() {
-    const btn = $('hx-restart')
-    if (btn) btn.disabled = true
-    setHint('Restarting the agent…')
-    try {
-      const console = active()
-      const res = await fetch(consoleApi(console, '/restart'), { method: 'POST' })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || `Could not restart the agent (${res.status}).`)
-      setRunning(false, console)
-      console.items.push({ kind: 'notice', tone: 'info', text: 'Agent restarted.' })
-      syncTranscript({}, console)
-      await refreshStatus(console)
-      setHint('')
-    } catch (err) {
-      setHint(err?.message || 'Could not restart the agent.', 'error')
-    } finally {
-      if (btn) btn.disabled = false
-    }
-  }
-
   // ── Sessions ────────────────────────────────────────────────────────────────────────
 
   function sessionWhen(modifiedMs) {
@@ -5630,6 +6128,8 @@
     }
     // A parallel conversation is one the next page should reopen, whatever brought its file in.
     if (ctx.instanceId) rememberOpenFile(file)
+    // A conversation that starts writing is the one on screen, unless something switched since.
+    if (ctx === active()) rememberViewed(ctx)
     // The main console starts unnamed and learns its file from the first status frame, after
     // the page has already painted. That status is when the draft saved under the fallback key
     // becomes readable under the session-file key the next restart will look for.
@@ -6146,7 +6646,12 @@
     }
     const running = new Set()
     for (const entry of instances) {
-      if (entry.sessionFile && (entry.phase === 'busy' || entry.isStreaming)) {
+      // A compacting console is working too, so its row spins: a conversation that is being
+      // summarised cannot be joined and sent to any more than one mid-turn can.
+      if (
+        entry.sessionFile &&
+        (entry.phase === 'busy' || entry.isStreaming || entry.isCompacting === true)
+      ) {
         running.add(entry.sessionFile)
       }
     }
@@ -6185,7 +6690,6 @@
     { label: 'Stop the agent', hint: '/stop', run: stopRun },
     { label: 'Previous prompt', hint: 'Alt+↑', run: () => jumpPrompt(-1) },
     { label: 'Next prompt', hint: 'Alt+↓', run: () => jumpPrompt(1) },
-    { label: 'Restart the agent', run: restartAgent },
     {
       label: 'Rename the current session…',
       run: () => {
@@ -6277,7 +6781,9 @@
 
     $('hx-composer')?.addEventListener('submit', (event) => {
       event.preventDefault()
-      sendPrompt()
+      // The button that submitted says how the message is delivered. Enter takes the default,
+      // which is the primary action: into the turn if one is running, otherwise a new one.
+      sendPrompt(event.submitter?.dataset?.queueMode === 'followUp' ? 'followUp' : 'steer')
     })
 
     const input = $('hx-input')
@@ -6285,6 +6791,9 @@
       autoGrow()
       // Every keystroke is one worth keeping: the draft survives a tab switch and a restart.
       saveDraft(active(), input.value)
+      // ...and it decides whether there is anything to send, so the send control comes and goes
+      // with the text rather than sitting there empty.
+      updateComposer()
     })
     input?.addEventListener('keydown', (event) => {
       // Enter sends, Shift+Enter is a newline: a harness is a chat with a keyboard shortcut,
@@ -6309,9 +6818,22 @@
     $('hx-toggle-sessions')?.addEventListener('click', () => toggleSidebar('sessions'))
     $('hx-toggle-details')?.addEventListener('click', () => toggleSidebar('details'))
 
-    $('hx-queue-mode')?.addEventListener('click', () =>
-      setQueueMode(state.queueMode === 'followUp' ? 'steer' : 'followUp'),
-    )
+    // The queue's own controls, delegated: the strip is redrawn from state on every update, so a
+    // listener per row would be thrown away with it.
+    $('hx-queue-list')?.addEventListener('click', (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-queue-act]') : null
+      if (!(button instanceof HTMLButtonElement) || button.disabled) return
+      const row = button.closest('li[data-queue-index]')
+      const index = Number(row?.getAttribute('data-queue-index'))
+      const ctx = active()
+      if (!ctx || !Number.isInteger(index)) return
+      const act = button.getAttribute('data-queue-act')
+      if (act === 'edit') return beginQueueEdit(ctx, index)
+      if (act === 'remove') return void changeQueue('remove', index)
+      if (act === 'up' || act === 'down') {
+        return void changeQueue('move', index, { direction: act === 'up' ? -1 : 1 })
+      }
+    })
     $('hx-thinking-slider')?.addEventListener('input', thinkingFromSlider)
     const slopeSlider = $('hx-slope-slider')
     slopeSlider?.addEventListener('input', slopeFromSlider)
@@ -6399,7 +6921,6 @@
       syncSidebarPressed()
     })
     $('hx-new')?.addEventListener('click', newSession)
-    $('hx-restart')?.addEventListener('click', restartAgent)
 
     // Compaction controls. The toggle is hidden until Pi reports whether auto-compaction is
     // on, so an agent that cannot answer does not present a switch that would do nothing.
@@ -6644,6 +7165,7 @@
     const main = createConsole({ id: 'main' })
     state.activeId = null
     activate(main)
+    watchConnectivity()
     renderSessions()
     // Status first: it is what names the conversation. An idle console is then rebuilt from its
     // session file before the stream opens, so the first paint after a restart shows the whole

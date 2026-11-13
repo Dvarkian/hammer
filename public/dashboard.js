@@ -166,7 +166,6 @@
     const LOADING_CONTAINERS = ['kpi-grid', 'models-view', 'models-table-container', 'providers-panel'];
     const LOADING_VALUES = [
       'readout-models', 'readout-combos', 'readout-providers', 'readout-rows',
-      'kpi-best',
     ];
     // Whether the shell is still the only thing on screen. Refreshes after the first snapshot
     // are silent: the skeleton is a first-load affordance, and a page that flashes placeholder
@@ -184,6 +183,25 @@
       const retry = document.getElementById('load-retry-btn');
       if (retry) retry.style.display = kind === 'failed' ? 'inline-block' : 'none';
     }
+
+    // An outage is not a page that will not load. The router is on this machine, so the shell,
+    // the cached catalog and the plots all arrive as usual — what stops is every provider
+    // answering HTTP, and the table would otherwise just go quiet. Chromium knows the link state,
+    // so the header says which silence this is, and the snapshot is asked for again the moment
+    // the link returns: providers were benched for an outage that has just ended, and the page
+    // should describe the connection that is there now rather than the one that wasn't.
+    function setOfflineNotice(visible) {
+      const line = document.getElementById('offline-notice');
+      if (line) line.hidden = !visible;
+    }
+
+    window.addEventListener('offline', () => setOfflineNotice(true));
+    window.addEventListener('online', () => {
+      setOfflineNotice(false);
+      if (!loadingStateActive) loadModelSnapshot().catch(() => {});
+    });
+    // A page opened mid-outage says so before the first provider call can fail.
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) setOfflineNotice(true);
 
     function setContainersBusy(busy) {
       for (const id of LOADING_CONTAINERS) {
@@ -1328,10 +1346,6 @@
       if (readoutProviders) readoutProviders.textContent = mainProviderKeys.size;
       if (readoutRows) readoutRows.textContent = mainRows;
 
-      const bestModel = bestModelId
-        ? models.find(m => m.modelId === bestModelId && (!bestProviderKey || m.providerKey === bestProviderKey))
-        : null;
-      setKpiBest(bestModel ? kpiBestText(bestModel) : 'None Online');
     }
 
     // Both plots, from one snapshot. Deferred to idle by the boot sequence and immediate for every
@@ -1394,30 +1408,6 @@
       return (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '') || m.modelId || '?';
     };
     const scatterDotSize = (rows) => rows.length > 220 ? 3 : 4.5;
-
-    // The KPI 'Current' readout names the model and the provider offering it,
-    // so identical model names from different providers stay distinguishable.
-    // Hoisted as a function declaration because updateKPIs (textually earlier)
-    // calls it from the poll callback.
-    function kpiBestText(model) {
-      const name = scatterShortName(model);
-      const provider = providerInstanceName(model);
-      return provider ? `${name} · ${provider}` : name;
-    }
-
-    // The 'Current' readout is a statement about routing, and its tooltip is the explanation of
-    // that statement. They are written together here because the explanation is only ever
-    // produced by the router-fallback branch of the scatter draw: a writer that set the name
-    // alone left the page hovering a model with the story of a *different* one — text reading
-    // the slope pick while the tooltip went on explaining a fallback the server had already
-    // withdrawn. Naming one model and explaining another is worse than either, so every writer
-    // goes through this.
-    function setKpiBest(text, title = '') {
-      const el = document.getElementById('kpi-best');
-      if (!el) return;
-      el.textContent = text;
-      el.title = title;
-    }
 
     // The answered length every dot is scored at, in output tokens. Mirrors
     // SPEED_REFERENCE_TOKENS in lib/utils.js, and it is a copy only because the browser
@@ -2152,6 +2142,22 @@
         .sort();
       const numProvs = plotProviders.length;
 
+      // Which models are in use right now. Every conversation routes on its own slope, so several
+      // can be answering at once, and the table already lights each of them (isCurrentBestRow).
+      // The exported `best` belongs to the set as well: it is what the router answers with when a
+      // caller names no conversation, and on a router with no console attached it is the only
+      // live pick there is. Pairs, not ids — the same weights served by two origins are two
+      // different serving paths, and the ring marks the origin that actually serves them.
+      const activePicks = activePickRows
+        .filter(pick => pick && pick.modelId)
+        .map(pick => ({ modelId: String(pick.modelId), providerKey: pick.providerKey || '' }));
+      if (bestModel) {
+        activePicks.push({ modelId: bestModel.modelId, providerKey: bestModel.providerKey || '' });
+      }
+      const isActivePick = (modelId, providerKey = '') => activePicks.some(pick =>
+        pick.modelId === modelId
+        && (!pick.providerKey || !providerKey || pick.providerKey === providerKey));
+
       // Model-family → favicon domain (model's own brand, not the provider hosting it).
       // Matched by prefix (raw.includes(prefix)); first matching key wins, so overlapping
       // prefixes are ordered to prefer the more specific brand. Covers every model family
@@ -2404,11 +2410,14 @@
       // come and go between the main and graveyard tables in real time.
       const membershipSig = plotRows.map(m => getModelRowKey(m)).sort().join('|');
       const providerSig = plotProviders.join('|');
-      // Which link is blue is a function of the *active* model as much as of the membership, so
-      // the active pair belongs in the rebuild key: the classes are refreshed every render, but
-      // a pick that moves to a pair the plot has not drawn yet needs the plot to redraw — a
-      // signature that only watched membership would leave the serving path unmarked.
-      const bestSig = bestModel ? getModelRowKey(bestModel) : '';
+      // Which links are blue is a function of the *active* models as much as of the membership,
+      // so the active pairs belong in the rebuild key: the classes are refreshed every render,
+      // but a pick that moves to a pair the plot has not drawn yet needs the plot to redraw — a
+      // signature that only watched membership would leave that serving path unmarked.
+      const bestSig = activePicks
+        .map(pick => `${pick.modelId}@${pick.providerKey}`)
+        .sort()
+        .join('|');
       // `dec` is in the key because whether the node marks exist is a property of what was drawn
       // (see faviconHrefs): a plot built before the idle pass is a different picture from the same
       // plot built after it, even though every model in it is identical.
@@ -2759,9 +2768,20 @@
         const cls = modelGroupStatus(um._providers.map(p => p.model)) === 'up' ? ' up' : ' down';
         return `${cls}${isBest ? ' best' : ''}`;
       }
+      // "Best" is really "in use": every model a conversation is routed to right now, which is
+      // more than one whenever more than one conversation is working. The name is kept because
+      // every class it drives (`.best`, `.selected`, the ring and the flowing link) is the same
+      // accent, and one lit node per live model is exactly what that accent should draw.
       function isModelBest(um) {
-        const bestKey = bestModel ? providerInstanceKey(bestModel) : '';
-        return bestModel && um._providers.some(p => p.model.modelId === bestModel.modelId && p.key === bestKey);
+        return um._providers.some(p => isActivePick(p.model.modelId, p.model.providerKey));
+      }
+      // The provider nodes serving a live pick, by instance key: a federated origin gets its own
+      // ring, so the ring that lights is the one that actually answers for the model.
+      const activeProviderKeys = new Set();
+      for (const um of uniqueModels) {
+        for (const p of um._providers) {
+          if (isActivePick(p.model.modelId, p.model.providerKey)) activeProviderKeys.add(p.key);
+        }
       }
 
       modelEls.forEach(el => {
@@ -2825,14 +2845,13 @@
           // Every drawn link comes from a live row (see the group filter above), so there is
           // no benched or down link left for 'warn' or the bare muted stroke to describe.
           //
-          // Exactly one link wears the flowing blue: the serving path — the active model to the
-          // provider instance that serves that exact row, the pair the selected ring marks too.
-          // Every other drawn link stays the plain maroon mesh: those providers can serve the
-          // model, but the router is not using them, and matching on the model alone is what
-          // painted several paths as the serving one at once (isModelBest is true for the whole
-          // best group, not for one of its links).
-          const servingProviderKey = bestModel ? providerInstanceKey(bestModel) : '';
-          const isServingPath = Boolean(bestModel) && isModelBest(um) && line.dataset.pkey === servingProviderKey;
+          // The links that wear the flowing blue are the serving paths: one per model in use, to
+          // the provider instance that serves that exact row (the pair the selected ring marks
+          // too). Every other drawn link stays the plain maroon mesh — those providers can serve
+          // the model, but the router is not using them. Matching the pair rather than the model
+          // is what keeps one model's mesh from lighting up with it.
+          const isServingPath = um._providers.some(p => p.key === line.dataset.pkey
+            && isActivePick(p.model.modelId, p.model.providerKey));
           const cls = `topo-link active${isServingPath ? ' selected' : ''}`;
           if (line.getAttribute('class') !== cls) line.setAttribute('class', cls);
         }
@@ -2846,9 +2865,9 @@
         // drawn at all (see the group filter above), so this is 'green' by construction — the
         // count is still read rather than hardcoded, so a node that outlived its last live
         // model reads red instead of lying about it.
-        // The provider serving the selected (best) model also gets the selected ring (the
-        // accent, matching the model it serves).
-        const servesBest = Boolean(bestModel) && providerInstanceKey(bestModel) === pk;
+        // The providers serving a live model also get the selected ring (the accent, matching
+        // the model they serve) — one per model in use, not only the exported best.
+        const servesBest = activeProviderKeys.has(pk);
         ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}${servesBest ? ' selected' : ''}`);
         const title = ring.querySelector('title');
         if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
@@ -4388,6 +4407,115 @@
       return `${provider}<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`;
     }
 
+    // ── Account bars ─────────────────────────────────────────────────────────
+    //
+    // A provider with several credentials spends a separate allowance on each of them. One bar
+    // for the row is the pool's total drawn against one key's limit, so with two keys the bar
+    // reads as spent while neither account is: 30 recorded requests against a published 20 look
+    // like 150% of a key that has carried 15. Every surface that draws a limit bar therefore
+    // asks for an account column per credential first, and a single-credential provider keeps
+    // the row bar it always had (the API sends `credentials: null` in that case).
+    //
+    // What each column shows is that account's own evidence: the windows its responses reported
+    // (`quota`, kept per credential by the pool), and the traffic it itself carried
+    // (`usage`), drawn against the same published allowance the row carries — the allowance a
+    // per-key plan grants every key. Nothing is divided by the pool size: sharing one key's
+    // limit out across accounts would be arithmetic about a plan nobody published.
+    function rowAccounts(m) {
+      const accounts = Array.isArray(m?.credentials) ? m.credentials : [];
+      if (accounts.length < 2) return null;
+      return accounts.map((account, i) => ({
+        index: Number.isInteger(account?.index) ? account.index : i,
+        label: account?.label ? String(account.label) : `Account ${i + 1}`,
+        serving: account?.serving === true,
+        exhausted: account?.exhausted === true,
+        resetsInMs: Number(account?.resetsInMs) > 0 ? Number(account.resetsInMs) : null,
+        usage: account?.usage || {},
+        // What this account carried across the provider: an account-scoped published limit is
+        // spent by every model on that key, so its bar must not fill from one row's traffic.
+        usageAcrossModels: account?.usageAcrossModels || account?.usage || {},
+        rateLimit: account?.rateLimit || null,
+        quota: account?.quota || null,
+      }));
+    }
+
+    // The window behind one credential's reported quota. `quotaWindows` is the shape every
+    // window renderer already reads, so the account bar goes through the same code path as a
+    // row's published and refused windows.
+    function accountWindows(account, kind) {
+      const quota = account?.quota;
+      if (!quota || typeof quota !== 'object') return [];
+      const remaining = quota.remaining == null ? null : Number(quota.remaining);
+      const limit = quota.limit == null ? null : Number(quota.limit);
+      if (!Number.isFinite(remaining) && !Number.isFinite(limit)) return [];
+      const percentOnly = quota.percentOnly === true;
+      const resetAt = Number(quota.resetsInMs) > 0 ? Date.now() + Number(quota.resetsInMs) : null;
+      return [{
+        kind,
+        period: 'window',
+        metric: 'requests',
+        rawWindow: 'last response',
+        used:
+          Number.isFinite(remaining) && Number.isFinite(limit)
+            ? Math.max(0, limit - remaining)
+            : null,
+        limit: Number.isFinite(limit) ? limit : null,
+        remaining: Number.isFinite(remaining) ? remaining : null,
+        resetAt,
+        source: 'headers',
+        scope: 'account',
+        detail: quota.modelId ? `reported for ${quota.modelId}` : 'from the last response',
+        percentOnly,
+        usedPercent:
+          percentOnly && Number.isFinite(remaining) ? Math.max(0, 100 - remaining) : null,
+      }];
+    }
+
+    function accountBarHtml(account, windows, kind) {
+      const state = account.exhausted ? 'exhausted' : account.serving ? 'serving' : 'idle';
+      const resetIn =
+        account.exhausted && account.resetsInMs
+          ? ` · resets in ${formatQuotaReset(account.resetsInMs)}`
+          : '';
+      const stateLabel = account.exhausted ? 'exhausted' : account.serving ? 'serving' : '';
+      const title = `${account.label}${stateLabel ? ` · ${stateLabel}` : ''}${resetIn}`;
+      const body = windows.length > 0
+        ? `<div class="quota-row-windows">${windows.map(quotaRowWindowHtml).join('')}</div>`
+        : quotaUnknownHtml(kind);
+      return `<div class="quota-account-bar is-${state}" title="${escapeAttr(title)}">
+        <div class="quota-account-head"><span class="quota-account-tag">A${account.index + 1}</span>${stateLabel ? `<span class="quota-account-state">${stateLabel}</span>` : ''}</div>
+        ${body}
+      </div>`;
+    }
+
+    // One column per credential, or null when this provider has a single one. The row's own
+    // observed windows (published allowances, refusals, Google buckets) are endpoint-scoped
+    // rather than key-scoped, so every account column reads them.
+    function accountBarsHtml(m, kind) {
+      const accounts = rowAccounts(m);
+      if (!accounts) return null;
+      const rowWindows = Array.isArray(m?.quotaWindows) ? m.quotaWindows : [];
+      const observed = rowWindows.filter((window) =>
+        kind === 'rate-limit' ? window?.kind === 'rate-limit' : window?.kind !== 'rate-limit',
+      );
+      const columns = accounts.map((account) => {
+        const windows = quotaRowViews({
+          ...m,
+          rateLimit: account.rateLimit,
+          quota: account.quota,
+          recordedUsage: account.usage,
+          providerRecordedUsage: account.usageAcrossModels,
+          providerUsage: null,
+          providerUsages: [],
+          quotaWindows: [...accountWindows(account, kind), ...observed],
+        }).filter((window) =>
+          kind === 'rate-limit' ? window.kind === 'rate-limit' : window.kind !== 'rate-limit',
+        );
+        return accountBarHtml(account, windows, kind);
+      });
+      return `<div class="quota-row-accounts" data-quota-accounts="${columns.length}">${columns.join('')}</div>`;
+    }
+
     // A provider whose quota cannot be measured from here still has something true to say: a
     // live view to open, or the plain fact that no usage API exists. A bare dash says neither,
     // and it is exactly what a row with no observed window used to show.
@@ -4442,6 +4570,9 @@
     }
 
     function quotaRowCellInnerHTML(m, opts = {}) {
+      // A pooled provider gets one column per credential before anything else is drawn.
+      const accountBars = accountBarsHtml(m, 'quota');
+      if (accountBars) return accountBars;
       // The Quota column carries capacity only. A throttle window belongs to the column
       // beside it, even when the provider published it as a nominal allowance.
       const windows = quotaRowViews(m).filter((window) => window.kind !== 'rate-limit');
@@ -4511,6 +4642,8 @@
       const bench = rl?.wasRateLimited === true
         ? `<div class="rl-cell-line rl-cell-bench">Bench active${resetIn ? ` · resets in ${resetIn}` : ''}</div>`
         : '';
+      const accountBars = accountBarsHtml(m, 'rate-limit');
+      if (accountBars) return `<div class="rl-cell">${bench}${accountBars}</div>`;
       if (windows.length === 0) {
         const empty = m?.knownQuota?.unlimited === true
           ? quotaUnlimitedHtml('rate-limit')
@@ -4560,7 +4693,34 @@
     // asks of one row, so it answers with the same windows: the representative row's when
     // the provider has one, the catalog's published limits when it does not, and ∞ when
     // neither exists. A provider cell never renders a note or a link instead of a bar.
+    // The provider table's own account view, for a provider whose representative model row is
+    // not in the snapshot (disabled, or filtered out): the pool payload carries the same facts
+    // the row would have, so the table still answers per account instead of falling back to
+    // the provider total.
+    function poolAccountRow(provider) {
+      const pool = provider?.credentialPool;
+      if (!pool || !Array.isArray(pool.accounts) || pool.accounts.length < 2) return null;
+      return {
+        knownQuota: provider.knownQuota,
+        recordedUsage: provider.recordedUsage,
+        providerRecordedUsage: provider.recordedUsage,
+        credentials: pool.accounts.map((account) => ({
+          index: account.index,
+          label: account.label,
+          serving: account.index === pool.servingIndex,
+          exhausted: account.exhausted,
+          resetsInMs: account.resetsInMs,
+          usage: account.usage || {},
+          usageAcrossModels: account.usage || {},
+          rateLimit: account.rateLimit,
+          quota: account.quota,
+        })),
+      };
+    }
+
     function providerQuotaCellHtml(model, provider) {
+      const accountBars = accountBarsHtml(model || poolAccountRow(provider), 'quota');
+      if (accountBars) return accountBars;
       const source = model || {
         knownQuota: provider?.knownQuota,
         recordedUsage: provider?.recordedUsage,
@@ -4590,7 +4750,9 @@
       return `<div class="quota-row-windows">${windows.map((window) => quotaRowWindowHtml(window)).join('')}</div>`;
     }
 
-    function providerRateLimitCellHtml(model) {
+    function providerRateLimitCellHtml(model, provider) {
+      const accountBars = accountBarsHtml(model || poolAccountRow(provider), 'rate-limit');
+      if (accountBars) return `<div class="rl-cell">${accountBars}</div>`;
       const windows = model
         ? quotaRowViews(model).filter((window) => window.kind === 'rate-limit')
         : [];
@@ -8148,7 +8310,7 @@
           // the provider's rows carries the most limit state.
           const providerQuotaHtml = providerQuotaCellHtml(rlModel, p);
           const providerUsageCell = `<td class="provider-usage-cell" data-provider-usage="${escapeAttr(p.key)}"></td>`;
-          const rateLimitHtml = providerRateLimitCellHtml(rlModel);
+          const rateLimitHtml = providerRateLimitCellHtml(rlModel, p);
 
           let providerErrorHtml = '';
           if (providerError && providerError.message) {
@@ -11356,5 +11518,9 @@
     // publishSessionUsage): the rail's plot is drawn by this file, but the page that knows
     // which conversation is open is the agent's. Exposing the publisher, and the repaint that
     // goes with it, is the whole contract — everything else stays private.
+    // The console's right rail asks the same quota question about the routed model, and its
+    // window builder lives in its own script. The estimated ceiling is one rule, not two, so it
+    // is handed over rather than copied (see railQuotaWindows in harness.js).
+    window.hxEstimateLimitCeiling = estimateLimitCeiling;
     window.publishSessionUsage = publishSessionUsage;
     window.requestSessionPlotRedraw = requestSessionPlotRedraw;

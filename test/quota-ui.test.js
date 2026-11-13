@@ -569,3 +569,40 @@ test('plot colours come from the model mark, not the provider', () => {
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 65% 55%)`'))
   assert.ok(dashboard.includes('fill: accent || `hsl(${hue} 70% 55%)`'))
 })
+
+test('the model table and the rail draw one limit bar per account', () => {
+  // The row carries the accounts, so every bar surface reads the same facts rather than each
+  // inventing a per-account view of its own.
+  assert.match(modelsRoute, /credentials: \(\(\) => \{/)
+  assert.match(modelsRoute, /if \(!pool \|\| pool\.count < 2\) return null/)
+  assert.match(modelsRoute, /usage: ctx\.credentialRecordedUsage\b/)
+  assert.match(dashboard, /function accountBarsHtml\(m, kind\)/)
+  assert.match(dashboard, /data-quota-accounts=/)
+  assert.match(dashboard, /function accountWindows\(account, kind\)/)
+  // Quota and Rate limit both fan out, on the model rows and on the provider tables.
+  assert.match(dashboard, /const accountBars = accountBarsHtml\(m, 'quota'\)/)
+  assert.match(dashboard, /const accountBars = accountBarsHtml\(m, 'rate-limit'\)/)
+  assert.match(
+    dashboard,
+    /const accountBars = accountBarsHtml\(model \|\| poolAccountRow\(provider\), 'quota'\)/,
+  )
+  assert.match(
+    dashboard,
+    /const accountBars = accountBarsHtml\(model \|\| poolAccountRow\(provider\), 'rate-limit'\)/,
+  )
+  assert.match(dashboardCss, /\.quota-row-accounts \{[\s\S]*?display: flex/)
+  assert.match(harness, /function railQuotaAccounts\(row\)/)
+  assert.match(harness, /hx-quota-account-list/)
+  assert.match(harness, /paint\(railQuotaWindows\(row\), railQuotaAccounts\(row\)\)/)
+  const harnessCss = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  assert.match(harnessCss, /\.hx-quota-account-list \{[\s\S]*?display: flex/)
+})
+
+test('a served request is attributed to the credential that answered it', () => {
+  // The sample is taken where the answer is relayed, so the account that actually served it
+  // is the one whose bar moves — not whichever account the pool would pick next.
+  assert.match(proxyRoute, /let selectedCredential = null/)
+  assert.equal((proxyRoute.match(/credential: selectedCredential/g) || []).length, 3)
+  assert.match(server, /credentialUsageStats\.set\(/)
+  assert.match(server, /CREDENTIAL_USAGE_PATH/)
+})

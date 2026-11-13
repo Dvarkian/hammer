@@ -291,7 +291,7 @@ test('the composer follows the answered model, not only a status frame', () => {
   assert.match(harness, /viaEl\.hidden = Boolean\(answered \|\| routed\)/)
   assert.match(
     harness,
-    /if \(ctx\.routedModelKey && key !== ctx\.routedModelKey\) ctx\.answeredModel = null/,
+    /if \(ctx\.routedModelKey && key !== ctx\.routedModelKey\) \{\s*ctx\.answeredModel = null/,
   )
 })
 

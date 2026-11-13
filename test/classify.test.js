@@ -974,6 +974,17 @@ test('a window ceiling is read from above, never from a lower bound', () => {
   // catalog window. deriveContextState shows that as the row's context, which is right for the
   // table and wrong for a clamp: using it capped a 4096-token model's answers at 256.
   assert.equal(deriveContextState(null, { contextMin: 6 }).tokens, 6)
+  // ...and it says the number is a floor, which is what keeps Pi's auto-compaction off for such a
+  // pick: a threshold derived from "at least 6" has no idea where the real ceiling is.
+  assert.equal(deriveContextState(null, { contextMin: 6 }).lowerBoundOnly, true)
+  assert.equal(deriveContextState(null, { contextMax: 262144 }).lowerBoundOnly, false)
+  assert.equal(
+    deriveContextState(null, { contextMin: 6, contextMax: 262144 }).lowerBoundOnly,
+    false,
+  )
+  // A declared window is known even when a stale floor sits beside it.
+  assert.equal(deriveContextState('4k', { contextMin: 6 }).lowerBoundOnly, false)
+  assert.equal(deriveContextState(null, {}).lowerBoundOnly, false)
   assert.equal(resolveContextUpperBound(null, { contextMin: 6 }), null)
   // A stated window is one, from either source, and the tighter of the two wins.
   assert.equal(resolveContextUpperBound('4k', { contextMin: 6 }), 4000)

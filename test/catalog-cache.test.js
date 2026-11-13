@@ -164,6 +164,32 @@ test('a refresh someone asked for is never answered from the cache', async () =>
   assert.equal(calls, 2)
 })
 
+test('a metadata POST is cached per body, not per URL', async () => {
+  // Ollama's /api/show describes one model per request and is otherwise a static catalog, so
+  // the body that names the model has to be part of the identity: two models must not share
+  // an answer, and one model must not be asked twice.
+  resetCatalogCache()
+  const asked = []
+  const fetchImpl = async (url, options) => {
+    asked.push(options.body)
+    return okResponse({ model_info: { 'llama.context_length': 8192 } })
+  }
+  const showUrl = 'https://ollama.test/api/show'
+  const show = (model) => ({
+    fetchImpl,
+    method: 'POST',
+    body: JSON.stringify({ model }),
+    cache: 'prefer',
+    cacheMaxAgeMs: 60_000,
+  })
+
+  await fetchJsonWithRetry(showUrl, show('one'))
+  await fetchJsonWithRetry(showUrl, show('one'))
+  await fetchJsonWithRetry(showUrl, show('two'))
+
+  assert.deepEqual(asked, [JSON.stringify({ model: 'one' }), JSON.stringify({ model: 'two' })])
+})
+
 test('a catalog survives a restart, and a corrupt file is just an empty cache', async () => {
   resetCatalogCache()
   const fetchImpl = async () => okResponse({ data: [{ id: 'kept-model' }] }, { etag: '"v1"' })
@@ -187,6 +213,24 @@ test('a catalog survives a restart, and a corrupt file is just an empty cache', 
   writeFileSync(process.env.HAMMER_MODEL_CACHE_PATH, '{ not json at all')
   resetCatalogCache({ keepFile: true })
   assert.equal(readCatalogCacheEntry(catalogCacheKey(CATALOG_URL)), null)
+})
+
+test('the cache evicts the least recently fetched catalogs when it outgrows its budget', () => {
+  // A cache that only ever grows is a file in the user's home directory they cannot explain.
+  resetCatalogCache()
+  for (let i = 0; i < 100; i += 1) {
+    writeCatalogCacheEntry(`GET https://catalog.test/m${i} 0000000000000000`, {
+      payload: { data: [{ id: `m${i}` }] },
+      fetchedAt: 1_000 + i,
+    })
+  }
+  saveCatalogCache()
+
+  const written = JSON.parse(readFileSync(process.env.HAMMER_MODEL_CACHE_PATH, 'utf8'))
+  const keys = Object.keys(written.entries)
+  assert.equal(keys.length, 96, 'the entry budget is enforced')
+  assert.equal(keys.includes('GET https://catalog.test/m0 0000000000000000'), false)
+  assert.equal(keys.includes('GET https://catalog.test/m99 0000000000000000'), true)
 })
 
 test('conditional headers are only sent when the provider published a validator', () => {

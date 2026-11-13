@@ -11,9 +11,12 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { buildProviderRequestBody } from '../lib/server.js'
 import {
   THINKING_LEVELS,
   applyThinkingLevel,
+  thinkingChoicesFor,
   canonicalModelName,
   modelTakesThinking,
   normalizeThinkingLevel,
@@ -183,4 +186,68 @@ test('a wire hammer builds itself is never handed an OpenAI parameter', () => {
   for (const providerKey of ['nvidia', 'groq', 'googleai', 'cerebras', 'some-import']) {
     assert.equal(thinkingStyleFor(providerKey), 'effort', providerKey)
   }
+})
+
+test('a console is offered the steps its model actually takes', () => {
+  // A reasoning model on a wire with an effort field: the four steps the control sets.
+  assert.deepEqual(thinkingChoicesFor('nvidia', 'openai/gpt-5'), {
+    levels: ['off', 'low', 'medium', 'high'],
+    style: 'effort',
+    reason: null,
+  })
+  assert.deepEqual(thinkingChoicesFor('openrouter', 'qwen/qwen3-coder:free').levels, [
+    'off',
+    'low',
+    'medium',
+    'high',
+  ])
+  // A plain chat model has no step but off, and says why: a slider offering three more would
+  // move without changing the request.
+  const plain = thinkingChoicesFor('groq', 'llama-3.3-70b-versatile')
+  assert.deepEqual(plain.levels, ['off'])
+  assert.match(String(plain.reason), /reasoning mode/)
+  // So does a wire with no thinking control, even on a model that reasons.
+  for (const provider of ['kiro', 'devin', 'gptfree', 'puter']) {
+    const wire = thinkingChoicesFor(provider, 'openai/gpt-5')
+    assert.deepEqual(wire.levels, ['off'], provider)
+    assert.match(String(wire.reason), /no thinking control/, provider)
+  }
+  // Codex has no chat field and still takes a level, in the Responses API's own field.
+  const codex = thinkingChoicesFor('openai-codex', 'gpt-5-codex')
+  assert.deepEqual(codex.levels, ['off', 'low', 'medium', 'high'])
+  assert.equal(codex.style, 'none')
+})
+
+test('a level never rides into a wire that builds its own payload', () => {
+  const body = { messages: [], model: 'openai/gpt-5', reasoning_effort: 'high' }
+  const puter = buildProviderRequestBody('puter', body, 'openai/gpt-5')
+  assert.equal('reasoning_effort' in puter.args, false)
+  // Codex translates the level instead of forwarding the chat field.
+  const codex = buildProviderRequestBody('openai-codex', body, 'gpt-5-codex')
+  assert.deepEqual(codex.reasoning, { effort: 'high', summary: 'auto' })
+  // A model with no reasoning mode is not given one on a wire that could carry it.
+  const plain = buildProviderRequestBody(
+    'openai-codex',
+    { messages: [], reasoning_effort: 'high' },
+    'gpt-4o',
+  )
+  assert.equal('reasoning' in plain, false)
+})
+
+test('the composer control follows the steps its route reports', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.match(harness, /function paintThinking\(choices, level\)/)
+  assert.match(harness, /slider\.disabled = inert/)
+  assert.match(harness, /setThinkingLevel\(thinkingLevels\[Number\(slider\.value\)\] \|\| 'off'\)/)
+  assert.match(harness, /paintThinking\(data\.thinking, data\.thinkingLevel \|\| 'off'\)/)
+  const pi = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
+  // Every frame that carries a route carries its steps: one helper builds them for the status
+  // broadcast and both opening hellos, and the status the control is drawn from answers with
+  // the same call.
+  assert.ok((pi.match(/thinkingChoicesFor\(/g) || []).length >= 1)
+  assert.match(pi, /thinking: route\.thinking,/)
+  assert.match(
+    pi,
+    /thinking:\s*\n?\s*plan\.routed && pick\s*\n?\s*\? thinkingChoicesFor\(pick\.providerKey, pick\.realModelId \|\| pick\.modelId\)/,
+  )
 })

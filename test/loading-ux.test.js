@@ -5,6 +5,7 @@ import { serverSource } from './support/server-source.js'
 
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+const harnessJs = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
 const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
 const server = serverSource
 
@@ -27,8 +28,11 @@ test('the shell states that it is loading instead of printing zeroes', () => {
     assert.match(html, new RegExp(`class="readout-value is-loading" id="${id}"`))
     assert.doesNotMatch(html, new RegExp(`id="${id}">\\d`))
   }
-  assert.match(html, /class="kpi-value is-loading" id="kpi-best"/)
-  assert.doesNotMatch(html, /id="kpi-best"[^>]*>Calculating/)
+  // The network plot's card carried a "Current" readout of the routed model. The plot marks
+  // the models in use itself (see the topology test below), so the card no longer names one of
+  // them in text above the picture, and nothing has to be seeded for it.
+  assert.doesNotMatch(html, /id="kpi-best"/)
+  assert.doesNotMatch(dashboard, /kpi-best|setKpiBest/)
   // The scatter moved into the composer popup, so the shell no longer seeds it.
   assert.doesNotMatch(html, /id="speed-intell-svg"/)
 
@@ -36,6 +40,23 @@ test('the shell states that it is loading instead of printing zeroes', () => {
   assert.match(html, /<div class="kpi-grid" id="kpi-grid" aria-busy="true">/)
   assert.match(html, /<div id="models-view" aria-busy="true">/)
   assert.match(html, /<div id="providers-panel"[^>]*aria-busy="true">/)
+
+  // An outage has its own line rather than borrowing the loading or failed one: the router is
+  // fine and the page is fine, so it must neither pulse like a wait nor offer a retry that
+  // cannot help.
+  assert.match(html, /<p id="offline-notice" class="load-status is-offline"[^>]*hidden>/)
+  assert.match(dashboard, /function setOfflineNotice\(visible\)/)
+  assert.match(dashboard, /window\.addEventListener\('offline', \(\) => setOfflineNotice\(true\)\)/)
+  assert.match(
+    dashboard,
+    /window\.addEventListener\('online', \(\) => \{[\s\S]{0,160}loadModelSnapshot\(\)/,
+  )
+  // The console says the same thing where a failed send is read, and only clears the line it
+  // wrote itself.
+  assert.match(harnessJs, /const OFFLINE_HINT = 'No internet connection/)
+  assert.match(harnessJs, /function watchConnectivity\(\) \{/)
+  assert.match(harnessJs, /if \(ctx && ctx\.hint === OFFLINE_HINT\) setHint\('', null, ctx\)/)
+  assert.match(harnessJs, /activate\(main\)\n\s*watchConnectivity\(\)/)
 
   assert.match(dashboard, /function beginLoadingState\(\)/)
   assert.match(dashboard, /function endLoadingState\(\)/)
@@ -347,12 +368,21 @@ test('the inspector rail carries both context and routed-row quota', () => {
   assert.match(harness, /const quotaRowByModel = new Map\(\)/)
   assert.match(harness, /quotaRowByModel\.set\(/)
   assert.match(harness, /function renderQuota\(/)
+  // The rail's two meters belong to the model that is routed now. A route change re-reads the
+  // table instead of waiting for its minute to expire, and a row the table does not mention is
+  // looked up once rather than answered with "no limit reported" from a stale read.
+  assert.match(harness, /async function loadKnownTtfts\(\{ force = false \} = \{\}\)/)
+  assert.match(harness, /if \(!force && Date\.now\(\) < ttftFreshUntil\) return/)
+  assert.match(harness, /quotaMissLookup = \{ key: null, at: 0 \}/)
+  assert.match(harness, /loadKnownTtfts\(\{ force: true \}\)/)
+  assert.match(harness, /const settled =\n\s*quotaMissLookup\.key === rowKey/)
   assert.match(harness, /function railQuotaWindows\(/)
   assert.match(harness, /function railQuotaWindowHtml\(/)
   assert.match(harness, /row\?\.quotaWindows/)
   assert.match(harness, /row\?\.providerUsage/)
   // Pi's context figure arrives on status; a status refresh must not discard it.
   assert.match(harness, /if \(data\.contextUsage\)/)
+  assert.match(harness, /if \(ctx\.routedModelKey && key !== ctx\.routedModelKey\)/)
   assert.match(harness, /contextUsage: data\.contextUsage/)
   assert.match(harness, /function routedContextWindow\(/)
   // The meter's own figures have to be readable and true: the remainder floors instead of
@@ -366,8 +396,23 @@ test('the inspector rail carries both context and routed-row quota', () => {
     harness,
     /if \(autoCompactionOff\) bar\.style\.removeProperty\('--hx-context-trigger'\)/,
   )
-  assert.match(css, /\.hx-quota-window/)
-  assert.match(css, /\.hx-quota-fill-success/)
+  // A window that is only a floor, or one the conversation has already outgrown, has no true
+  // share. The meter says which case it is instead of pinning "100%" above "0 free" — the
+  // reading that looked wrong whenever an estimate or a lower-bound window was in play.
+  assert.match(harness, /function routedContextWindowExact\(/)
+  assert.match(harness, /routed\.contextLowerBoundOnly === true/)
+  assert.match(harness, /return !String\(row\.context \|\| ''\)\.startsWith\('>'\)/)
+  assert.match(harness, /const over = measured && used > window_/)
+  assert.match(harness, /const shareKnown = windowExact && !over/)
+  // A share is never claimed against a floor: the value says the tokens are "over window"
+  // or a lower bound, and the note names the window it could not fill.
+  assert.match(harness, /in context · window at least/)
+  assert.match(harness, /compactFloor\(used - window_\)\} over/)
+  assert.match(harness, /bar\.classList\.toggle\('is-over', over\)/)
+  // Past a floor the value states the bound it passed, not a share of it.
+  assert.match(harness, /`>\$\{compact\(window_\)\}`/)
+  assert.match(css, /\.hx-usage-bar\.is-context\.is-over > span/)
+  assert.match(css, /repeating-linear-gradient/)
 })
 
 test('a live wait below the spine runs on the model’s own TTFT', () => {
@@ -395,6 +440,81 @@ test('a live wait below the spine runs on the model’s own TTFT', () => {
   assert.doesNotMatch(harnessCss, /@keyframes hx-ttft-run/)
   assert.match(harnessCss, /\.hx-ttft-ring \{[\s\S]{0,220}margin-left: -11px;/)
   assert.match(harnessCss, /@media \(prefers-reduced-motion: reduce\)/)
+})
+
+test('the network plot lights every model in use, not just the routed one', () => {
+  // Each conversation routes on its own slope, so several models can be answering at once —
+  // `/api/models` reports them as `activePicks`, and the table has always lit every one. The
+  // plot lit only the exported best, so a page with three conversations on three models showed a
+  // single blue node and the picture disagreed with the table beside it. The picks drive the
+  // model node, the link to the provider serving it, and that provider's ring alike.
+  assert.match(dashboard, /const activePicks = activePickRows/)
+  assert.match(dashboard, /activePicks\.push\(\{ modelId: bestModel\.modelId/)
+  assert.match(
+    dashboard,
+    /function isModelBest\(um\) \{\s*return um\._providers\.some\(p => isActivePick\(/,
+  )
+  assert.match(
+    dashboard,
+    /const isServingPath = um\._providers\.some\(p => p\.key === line\.dataset\.pkey/,
+  )
+  assert.match(dashboard, /const servesBest = activeProviderKeys\.has\(pk\)/)
+  // The rebuild key watches the picks: a pick that moves to a pair the plot has not drawn would
+  // otherwise leave its serving path unmarked until the membership changed.
+  assert.match(
+    dashboard,
+    /const bestSig = activePicks\n\s*\.map\(pick => `\$\{pick\.modelId\}@\$\{pick\.providerKey\}`\)/,
+  )
+})
+
+test('the rail estimates a quota ceiling the way the table does, and says so', () => {
+  // The Router table synthesises an EST window from the traffic a model has carried when no
+  // limit is published. The rail reads the same row and used to draw nothing for exactly those
+  // models, so the one place a reader looks at the model the agent is on was the one place with
+  // no allowance at all. Same rule, handed over rather than copied, and labelled the same way.
+  const dashboardJs = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const harnessJs = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const harnessCss = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  assert.match(dashboardJs, /window\.hxEstimateLimitCeiling = estimateLimitCeiling/)
+  assert.match(
+    harnessJs,
+    /window\.hxEstimateLimitCeiling === 'function' \? window\.hxEstimateLimitCeiling : null/,
+  )
+  assert.match(
+    harnessJs,
+    /const observedUsage = row\?\.knownQuota\?\.unlimited === true \? \{\} : row\?\.recordedUsage \|\| \{\}/,
+  )
+  assert.match(harnessJs, /estimated: true,/)
+  assert.match(harnessJs, /window\.estimated \? `\$\{basePeriodLabel\} · EST` : basePeriodLabel/)
+  assert.match(harnessJs, /window\.estimated \? ' is-estimated' : ''/)
+  assert.match(harnessCss, /\.hx-quota-window\.is-estimated \.hx-quota-fill \{[^}]*opacity: 0\.62;/)
+})
+
+test('the send controls appear only when there is something to send', () => {
+  // An empty composer is not a button with nothing to do. Send (or steer/queue, into a running
+  // turn) used to be there always, disabled or not, which asks the reader what is wrong with it.
+  // It now comes and goes with the text — or with a staged image — and Stop stays put, because
+  // Stop is about the turn rather than the composer.
+  const harnessJs = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.match(harnessJs, /const hasContent =/)
+  assert.match(harnessJs, /state\.attachments\.length > 0/)
+  assert.match(harnessJs, /send\.hidden = running \|\| !hasContent/)
+  assert.match(harnessJs, /button\.hidden = !running \|\| !hasContent/)
+  assert.match(harnessJs, /if \(stop\) stop\.hidden = !running\n/)
+  // Every way the composer can gain or lose content repaints it: a keystroke, a restored draft,
+  // and a staged or removed image.
+  assert.match(
+    harnessJs,
+    /saveDraft\(active\(\), input\.value\)\n\s*\/\/[\s\S]{0,300}?updateComposer\(\)/,
+  )
+  assert.match(
+    harnessJs,
+    /input\.value = text\n\s*autoGrow\(\)\n\s*\/\/[\s\S]{0,200}?updateComposer\(\)/,
+  )
+  assert.match(
+    harnessJs,
+    /strip\.appendChild\(chip\)\n\s*\}\n\s*\/\/[\s\S]{0,200}?updateComposer\(\)/,
+  )
 })
 
 test('the rail compaction buttons are bound through the panel element', () => {

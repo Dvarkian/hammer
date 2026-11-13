@@ -36,6 +36,12 @@ import {
 } from '../lib/pi/agent-dir.js'
 import { registerPiRoutes, shouldCompactBeforePrompt } from '../lib/http/routes/pi.js'
 import { consoleSessionFile, resetConsoleSessionsForTests } from '../lib/pi/console-session.js'
+import {
+  configureQueueStore,
+  queueStorePath,
+  rememberedQueue,
+  rememberQueue,
+} from '../lib/pi/queue-store.js'
 import { ensureHarnessDirs, normalizePiSettings, readPiSettings } from '../lib/pi/settings.js'
 import {
   MIN_NODE_MAJOR,
@@ -704,7 +710,17 @@ test('the stop button exists only while the agent is running', () => {
 
   // The button ships hidden and JS drives it off the console's running state.
   assert.match(html, /id="hx-stop"[^>]*hidden/)
-  assert.match(harness, /stop\.hidden = !state\.running/)
+  assert.match(harness, /stop\.hidden = !running/)
+
+  // Sending into a running turn is two buttons, not a toggle: they ship hidden too, replace the
+  // plain send while the agent works, and are driven by the same running state.
+  assert.match(html, /id="hx-send-steer"[^>]*hidden/)
+  assert.match(html, /id="hx-send-queue"[^>]*hidden/)
+  // The delivery buttons must not borrow the queue strip's own id, or the strip would answer
+  // `$('hx-queue')` and get hidden by the composer.
+  assert.equal((html.match(/id="hx-queue"/g) || []).length, 1)
+  assert.match(harness, /send\.hidden = running/)
+  assert.match(harness, /button\.hidden = !running/)
 
   // `.hx-btn.hx-icon` sets `display: inline-flex`, which beats the UA `[hidden]` default and
   // would hold a dead square next to Send while the agent is idle.
@@ -936,7 +952,9 @@ test('with no system Node, a packaged app runs pi on the Node inside Electron', 
       join(root, 'agent'),
       'the routing env survives the flag',
     )
-    assert.match(plan.notes.join(' '), /Node inside Hammer/)
+    // The interpreter is an implementation detail: it is the flag that makes it work, and the
+    // page used to say so in a note nobody could act on.
+    assert.doesNotMatch(plan.notes.join(' '), /Node inside Hammer/)
   } finally {
     delete process.versions.electron
   }
@@ -1019,6 +1037,123 @@ test('the compaction budgets are Pi defaults until one is set, and the file foll
   assert.ok(existsSync(cleared.modelsPath), 'models.json survives')
 })
 
+test('rewriting the queue clears it and re-sends what survives, in order', async () => {
+  const { bridge, commands } = makeFake({})
+  try {
+    await withEnv({ FAKE_PI_SETTLE_DELAY_MS: '5000' }, async () => {
+      await bridge.prompt('turn one')
+      await bridge.prompt('steer A')
+      await bridge.prompt('steer B')
+      await bridge.prompt('held C', { queueMode: 'followUp' })
+      await waitFor(() => bridge.status().pendingMessages === 3)
+
+      const queue = await bridge.replaceQueue([
+        { text: 'steer B', mode: 'steer' },
+        { text: 'held C', mode: 'followUp' },
+      ])
+      assert.deepEqual(queue, { steering: ['steer B'], followUp: ['held C'] })
+      assert.deepEqual(bridge.status().queuedSteering, ['steer B'])
+      assert.deepEqual(bridge.status().queuedFollowUp, ['held C'])
+      assert.equal(bridge.status().pendingMessages, 2)
+      assert.ok(commands().includes('clear_queue'), 'the old queue is emptied, not appended to')
+    })
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a queue cannot be rewritten while nothing is running', async () => {
+  // A prompt to an idle Pi starts a turn, so an edit made while idle would launch the very message
+  // the user was trying to change. The bridge refuses rather than start something.
+  const { bridge, commands } = makeFake({})
+  try {
+    await assert.rejects(
+      () => bridge.replaceQueue([{ text: 'never sent' }]),
+      /only be changed while the agent is running/,
+    )
+    assert.equal(commands().includes('clear_queue'), false, 'a refused rewrite clears nothing')
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a queued message outlives the agent that was holding it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hammer-queue-restart-'))
+  const sessionFile = join(dir, 'session-queue.jsonl')
+  writeFileSync(sessionFile, '')
+  configureQueueStore(queueStorePath(dir))
+  try {
+    await withEnv(
+      { FAKE_PI_SESSION_FILE: sessionFile, FAKE_PI_SETTLE_DELAY_MS: '5000' },
+      async () => {
+        const first = makeFake({})
+        await first.bridge.prompt('turn one')
+        await first.bridge.prompt('held for later', { queueMode: 'followUp' })
+        await waitFor(() => first.bridge.status().pendingMessages === 1)
+        // The agent dies — a reboot, or a keeper reaped by its idle window. Its queue dies with it.
+        first.bridge.dispose({ kill: true })
+        assert.deepEqual(rememberedQueue(sessionFile), {
+          steering: [],
+          followUp: ['held for later'],
+        })
+
+        // The next process starts with nothing queued, so the message is owed rather than waiting:
+        // it is sent again, with the mode it was queued under.
+        const second = makeFake({})
+        try {
+          // The next router learns the queue when the console opens, which is the first status
+          // read; nothing is started on behalf of a session nobody opened.
+          await second.bridge.describe()
+          await waitFor(() => second.commands().includes('body:held for later'))
+          await waitFor(() => rememberedQueue(sessionFile) === null)
+          assert.equal(
+            second.bridge.status().isStreaming,
+            true,
+            'the restored message starts the turn it was waiting behind',
+          )
+        } finally {
+          second.bridge.dispose({ kill: true })
+        }
+      },
+    )
+  } finally {
+    configureQueueStore('')
+  }
+})
+
+test('an adopted agent keeps the queue it never lost', async () => {
+  // The same agent with a new router: the messages are still inside Pi, so they are shown again and
+  // not sent a second time. The depth Pi reports is what tells this case apart from a fresh agent.
+  const dir = mkdtempSync(join(tmpdir(), 'hammer-queue-adopt-'))
+  const sessionFile = join(dir, 'session-adopt.jsonl')
+  configureQueueStore(queueStorePath(dir))
+  rememberQueue(sessionFile, { steering: ['steer it'], followUp: ['then this'] })
+  const bridge = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: dir })
+  try {
+    bridge.adoptedChild = true
+    bridge.state.sessionFile = sessionFile
+    bridge.applyState({ isStreaming: true, sessionFile, pendingMessageCount: 2 })
+    assert.deepEqual(bridge.status().queuedSteering, ['steer it'])
+    assert.deepEqual(bridge.status().queuedFollowUp, ['then this'])
+
+    // An adopted agent that finished its queue while no router watched has nothing to restore:
+    // saying those messages twice is worse than forgetting them.
+    const settled = new PiBridge({ command: process.execPath, args: [FAKE_PI], cwd: dir })
+    try {
+      settled.adoptedChild = true
+      settled.state.sessionFile = sessionFile
+      settled.applyState({ isStreaming: false, sessionFile, pendingMessageCount: 0 })
+      assert.equal(settled.status().pendingMessages, 0)
+      assert.equal(rememberedQueue(sessionFile), null)
+    } finally {
+      settled.dispose({ kill: false })
+    }
+  } finally {
+    bridge.dispose({ kill: false })
+    configureQueueStore('')
+  }
+})
+
 // ── The routes ───────────────────────────────────────────────────────────────────────────
 
 /** A bridge stand-in: the routes only need these methods, and a real EventEmitter. */
@@ -1032,6 +1167,8 @@ class StubBridge extends EventEmitter {
     this.sessionFile = null
     this.streaming = false
     this.running = true
+    /** @type {{steering: string[], followUp: string[]}} */
+    this.queue = { steering: [], followUp: [] }
   }
   status() {
     return {
@@ -1042,6 +1179,9 @@ class StubBridge extends EventEmitter {
       model: { id: 'stub-model', provider: 'stub' },
       thinkingLevel: 'off',
       isStreaming: this.streaming,
+      queuedSteering: this.queue.steering,
+      queuedFollowUp: this.queue.followUp,
+      pendingMessages: this.queue.steering.length + this.queue.followUp.length,
       sessionId: 's1',
       sessionFile: this.sessionFile,
       error: null,
@@ -1071,6 +1211,14 @@ class StubBridge extends EventEmitter {
   async prompt(message) {
     this.calls.push(['prompt', message])
     return { data: { disposition: 'started' } }
+  }
+  async replaceQueue(items) {
+    this.calls.push(['replaceQueue', items.map((item) => `${item.mode}:${item.text}`).join('|')])
+    this.queue = {
+      steering: items.filter((item) => item.mode !== 'followUp').map((item) => item.text),
+      followUp: items.filter((item) => item.mode === 'followUp').map((item) => item.text),
+    }
+    return { steering: this.queue.steering.slice(), followUp: this.queue.followUp.slice() }
   }
   async abort() {
     this.calls.push(['abort'])
@@ -1156,6 +1304,66 @@ test('a prompt is validated and then handed to the agent trimmed', async () => {
     })
     assert.deepEqual(await ok.json(), { success: true, disposition: 'started' })
     assert.deepEqual(bridge.calls, [['prompt', 'fix the tests']])
+  })
+})
+
+test('a queue change removes, moves or edits one message and reports the queue left', async () => {
+  const bridge = new StubBridge()
+  bridge.streaming = true
+  bridge.queue = { steering: ['first', 'second'], followUp: ['later'] }
+  await withPiApp({ piBridge: bridge }, async (base) => {
+    const post = (body) =>
+      fetch(`${base}/api/pi/queue`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+
+    // A click that raced a `queue_update` is refused, and answered with the queue Pi holds.
+    const stale = await post({ op: 'remove', index: 0, text: 'already consumed' })
+    assert.equal(stale.status, 409)
+    assert.deepEqual(await stale.json(), {
+      error: 'The queue changed before that landed.',
+      steering: ['first', 'second'],
+      followUp: ['later'],
+    })
+    assert.deepEqual(bridge.calls, [], 'a refused change never reaches the agent')
+
+    const removed = await post({ op: 'remove', index: 0, text: 'first' })
+    assert.equal(removed.status, 200)
+    assert.deepEqual(await removed.json(), {
+      success: true,
+      steering: ['second'],
+      followUp: ['later'],
+    })
+    assert.deepEqual(bridge.calls.at(-1), ['replaceQueue', 'steer:second|followUp:later'])
+
+    // A move stays inside its own list: a follow-up's place among steering messages would not
+    // change when it arrives, so the two lists are never interleaved.
+    bridge.queue = { steering: ['a', 'b'], followUp: ['c'] }
+    const moved = await post({ op: 'move', index: 1, text: 'b', direction: -1 })
+    assert.equal(moved.status, 200)
+    assert.deepEqual(bridge.calls.at(-1), ['replaceQueue', 'steer:b|steer:a|followUp:c'])
+
+    const edge = await post({ op: 'move', index: 0, text: 'b', direction: -1 })
+    assert.equal(edge.status, 409)
+    assert.equal(bridge.calls.at(-1)[0], 'replaceQueue', 'an edge move sends nothing new')
+
+    const edited = await post({ op: 'edit', index: 0, text: 'b', message: '  b, clarified  ' })
+    assert.equal(edited.status, 200)
+    assert.deepEqual(bridge.calls.at(-1), ['replaceQueue', 'steer:b, clarified|steer:a|followUp:c'])
+
+    const blank = await post({ op: 'edit', index: 0, text: 'b, clarified', message: '   ' })
+    assert.equal(blank.status, 400)
+    const unknown = await post({ op: 'shuffle', index: 0 })
+    assert.equal(unknown.status, 400)
+    const greedy = await post({
+      op: 'edit',
+      index: 0,
+      text: 'b, clarified',
+      message: 'x'.repeat(20_001),
+    })
+    assert.equal(greedy.status, 413)
   })
 })
 
@@ -1263,6 +1471,8 @@ test('the event stream opens with the transcript the agent already produced', as
       tokens: 12,
       cost: 0.5,
       routedModel: null,
+      // The steps the route takes travel with the route; with nothing routed there is none.
+      thinking: null,
     })
 
     bridge.emit('usage', { tokens: 34, cost: 0.75 })
@@ -1841,6 +2051,12 @@ test('a compaction is reported in the transcript a user can see', async () => {
     assert.equal(bridge.status().compactionError, null)
     assert.equal(bridge.status().phase, 'alive', 'a finished compaction is still not a turn')
     assert.equal(bridge.status().compactionCount, 1, 'the count is a total, not a live flag')
+    // The summary replaced the conversation the context meter was describing, so the figure it
+    // showed is wrong by however much was removed — and for a manual compaction that fall is
+    // the point of pressing the button. Pi reports the new size with the result, so the meter
+    // takes it now instead of waiting for the next turn to measure a new one.
+    assert.equal(bridge.status().contextUsage.tokens, 34000)
+    assert.equal(bridge.status().contextUsage.estimated, true, 'reported, not measured')
 
     // A manual compaction answers with its result directly, so a caller that wants the
     // figures does not have to sift the event stream for them.
@@ -1950,6 +2166,57 @@ test('auto-compaction is read from Pi as three-valued, and a change is echoed ba
   } finally {
     bridge.dispose()
   }
+})
+
+test('auto-compaction starts off when the routed window is only a floor', async () => {
+  // "At least this much" is not a window: the real ceiling is somewhere above the bound, so a
+  // compaction point derived from it fires while the model still has room and spends a summary on
+  // nothing. Such a pick starts with Pi's own switch off, and says so — a toggle that turned
+  // itself off with no explanation is the failure this note exists to avoid.
+  await withEnv({ FAKE_PI_AUTO_COMPACTION: '1' }, async () => {
+    const floorOnly = makeFake({ routedLowerBoundOnly: () => true })
+    try {
+      await floorOnly.bridge.describe()
+      assert.equal(
+        floorOnly.bridge.status().autoCompactionEnabled,
+        false,
+        'a floor is not a window',
+      )
+      assert.match(floorOnly.bridge.status().notes.join(' '), /only known as a lower bound/)
+
+      // It is a default, not a policy: once the reader moves the switch, it stays where they put
+      // it even though the routed model still reports only a floor.
+      await floorOnly.bridge.runCommand('set_auto_compaction', { enabled: true })
+      floorOnly.bridge.autoCompactionChosen = true
+      await floorOnly.bridge.describe()
+      assert.equal(
+        floorOnly.bridge.status().autoCompactionEnabled,
+        true,
+        'the choice is the reader’s',
+      )
+    } finally {
+      floorOnly.bridge.dispose()
+    }
+
+    const measured = makeFake({ routedLowerBoundOnly: () => false })
+    try {
+      await measured.bridge.describe()
+      assert.equal(
+        measured.bridge.status().autoCompactionEnabled,
+        true,
+        'a measured window leaves Pi’s own default alone',
+      )
+      assert.doesNotMatch(measured.bridge.status().notes.join(' '), /lower bound/)
+    } finally {
+      measured.bridge.dispose()
+    }
+  })
+
+  // The verdict is the router's, and the console has to ask for it on every sync: the model can
+  // change between turns, so a window known at launch says nothing about the one answering now.
+  const source = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
+  assert.match(source, /routedLowerBoundOnly: \(\) =>/)
+  assert.match(source, /contextLowerBoundOnly === true/)
 })
 
 test('a prompt is compacted first when the routed model has less room than Pi’s alias', () => {
@@ -2199,6 +2466,93 @@ test('a turn that fills the routed window between steps compacts mid-turn', () =
   }
 })
 
+test('a turn stopped by a mid-turn compaction is picked back up', async () => {
+  // This is the bug that ended a session silently: the compaction guard asks Pi to compact, Pi
+  // aborts the running turn to do it, and nothing ever restarts that turn — so the transcript
+  // showed work in progress, the compaction note, and then a console that never moved again.
+  const bridge = new PiBridge({
+    autoContinue: true,
+    autoContinueBaseMs: 1,
+    routedWindowTokens: () => 20_000,
+    compactionReserveTokens: 4_000,
+  })
+  try {
+    /** @type {string[]} */
+    const commands = []
+    // The command answers without the event: the resume has to work from either end.
+    bridge.runCommand = async (type) => {
+      commands.push(type)
+      return { data: {} }
+    }
+    /** @type {Array<{ message: string, options: any }>} */
+    const sent = []
+    bridge.prompt = async (message, options) => {
+      sent.push({ message, options })
+      return { data: {} }
+    }
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [],
+        usage: { input: 15_000, output: 1_000, totalTokens: 16_000 },
+      },
+    })
+    assert.deepEqual(commands, ['compact'])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(sent.length, 1, 'the interrupted turn is resumed once')
+    assert.match(sent[0].message, /interrupted so the conversation could be compacted/)
+    assert.equal(sent[0].options.queueMode, 'followUp')
+    assert.ok(bridge.status().notes.some((note) => /Resuming the turn/.test(note)))
+
+    // The event arriving as well must not resume a second time.
+    bridge.track({ type: 'compaction_end', reason: 'manual', result: { estimatedTokensAfter: 9 } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(sent.length, 1)
+  } finally {
+    bridge.dispose()
+  }
+})
+
+test('a mid-turn compaction that fails says the turn stays stopped', async () => {
+  const bridge = new PiBridge({
+    autoContinue: true,
+    autoContinueBaseMs: 1,
+    routedWindowTokens: () => 20_000,
+    compactionReserveTokens: 4_000,
+  })
+  try {
+    bridge.runCommand = async () => {
+      throw new Error('The summary hit the output cap.')
+    }
+    let sent = 0
+    bridge.prompt = async () => {
+      sent += 1
+      return { data: {} }
+    }
+    bridge.track({ type: 'agent_start' })
+    bridge.track({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'toolUse',
+        content: [],
+        usage: { input: 15_000, output: 1_000, totalTokens: 16_000 },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(sent, 0, 'a turn with no room left is not sent back into the wall')
+    assert.ok(
+      bridge.status().notes.some((note) => /Could not compact mid-turn/.test(note)),
+      'the stop is explained rather than silent',
+    )
+  } finally {
+    bridge.dispose()
+  }
+})
+
 test('a prompt-cap routed window compacts near its cap, not at Pi’s full reserve', () => {
   const bridge = new PiBridge({
     autoContinue: false,
@@ -2337,6 +2691,51 @@ test('the Compact now button says what it is doing while a compaction runs', () 
     'the repaint keeps the button saying Compacting… while it is',
   )
   assert.match(css, /data-compaction-now\]\[data-working='true'\]/)
+})
+
+test('a compaction row reports its outcome when the compaction ends', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const ended = harness.match(/\n {6}case 'compaction_end': \{[\s\S]*?\n {6}\}\n/)
+  assert.ok(ended, 'the end of a compaction has its own case')
+  // `syncTranscript` mounts rows it has never mounted and never rebuilds one it already did, so
+  // a compaction that ended was left on screen saying "Compacting the context…" for as long as
+  // the page stayed open — no figures, and no failure either, which made a compaction that
+  // worked and one that refused indistinguishable. The row has to be patched itself.
+  assert.match(
+    ended[0],
+    /patchCompactionItem\(item, ctx\)/,
+    'the mounted row is repainted with its outcome',
+  )
+  // Pi's error message opens with "Compaction failed: " and the row says the same words, so
+  // the prefix is stripped rather than printed twice.
+  assert.match(harness, /\.replace\(\/\^compaction failed:\\s\*\/i, ''\)/)
+})
+
+test('a compaction in flight makes the console busy, the way a turn does', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+
+  // Pi's manual compaction aborts the turn, spends a model call writing the summary, and then
+  // sits idle again: `phase` never leaves 'alive' and `isStreaming` is false throughout. The
+  // page read either one alone, so the console stayed idle while the conversation was being
+  // rewritten — Send offered to post into it, Stop was hidden (pi's abort is what cancels a
+  // compaction), and the streaming row had no busy shape around it. Busy is what puts those
+  // controls on screen for the seconds the summary takes.
+  assert.match(
+    harness,
+    /status\.phase === 'busy' \|\| Boolean\(status\.isStreaming\) \|\| status\.isCompacting === true/,
+    'a live status frame counts a compaction as running',
+  )
+  assert.match(
+    harness,
+    /data\.phase === 'busy' \|\| Boolean\(data\.isStreaming\) \|\| data\.isCompacting === true/,
+    'so does the hello frame of a page opened mid-compaction',
+  )
+  // The rail draws its spinner from the instance listing, not from this console's status.
+  assert.match(
+    harness,
+    /entry\.phase === 'busy' \|\| entry\.isStreaming \|\| entry\.isCompacting === true/,
+    'a compacting conversation spins in the rail too',
+  )
 })
 
 test('the rail usage plot describes the conversation, not the router process', () => {

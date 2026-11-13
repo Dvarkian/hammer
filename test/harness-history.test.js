@@ -11,6 +11,9 @@
  *   2. The conversation is already open on the main console. Opening it from the rail answered
  *      409 "That conversation is already open." and the click did nothing, because the page had
  *      not yet been told which file the main console is on.
+ *   3. The page reopened the tabs it remembered and left the reader on an empty main console,
+ *      because the conversation that is *not* a tab — the one Hammer lands on — was the one
+ *      thing no storage key described.
  *
  * These are source assertions, like the rest of the harness's UI rules: the page is a classic
  * script inside an IIFE, so the shape of the two paths is what a test can pin.
@@ -39,4 +42,27 @@ test('opening a conversation that is already open shows it instead of failing', 
   assert.match(harness, /const main = state\.consoles\.get\('main'\)/)
   assert.match(harness, /await refreshStatus\(main\)/)
   assert.match(harness, /if \(focus\) activate\(open\)/)
+})
+
+test('a restart lands on the conversation the page was showing', () => {
+  // The conversation on screen is remembered on its own: the open-tabs key only carries the
+  // tabs, so a single conversation had nowhere to come back from.
+  assert.match(harness, /const LAST_KEY = 'hammer\.hx\.last'/)
+  assert.match(harness, /function rememberViewed\(console\) \{/)
+  assert.match(harness, /if \(ctx === active\(\)\) rememberViewed\(ctx\)/)
+  // A fresh main console takes the remembered conversation back instead of showing an empty one
+  // (a restart starts a new agent, so main has no file of its own to resume).
+  // Never while that console is streaming: switching its session would end the turn.
+  assert.match(harness, /!main\.items\.length && !main\.running\)\)/)
+  assert.match(harness, /if \(await resumeOnMain\(main, lastFile\)\) focusFile = lastFile/)
+  assert.match(harness, /fetch\(`\$\{API\}\/sessions\/open`/)
+  // And the page settles on that file, not on whichever tab happened to be written last.
+  assert.match(harness, /const onScreen = focusFile/)
+  // Read once at load: boot activates an empty main console before the restore runs, and
+  // remembering that would overwrite the file the restore is about to put back.
+  assert.match(harness, /const bootLastViewed = lastViewedFile\(\)/)
+  assert.match(harness, /const lastFile = bootLastViewed \|\|/)
+  // The console's earlier rebuild (an empty conversation, after a restart) must not stop the
+  // remembered file from being read now.
+  assert.match(harness, /main\.historyLoaded = false\n\s*await restoreHistory\(main\)/)
 })

@@ -391,7 +391,9 @@ test('a live fallback is painted across the dashboard before the next snapshot',
   assert.match(dashboard, /payload\.type === 'evidence'/)
   assert.match(dashboard, /routerEventRevisionAtStart !== routerEventRevision/)
   assert.match(dashboard, /function updateKPIs\(models, bestModelId, bestProviderKey = null\)/)
-  assert.match(dashboard, /m\.providerKey === bestProviderKey/)
+  // The routed pair reaches the picture through drawPlots' own lookup. The "Current" readout that
+  // used to read it as well is gone, so the assertion follows the pair into the plot instead.
+  assert.match(dashboard, /m\.providerKey === effectiveKey/)
 })
 
 test('the slope plot lives in the composer popup, not on the router page', () => {

@@ -54,10 +54,19 @@
           <button id="load-retry-btn" type="button" onclick="retryInitialLoad()" style="display:none;">Retry</button>
         </p>
 
+        <!-- The page is served by the router on this machine, so losing the internet does not
+             stop it loading — it stops every provider from answering. Chromium reports the link
+             state, and this line carries it: an outage then reads as a reason for the quiet,
+             in the same place and shape as the loading status above it. -->
+        <p id="offline-notice" class="load-status is-offline" role="status" aria-live="polite" hidden>
+          <span class="load-status-dot" aria-hidden="true"></span>
+          <span id="offline-notice-text">No internet connection — model providers cannot be reached.</span>
+        </p>
+
         <div class="dashboard-header-controls">
           <!-- The console's own controls live in the top bar, beside Commands: the phase pill
-               (Ready/busy/down), the session name, the sidebar toggles and Restart agent.
-               That frees the head row inside the console, and the log gets its height back. -->
+               (Ready/busy/down), the session name and the sidebar toggles. That frees the head
+               row inside the console, and the log gets its height back. -->
           <span class="hx-phase" id="hx-phase" data-phase="idle"><i aria-hidden="true"></i><span id="hx-phase-label">idle</span></span>
           <span class="hx-session-name" id="hx-session-name">new session</span>
           <button class="hx-btn hx-icon" id="hx-toggle-sessions" type="button" title="Show or hide the sessions sidebar" aria-label="Toggle sessions sidebar" aria-pressed="true">
@@ -66,7 +75,6 @@
           <button class="hx-btn hx-icon" id="hx-toggle-details" type="button" title="Show or hide the details sidebar" aria-label="Toggle details sidebar" aria-pressed="true">
             <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><rect x="2.5" y="3.5" width="15" height="13" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M12.5 3.5v13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>
           </button>
-          <button class="hx-btn" id="hx-restart" type="button" title="Replace the agent process, keeping this conversation">Restart agent</button>
           <button id="reload-btn" onclick="restartHammer()" title="Restart the router (picks up code, provider and catalog changes), then reload this page" style="background: var(--surface-alt); border: 1px solid var(--border); cursor: pointer; padding: 4px 8px; border-radius: 6px; font-size: 0.82rem; display: inline-flex; align-items: center; gap: 4px; color: var(--text);">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="[redacted]" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
             <span id="reload-label">Restart router</span>
@@ -130,13 +138,8 @@
           <div class="hx-attachments" id="hx-attachments" hidden></div>
           <input type="file" id="hx-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
           <div class="hx-composer-bar">
-            <span class="hx-hint" id="hx-hint">Enter sends · Shift+Enter for a newline · Ctrl/Cmd+K for commands</span>
-            <div class="hx-composer-thinking" aria-label="Thinking effort">
-              <span class="hx-composer-thinking-label">thinking</span>
-              <input type="range" id="hx-thinking-slider" min="0" max="3" value="0" step="1"
-                title="Thinking effort — off, low, medium, high. Sent in the form the chosen model understands.">
-              <span id="hx-thinking-level">off</span>
-            </div>
+            <!-- Left to right: the slope selector, the model it routes to, then the thinking
+                 slider. Everything else — the hint and the send controls — sits at the right. -->
             <div class="hx-composer-thinking hx-composer-slope" aria-label="Intelligence vs speed slope">
               <span class="hx-composer-thinking-label">slope</span>
               <input type="range" id="hx-slope-slider" min="0" max="100" value="4" step="1"
@@ -146,20 +149,44 @@
                    measured model, and the line this conversation's slope lowers onto them. -->
               <div class="hx-slope-pop" id="hx-slope-pop" hidden aria-hidden="true"></div>
             </div>
-            <div class="hx-composer-btns">
-              <button class="hx-btn hx-icon" id="hx-attach" type="button" title="Attach images" aria-label="Attach images">
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.5 3.5 5 9a2.1 2.1 0 0 0 3 3l5.6-5.6a3.5 3.5 0 0 0-5-5L2.5 7.5a5 5 0 0 0 7 7l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-              </button>
-              <!-- Model name sits beside the attach control; thinking effort lives on the left of the bar, next to the hint. -->
-              <div class="hx-composer-model" aria-live="polite" aria-atomic="true">
-                <span class="hx-composer-model-label">model</span>
-                <span id="hx-model-name">waiting for the router…</span>
+            <div class="hx-composer-model" aria-live="polite" aria-atomic="true">
+              <span class="hx-composer-model-label">model</span>
+              <span id="hx-model-name">waiting for the router…</span>
+            </div>
+            <div class="hx-composer-thinking" aria-label="Thinking effort">
+              <span class="hx-composer-thinking-label">thinking</span>
+              <input type="range" id="hx-thinking-slider" min="0" max="3" value="0" step="1"
+                title="Thinking effort — off, low, medium, high. Sent in the form the chosen model understands.">
+              <span id="hx-thinking-level">off</span>
+            </div>
+            <div class="hx-composer-right">
+              <span class="hx-hint" id="hx-hint">Enter sends · Shift+Enter for a newline · Ctrl/Cmd+K for commands</span>
+              <div class="hx-composer-btns">
+                <button class="hx-btn hx-icon" id="hx-attach" type="button" title="Attach images" aria-label="Attach images">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M10.5 3.5 5 9a2.1 2.1 0 0 0 3 3l5.6-5.6a3.5 3.5 0 0 0-5-5L2.5 7.5a5 5 0 0 0 7 7l4-4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+                <!-- A message into a running turn is delivered one of two ways, and each is a button
+                     of its own: steering joins the turn in progress, queueing waits for it to end. The
+                     icons are drawn for that difference — an arrow joining the running line, against
+                     a stack of items waiting their turn — and the plain send takes their place only
+                     while nothing is running, when there is no choice to make. -->
+                <button class="hx-btn hx-icon" id="hx-send-steer" type="submit" data-queue-mode="steer" hidden
+                  title="Steer — deliver this into the running turn, after its current tool call"
+                  aria-label="Steer: deliver this message into the running turn">
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M2.2 4.6h11.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M2.6 14.2c.4-4.8 2.8-7.6 6.6-8.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6.4 5.6 9.2 4.6 9 7.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button class="hx-btn hx-icon" id="hx-send-queue" type="submit" data-queue-mode="followUp" hidden
+                  title="Queue — hold this until the running turn finishes, then send it as the next one"
+                  aria-label="Queue: hold this message until the running turn finishes">
+                  <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M1.4 12h2.1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3.4 10.2 5.9 12 3.4 13.8z" fill="currentColor" stroke="currentColor" stroke-width="0.6" stroke-linejoin="round"/><path d="M6.6 4.6h7M6.6 8.3h7M6.6 12h7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
+                <button class="hx-btn hx-icon" id="hx-stop" type="button" hidden title="Halt the running turn" aria-label="Halt the running turn">
+                  <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>
+                </button>
+                <button class="hx-btn hx-primary hx-icon" id="hx-send" type="submit" title="Send" aria-label="Send">
+                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M14.6 1.5 10 14.5 7.3 8.7 1.5 6z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M14.6 1.5 7.3 8.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                </button>
               </div>
-              <button class="hx-btn hx-queue-mode" id="hx-queue-mode" type="button" data-mode="steer">Queue: steer</button>
-              <button class="hx-btn hx-icon" id="hx-stop" type="button" hidden title="Halt the running turn" aria-label="Halt the running turn">
-                <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>
-              </button>
-              <button class="hx-btn hx-primary" id="hx-send" type="submit">Send</button>
             </div>
           </div>
         </form>
@@ -191,6 +218,22 @@
             </div>
             <div class="hx-context-note" id="hx-context-note" hidden></div>
             <div class="hx-context-compacts" id="hx-context-compacts" hidden></div>
+            <!-- Compaction's controls sit with the figure that decides them: directly under the
+                 "Compacts at … tokens" line, where the switch Pi obeys and the button that
+                 compacts now belong. No second "Context" heading — the meter's one says it. -->
+            <div class="hx-compaction-inline" id="hx-compaction-panel">
+              <div class="hx-kv">
+                <dt>Auto-compaction</dt>
+                <dd><button class="hx-btn" type="button" data-compaction-toggle hidden
+                  aria-pressed="true" title="Let Pi compact when the context is nearly full">
+                  <span data-compaction-state>on</span></button></dd>
+              </div>
+              <button class="hx-btn" type="button" data-compaction-now
+                title="Summarise the older turns now. Pi stops the current turn to do it.">
+                Compact now</button>
+              <div class="hx-notice" data-compaction-note hidden></div>
+              <span class="hx-compaction-badge" data-compaction-count hidden></span>
+            </div>
           </div>
           <!-- The routed model's quota, using the same windows as the Router table's Quota
                column. It is separate from context: context is this conversation's fill, while
@@ -212,6 +255,9 @@
               <div class="hx-quota-empty">No model routed yet.</div>
             </div>
           </div>
+          <!-- The rate readout closes the figures; the graph below answers the same question
+               over time, so a hairline marks where one ends and the other begins. -->
+          <hr class="hx-rail-sep" />
           <!-- This conversation's tokens over time, from its own transcript. It sits under
                the turn total because the two answer the same question at two scales: what the
                agent has spent, and when. It is the whole conversation rather than this
@@ -224,27 +270,6 @@
             <div class="usage-session-legend" id="usage-session-legend" hidden></div>
             <div class="usage-plot-empty" id="usage-session-empty" style="display:none;">No tokens in this conversation yet.</div>
           </div>
-          <div class="hx-empty-note">Reported per turn by the agent, not estimated by this page.</div>
-        </section>
-
-        <!-- Compaction: what it did, whether Pi will do it again on its own, and how to make it
-             happen now. It is a panel rather than a button in the head because a compaction
-             cannot be undone, and the figures are what make the button safe to press. -->
-        <section class="hx-panel" id="hx-compaction-panel">
-          <div class="hx-panel-head">
-            <span class="hx-panel-title">Context</span>
-            <span class="hx-compaction-badge" data-compaction-count hidden></span>
-          </div>
-          <div class="hx-notice" data-compaction-note hidden></div>
-          <div class="hx-kv">
-            <dt>Auto-compaction</dt>
-            <dd><button class="hx-btn" type="button" data-compaction-toggle hidden
-              aria-pressed="true" title="Let Pi compact when the context is nearly full">
-              <span data-compaction-state>on</span></button></dd>
-          </div>
-          <button class="hx-btn" type="button" data-compaction-now
-            title="Summarise the older turns now. Pi stops the current turn to do it.">
-            Compact now</button>
         </section>
 
       </aside>
@@ -276,13 +301,6 @@
         <div class="kpi-content">
           <div style="display:flex; gap:24px; align-items:flex-start;">
             <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
-              <div style="display:flex; align-items:center; gap:6px;">
-                <svg class="signal-icon" viewBox="0 0 24 24" style="width:10px;height:10px;">
-                  <circle cx="12" cy="12" r="10" />
-                </svg>
-                <span class="kpi-label" style="font-size:0.72rem;">Current</span>
-                <span class="kpi-value is-loading" id="kpi-best" style="font-size:0.85rem;"></span>
-              </div>
               <button type="button" class="pin-badge" id="pin-badge" style="display:none;" onclick="pinModel('')"
                 title="Click to unpin">📌 Pinned ×</button>
             </div>

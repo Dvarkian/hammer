@@ -1006,6 +1006,57 @@
       gap: 7px;
     }
 
+    /* A provider that pools several credentials draws one column per account, side by side:
+       each account spends its own allowance, so stacking them would read as windows of one
+       account rather than as the accounts themselves. The rail rule in harness.css is the same
+       shape for the same reason. */
+    .quota-row-accounts {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .quota-account-bar {
+      display: flex;
+      flex: 1 1 0;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+      padding-left: 8px;
+      border-left: 2px solid var(--border);
+    }
+
+    .quota-account-bar.is-serving {
+      border-left-color: var(--accent);
+    }
+
+    .quota-account-bar.is-exhausted {
+      border-left-color: var(--status-error-border);
+      opacity: 0.85;
+    }
+
+    .quota-account-head {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font-size: 0.6rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .quota-account-tag {
+      font-weight: 700;
+      color: var(--text-muted);
+    }
+
+    .quota-account-state {
+      color: var(--accent);
+    }
+
+    .quota-account-bar.is-exhausted .quota-account-state {
+      color: var(--status-error-text);
+    }
+
     .quota-row-window + .quota-row-window {
       padding-top: 6px;
       border-top: 1px solid var(--border);
@@ -2476,6 +2527,13 @@
     .load-status.is-failed .load-status-dot {
       animation: none;
       background: var(--error);
+    }
+    /* An outage is neither a wait nor a failure: nothing is coming until the link returns, and
+       the router itself is working. Amber rather than red — red would blame Hammer for the
+       connection, and a still dot rather than the pulsing one, which promises an arrival. */
+    .load-status.is-offline .load-status-dot {
+      animation: none;
+      background: var(--warning);
     }
     .load-status button {
       border: 1px solid var(--border);

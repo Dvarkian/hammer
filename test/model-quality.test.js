@@ -53,6 +53,49 @@ test('Agnes rows use the AA scores AA actually publishes', () => {
   assert.equal(flash.aa, null)
 })
 
+test('rows AA has no page for get a derived score, and say what it came from', () => {
+  // The catalog is full of variants AA never rated: a size or a tuned head of a family it did
+  // measure, or a model whose vendor benchmarks pin it to a place in that family. Those rows
+  // used to be unscored and drew a dash, which reads as "not measured" for a model a reader is
+  // about to route to. Each entry records the basis of its number, and every one is still
+  // drawn as an estimate — placed, not weighed.
+  const rows = [
+    ['thinkingmachines/inkling-2-small:free', 30.6, /AA intelligence index 30\.6/],
+    ['google/diffusiongemma-26b-a4b-it', 13.4, /Benchmarklist-hosted AA index/],
+    ['models/gemini-robotics-er-2-preview', 30, /Gemini 3\.5 Flash backbone/],
+    ['azure/decision-1@swedencentral', 12, /Flash-Lite class/],
+    ['baidu/ernie-5.5-flash-preview:free', 32, /TB4/],
+    ['mistral/codestral-latest', 7.5, /Mistral Small 3\.1/],
+    // Hydrogen launched with Google's own AA Index figures and no AA page or benchmarklist
+    // row of its own: the launch post is what places it, at its default thinking level.
+    [
+      'google/gemini-4-hydrogen',
+      51,
+      /AA intelligence index 51 at the default high thinking level, Google launch post 2026-11-12/,
+    ],
+  ]
+  for (const [id, aa, basis] of rows) {
+    const scored = resolveModelQuality({}, id)
+    assert.equal(scored.source, 'curated-aa', `${id} is scored from the curated table`)
+    assert.equal(scored.aa, aa, `${id} takes the derived figure`)
+    assert.match(scored.detail, basis, `${id} says what the figure was derived from`)
+    assert.equal(scored.isEstimated, true, `${id} is drawn as an estimate`)
+  }
+  // The region suffix is Azure's, not the model's: every deployment spelling finds the entry.
+  assert.equal(resolveModelQuality({}, 'azure/decision-1').aa, 12)
+  assert.equal(resolveModelQuality({}, 'models/gemini-decision-1').aa, 12)
+  // Hydrogen is served under OpenRouter's vendor-prefixed id, Google's own catalog spelling,
+  // and the bare name the launch post publishes; the score is one model, not three.
+  for (const id of ['google/gemini-4-hydrogen', 'gemini-4-hydrogen', 'models/gemini-4-hydrogen']) {
+    const hydrogen = resolveModelQuality({}, id)
+    assert.equal(hydrogen.aa, 51, `${id} takes the launch-post figure`)
+    assert.equal(hydrogen.source, 'curated-aa', `${id} is scored from the curated table`)
+    assert.equal(hydrogen.isEstimated, true, `${id} says Google placed it, AA did not weigh it`)
+  }
+  // A model with no measured relative and no vendor evidence is still given no number.
+  assert.equal(resolveModelQuality({}, 'someone/unrated-model').source, 'unscored')
+})
+
 test('a free twin inherits the measured score of the same weights', () => {
   // KiloCode advertises `reflection/beam-free` and Ollama publishes the same weights as bare
   // `beam`; the benchmark catalog measures the paid OpenRouter spelling. Both aliases must
@@ -84,9 +127,10 @@ test('a free twin inherits the measured score of the same weights', () => {
     assert.equal(scored.source, 'benchmarklist-aa-index')
     assert.equal(scored.isEstimated, false)
   }
-  for (const id of ['stealth/crouton-alpha', 'stealth/glyph-cluster']) {
-    assert.equal(resolveModelQuality(quality, id).source, 'unscored')
-  }
+  // A stealth preview the catalog does not measure is still unscored — unless the curated
+  // table has placed it, which is how `stealth/glyph-cluster` now gets its derived figure
+  // (see the derived-estimate test above). Crouton Alpha has neither.
+  assert.equal(resolveModelQuality(quality, 'stealth/crouton-alpha').source, 'unscored')
 })
 
 test('the index keys a requested alias under its measured twin', async () => {
