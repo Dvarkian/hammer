@@ -7,6 +7,11 @@ import {
   routedCompactionReserve,
 } from '../lib/pi/agent-dir.js'
 import { DEFAULT_CONTEXT_WINDOW, effectiveContextWindow } from '../lib/pi/bridge.js'
+import {
+  accumulateContextObservation,
+  accumulateUsageSample,
+  deriveContextState,
+} from '../lib/utils.js'
 
 test('the prompt preflight and the meter read the same conversation’s pick', () => {
   // The bridge meters and compacts against `routedSelection(consoleSlopePercent(key))`, and
@@ -49,6 +54,43 @@ test("the routed row's window is the budget, whether it is smaller or larger tha
   // The route wins even over a declaration still in memory from an older start: a running Pi
   // that was launched before the alias changed must not keep compacting at the old wall.
   assert.equal(effectiveContextWindow({ piWindow: 131072, routedWindow: 200000 }), 200000)
+})
+
+test('a prompt cap is drawn as a prompt cap, not as an overrun', () => {
+  // OrcaRouter's free tiers cap the prompt, and Pi's context figure is the prompt *plus* the
+  // reply. Comparing the two said "31k of 26k · 5.5k over" about a conversation the model was
+  // answering, with the overshoot equal to the reply it had just written.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  assert.match(
+    harness,
+    /function routedPromptCap\(ctx\) \{\s*return ctx\?\.routedModel\?\.contextPromptCap === true/,
+  )
+  assert.match(harness, /const over = measured && !promptCap && used > window_/)
+  assert.match(harness, /in context · prompt caps at \$\{compact\(window_\)\}/)
+  assert.match(
+    harness,
+    /renderContext\(bar, usage, compact, fallbackWindow, fallbackExact, fallbackPromptCap\)/,
+  )
+})
+
+test('a success above an inferred ceiling lifts it instead of contradicting it', () => {
+  // A refusal-derived bound is an inference, not a quoted limit. When the route answers a
+  // larger request the inference has been disproved, and keeping it left the table on "<26k"
+  // and the console on "over window" for that same conversation.
+  const refused = accumulateContextObservation({}, { maxTokens: 25_639, exact: false })
+  assert.equal(refused.contextMax, 25_639)
+  // The runtime path: a successful turn's prompt is what raises `contextMin`.
+  const accepted = accumulateUsageSample(refused, { promptTokens: 31_334 })
+  assert.equal(accepted.contextMax, undefined)
+  assert.equal(accepted.contextMin, 31_334)
+  const state = deriveContextState(null, accepted)
+  assert.ok(String(state.display).startsWith('>'), `expected a floor, got ${state.display}`)
+  assert.equal(state.lowerBoundOnly, true)
+  // The same rule holds when the observation carries the bound directly.
+  assert.equal(accumulateContextObservation(refused, { minTokens: 31_334 }).contextMax, undefined)
+  // A provider-stated maximum is a statement, not an inference, and is left standing.
+  const stated = accumulateContextObservation({}, { maxTokens: 32_768, exact: true })
+  assert.equal(accumulateUsageSample(stated, { promptTokens: 40_000 }).contextMax, 32_768)
 })
 
 test('a route that reports no window falls back to the conservative default', () => {

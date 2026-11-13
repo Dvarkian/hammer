@@ -4509,6 +4509,18 @@
    * meter asks the same two sources the table does: the pick's own lower-bound flag, and the
    * label the row's context column prints.
    */
+  /**
+   * Whether the routed window is a prompt cap rather than a context window.
+   *
+   * OrcaRouter's free tiers refuse a request whose *prompt* is too long, and the bound Hammer
+   * learns from that refusal caps the prompt — it does not describe the whole context, which is
+   * the prompt plus the reply Pi reports. Comparing the two as if they were the same quantity
+   * drew a working conversation as "over window" by exactly the reply's length.
+   */
+  function routedPromptCap(ctx) {
+    return ctx?.routedModel?.contextPromptCap === true
+  }
+
   function routedContextWindowExact(ctx) {
     const routed = ctx?.routedModel
     if (!routed) return false
@@ -4544,11 +4556,12 @@
     window.hxCompact = compact
     const fallbackWindow = routedContextWindow(ctx)
     const fallbackExact = routedContextWindowExact(ctx)
+    const fallbackPromptCap = routedPromptCap(ctx)
     if (!usage) {
       el.textContent = 'No tokens reported yet'
       // A fresh console can still know the context ceiling from its routed row. Painting the
       // meter here keeps the bar honest ("not measured") instead of clearing a useful limit.
-      renderContext(bar, {}, compact, fallbackWindow, fallbackExact)
+      renderContext(bar, {}, compact, fallbackWindow, fallbackExact, fallbackPromptCap)
       renderQuota(ctx)
       return
     }
@@ -4566,7 +4579,7 @@
       // row of zeros that reads like the reporting is broken. Its context figure may still
       // be the only thing Pi has measured, so paint that before returning.
       el.textContent = 'No tokens reported yet'
-      renderContext(bar, usage, compact, fallbackWindow, fallbackExact)
+      renderContext(bar, usage, compact, fallbackWindow, fallbackExact, fallbackPromptCap)
       renderQuota(ctx)
       return
     }
@@ -4584,7 +4597,7 @@
     el.textContent = parts.join(' · ')
     // The meter is drawn against the model's own window, not against the turn's spend: only
     // the window says how close compaction is. Both figures come from the frame.
-    renderContext(bar, usage, compact, fallbackWindow, fallbackExact)
+    renderContext(bar, usage, compact, fallbackWindow, fallbackExact, fallbackPromptCap)
     // Quota is about the routed row, not this conversation. Paint it from the same table the
     // router uses, and refresh that table when its cache has aged out.
     renderQuota(ctx)
@@ -4633,7 +4646,7 @@
     if (el) el.textContent = text
   }
 
-  function renderContext(bar, usage, compact, fallbackWindow = 0, windowExact = true) {
+  function renderContext(bar, usage, compact, fallbackWindow = 0, windowExact = true, promptCap = false) {
     const note = $('hx-context-note')
     const compactsAt = $('hx-context-compacts')
     const fill = bar?.firstElementChild || null
@@ -4716,7 +4729,9 @@
     // either the window is a floor the model has outgrown, or a streamed estimate overshot it.
     // "100% · 233k of 131k · 0 free" is the reading that looked wrong, because none of those
     // three numbers is a real measurement once the first is past the second.
-    const over = measured && used > window_
+    // A prompt cap bounds the prompt, never the context: a full conversation sits above a cap
+    // it has not violated, so there is no overrun to report.
+    const over = measured && !promptCap && used > window_
     const shareKnown = windowExact && !over
     if (bar) {
       bar.classList.add('is-context')
@@ -4727,9 +4742,11 @@
         'aria-valuetext',
         pct == null
           ? 'context not measured'
-          : !windowExact
-            ? `${compact(used)} tokens in context, window at least ${compact(window_)}`
-            : over
+          : promptCap
+            ? `${compact(used)} tokens in context, prompt cap ${compact(window_)}`
+            : !windowExact
+              ? `${compact(used)} tokens in context, window at least ${compact(window_)}`
+              : over
               ? `${compact(used)} tokens in context, past a window of ${compact(window_)}`
               : `${compact(used)} of ${compact(window_)} tokens`,
       )
@@ -4741,7 +4758,11 @@
     // Half a percent of a large window is still tokens in the context, so a measured sliver
     // says "<1%" rather than "0%" — the rounding is this page's, not Pi's.
     let share = pct == null ? 'not measured' : pct > 0 && pct < 0.5 ? '<1%' : `${Math.round(pct)}%`
-    if (pct != null && !shareKnown) {
+    if (promptCap && pct != null) {
+      // The share is of the prompt cap, and a context that is past it is not a violation: the
+      // cap fills up, and the note names the figure it would have to be compared with.
+      share = `${Math.min(100, Math.round(pct))}%`
+    } else if (pct != null && !shareKnown) {
       // Neither state gives a true percentage. A floor is exceeded by an unknown amount, so the
       // share is only a lower bound; an overrun is past the whole window, so "100%" would claim
       // exactly full. The tokens are measured in both, and the note names the window.
@@ -4768,6 +4789,8 @@
         // The window is a floor, so the free space against it is not knowable; the tokens in the
         // context are. This is the case the meter used to draw as a full bar with "0 free".
         note.textContent = `${approx}${compact(used)} in context · window at least ${compact(window_)}`
+      } else if (promptCap) {
+        note.textContent = `${approx}${compact(used)} in context · prompt caps at ${compact(window_)}`
       } else if (over) {
         note.textContent = `${approx}${compact(used)} of ${compact(window_)} · ${compactFloor(used - window_)} over`
       } else if (estimated) {

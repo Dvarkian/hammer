@@ -402,7 +402,9 @@ test('the inspector rail carries both context and routed-row quota', () => {
   assert.match(harness, /function routedContextWindowExact\(/)
   assert.match(harness, /routed\.contextLowerBoundOnly === true/)
   assert.match(harness, /return !String\(row\.context \|\| ''\)\.startsWith\('>'\)/)
-  assert.match(harness, /const over = measured && used > window_/)
+  // A prompt cap bounds the prompt, not the context Pi reports, so it never reads as an
+  // overrun (see the prompt-cap case in context-window.test.js).
+  assert.match(harness, /const over = measured && !promptCap && used > window_/)
   assert.match(harness, /const shareKnown = windowExact && !over/)
   // A share is never claimed against a floor: the value says the tokens are "over window"
   // or a lower bound, and the note names the window it could not fill.
