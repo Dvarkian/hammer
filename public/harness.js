@@ -1735,6 +1735,12 @@
   let slopeNotches = []
   /** The field the popup draws: one {intelligence, speed} per routable row of /api/models. */
   let slopePlotPoints = []
+  /**
+   * The slope at 100%, as the router measures it over the rows its minimums leave. The popup used
+   * to compute its own copy from the plotted dots, which are measured differently, so the line it
+   * drew for a percentage was not the line the router followed at that percentage.
+   */
+  let slopePlotCeilingSlope = null
 
   /**
    * Reads the router's per-model TTFT table.
@@ -1802,6 +1808,9 @@
             .map(Number)
             .filter((n) => Number.isFinite(n) && n >= 0 && n <= 100)
           paintSlopeNotches()
+          const ceilingSlope = Number(data.selector?.ceilingSlope)
+          slopePlotCeilingSlope =
+            Number.isFinite(ceilingSlope) && ceilingSlope > 0 ? ceilingSlope : null
           slopePlotPoints = collectSlopePlotPoints(
             Array.isArray(data.models) ? data.models : [],
           )
@@ -3566,7 +3575,21 @@
       if (!row || row.status === 'noauth') continue
       const id = String(row.modelId || row.id || '')
       const aa = Number(row.aa)
-      const intell = Number.isFinite(aa) && aa > 0 ? aa : Number(row.intell) * 100
+      // The router's own two numbers, when the payload carries them: the line, the pick and the
+      // strip all have to be talking about the same row, and a dot placed by a different speed
+      // formula puts the line on a dot the router would not choose.
+      const routingIntell = Number(row.routingIntell)
+      const routingSpeed = Number(row.routingSpeed)
+      const routerNumbers =
+        Number.isFinite(routingIntell) &&
+        routingIntell > 0 &&
+        Number.isFinite(routingSpeed) &&
+        routingSpeed > 0
+      const intell = routerNumbers
+        ? routingIntell
+        : Number.isFinite(aa) && aa > 0
+          ? aa
+          : Number(row.intell) * 100
       // The row's own measurement, or the last response that answered — the same fallback the
       // table's columns and the dashboard's scatter read.
       const served = plottedResponse(row.lastResponse)
@@ -3583,14 +3606,18 @@
             ? Number(served.tps)
             : null
       if (!id || !(Number.isFinite(intell) && intell > 0)) continue
-      if (ttft == null || !Number.isFinite(ttft) || ttft < 0) continue
-      if (tps == null || !Number.isFinite(tps) || tps <= 0) continue
+      let speed = routerNumbers ? routingSpeed : null
+      if (speed == null) {
+        if (ttft == null || !Number.isFinite(ttft) || ttft < 0) continue
+        if (tps == null || !Number.isFinite(tps) || tps <= 0) continue
+        speed = SLOPE_PLOT_REFERENCE_TOKENS / (ttft / 1000 + SLOPE_PLOT_REFERENCE_TOKENS / tps)
+      }
       points.push({
         modelId: id,
         providerKey: String(row.providerKey || ''),
         label: String(row.label || row.name || id),
         intell,
-        speed: SLOPE_PLOT_REFERENCE_TOKENS / (ttft / 1000 + SLOPE_PLOT_REFERENCE_TOKENS / tps),
+        speed,
         // The router's own flag, so "what the line picks" and "what the router routes" cannot
         // drift apart. Payloads from an older server fall back to the table's verdict.
         routable: typeof row.routingEligible === 'boolean' ? row.routingEligible : row.status === 'up',
@@ -3709,9 +3736,6 @@
     return true
   }
 
-  /** How steep the slope line leans at 100%: upright, short of the exact vertical it takes there. */
-  const SLOPE_LINE_MAX_ANGLE_DEG = 89.4
-
   /**
    * The part of a line through a pixel point that lies inside the plot box.
    *
@@ -3794,7 +3818,10 @@
     // not answer. With nothing clearing the minimums the router falls back to its ranking, and
     // the caption says so rather than inventing a pick.
     const eligible = field.filter((point) => pointClearsMinimums(point))
-    const ceiling = slopePlotCeiling(eligible)
+    // The router's own scale when the payload carries it; the local copy only stands in for an
+    // older server. Two ceilings over two slightly different fields is how the line came to rest
+    // on a dot the pick did not choose.
+    const ceiling = slopePlotCeilingSlope ?? slopePlotCeiling(eligible)
     const slope = ceiling ? (percent / 100) * ceiling : 0
     // The line is a constant score: intelligence + slope × speed. The row on it with the
     // highest score is the router's pick at this slope, which is what the caption names.
@@ -3802,32 +3829,32 @@
     // speed` — the same argmax the router computes.
     let pick = null
     let best = -Infinity
+    let bestSpeed = -Infinity
     for (const point of eligible) {
       const value = point.intell + slope * point.speed
-      if (value > best) {
-        best = value
+      // selectModelBySlope's own rule: rows within rounding of one another are equally good on
+      // this line, and the faster one is the pick. Without it the popup could ring a dot the
+      // router would not choose from a tie.
+      const tied = pick !== null && Math.abs(value - best) <= 1e-9 * Math.max(1, Math.abs(value))
+      if (pick === null || (value > best && !tied) || (tied && point.speed > bestSpeed)) {
         pick = point
+        best = value
+        bestSpeed = point.speed
       }
     }
     // The line is lowered until it touches the pick, and upright at 100% where the router's
     // rule picks the fastest eligible row. Drawing it through the pick is what makes the
     // picture say which row the line lands on.
     //
-    // What rotates with the slider is the line's *screen* angle, evenly, from horizontal at 0%
-    // to vertical at 100% — the rule this control followed when it lived on the router page.
-    // The numeric slope cannot be drawn directly here: the axes are scaled independently, so a
-    // ceiling slope (a data-space figure) is an arbitrary screen angle, and on a real catalogue
-    // it stayed around 45° for the whole track and then snapped upright at 100%, where the
-    // vertical special case takes over. The pick is still the router's own argmax — only the
-    // line that names it turns smoothly.
-    const clampedPct = Math.max(0, Math.min(100, Number(percent) || 0))
-    const screenAngle = (clampedPct / 100) * ((SLOPE_LINE_MAX_ANGLE_DEG * Math.PI) / 180)
-    const screenSlope = Math.tan(screenAngle)
-    const atMax = clampedPct >= 100
-    const line = !ceiling || !pick
-      ? ''
-      : atMax
-        ? `<line class="hx-slope-line" x1="${xOf(pick.speed).toFixed(1)}" y1="${pad.top}" x2="${xOf(pick.speed).toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>`
+    // The line is the contour `intelligence + slope × speed` in the picture's own units: the
+    // axes are scaled independently, so its screen steepness is the data slope times each axis's
+    // pixel density. That is the only angle at which the line actually rests on the row the
+    // router picks — an angle chosen to look even ran it through dots the pick had not chosen,
+    // which is what "the line hits a different dot than the one it selects" was.
+    const screenSlope = slope * (plotH / ySpan) / (plotW / xSpan)
+    const line =
+      !ceiling || !pick
+        ? ''
         : (() => {
             const segment = slopeLineSegment(
               xOf(pick.speed),

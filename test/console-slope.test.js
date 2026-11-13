@@ -142,17 +142,14 @@ test('the slope popup plots the field the slider is choosing from', () => {
   assert.match(css, /\.hx-slope-line \{/)
 })
 
-test('the slope line turns evenly to vertical instead of snapping at the top', () => {
-  // The popup drew its line from the numeric slope. The axes are scaled independently, so on a
-  // real catalogue that screen angle stayed near 45° right up to 99% and then took the vertical
-  // special case at 100% in one slider step. The line's angle now advances with the track, and
-  // it is clipped to the plot so a steep frame cannot run off the viewBox.
+test('the slope line is the contour the pick sits on', () => {
+  // It used to be drawn at an angle that merely advanced with the track, because the numeric
+  // slope barely moved on a real catalogue. The scale is measured over the field the minimums
+  // leave now, so the slope does sweep — and the line has to be the real contour, times each
+  // axis's pixel density, or it rests on a dot the pick did not choose.
   const harness = read('public/harness.js')
-  assert.match(harness, /const SLOPE_LINE_MAX_ANGLE_DEG = 89\.4/)
-  assert.match(
-    harness,
-    /const screenAngle = \(clampedPct \/ 100\) \* \(\(SLOPE_LINE_MAX_ANGLE_DEG \* Math\.PI\) \/ 180\)/,
-  )
+  assert.match(harness, /const screenSlope = slope \* \(plotH \/ ySpan\) \/ \(plotW \/ xSpan\)/)
+  assert.doesNotMatch(harness, /SLOPE_LINE_MAX_ANGLE_DEG/)
   assert.match(harness, /function slopeLineSegment\(px, py, screenSlope, pad, plotW, plotH\)/)
   // The 340px panel hangs off an 88px control, so it is placed rather than left to CSS: on a
   // narrow window the CSS anchor put most of it past the side of the screen.
@@ -170,6 +167,23 @@ test('the slope line turns evenly to vertical instead of snapping at the top', (
   assert.match(harness, /y2: py \+ screenSlope \* tMax/)
   assert.doesNotMatch(harness, /y1: py - screenSlope \* tMin/)
   assert.doesNotMatch(harness, /const atMax = percent >= 100/)
+})
+
+test("the plot draws the router's own field, not a second measurement of it", () => {
+  // The popup placed its dots with a blended throughput and its own intelligence scale, and
+  // scaled the track with a local copy of the ceiling. The line therefore rested on a dot the
+  // router would not pick — the picture and the strip named different models.
+  const harness = read('public/harness.js')
+  assert.match(harness, /const routingIntell = Number\(row\.routingIntell\)/)
+  assert.match(harness, /const routingSpeed = Number\(row\.routingSpeed\)/)
+  assert.match(harness, /const ceiling = slopePlotCeilingSlope \?\? slopePlotCeiling\(eligible\)/)
+  // selectModelBySlope's tie rule: equally good rows on the line, the faster one wins.
+  assert.match(harness, /const tied = pick !== null && Math\.abs\(value - best\)/)
+  assert.match(harness, /\(tied && point\.speed > bestSpeed\)/)
+  const models = read('lib/http/routes/models.js')
+  assert.match(models, /routingSpeed: computeRowSpeed\(r\),/)
+  assert.match(models, /routingIntell: computeRowIntelligence\(r\),/)
+  assert.match(models, /ceilingSlope: selectorSlopeForPercent\(100, ctx\.results, selectorBounds\)/)
 })
 
 test('the composer saves the slope for its own conversation', () => {
