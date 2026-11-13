@@ -3846,28 +3846,34 @@
     // rule picks the fastest eligible row. Drawing it through the pick is what makes the
     // picture say which row the line lands on.
     //
-    // The line is the contour `intelligence + slope × speed` in the picture's own units: the
-    // axes are scaled independently, so its screen steepness is the data slope times each axis's
-    // pixel density. That is the only angle at which the line actually rests on the row the
-    // router picks — an angle chosen to look even ran it through dots the pick had not chosen,
-    // which is what "the line hits a different dot than the one it selects" was.
-    const screenSlope = slope * (plotH / ySpan) / (plotW / xSpan)
+    // The line's angle is the slider's own, and reads as the control it belongs to: horizontal
+    // at 0%, upright at 100%, and turning evenly between them. The axes are scaled
+    // independently, so an angle derived from the data slope is an arbitrary one; deriving it
+    // from the thumb instead makes 0% look like "no speed preference" and 100% look like
+    // "speed only". It is drawn through the pick, so the line still rest on the row the router
+    // selects — the percentage turns the line, it does not choose the model.
+    const clampedPct = Math.max(0, Math.min(100, Number(percent) || 0))
+    const upright = clampedPct >= 100
+    const screenSlope = Math.tan((clampedPct / 100) * (Math.PI / 2))
+    const pickX = pick ? xOf(pick.speed).toFixed(1) : '0'
     const line =
       !ceiling || !pick
         ? ''
-        : (() => {
-            const segment = slopeLineSegment(
-              xOf(pick.speed),
-              yOf(pick.intell),
-              screenSlope,
-              pad,
-              plotW,
-              plotH,
-            )
-            return segment
-              ? `<line class="hx-slope-line" x1="${segment.x1.toFixed(1)}" y1="${segment.y1.toFixed(1)}" x2="${segment.x2.toFixed(1)}" y2="${segment.y2.toFixed(1)}"/>`
-              : ''
-          })()
+        : upright
+          ? `<line class="hx-slope-line" x1="${pickX}" y1="${pad.top}" x2="${pickX}" y2="${(pad.top + plotH).toFixed(1)}"/>`
+          : (() => {
+              const segment = slopeLineSegment(
+                xOf(pick.speed),
+                yOf(pick.intell),
+                screenSlope,
+                pad,
+                plotW,
+                plotH,
+              )
+              return segment
+                ? `<line class="hx-slope-line" x1="${segment.x1.toFixed(1)}" y1="${segment.y1.toFixed(1)}" x2="${segment.x2.toFixed(1)}" y2="${segment.y2.toFixed(1)}"/>`
+                : ''
+            })()
     // The router plot's dot vocabulary, in miniature: a routable row is a provider-hued disc, a
     // row the router will not use is a smaller mark in the same hue, and the pick wears an accent
     // ring. A row below a minimum keeps its place but fades — it is still on the field, it just
@@ -5365,7 +5371,7 @@
     // An estimated ceiling is labelled as one, in the table's own words: the bar is real, the
     // figure under it is a bound Hammer inferred from traffic, not something the provider said.
     const periodLabel = window.estimated ? `${basePeriodLabel} · EST` : basePeriodLabel
-    const unit = window.metric === 'requests' ? 'requests' : 'tokens'
+    const unit = window.metric === 'requests' ? 'req' : 'tok'
     const remainingPercent =
       (window.unavailable && !window.percentOnly) || window.usedPercent == null
         ? null

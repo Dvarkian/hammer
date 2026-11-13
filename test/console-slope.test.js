@@ -142,14 +142,22 @@ test('the slope popup plots the field the slider is choosing from', () => {
   assert.match(css, /\.hx-slope-line \{/)
 })
 
-test('the slope line is the contour the pick sits on', () => {
-  // It used to be drawn at an angle that merely advanced with the track, because the numeric
-  // slope barely moved on a real catalogue. The scale is measured over the field the minimums
-  // leave now, so the slope does sweep — and the line has to be the real contour, times each
-  // axis's pixel density, or it rests on a dot the pick did not choose.
+test('the slope line turns from horizontal to upright with the thumb', () => {
+  // The angle belongs to the control, not to the data: the axes are scaled independently, so a
+  // data slope is an arbitrary screen angle — it sat near 45° for most of the track and needed a
+  // special case to be upright at the top. Horizontal at 0%, upright at 100%, even in between,
+  // and always drawn through the picked row (the pick is the router's own argmax).
   const harness = read('public/harness.js')
-  assert.match(harness, /const screenSlope = slope \* \(plotH \/ ySpan\) \/ \(plotW \/ xSpan\)/)
-  assert.doesNotMatch(harness, /SLOPE_LINE_MAX_ANGLE_DEG/)
+  assert.match(
+    harness,
+    /const screenSlope = Math\.tan\(\(clampedPct \/ 100\) \* \(Math\.PI \/ 2\)\)/,
+  )
+  assert.match(harness, /const upright = clampedPct >= 100/)
+  // Both paths start at the pick: the upright line on its speed, the leaning one on its point.
+  assert.match(
+    harness,
+    /slopeLineSegment\(\s*\n?\s*xOf\(pick\.speed\),\s*\n?\s*yOf\(pick\.intell\),/,
+  )
   assert.match(harness, /function slopeLineSegment\(px, py, screenSlope, pad, plotW, plotH\)/)
   // The 340px panel hangs off an 88px control, so it is placed rather than left to CSS: on a
   // narrow window the CSS anchor put most of it past the side of the screen.
