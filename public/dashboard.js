@@ -1182,7 +1182,11 @@
     function calculateBestModel(models) {
       // Same verdict as the dots and the KPIs: the highlighted model is one that can
       // actually take a request, not one whose last test hit a quota wall.
-      const candidates = models.filter(m => isRowUp(m) && m.avg !== Infinity);
+      // `getAvg` answers Infinity for a row with no successful ping, and JSON cannot carry
+      // that: /api/models sends null. Comparing against Infinity here therefore excluded
+      // nothing — null !== Infinity is true — and an unmeasured row passed a gate written to
+      // keep it out. `Number.isFinite` is the test the wire can actually satisfy.
+      const candidates = models.filter(m => isRowUp(m) && Number.isFinite(m.avg));
       if (candidates.length === 0) return null;
 
       return [...candidates].sort((a, b) => (b.qos || 0) - (a.qos || 0))[0];

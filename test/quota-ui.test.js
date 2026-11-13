@@ -648,6 +648,24 @@ test('the rail draws the bars of the model that answered, not just the pick', ()
   )
 })
 
+test('the row counter is only sent while it is today’s, and the log write leaves the loop', () => {
+  // `recordUsage` rolls the daily counter over by rewriting `dailyDate` on the next request, so
+  // a row idle since yesterday still holds yesterday's figure. The provider total skips those
+  // entries; the row field did not, and /api/models served eight-day-old traffic as today's.
+  assert.match(
+    modelsRoute,
+    /dailyProxyCount:\s*usageEntry\?\.dailyDate === today \? Number\(usageEntry\.dailyProxyCount\) \|\| 0 : 0,/,
+  )
+  // The request log reaches tens of megabytes (50 entries × ~620 KB), and writeFileSync on it
+  // stalled the event loop — the one serving /v1 — for hundreds of milliseconds per burst.
+  assert.match(server, /let logSaveInFlight = null;/)
+  assert.match(server, /await fsp\.rename\(tmpPath, LOGS_PATH\);/)
+  assert.doesNotMatch(server, /writeFileSync\(LOGS_PATH/)
+  // Infinity cannot cross the wire: /api/models sends null, so a filter written against
+  // Infinity excluded nothing and let unmeasured rows through a gate meant to keep them out.
+  assert.match(dashboard, /isRowUp\(m\) && Number\.isFinite\(m\.avg\)/)
+})
+
 test('a served request is attributed to the credential that answered it', () => {
   // The sample is taken where the answer is relayed, so the account that actually served it
   // is the one whose bar moves — not whichever account the pool would pick next.

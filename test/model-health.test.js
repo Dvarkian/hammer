@@ -9,6 +9,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   createModelHealth,
@@ -17,7 +18,40 @@ import {
   modelFailureStreak,
   noteModelFailure,
   noteModelSuccess,
+  sortResults,
 } from '../lib/utils.js'
+
+const utilsSource = readFileSync(new URL('../lib/utils.js', import.meta.url), 'utf8')
+
+test('an unmeasured row sorts after a measured one, whichever the direction', () => {
+  // `getAvg` answers Infinity for a row with no successful ping in the window, and /api/models
+  // can only carry null for that. Two unmeasured rows subtracted is Infinity - Infinity = NaN,
+  // which is not an answer a comparator may give: the engine is then free to leave the pair in
+  // whatever order it likes. A finite stand-in ranks them equal to each other and after every
+  // measured row, which is the order Infinity produced.
+  const unmeasured = [
+    { label: 'Alpha', status: 'up', pings: [] },
+    { label: 'Beta', status: 'up', pings: [] },
+  ]
+  const measured = {
+    label: 'Gamma',
+    status: 'up',
+    pings: [{ code: '200', ms: 120, ts: Date.now() }],
+  }
+  for (let i = 0; i < 25; i += 1) {
+    assert.deepEqual(
+      sortResults([...unmeasured, measured], 'avg', 'asc').map((r) => r.label),
+      ['Gamma', 'Alpha', 'Beta'],
+    )
+    // Descending is slowest first, and "no measurement" has always ranked as the slowest end
+    // of that axis — the two unmeasured rows keep their own (stable) order beside each other.
+    assert.deepEqual(
+      sortResults([measured, ...unmeasured], 'avg', 'desc').map((r) => r.label),
+      ['Alpha', 'Beta', 'Gamma'],
+    )
+  }
+  assert.match(utilsSource, /Number\.isFinite\(aAvg\) \? aAvg : Number\.MAX_VALUE/)
+})
 
 test('a model is out of action only on the third failure in a row', () => {
   const health = createModelHealth()
