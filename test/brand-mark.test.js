@@ -100,13 +100,14 @@ test('the mark on screen carries the same rounded ground as the icon', () => {
   }
 })
 
-test('the header draws the bare mark, not a tile', () => {
+test("the header draws the bare mark, in the brand's own maroon", () => {
   // A tile is a 32px-icon device. In the app bar the mark sits beside the wordmark instead, so it
-  // is drawn without the ground and in the text colour, that it reads in either theme.
+  // is drawn without the ground — but still in the brand tones: the maroon of the tile becomes the
+  // head's ink, with the bone shaft, rather than inheriting the text colour.
   const start = html.indexOf('class="hx-brand"')
   const brand = html.slice(start, html.indexOf('</svg>', start))
   assert.ok(brand.length > 0, 'the header mark is missing')
   assert.ok(!/<rect width="32"/.test(brand), 'the header still draws the maroon tile')
-  assert.match(brand, /fill="currentColor"/)
-  assert.ok(!/#f6ece5|#d9c3bb/.test(brand), 'the header still paints the icon\u2019s own tones')
+  assert.match(brand, new RegExp(`fill="#${GROUND}"`), 'the header head is not the brand maroon')
+  assert.match(brand, new RegExp(`fill="#${HANDLE}"`), 'the header shaft is not the bone tone')
 })

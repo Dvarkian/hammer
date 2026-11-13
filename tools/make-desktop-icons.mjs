@@ -278,11 +278,58 @@ function fitMark(target, boxWeight = 0.7) {
 }
 
 /**
- * The mark on its own, fitted wider: the tray has no tile, so the drawing may use the margin.
- * Centred on its bounding box rather than on its visual mass — at 16px in a panel the ink has to
- * sit level, and the optical bias that helps inside a tile pushes it against the top edge here.
+ * The transparent mark's fit, measured from the flattened outline rather than by sampling.
+ *
+ * `fitMark` reads its box back through the screen grid, so it is accurate to a sample — good
+ * enough inside a tile with its margin, but the bare mark is fitted nearly to the edges, and there
+ * a sample of slack put the claw against the top row and the panel cut it. This projects every
+ * outline point directly, so the box is the drawing's own, and centres it on that.
  */
-const TRAY_TARGET = 29
+function exactFit(target) {
+  const radians = (-TILT_DEGREES * Math.PI) / 180
+  const project = (point, scale, offset) => {
+    const x = (point[0] - CENTER) * scale
+    const y = (point[1] - CENTER) * scale
+    return [
+      CENTER + x * Math.cos(radians) - y * Math.sin(radians) + offset[0],
+      CENTER + x * Math.sin(radians) + y * Math.cos(radians) + offset[1],
+    ]
+  }
+  const box = (scale, offset) => {
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const point of [...HEAD_POLY, ...HANDLE_POLY]) {
+      const [x, y] = project(point, scale, offset)
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (x > maxX) maxX = x
+      if (y > maxY) maxY = y
+    }
+    return { minX, minY, maxX, maxY }
+  }
+  let scale = 1
+  for (let pass = 0; pass < 3; pass += 1) {
+    const measured = box(scale, [0, 0])
+    scale *= target / Math.max(measured.maxX - measured.minX, measured.maxY - measured.minY)
+  }
+  const measured = box(scale, [0, 0])
+  SCALE = scale
+  OFFSET = [
+    CENTER - (measured.minX + measured.maxX) / 2,
+    CENTER - (measured.minY + measured.maxY) / 2,
+  ]
+  return box(scale, OFFSET)
+}
+
+/**
+ * The mark on its own, fitted wider: the tray has no tile, so the drawing may use the margin.
+ * Centred on its bounding box rather than on its visual mass, and fitted to 26 of the 32 units
+ * rather than nearly all of them: a status bar sizes a tray icon by height, so a mark that fills
+ * the canvas loses its top row to the panel's own crop.
+ */
+const TRAY_TARGET = 26
 
 const finalBox = fitMark(TARGET_SIZE)
 console.log(
@@ -408,7 +455,10 @@ writeFileSync(join(OUT_DIR, 'icon.png'), encodePng(512, render(512)))
 console.log(`wrote ${join(OUT_DIR, 'icon.png')} (512×512)`)
 // The tray and the app bar want the hammer without the maroon tile: a tile is a 32px-icon device,
 // and in a panel or beside a wordmark it reads as a sticker. Transparent, fitted wider.
-fitMark(TRAY_TARGET, 1)
+const trayBox = exactFit(TRAY_TARGET)
+console.log(
+  `tray fit: box ${round(trayBox.minX)}→${round(trayBox.maxX)} × ${round(trayBox.minY)}→${round(trayBox.maxY)}`,
+)
 writeFileSync(join(OUT_DIR, 'tray.png'), encodePng(32, render(32, false)))
 console.log(`wrote ${join(OUT_DIR, 'tray.png')} (32×32, no ground)`)
 fitMark(TARGET_SIZE)
