@@ -142,6 +142,21 @@ test('the slope popup plots the field the slider is choosing from', () => {
   assert.match(css, /\.hx-slope-line \{/)
 })
 
+test('the slope line turns evenly to vertical instead of snapping at the top', () => {
+  // The popup drew its line from the numeric slope. The axes are scaled independently, so on a
+  // real catalogue that screen angle stayed near 45° right up to 99% and then took the vertical
+  // special case at 100% in one slider step. The line's angle now advances with the track, and
+  // it is clipped to the plot so a steep frame cannot run off the viewBox.
+  const harness = read('public/harness.js')
+  assert.match(harness, /const SLOPE_LINE_MAX_ANGLE_DEG = 89\.4/)
+  assert.match(
+    harness,
+    /const screenAngle = \(clampedPct \/ 100\) \* \(\(SLOPE_LINE_MAX_ANGLE_DEG \* Math\.PI\) \/ 180\)/,
+  )
+  assert.match(harness, /function slopeLineSegment\(px, py, screenSlope, pad, plotW, plotH\)/)
+  assert.doesNotMatch(harness, /const atMax = percent >= 100/)
+})
+
 test('the composer saves the slope for its own conversation', () => {
   const harness = read('public/harness.js')
   assert.match(harness, /function setSlopePercent\(percent\)/)

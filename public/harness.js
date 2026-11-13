@@ -3706,6 +3706,40 @@
     return true
   }
 
+  /** How steep the slope line leans at 100%: upright, short of the exact vertical it takes there. */
+  const SLOPE_LINE_MAX_ANGLE_DEG = 89.4
+
+  /**
+   * The part of a line through a pixel point that lies inside the plot box.
+   *
+   * The line turns through the whole quadrant, so its ends leave the viewBox long before the
+   * track ends; clipping to the box keeps every frame inside the picture instead of letting a
+   * steep line's endpoints run thousands of pixels off it.
+   */
+  function slopeLineSegment(px, py, screenSlope, pad, plotW, plotH) {
+    const left = pad.left
+    const right = pad.left + plotW
+    const top = pad.top
+    const bottom = pad.top + plotH
+    if (!(screenSlope > 0) || !Number.isFinite(screenSlope)) {
+      const y = Math.max(top, Math.min(bottom, py))
+      return { x1: left, y1: y, x2: right, y2: y }
+    }
+    // Parameterise as x = px + t, y = py - screenSlope · t, and keep what falls in the box.
+    let tMin = Math.max(left - px, (py - bottom) / screenSlope)
+    let tMax = Math.min(right - px, (py - top) / screenSlope)
+    if (!(tMax > tMin)) {
+      tMin = 0
+      tMax = 0
+    }
+    return {
+      x1: px + tMin,
+      y1: py - screenSlope * tMin,
+      x2: px + tMax,
+      y2: py - screenSlope * tMax,
+    }
+  }
+
   /** The plot, as markup: dots, the line this slope lowers, and the row it lands on. */
   function slopePlotMarkup(percent) {
     const points = slopePlotPoints
@@ -3767,17 +3801,38 @@
         pick = point
       }
     }
-    // The line is a constant score, lowered until it touches the pick, and truly vertical at
-    // 100% where the router's rule picks the fastest eligible row. Drawing it through the pick
-    // is what makes the picture say which row the line lands on.
-    const atMax = percent >= 100
-    const line = !ceiling
+    // The line is lowered until it touches the pick, and upright at 100% where the router's
+    // rule picks the fastest eligible row. Drawing it through the pick is what makes the
+    // picture say which row the line lands on.
+    //
+    // What rotates with the slider is the line's *screen* angle, evenly, from horizontal at 0%
+    // to vertical at 100% — the rule this control followed when it lived on the router page.
+    // The numeric slope cannot be drawn directly here: the axes are scaled independently, so a
+    // ceiling slope (a data-space figure) is an arbitrary screen angle, and on a real catalogue
+    // it stayed around 45° for the whole track and then snapped upright at 100%, where the
+    // vertical special case takes over. The pick is still the router's own argmax — only the
+    // line that names it turns smoothly.
+    const clampedPct = Math.max(0, Math.min(100, Number(percent) || 0))
+    const screenAngle = (clampedPct / 100) * ((SLOPE_LINE_MAX_ANGLE_DEG * Math.PI) / 180)
+    const screenSlope = Math.tan(screenAngle)
+    const atMax = clampedPct >= 100
+    const line = !ceiling || !pick
       ? ''
-      : pick && atMax
+      : atMax
         ? `<line class="hx-slope-line" x1="${xOf(pick.speed).toFixed(1)}" y1="${pad.top}" x2="${xOf(pick.speed).toFixed(1)}" y2="${(pad.top + plotH).toFixed(1)}"/>`
-        : pick
-          ? `<line class="hx-slope-line" x1="${xOf(xMin).toFixed(1)}" y1="${yOf(pick.intell + slope * (pick.speed - xMin)).toFixed(1)}" x2="${xOf(xMax).toFixed(1)}" y2="${yOf(pick.intell + slope * (pick.speed - xMax)).toFixed(1)}"/>`
-          : ''
+        : (() => {
+            const segment = slopeLineSegment(
+              xOf(pick.speed),
+              yOf(pick.intell),
+              screenSlope,
+              pad,
+              plotW,
+              plotH,
+            )
+            return segment
+              ? `<line class="hx-slope-line" x1="${segment.x1.toFixed(1)}" y1="${segment.y1.toFixed(1)}" x2="${segment.x2.toFixed(1)}" y2="${segment.y2.toFixed(1)}"/>`
+              : ''
+          })()
     // The router plot's dot vocabulary, in miniature: a routable row is a provider-hued disc, a
     // row the router will not use is a smaller mark in the same hue, and the pick wears an accent
     // ring. A row below a minimum keeps its place but fades — it is still on the field, it just
