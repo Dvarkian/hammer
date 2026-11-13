@@ -202,7 +202,7 @@ test("routing reads the slope of the request's conversation", () => {
     proxy,
     /const requestSlopePercent =\s*\n?\s*consoleSlopePercent\(req\.get\('x-hammer-pi-console'\)\)/,
   )
-  assert.match(proxy, /selectorSlopeForPercent\(requestSlopePercent, pool\)/)
+  assert.match(proxy, /selectorSlopeForPercent\(requestSlopePercent, pool, \{/)
   assert.doesNotMatch(proxy, /selectorSlopeOf\(/)
   const models = read('lib/http/routes/models.js')
   assert.match(models, /SELECTOR_DEFAULT_PERCENT/)

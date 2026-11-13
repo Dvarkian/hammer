@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
   selectModelBySlope,
+  selectorSlopeCeiling,
   selectorSlopeForPercent,
   selectorSlopeNotchesPercent,
   selectorSlopeRegions,
@@ -61,15 +62,55 @@ test('the ceiling and the notches agree on the same scale', () => {
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
+test('the top of the slider reaches the fastest model the minimums leave', () => {
+  // The bug this catches: an excluded row still widened the scale, so 100% was a slope the
+  // fastest *reachable* row could not take over at. The slider then resolved to one model from
+  // end to end while the router claimed to be sliding between them.
+  const withArtefact = [
+    {
+      providerKey: 'a',
+      modelId: 'smart',
+      label: 'Smart',
+      status: 'up',
+      aa: 90,
+      ttft: 900,
+      tps: 40,
+    },
+    { providerKey: 'b', modelId: 'fast', label: 'Fast', status: 'up', aa: 55, ttft: 100, tps: 300 },
+    // Unroutable by the floor below, but its speed still stretches the unfiltered scale.
+    {
+      providerKey: 'c',
+      modelId: 'hyper',
+      label: 'Hyper',
+      status: 'up',
+      aa: 20,
+      ttft: 50,
+      tps: 1000,
+    },
+  ]
+  const floor = { minIntell: 50 }
+  const pick = (percent, options) =>
+    selectModelBySlope(withArtefact, {
+      slope: selectorSlopeForPercent(percent, withArtefact, options),
+      ...options,
+    })?.model.modelId
+  assert.equal(pick(100, floor), 'fast', 'the fastest reachable row wins at the top')
+  assert.equal(pick(0, floor), 'smart', 'the smartest reachable row wins at the bottom')
+  assert.ok(
+    selectorSlopeCeiling(withArtefact, floor) > selectorSlopeCeiling(withArtefact),
+    'the scale shrinks to the field the minimums leave',
+  )
+})
+
 test('a minimum narrows the slider to the models it leaves', () => {
   // The bug this catches: the envelope is drawn over every usable row, so a minimum that leaves
   // one model still left ticks where the envelope changed hands. A drag crossed them and the
   // model never moved.
   const full = selectorSlopeRegions(rows)
   assert.ok(full.length > 1, 'without minimums both rows can win')
-  const narrowed = selectorSlopeRegions(rows, { minIntell: 80 })
-  assert.equal(narrowed.length, 1, 'only the smart row clears the floor')
-  assert.equal(narrowed[0].model.modelId, 'smart')
+  // One reachable model is a field with no spread, so it has no regions to slide across: the
+  // slider is a single model and must not advertise handoffs it cannot make.
+  assert.deepEqual(selectorSlopeRegions(rows, { minIntell: 80 }), [])
   assert.deepEqual(
     selectorSlopeNotchesPercent(rows, { minIntell: 80 }),
     [],
@@ -82,7 +123,10 @@ test('the models payload carries the notches for the composer', () => {
   const models = read('lib/http/routes/models.js')
   // The notches are walked through the pick, so they are computed with the same minimums it
   // honours rather than over every usable row.
-  assert.match(models, /notchesPercent: selectorSlopeNotchesPercent\(ctx\.results, \{/)
+  assert.match(
+    models,
+    /notchesPercent: selectorSlopeNotchesPercent\(ctx\.results, selectorBounds\)/,
+  )
   assert.match(models, /minSpeed: selCfg \? selCfg\.minSpeed : null/)
   assert.match(models, /minIntell: selCfg \? selCfg\.minIntell : null/)
   const harness = read('public/harness.js')
@@ -123,5 +167,6 @@ test('the console reports the model its own slope resolves to', () => {
   assert.match(pi, /ctx\.routedSelection\(percent\)/)
   const server = read('lib/server.js')
   assert.match(server, /const routedSelectionForConsole = \(percent = SELECTOR_DEFAULT_PERCENT\)/)
-  assert.match(server, /const slope = selectorSlopeForPercent\(percent, results\)/)
+  assert.match(server, /const slope = selectorSlopeForPercent\(percent, results, \{/)
+  assert.match(server, /minSpeed: selector\.minSpeed,/)
 })
