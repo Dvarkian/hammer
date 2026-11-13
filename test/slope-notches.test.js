@@ -5,6 +5,7 @@ import {
   selectModelBySlope,
   selectorSlopeForPercent,
   selectorSlopeNotchesPercent,
+  selectorSlopeRegions,
 } from '../lib/utils.js'
 
 const rows = [
@@ -60,9 +61,30 @@ test('the ceiling and the notches agree on the same scale', () => {
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
+test('a minimum narrows the slider to the models it leaves', () => {
+  // The bug this catches: the envelope is drawn over every usable row, so a minimum that leaves
+  // one model still left ticks where the envelope changed hands. A drag crossed them and the
+  // model never moved.
+  const full = selectorSlopeRegions(rows)
+  assert.ok(full.length > 1, 'without minimums both rows can win')
+  const narrowed = selectorSlopeRegions(rows, { minIntell: 80 })
+  assert.equal(narrowed.length, 1, 'only the smart row clears the floor')
+  assert.equal(narrowed[0].model.modelId, 'smart')
+  assert.deepEqual(
+    selectorSlopeNotchesPercent(rows, { minIntell: 80 }),
+    [],
+    'one reachable model has no handoff to notch',
+  )
+  assert.ok(selectorSlopeNotchesPercent(rows).length > 0, 'without the floor there is a handoff')
+})
+
 test('the models payload carries the notches for the composer', () => {
   const models = read('lib/http/routes/models.js')
-  assert.match(models, /notchesPercent: selectorSlopeNotchesPercent\(ctx\.results\)/)
+  // The notches are walked through the pick, so they are computed with the same minimums it
+  // honours rather than over every usable row.
+  assert.match(models, /notchesPercent: selectorSlopeNotchesPercent\(ctx\.results, \{/)
+  assert.match(models, /minSpeed: selCfg \? selCfg\.minSpeed : null/)
+  assert.match(models, /minIntell: selCfg \? selCfg\.minIntell : null/)
   const harness = read('public/harness.js')
   assert.match(harness, /data\.selector\?\.notchesPercent/)
   assert.match(harness, /function paintSlopeNotches\(\)/)

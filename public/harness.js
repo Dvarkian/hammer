@@ -1728,6 +1728,9 @@
   // not mention must not become one fetch per status frame; after one look the answer stands
   // for a while (see renderQuota).
   let quotaMissLookup = { key: null, at: 0 }
+  // When the table was last re-read for a route change. The table is megabytes, so a drag that
+  // crosses several models must not ask for a fresh copy at every step.
+  let ttftForcedAt = 0
   /** The composer slope slider's notches, as percentages of the data's slope ceiling. */
   let slopeNotches = []
   /** The field the popup draws: one {intelligence, speed} per routable row of /api/models. */
@@ -4148,11 +4151,47 @@
   }
 
   let slopeSaveTimer = null
+  /** A save in flight, and the newest slope that arrived while it was. */
+  let slopeSaveInFlight = false
+  let slopeSavePending = null
+  /**
+   * How long a drag may go unsaved. The strip and the rail name the model the router has picked,
+   * so a drag that crosses a handoff has to be named while it crosses it; a request per pixel
+   * would be one per frame, and a single trailing timer named nothing until the thumb stopped.
+   */
+  const SLOPE_SAVE_INTERVAL_MS = 90
+
+  /**
+   * Saves the slope at most one request at a time: whatever the thumb reached while a save was in
+   * flight goes out as soon as it returns, so the last position always wins.
+   */
+  function saveSlopeSoon(percent) {
+    if (slopeSaveInFlight) {
+      slopeSavePending = percent
+      return
+    }
+    if (slopeSaveTimer) clearTimeout(slopeSaveTimer)
+    slopeSaveTimer = setTimeout(() => {
+      slopeSaveTimer = null
+      if (slopeSaveInFlight) {
+        slopeSavePending = percent
+        return
+      }
+      slopeSaveInFlight = true
+      void setSlopePercent(percent).finally(() => {
+        slopeSaveInFlight = false
+        const next = slopeSavePending
+        slopeSavePending = null
+        if (next != null) saveSlopeSoon(next)
+      })
+    }, SLOPE_SAVE_INTERVAL_MS)
+  }
 
   /** Saves the slider's slope for this conversation; the router uses it on the next turn. */
   async function setSlopePercent(percent) {
     const ctx = active()
     if (!ctx) return
+    const slider = $('hx-slope-slider')
     try {
       const res = await fetch(consoleApi(ctx, '/slope'), {
         method: 'POST',
@@ -4161,7 +4200,10 @@
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || 'Could not change the slope (' + res.status + ').')
-      paintSlopePercent(data.percent)
+      // A save the thumb has already left must not pull the slider back to where it was: while a
+      // drag is running, answers arrive for positions it has long passed. The new pick below is
+      // still painted — a later save supersedes it within a frame or two of the thumb.
+      if (!slider || Number(slider.value) === Number(percent)) paintSlopePercent(data.percent)
       // The slope *is* a model choice the user just made, so the strip names the new pick now.
       // Waiting for the status round trip left it showing the previous model — and waiting for
       // an answer left it there until the next message, which is the failure this fixes. The
@@ -4182,7 +4224,8 @@
           paintModelLabel(ctx, ctx.status?.model)
           renderQuota(ctx)
         }
-        if (changed) {
+        if (changed && Date.now() - ttftForcedAt > 5_000) {
+          ttftForcedAt = Date.now()
           void loadKnownTtfts({ force: true }).then(() => {
             if (ctx === active()) renderQuota(ctx)
           })
@@ -4202,12 +4245,9 @@
     // The plot follows the thumb, not the saved value: a drag crosses dozens of slopes and the
     // one under the thumb is the one being read.
     if (!$('hx-slope-pop')?.hidden) renderSlopePlot(Number(slider.value))
-    if (slopeSaveTimer) clearTimeout(slopeSaveTimer)
-    // A drag crosses dozens of values; only the one it lands on is worth a request.
-    slopeSaveTimer = setTimeout(() => {
-      slopeSaveTimer = null
-      void setSlopePercent(Number(slider.value))
-    }, 250)
+    // A drag crosses dozens of values; coalescing sends the position it has reached every few
+    // frames instead of one request per input — or one after it stops.
+    saveSlopeSoon(Number(slider.value))
   }
 
   /**

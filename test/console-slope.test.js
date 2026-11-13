@@ -184,6 +184,11 @@ test('the composer saves the slope for its own conversation', () => {
   assert.match(harness, /const key = routedModelKey\(data\.routedModel\)/)
   assert.match(harness, /ctx\.answeredModel = null/)
   assert.match(harness, /paintModelLabel\(ctx, ctx\.status\?\.model\)\n\s*renderQuota\(ctx\)/)
+  // The save is coalesced, not deferred to the end of the drag: the strip names models as the
+  // thumb passes them, at most one request at a time.
+  assert.match(harness, /function saveSlopeSoon\(percent\)/)
+  assert.match(harness, /saveSlopeSoon\(Number\(slider\.value\)\)/)
+  assert.match(harness, /const SLOPE_SAVE_INTERVAL_MS = 90/)
   // Cleared whether or not the pick moved: a slope the router resolves to the same model still
   // ends the previous answer's claim on the strip and the rail, which otherwise kept naming the
   // answered model until the next answer arrived.
