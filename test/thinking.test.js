@@ -84,6 +84,19 @@ test('only families that reason are offered a level', () => {
     'grok-4',
     'minimax-m2',
     'magistral-small-2506',
+    // The catalog's current names. A version-pinned list hid the control on whole generations:
+    // the routed free DeepSeek is V4.1, and Nemotron writes its version with a dot, so both
+    // offered no steps at all.
+    'deepseek-v4.1-flash',
+    'deepseek/deepseek-v4-pro',
+    'deepseek-v4-flash-0731',
+    'nemotron-3.5-super-vl',
+    'nvidia/nemotron-3.5-lightning-free',
+    'step-5-preview',
+    'gemini-4-hydrogen',
+    'gemini-flash-lite-latest',
+    'claude-haiku-4-5',
+    'glm-5.3-flash',
   ]) {
     assert.equal(modelTakesThinking(model), true, model)
   }
@@ -98,6 +111,9 @@ test('only families that reason are offered a level', () => {
     'kimi-k2-instruct',
     'glm-4',
     'phi-4-mini-instruct',
+    // The plain DeepSeek line is not the reasoning one, even though it shares the family name.
+    'deepseek-chat',
+    'deepseek-flash',
   ]) {
     assert.equal(modelTakesThinking(model), false, model)
   }
