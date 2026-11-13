@@ -2,8 +2,10 @@
  * The usage a provider streams back is the only thing Pi sizes a conversation from: it reads the
  * context out of the last assistant message's usage. A provider that reports the tokens it
  * generated and nothing it was sent leaves Pi measuring 122 tokens for a context that had just
- * overflowed, and Pi then compacted against that figure. These tests pin the relay's half of it:
- * a prompt count the provider left out is filled from the request, and one it did report is
+ * overflowed, and Pi then compacted against that figure. A provider that reports 372 for a
+ * hundred thousand tokens of conversation does the same thing less obviously (devin). These
+ * tests pin the relay's half of it: a prompt count the provider left out — or reported far
+ * below the request — is filled from the request, and one that could describe the request is
  * never touched.
  */
 
@@ -42,6 +44,23 @@ test('a prompt count the provider did report is never replaced', () => {
   const repair = createUsageRepair(40_000)
   const frame = usageFrame({ prompt_tokens: 31_500, completion_tokens: 90, total_tokens: 31_590 })
   assert.equal(repair.push(frame) + repair.flush(), frame)
+  // Denser tokenizers than chars/4 are ordinary (code, CJK): their count is lower than the
+  // estimate without being a different number.
+  const dense = createUsageRepair(40_000)
+  const denseFrame = usageFrame({ prompt_tokens: 18_000, completion_tokens: 90 })
+  assert.equal(dense.push(denseFrame) + dense.flush(), denseFrame)
+})
+
+test('a prompt count far below the request cannot be describing it', () => {
+  // Devin: a hundred thousand tokens of conversation, answered, reported as 372 prompt tokens.
+  // Pi sized the context from that, so the meter read 751 tokens (0.3% of a 262k window) while
+  // the conversation was well over a third of the way to the wall.
+  const repair = createUsageRepair(100_000)
+  const frame = usageFrame({ prompt_tokens: 372, completion_tokens: 379, total_tokens: 751 })
+  const out = repair.push(frame) + repair.flush()
+  const usage = JSON.parse(out.trim().slice(6)).usage
+  assert.equal(usage.prompt_tokens, 100_000)
+  assert.equal(usage.total_tokens, 100_379)
 })
 
 test('frames the repair has no business in pass through unchanged', () => {
