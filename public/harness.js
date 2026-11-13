@@ -3997,6 +3997,56 @@
 
   let slopePlotHideTimer = null
 
+  /**
+   * Keeps the plot inside the window.
+   *
+   * The panel is 340px wide and hangs off an 88px slider that sits near the composer's edge, so
+   * on a narrow window most of it was past the side of the screen. It slides along its anchor
+   * instead: the control's right edge by default, clamped to the viewport on both sides, and
+   * narrowed only when the window itself is narrower than the panel.
+   */
+  function placeSlopePlot() {
+    const pop = $('hx-slope-pop')
+    const anchor = pop?.parentElement
+    if (!pop || pop.hidden || !anchor) return
+    const margin = 8
+    const available = Math.max(160, window.innerWidth - margin * 2)
+    // The panel's own box model is content-box, so a max-width of the viewport would still
+    // overflow by its padding and border; the clamp has to be on the box that is drawn.
+    pop.style.boxSizing = 'border-box'
+    pop.style.maxWidth = `${available}px`
+    // A window shorter than the panel scrolls it rather than letting it hang off the bottom.
+    pop.style.maxHeight = `${Math.max(120, window.innerHeight - margin * 2)}px`
+    pop.style.overflow = 'auto'
+    // Measured after the clamp: a panel wider than the window would otherwise be positioned
+    // by a width it does not have.
+    const width = Math.min(available, pop.offsetWidth || 340)
+    const box = anchor.getBoundingClientRect()
+    const preferred = box.right - width + 8
+    const left = Math.max(margin, Math.min(preferred, window.innerWidth - width - margin))
+    pop.style.left = `${left - box.left}px`
+    pop.style.right = 'auto'
+    // It opens above the control, which is where the room usually is; a window too short for
+    // that opens it below. Either way it is then slid in until both edges are on screen.
+    pop.style.top = ''
+    pop.style.bottom = ''
+    if (box.top - 10 - (pop.offsetHeight || 240) < margin) {
+      pop.style.top = 'calc(100% + 10px)'
+      pop.style.bottom = 'auto'
+    }
+    const rect = pop.getBoundingClientRect()
+    const overflow =
+      rect.top < margin
+        ? margin - rect.top
+        : rect.bottom > window.innerHeight - margin
+          ? window.innerHeight - margin - rect.bottom
+          : 0
+    if (overflow !== 0) {
+      pop.style.top = `${rect.top - box.top + overflow}px`
+      pop.style.bottom = 'auto'
+    }
+  }
+
   /** Shows the plot while the slider is in hand, with the value it currently holds. */
   function showSlopePlot(percent) {
     const pop = $('hx-slope-pop')
@@ -4007,6 +4057,7 @@
     }
     renderSlopePlot(percent)
     pop.hidden = false
+    placeSlopePlot()
   }
 
   /** Folds it away. A delay keeps the last frame legible after the thumb is let go. */
@@ -5241,7 +5292,7 @@
       ? 'FREE TIER'
       : railQuotaPeriodLabel(window.period, window.rawWindow)
     // An estimated ceiling is labelled as one, in the table's own words: the bar is real, the
-    // number above it is a bound Hammer inferred from traffic, not something the provider said.
+    // figure under it is a bound Hammer inferred from traffic, not something the provider said.
     const periodLabel = window.estimated ? `${basePeriodLabel} · EST` : basePeriodLabel
     const unit = window.metric === 'requests' ? 'requests' : 'tokens'
     const remainingPercent =
@@ -7070,6 +7121,8 @@
     // released over the track.
     slopeSlider?.addEventListener('pointerdown', () => showSlopePlot(Number(slopeSlider.value)))
     slopeSlider?.addEventListener('focus', () => showSlopePlot(Number(slopeSlider.value)))
+    // A window that narrows while the panel is open would push it off the side again.
+    window.addEventListener('resize', () => placeSlopePlot())
     slopeSlider?.addEventListener('blur', () => hideSlopePlot(300))
     slopeSlider?.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return

@@ -154,6 +154,15 @@ test('the slope line turns evenly to vertical instead of snapping at the top', (
     /const screenAngle = \(clampedPct \/ 100\) \* \(\(SLOPE_LINE_MAX_ANGLE_DEG \* Math\.PI\) \/ 180\)/,
   )
   assert.match(harness, /function slopeLineSegment\(px, py, screenSlope, pad, plotW, plotH\)/)
+  // The 340px panel hangs off an 88px control, so it is placed rather than left to CSS: on a
+  // narrow window the CSS anchor put most of it past the side of the screen.
+  assert.match(harness, /function placeSlopePlot\(\)/)
+  assert.match(
+    harness,
+    /const left = Math\.max\(margin, Math\.min\(preferred, window\.innerWidth - width - margin\)\)/,
+  )
+  assert.match(harness, /window\.addEventListener\('resize', \(\) => placeSlopePlot\(\)\)/)
+  assert.match(harness, /pop\.hidden = false\n\s*placeSlopePlot\(\)/)
   // A contour of `intelligence + slope × speed` falls as speed rises: on screen that is
   // y *increasing* with x. Drawing it the other way put the line above the rows it was
   // supposed to lean over.
