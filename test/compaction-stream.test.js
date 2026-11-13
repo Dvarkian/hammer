@@ -326,7 +326,9 @@ test('a summarization is routed only to a model that can hold it', () => {
 test('the proxy taps the stream and names the console it belongs to', () => {
   assert.match(proxy, /piBridgeForConsole\(compactionConsole\)/)
   assert.match(proxy, /createCompactionTap\(compactionBridge\)/)
-  assert.match(proxy, /bridge\.noteCompactionText\(delta\.content\)/)
+  // The summary text is read through the content helper now: a chunked answer is still text.
+  assert.match(proxy, /const partText = delta \? contentPartsText\(delta\.content\) : ''/)
+  assert.match(proxy, /bridge\.noteCompactionText\(partText\)/)
 })
 
 test('a prose-less message still counts as the previous model', () => {
