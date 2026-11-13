@@ -1764,6 +1764,10 @@
               // Keep only what the rail's quota meter reads. The full table is thousands of
               // rows; holding every row in the page would be a second copy of the router.
               quotaRowByModel.set(`${providerKey}::${id}`, {
+                // The row's own name, so a bar drawn for this model can say which model it is
+                // without the caller re-deriving a label from the id (see quotaSubject).
+                label: row.label || null,
+                providerName: providerName || null,
                 context: row.context || null,
                 // The table's own resolved figure. It is the number the column is sorted
                 // and compared on, and it survives a display such as ">238k" that cannot be
@@ -4332,7 +4336,12 @@
   function noteAnsweredModel(ctx, model) {
     if (!ctx || !model) return
     ctx.answeredModel = model
-    if (ctx === active()) paintModelLabel(ctx, ctx.status?.model)
+    if (ctx === active()) {
+      paintModelLabel(ctx, ctx.status?.model)
+      // The rail's bars belong to the model that answered, so a fallback that just served this
+      // turn has to move them now — not at the next status frame, which keeps the pick.
+      renderQuota(ctx)
+    }
   }
 
   function renderRouting(data, ctx = active()) {
@@ -5344,12 +5353,49 @@
     })
   }
 
+  /**
+   * The model whose limits the rail draws, with the words that name it.
+   *
+   * One decision for both the label and the row beneath it. The composer's strip already treats
+   * the model that answered as the truth — the router's pick is a request, and a fallback answers
+   * with a model the pick never named (`noteAnsweredModel`) — while the rail read only the pick.
+   * So a turn served by a fallback left the pick's windows in the sidebar beside a strip naming
+   * another model, and nothing said which model those bars belonged to. An answer that fits a
+   * table row wins; the pick is used when nothing has answered, or when the answer does not name
+   * the same model the transcript recorded (that field is cleared whenever the route moves, so a
+   * new route never inherits the previous answer's bars).
+   */
+  function quotaSubject(ctx) {
+    const routed = ctx?.routedModel
+    const routedKey = routed ? `${routed.providerKey}::${routed.modelId}` : ''
+    const answeredName = modelName(ctx?.answeredModel || '')
+    const rowName = modelName(lastAnsweredRow(ctx)?.model || '')
+    // The answer is only this turn's answer when the transcript's newest row agrees with it.
+    if (answeredName && rowName && answeredName === rowName) {
+      const providerKey = providerKeyByModel.get(answeredName) || ''
+      const key = providerKey ? `${providerKey}::${answeredName}` : ''
+      const stored = key ? quotaRowByModel.get(key) : null
+      if (key && key !== routedKey && stored) {
+        const label = printableModelName(stored.label || answeredName)
+        const providerName = stored.providerName || providerDisplayName(providerKey)
+        return { key, label, title: [label, providerName].filter(Boolean).join(' · ') }
+      }
+    }
+    if (!routed) return null
+    const label = printableModelName(routed.label || routed.modelId || routed.realModelId || 'model')
+    return {
+      key: routedKey,
+      label,
+      title: [label, routed.providerName].filter(Boolean).join(' · '),
+    }
+  }
+
   function renderQuota(ctx = active()) {
     const list = $('hx-quota-windows')
     const rateList = $('hx-rate-windows')
     const rateMeter = rateList?.closest('.hx-meter') || null
     const modelEl = $('hx-quota-model')
-    const routed = ctx?.routedModel
+    const subject = quotaSubject(ctx)
     if (!list) return
     // Both meters answer with a bar or ∞. Nothing here is a dash or a link: the routed row
     // is either under a window this endpoint named, or it is not limited by one.
@@ -5392,8 +5438,8 @@
       list.innerHTML = body('quota', quota)
       if (rateList) rateList.innerHTML = body('rate-limit', throttles)
     }
-    if (rateMeter) rateMeter.hidden = !routed
-    if (!routed) {
+    if (rateMeter) rateMeter.hidden = !subject
+    if (!subject) {
       if (modelEl) {
         modelEl.textContent = 'no model'
         modelEl.title = ''
@@ -5402,12 +5448,13 @@
       if (rateList) rateList.innerHTML = '<div class="hx-quota-empty">No model routed yet.</div>'
       return
     }
-    const label = printableModelName(routed.label || routed.modelId || routed.realModelId || 'model')
+    // The label and the row are one subject: the words above the bars always name the model the
+    // bars were read from, whichever of the two it is.
     if (modelEl) {
-      modelEl.textContent = label
-      modelEl.title = [label, routed.providerName].filter(Boolean).join(' · ')
+      modelEl.textContent = subject.label
+      modelEl.title = subject.title
     }
-    const rowKey = `${routed.providerKey}::${routed.modelId}`
+    const rowKey = subject.key
     const row = quotaRowByModel.get(rowKey)
     if (!row) {
       // The table does not mention this endpoint. A table read minutes ago is not evidence

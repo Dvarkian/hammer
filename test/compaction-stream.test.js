@@ -282,7 +282,12 @@ test('the composer follows the answered model, not only a status frame', () => {
   assert.match(harness, /answeredModel: null/)
   assert.match(harness, /function noteAnsweredModel/)
   assert.match(harness, /ctx\.answeredModel = model/)
-  assert.match(harness, /if \(ctx === active\(\)\) paintModelLabel\(ctx, ctx\.status\?\.model\)/)
+  // The same answer now also repaints the rail's quota meter, so the composer's strip and the
+  // bars beside it name one model (see quotaSubject); the strip is still painted here.
+  assert.match(
+    harness,
+    /if \(ctx === active\(\)\) \{[\s\S]{0,400}paintModelLabel\(ctx, ctx\.status\?\.model\)/,
+  )
   assert.match(harness, /function paintModelLabel/)
   assert.match(
     harness,

@@ -623,6 +623,31 @@ test('the model table and the rail draw one limit bar per account', () => {
   assert.match(harnessCss, /\.hx-quota-account-list \{[\s\S]*?display: flex/)
 })
 
+test('the rail draws the bars of the model that answered, not just the pick', () => {
+  // A fallback answers with a model the router's pick never named, and the composer's strip
+  // already says so (`noteAnsweredModel` outranks the status route). The rail read only
+  // `ctx.routedModel`, so a turn served by a fallback left the pick's windows in the sidebar
+  // beside a strip naming another model — a quota read for a model that was not the one serving.
+  // One subject now decides both the label and the row, so the two cannot name different models.
+  assert.match(harness, /function quotaSubject\(ctx\) \{/)
+  assert.match(harness, /const subject = quotaSubject\(ctx\)/)
+  assert.match(harness, /modelEl\.textContent = subject\.label/)
+  assert.match(harness, /const rowKey = subject\.key/)
+  // An answer the transcript's newest row does not agree with is not this turn's answer, and an
+  // answer that resolves to no table row is no better than the pick.
+  assert.match(harness, /answeredName === rowName/)
+  assert.match(harness, /key !== routedKey && stored/)
+  // The answer's row is stored with the name it prints, so the label is not guessed back out of
+  // the id when the bars switch to another model.
+  assert.match(harness, /label: row\.label \|\| null,/)
+  assert.match(harness, /providerName: providerName \|\| null,/)
+  // A new answer repaints the rail now: the next status frame keeps naming the pick.
+  assert.match(
+    harness,
+    /function noteAnsweredModel\(ctx, model\) \{[\s\S]{0,400}renderQuota\(ctx\)/,
+  )
+})
+
 test('a served request is attributed to the credential that answered it', () => {
   // The sample is taken where the answer is relayed, so the account that actually served it
   // is the one whose bar moves — not whichever account the pool would pick next.
