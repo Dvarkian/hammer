@@ -201,6 +201,16 @@ test('a console is offered the steps its model actually takes', () => {
     'medium',
     'high',
   ])
+  // Ling 3.x reasons by default and takes the effort field, so the console's own route — the
+  // household name behind a provider prefix, and one with a dated suffix — has steps to set.
+  // Missing it here disabled the slider on a model that thinks.
+  for (const id of ['novita/ling-3.1-flash', 'ling-3.1-flash-1019', 'ling-3.0-flash-vl']) {
+    assert.deepEqual(
+      thinkingChoicesFor('requesty', id).levels,
+      ['off', 'low', 'medium', 'high'],
+      id,
+    )
+  }
   // A plain chat model has no step but off, and says why: a slider offering three more would
   // move without changing the request.
   const plain = thinkingChoicesFor('groq', 'llama-3.3-70b-versatile')
@@ -238,6 +248,15 @@ test('the composer control follows the steps its route reports', () => {
   const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
   assert.match(harness, /function paintThinking\(choices, level\)/)
   assert.match(harness, /slider\.disabled = inert/)
+  // A route with one step has nothing to choose, so the block is hidden instead of showing a
+  // slider that cannot move. The CSS has to say so too: the block's own `display` outranks the
+  // browser's rule for [hidden].
+  assert.match(harness, /const control = \$\('hx-thinking'\)/)
+  assert.match(harness, /if \(control\) control\.hidden = inert/)
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(html, /id="hx-thinking"/)
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  assert.match(css, /\.hx-composer-thinking\[hidden\] \{[^}]*display: none/)
   assert.match(harness, /setThinkingLevel\(thinkingLevels\[Number\(slider\.value\)\] \|\| 'off'\)/)
   assert.match(harness, /paintThinking\(data\.thinking, data\.thinkingLevel \|\| 'off'\)/)
   const pi = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')

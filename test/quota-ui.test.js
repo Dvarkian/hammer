@@ -578,7 +578,10 @@ test('the model table and the rail draw one limit bar per account', () => {
   assert.match(modelsRoute, /usage: ctx\.credentialRecordedUsage\b/)
   assert.match(dashboard, /function accountBarsHtml\(m, kind\)/)
   assert.match(dashboard, /data-quota-accounts=/)
-  assert.match(dashboard, /function accountWindows\(account, kind\)/)
+  // A credential's reported number is an allowance, so it is a quota window in both columns:
+  // stamping it with the column's kind drew the same report in Rate limit as a throttle.
+  assert.match(dashboard, /function accountWindows\(account\)/)
+  assert.match(dashboard, /const kind = 'quota'/)
   // Quota and Rate limit both fan out, on the model rows and on the provider tables.
   assert.match(dashboard, /const accountBars = accountBarsHtml\(m, 'quota'\)/)
   assert.match(dashboard, /const accountBars = accountBarsHtml\(m, 'rate-limit'\)/)
@@ -594,6 +597,28 @@ test('the model table and the rail draw one limit bar per account', () => {
   assert.match(harness, /function railQuotaAccounts\(row\)/)
   assert.match(harness, /hx-quota-account-list/)
   assert.match(harness, /paint\(railQuotaWindows\(row\), railQuotaAccounts\(row\)\)/)
+  // The rail's copy of the row has to carry the pool, or the fan-out above never runs: the
+  // sidebar drew one bar (or ∞) for a provider the table drew as two columns.
+  assert.match(
+    harness,
+    /credentials: Array\.isArray\(row\.credentials\) \? row\.credentials : null/,
+  )
+  // A window a provider reported for one key belongs to that key's column only. Handing every
+  // column every window drew the other key's bar, and the same bar twice in the Google pools.
+  assert.match(
+    dashboard,
+    /window\?\.accountIndex == null \|\| Number\(window\.accountIndex\) === account\.index/,
+  )
+  assert.match(
+    harness,
+    /window\?\.accountIndex == null \|\| Number\(window\.accountIndex\) === index/,
+  )
+  // The rail's empty readings are the table's two: ∞ is a stated absence of a limit, and the
+  // unknown bar is "nothing measured yet". The rail used to call both of them ∞.
+  assert.match(harness, /function railQuotaUnknownHtml\(kind\)/)
+  assert.match(harness, /function railQuotaUnlimitedHtml\(kind\)/)
+  assert.match(harness, /const unlimited = row\?\.knownQuota\?\.unlimited === true/)
+
   const harnessCss = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
   assert.match(harnessCss, /\.hx-quota-account-list \{[\s\S]*?display: flex/)
 })

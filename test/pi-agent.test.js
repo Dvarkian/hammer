@@ -664,13 +664,23 @@ test('the transcript keeps thinking, text and tool calls in the order the model 
   // message only carries output, so restoring rows from results alone lost every command line.
   assert.match(harness, /part\.type !== 'toolCall'/)
   assert.match(harness, /const call = calls\.get\(key\)/)
-  assert.match(harness, /args: call\?\.args \|\| null/)
 
-  // A call that never returned — closed mid-command — keeps its row instead of vanishing.
-  assert.match(harness, /for \(const \[key, call\] of calls\)/)
+  // A call that never returned — closed mid-command — keeps its row instead of vanishing, and
+  // keeps it where the call was made. Collecting the unpaired calls and pushing them after the
+  // rebuild put an old interrupted command at the bottom of the conversation, under the final
+  // answer of a later turn, where it read as a call the model had just asked for.
+  assert.match(
+    harness,
+    /const item = \{\n\s+kind: 'tool',\n\s+id: key,\n\s+name: part\.name \|\| 'tool',\n\s+args: part\.arguments && typeof part\.arguments === 'object' \? part\.arguments : null,/,
+  )
+  assert.match(
+    harness,
+    /calls\.set\(key, item\)\n\s+ctx\.tools\.set\(key, item\)\n\s+ctx\.items\.push\(item\)/,
+  )
+  assert.ok(!/for \(const \[key, call\] of calls\)/.test(harness), 'no leftover pass at the end')
   // ...but it is not still running. A reopened session has no turn in flight, so the row says
   // interrupted unless this console really is mid-run.
-  assert.match(harness, /status: ctx\.running \? 'running' : 'interrupted',\n {8}result: ''/)
+  assert.match(harness, /status: ctx\.running \? 'running' : 'interrupted',\n\s+result: ''/)
 })
 
 test('a tool whose end never arrived is not left saying running', () => {
@@ -2373,6 +2383,33 @@ test('the harness renders a compaction as a row in the transcript', () => {
   for (const selector of ['.hx-compaction', '.hx-compaction-head', '.hx-context-note']) {
     assert.match(css, new RegExp(selector.replace('.', '\\.')))
   }
+})
+
+test('a compaction cannot report a context that grew', () => {
+  // Pi sizes the context from the last assistant message's usage, so a provider that reports no
+  // prompt tokens leaves it with an answer's length: the context that had just overflowed arrived
+  // as 122 tokens. Printed beside the 17k estimate that followed it, the pair said the context
+  // grew — the one thing a compaction cannot do. The row and the "Compacted" hint both come
+  // through one phrase, so both drop a "before" that is not the larger figure.
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  const start = harness.indexOf('function compactionPair(')
+  const end = harness.indexOf('/** The figures Pi reported for one compaction row. */')
+  assert.ok(start > 0 && end > start, 'compactionPair is in the page')
+  const pair = new Function('window', `${harness.slice(start, end)}; return compactionPair`)({
+    hxCompact: (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n)),
+  })
+
+  assert.equal(pair(122, 17_000), 'to 17k tokens')
+  assert.equal(pair(122_000, 17_000), '122k → 17k tokens')
+  assert.equal(pair(null, 17_000), 'to 17k tokens')
+  assert.equal(pair(122_000, null), 'from 122k tokens')
+  assert.equal(pair(null, null), '')
+
+  assert.match(harness, /return compactionPair\(item\.tokensBefore, item\.tokensAfter\)/)
+  assert.match(
+    harness,
+    /const figures = compactionPair\(data\?\.tokensBefore, data\?\.tokensAfter\)/,
+  )
 })
 
 test('the context meter is tallied while a message is being written', () => {

@@ -4442,7 +4442,12 @@
     // The window behind one credential's reported quota. `quotaWindows` is the shape every
     // window renderer already reads, so the account bar goes through the same code path as a
     // row's published and refused windows.
-    function accountWindows(account, kind) {
+    function accountWindows(account) {
+      // What a credential reported is an *allowance*, so it is always a quota window. It used
+      // to be stamped with the column's kind, which put the same report in the Rate limit
+      // column as a throttle "resets in 3d" bar — a limit on what the account may spend
+      // drawn as a limit on how fast it may ask.
+      const kind = 'quota'
       const quota = account?.quota;
       if (!quota || typeof quota !== 'object') return [];
       const remaining = quota.remaining == null ? null : Number(quota.remaining);
@@ -4495,10 +4500,19 @@
       const accounts = rowAccounts(m);
       if (!accounts) return null;
       const rowWindows = Array.isArray(m?.quotaWindows) ? m.quotaWindows : [];
-      const observed = rowWindows.filter((window) =>
-        kind === 'rate-limit' ? window?.kind === 'rate-limit' : window?.kind !== 'rate-limit',
-      );
       const columns = accounts.map((account) => {
+        // Only the windows that describe *this* account. A provider that reports per key
+        // stamps the key's index on the window it reported; an endpoint-scoped window — a
+        // published refusal, a response header — carries none and belongs to every key.
+        // Handing every column the whole list drew the other key's bar in this one, and in
+        // the Google pools it drew the same bar twice, because both keys had reported one.
+        const observed = rowWindows.filter(
+          (window) =>
+            (kind === 'rate-limit'
+              ? window?.kind === 'rate-limit'
+              : window?.kind !== 'rate-limit') &&
+            (window?.accountIndex == null || Number(window.accountIndex) === account.index),
+        );
         const windows = quotaRowViews({
           ...m,
           rateLimit: account.rateLimit,
@@ -4507,7 +4521,7 @@
           providerRecordedUsage: account.usageAcrossModels,
           providerUsage: null,
           providerUsages: [],
-          quotaWindows: [...accountWindows(account, kind), ...observed],
+          quotaWindows: [...accountWindows(account), ...observed],
         }).filter((window) =>
           kind === 'rate-limit' ? window.kind === 'rate-limit' : window.kind !== 'rate-limit',
         );

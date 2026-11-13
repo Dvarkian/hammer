@@ -198,8 +198,10 @@ body[data-view='router'] .container {
 /* Bit-for-bit the app icon, scaled to the wordmark: the same drawing, the same ground and
    the same three tones, so the header mark and the taskbar cannot drift apart. */
 .hx-brand {
-  width: 24px;
-  height: 24px;
+  /* No ground behind this one, so the drawing needs the tile's old footprint to keep its weight
+     beside the wordmark. */
+  width: 27px;
+  height: 27px;
   flex: none;
 }
 
@@ -2473,7 +2475,8 @@ body.hx-details-collapsed .hx-side-details {
   min-height: 28px;
 }
 
-/* The model the slope routes to, between the slope selector and the thinking slider. */
+/* The model the slope routes to, between the slope selector and the thinking slider. The name
+   stands alone — nothing labels it, since the word beside it said nothing the name does not. */
 .hx-composer-model {
   display: inline-flex;
   align-items: center;
@@ -2485,10 +2488,6 @@ body.hx-details-collapsed .hx-side-details {
   flex: 0 1 auto;
   min-width: 0;
   max-width: 100%;
-}
-
-.hx-composer-model-label {
-  color: var(--text-dim);
 }
 
 .hx-composer-model span:last-child {
@@ -2510,6 +2509,12 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-composer-thinking-label {
   color: var(--text-dim);
+}
+
+/* `display: inline-flex` above outranks the UA rule for [hidden], so without this the thinking
+   block would stay on screen after the page hid it on a route with no step to set. */
+.hx-composer-thinking[hidden] {
+  display: none;
 }
 
 .hx-composer-thinking input[type=range] {

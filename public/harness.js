@@ -1293,9 +1293,9 @@
     <div class="hx-empty">
       <svg class="hx-empty-mark" viewBox="0 0 32 32" aria-hidden="true">
         <rect width="32" height="32" rx="6" fill="#7d2231"/>
-        <g transform="translate(-0.17 2.22) rotate(-32 16 16) translate(16 16) scale(1.05) translate(-16 -16)">
-          <path d="M11.75 8.6L15.25 8.6C15.15 13 15 18 15 20.8C15 22.8 15.2 24.6 15.25 25.8C15.3 27.3 14.7 27.9 13.5 27.9C12.3 27.9 11.7 27.3 11.75 25.8C11.8 24.6 12 22.8 12 20.8C12 18 11.85 13 11.75 8.6Z" fill="#d9c3bb"/>
-          <path d="M21.6 6.9L22.6 7.5L22.6 10.9L21.8 11.3C18.8 11.9 16.2 11.9 13.8 11.4C12.2 11.1 11 10.3 10.2 9.2C9 10.4 7.4 11.9 6.4 13.1C6 13.6 5.4 13.4 5.4 12.8C5.3 11.2 5.6 9.4 6.5 8C7.5 6.7 9 6.3 10.4 6.1C13.8 5.8 18.2 6.2 21.6 6.9Z" fill="#f6ece5"/>
+        <g transform="translate(-2.2 5.18) rotate(32 16 16) translate(16 16) scale(1.1) translate(-16 -16)">
+          <path d="M12.55 8.4L14.45 8.4C14.6 9.6 14.72 10.6 14.72 12.2C14.72 14.5 14.5 17.5 14.55 19.4C14.6 21.2 14.85 22.6 14.86 23.4C14.88 24.6 14.4 25.1 13.5 25.1C12.6 25.1 12.12 24.6 12.14 23.4C12.15 22.6 12.4 21.2 12.45 19.4C12.5 17.5 12.28 14.5 12.28 12.2C12.28 10.6 12.4 9.6 12.55 8.4Z" fill="#d9c3bb"/>
+          <path d="M21.76 2.91L19.86 2.91C19 2.91 18.49 3.6 17.63 3.6C16.6 3.6 16.08 2.91 15.05 2.91L11.95 2.91C8.17 2.91 5.42 4.63 3.18 8.07C5.93 5.83 8.34 6 11.09 6.69C11.78 6.86 11.95 7.72 12.12 9.1L14.88 9.1C15.05 7.72 15.22 6.86 16.08 6.52C16.77 6.18 17.11 6 17.63 6C18.49 6 19 6.69 19.86 6.69L21.76 6.69L22.27 6.18L22.27 3.42Z" fill="#f6ece5"/>
         </g>
       </svg>
       <h3>What should Hammer build?</h3>
@@ -1779,6 +1779,12 @@
                 quota: row.quota || null,
                 recordedUsage: row.recordedUsage || null,
                 providerRecordedUsage: row.providerRecordedUsage || null,
+                // The pool, when there is one. Without it the rail had no accounts to fan out,
+                // so a provider the table drew as two columns read in the sidebar as one bar —
+                // or as ∞, because the row's own windows are endpoint-scoped and the pool's
+                // traffic had nothing to be measured against. It is the same payload the
+                // table's account columns read; the rail just has to keep it.
+                credentials: Array.isArray(row.credentials) ? row.credentials : null,
               })
             }
           }
@@ -3304,14 +3310,31 @@
     return ''
   }
 
-  /** The figures Pi reported, rounded to the same thousands the token strip uses. */
-  function compactionFigures(item) {
-    if (item.tokensBefore == null && item.tokensAfter == null) return ''
+  /**
+   * One phrase for a pair of token figures, rounded to the same thousands the token strip uses.
+   *
+   * A compaction only ever removes text, so the figure measured before it cannot be the smaller
+   * of the two. It can come back that way: Pi reads the context size off the last assistant
+   * message's usage, and a provider that reports no prompt tokens — or only the tokens it
+   * generated — leaves it with the length of an answer, so a context that had just overflowed
+   * was reported as "122 tokens". Printed beside the 17k Pi estimated afterwards, that pair said
+   * the opposite of what happened, which is worse than saying less. An inverted pair is not a
+   * shrink, so only the size afterwards is shown; the figure dropped was never a context's size.
+   */
+  function compactionPair(before, after) {
     const fmt = (n) => (typeof window.hxCompact === 'function' ? window.hxCompact(n) : String(n))
-    if (item.tokensBefore != null && item.tokensAfter != null)
-      return `${fmt(item.tokensBefore)} → ${fmt(item.tokensAfter)} tokens`
-    if (item.tokensBefore != null) return `from ${fmt(item.tokensBefore)} tokens`
-    return `to ${fmt(item.tokensAfter)} tokens`
+    const b = before == null ? null : Number(before)
+    const a = after == null ? null : Number(after)
+    const known = (v) => v != null && Number.isFinite(v)
+    if (known(b) && known(a)) return b > a ? `${fmt(b)} → ${fmt(a)} tokens` : `to ${fmt(a)} tokens`
+    if (known(b)) return `from ${fmt(b)} tokens`
+    if (known(a)) return `to ${fmt(a)} tokens`
+    return ''
+  }
+
+  /** The figures Pi reported for one compaction row. */
+  function compactionFigures(item) {
+    return compactionPair(item.tokensBefore, item.tokensAfter)
   }
 
   /** The row's sentence, which is what the notice summary shows. */
@@ -3428,6 +3451,10 @@
         : THINKING_DEFAULT_LEVELS
     thinkingLevels = levels
     const inert = levels.length < 2
+    // A route with one step has nothing to set, and a slider that cannot move reads as a broken
+    // one — so the block is not shown at all. It returns the moment a route reports steps.
+    const control = $('hx-thinking')
+    if (control) control.hidden = inert
     const slider = $('hx-thinking-slider')
     if (slider) {
       slider.min = '0'
@@ -5218,6 +5245,40 @@
     </div>`
   }
 
+  /**
+   * The rail's two empty readings, which are the table's, not a third of its own.
+   *
+   * A provider that states it has no limit has ∞: nothing can exhaust it. A provider nothing has
+   * measured yet has not said that — its bar is unknown, and it starts filling once traffic or a
+   * response named a window. The rail printed ∞ for both, which claimed a limit the provider had
+   * never disclaimed, and it was the one surface that did.
+   */
+  function railQuotaUnlimitedHtml(kind) {
+    const throttle = kind === 'rate-limit'
+    const title = throttle
+      ? 'The provider states there is no rate limit for this endpoint — nothing can exhaust it.'
+      : 'The provider states there is no usage limit for this endpoint — nothing can exhaust it.'
+    // The meter above the bars already names the limit, so a bar never repeats the noun: ∞ is
+    // the whole reading, and the line underneath says why. The name assistive tech announces is
+    // the one the eye no longer needs.
+    return `<div class="hx-quota-window" title="${escapeHtml(title)}">
+      <div class="hx-quota-head"><span class="hx-quota-pct" aria-label="${throttle ? 'Rate limit' : 'Quota'}">∞</span></div>
+      <div class="hx-quota-meta">no usage limit published</div>
+    </div>`
+  }
+
+  function railQuotaUnknownHtml(kind) {
+    const throttle = kind === 'rate-limit'
+    const title = throttle
+      ? 'No rate limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.'
+      : 'No limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.'
+    return `<div class="hx-quota-window" title="${escapeHtml(title)}">
+      <div class="hx-quota-head"><span class="hx-quota-pct">limit not published</span></div>
+      <div class="hx-quota-track hx-quota-track-unknown" role="progressbar" aria-label="${throttle ? 'Rate limit' : 'Quota'}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="hx-quota-fill hx-quota-fill-unknown" style="width:0%"></div></div>
+      <div class="hx-quota-meta">no usage recorded yet</div>
+    </div>`
+  }
+
   // One set of windows per credential, when the routed provider pools several accounts.
   //
   // The row's own numbers describe the pool: a per-key allowance drawn against the pool's
@@ -5228,6 +5289,7 @@
     const accounts = Array.isArray(row?.credentials) ? row.credentials : []
     if (accounts.length < 2) return null
     return accounts.map((account, i) => {
+      const index = Number.isInteger(account?.index) ? account.index : i
       const quota = account?.quota && typeof account.quota === 'object' ? account.quota : null
       const remaining = quota?.remaining == null ? null : Number(quota.remaining)
       const limit = quota?.limit == null ? null : Number(quota.limit)
@@ -5256,8 +5318,15 @@
             },
           ]
         : []
+      // Only the windows that describe *this* account. A provider that reports per key stamps
+      // the key's index on the window it reported; an endpoint-scoped window carries none and
+      // belongs to every key. Passing the whole list drew another key's bar in this column —
+      // and the same bar twice in the Google pools, where both keys had reported one.
+      const observed = (Array.isArray(row?.quotaWindows) ? row.quotaWindows : []).filter(
+        (window) => window?.accountIndex == null || Number(window.accountIndex) === index,
+      )
       return {
-        index: Number.isInteger(account?.index) ? account.index : i,
+        index,
         label: account?.label ? String(account.label) : `Account ${i + 1}`,
         serving: account?.serving === true,
         exhausted: account?.exhausted === true,
@@ -5269,10 +5338,7 @@
           // An account-scoped limit is spent by all of that account's models.
           providerRecordedUsage: account?.usageAcrossModels || account?.usage || {},
           providerUsage: null,
-          quotaWindows: [
-            ...reportedWindows,
-            ...(Array.isArray(row?.quotaWindows) ? row.quotaWindows : []),
-          ],
+          quotaWindows: [...reportedWindows, ...observed],
         }),
       }
     })
@@ -5290,8 +5356,10 @@
     const paint = (windows, accounts = null) => {
       const quota = windows.filter((window) => window.kind !== 'rate-limit')
       const throttles = windows.filter((window) => window.kind === 'rate-limit')
-      const empty = (kind) =>
-        `<div class="hx-quota-empty">∞ ${kind === 'rate-limit' ? 'no rate limit reported' : 'no quota limit reported'}</div>`
+      // A provider that says "no limit" gets ∞ and one that has not been measured gets the
+      // unknown bar — the same two readings the table's cells make.
+      const unlimited = row?.knownQuota?.unlimited === true
+      const empty = (kind) => (unlimited ? railQuotaUnlimitedHtml(kind) : railQuotaUnknownHtml(kind))
       // A pooled provider draws a column per credential. A single-credential provider has one
       // account, which is the row bar itself, so it keeps the plain list.
       const accountColumn = (kind) => {
@@ -5976,15 +6044,9 @@
       const data = await res.json().catch(() => {})
       if (!res.ok) throw new Error(data?.error || `Could not compact (${res.status}).`)
       // "Nothing here grew" is the answer to a question well asked, not a failure.
-      if (data?.tokensBefore == null && data?.tokensAfter == null) setHint('Compacted.', 'success', console)
-      else {
-        const fmt = window.hxCompact || ((n) => String(n))
-        setHint(
-          `Compacted — ${fmt(data.tokensBefore)} → ${fmt(data.tokensAfter)} tokens.`,
-          'success',
-          console,
-        )
-      }
+      const figures = compactionPair(data?.tokensBefore, data?.tokensAfter)
+      if (!figures) setHint('Compacted.', 'success', console)
+      else setHint(`Compacted — ${figures}.`, 'success', console)
       await refreshStatus(console)
     } catch (err) {
       setHint(err?.message || 'Could not compact the context.', 'error', console)
@@ -6448,44 +6510,53 @@
         }
         for (const part of Array.isArray(message.content) ? message.content : []) {
           if (!part || part.type !== 'toolCall') continue
-          calls.set(String(part.id || part.name || 'tool'), {
+          const key = String(part.id || part.name || 'tool')
+          // The row is created here, where the call was made — not at the end of the rebuild.
+          // Unpaired calls used to be collected and pushed after the loop, which put every call
+          // whose result never came back at the bottom of the transcript: an interrupted
+          // command from earlier in the conversation sat underneath the final answer, reading
+          // as a call the model had just made, and it was a different call each time. The call
+          // happened at this point in the conversation, so its row belongs at this point.
+          const item = {
+            kind: 'tool',
+            id: key,
             name: part.name || 'tool',
             args: part.arguments && typeof part.arguments === 'object' ? part.arguments : null,
-          })
+            // A call that never returned — the turn was interrupted, or the app was closed
+            // while the command ran — still happened, so it keeps its row. It is only
+            // "running" when this console really has a turn in flight; a reopened session has
+            // none, and a row that claims one is the stale spinner this settles instead.
+            status: ctx.running ? 'running' : 'interrupted',
+            result: '',
+            partial: '',
+          }
+          calls.set(key, item)
+          ctx.tools.set(key, item)
+          ctx.items.push(item)
         }
       } else if (message.role === 'toolResult') {
         const key = String(message.toolCallId || message.toolName || 'tool')
         const call = calls.get(key)
         calls.delete(key)
-        const item = {
+        // A result whose call is not in this file — compacted away, or written by an older
+        // build — still gets a row, in place, carrying what the result itself knows.
+        const item = call || {
           kind: 'tool',
           id: key,
-          name: message.toolName || call?.name || 'tool',
-          args: call?.args || null,
-          status: message.isError ? 'error' : 'ok',
-          result: resultText(message),
+          name: message.toolName || 'tool',
+          args: null,
+          status: 'ok',
+          result: '',
           partial: '',
         }
-        ctx.tools.set(key, item)
-        ctx.items.push(item)
+        item.status = message.isError ? 'error' : 'ok'
+        item.result = resultText(message)
+        item.partial = ''
+        if (!call) {
+          ctx.tools.set(key, item)
+          ctx.items.push(item)
+        }
       }
-    }
-    // A call that never returned — the turn was interrupted, or the app was closed while the
-    // command ran — still happened, so it keeps its row instead of disappearing on a reopen.
-    // It is only "running" when this console really has a turn in flight; a reopened session has
-    // none, and a row that claims one is the stale spinner this settles instead.
-    for (const [key, call] of calls) {
-      const item = {
-        kind: 'tool',
-        id: key,
-        name: call.name,
-        args: call.args,
-        status: ctx.running ? 'running' : 'interrupted',
-        result: '',
-        partial: '',
-      }
-      ctx.tools.set(key, item)
-      ctx.items.push(item)
     }
     // A rebuilt transcript must hand the live stream the same base it compares against: the
     // last message that answered here, so the first new one is measured against it rather
