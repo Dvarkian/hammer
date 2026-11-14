@@ -221,36 +221,6 @@
       for (let i = 0; i < count; i++) tbody.appendChild(tpl.content.cloneNode(true));
     }
 
-    // The network plot is the largest thing on the page and the last to be drawn (it is idle work
-    // and its brand marks are fetched after the first paint), so it says it is coming instead of
-    // sitting empty beside a table that already has rows. The scatter needs no equivalent: it has
-    // its own "No measurements yet" text and draws itself on the one-second status ticker.
-    //
-    // Written into the SVG rather than overlaid, because both draw paths already clear the element
-    // (`svg.innerHTML = ''`) before they paint — so the placeholder cannot survive a real draw, and
-    // nothing outside this pair of functions has to know it exists.
-    function setTopologyPlaceholder(visible) {
-      const svg = document.getElementById('bg-topology-svg');
-      if (!svg) return;
-      if (!visible) {
-        if (svg.dataset.placeholder !== '1') return; // never clear a real plot
-        svg.textContent = '';
-        delete svg.dataset.placeholder;
-        return;
-      }
-      svg.textContent = '';
-      svg.dataset.placeholder = '1';
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', '50%');
-      text.setAttribute('y', '50%');
-      text.setAttribute('text-anchor', 'middle');
-      text.setAttribute('dominant-baseline', 'middle');
-      text.setAttribute('font-size', '11');
-      text.style.fill = 'var(--text-muted)';
-      text.textContent = 'Loading the model network…';
-      svg.appendChild(text);
-    }
-
     // The placeholder rows carry no `data-row-key`, so the keyed reconciler in render() can
     // neither match nor retire them: left in place they would sit above the real table forever.
     // They come out immediately before the first real render, and after a failed one.
@@ -277,7 +247,6 @@
       setLoadStatus('Loading router state…');
       showSkeletonRows();
       showSkeletonProviders();
-      setTopologyPlaceholder(true);
       // The readouts go back to placeholders too. They are empty in the markup, but a *retry*
       // after a failed load (or anything that put the shell back up) would otherwise show the
       // numbers from the snapshot that failed next to a table of skeletons.
@@ -313,7 +282,6 @@
       // six models that do not exist. The plot's placeholder goes the same way — a card waiting on
       // a load that is not coming is the same lie as a row for a model that does not exist.
       clearSkeletonRows();
-      setTopologyPlaceholder(false);
       setLoadStatus(`Could not read the router state (${err && err.message ? err.message : 'request failed'}).`, 'failed');
     }
 
@@ -352,14 +320,6 @@
       for (const ch of String(pk)) h = ((h << 5) - h + ch.charCodeAt(0)) | 0;
       return Math.abs(h) % 360;
     };
-    // providerKey -> the domains whose favicons may mark it in the topology plot, best first.
-    // Sent by the router (see providerFaviconDomains), which derives them from the sites each
-    // provider's own descriptor names — this replaced a hand-written list here that covered
-    // hammer's own providers only, so every imported provider drew as a blank disc. A list rather
-    // than one domain because a single derivation is a single guess: an endpoint on a hosting
-    // platform, or a company domain with no icon where the provider's console has one, would
-    // otherwise leave a node with no mark at all.
-    let providerFaviconDomainLists = new Map();
     // Whether the running router serves brand marks itself (/api/favicon — see fetchFavicon in
     // lib/server.js). This file is read from disk on every load, so the page can be newer than
     // the process answering it, and when that route was introduced the plot asked a path that
@@ -478,10 +438,6 @@
     const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;
     const providerRefreshInFlight = new Set();
     // Provider-onboarding cross-call state (see the onboarding block near refreshProviderModels).
-    // `onboardHighlight` is held here, not passed by the caller, so the idle repaint a finished run
-    // triggers cannot clobber the emphasis back to the router's pick before the user sees it.
-    let onboardHighlight = null;      // { modelId, providerKey } emphasized on the plots for a few seconds
-    let onboardHighlightTimer = null;
     let onboardSession = 0;           // bumped on close/start so a stale await cannot reopen the popup
     let onboardStarting = false;      // true between a start request and its response
     let onboardPollFailures = 0;      // consecutive poll failures, capped so a dead server is not hammered
@@ -607,12 +563,10 @@
       return /^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$/i.test(cleanedOrigin) ? cleanedOrigin : '';
     }
 
-    // Brand marks are the one part of either plot that costs a request per node, and each cold
-    // one costs the router up to three upstream fetches. They are decoration with a monogram
-    // already drawn underneath, so the first paint does without them and the idle pass that
-    // follows the table turns them on (see the boot sequence at the bottom of this file). The
-    // topology includes this flag in its rebuild key, so a plot drawn during the wait redraws
-    // once with marks rather than keeping its monograms until its membership changes.
+    // Brand marks cost a request per row, and each cold one costs the router up to three upstream
+    // fetches. They are decoration with a monogram already drawn underneath, so the first paint
+    // does without them and the idle pass that follows the table turns them on (see the boot
+    // sequence at the bottom of this file), then re-renders once so the marks appear.
     let decorationsReady = false;
 
     // The hrefs to try for one node's mark, in order. The router is preferred: it caches, it works
@@ -636,13 +590,180 @@
       return hrefs;
     }
 
-    // How the models table resolves a row's own brand domain. The model-family → vendor map
-    // lives in drawPlots, which draws the same mark on the plot's model nodes, so it publishes
-    // its resolver here rather than the table keeping a second copy that could drift. A model the
-    // map cannot name resolves to '' and keeps its monogram, and before the plots have drawn once
-    // there is nothing to ask — which costs nothing, because the first table paint is monograms by
-    // design and the brand marks arrive with decorationsReady (see the idle pass).
-    let modelDomainFor = () => ''
+    // Model-family → favicon domain (model's own brand, not the provider hosting it).
+    // Matched by prefix (raw.includes(prefix)); first matching key wins, so overlapping
+    // prefixes are ordered to prefer the more specific brand. Covers every model family
+    // defined in sources.js so the plot can resolve a brand icon for each.
+    const MODEL_DOMAINS = {
+      // --- Chinese open-weight labs ---
+      'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com',
+      'qwen': 'qwen.ai', 'qwq': 'qwen.ai', 'qvq': 'qwen.ai',
+      'glm': 'zhipuai.cn', 'z-ai': 'zhipuai.cn', 'zai': 'zhipuai.cn',
+      'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
+      'minimax': 'minimax.io', 'minimaxai': 'minimax.io', 'abab': 'minimax.io',
+      'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
+      // Baidu's ERNIE, and the two labs whose HF org name is all a node ever carries.
+      'baidu': 'baidu.com', 'ernie': 'baidu.com',
+      'nex-agi': 'nex-agi.com', 'dots-studio': 'dots.studio',
+      // iFlytek's Spark: its brand site is the console it sends users to, not the cloud host.
+      'sparkdesk': 'xfyun.cn',
+      'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
+      'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
+      'bytedance': 'bytedance.com', 'bytedance-seed': 'bytedance.com', 'seed': 'bytedance.com', 'dola': 'bytedance.com',
+      'hy3': 'hunyuan.cloud.tencent.com', 'hunyuan': 'hunyuan.cloud.tencent.com', 'tencent': 'hunyuan.cloud.tencent.com',
+      'cogito': 'deepcogito.com',
+      'swe': 'cognition.ai',
+      // --- Western labs / providers ---
+      'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
+      'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
+      'llama': 'meta.com', 'meta': 'meta.com',
+      // A fine-tune's own leading word still names Llama: `finetuned-llama-3-70b` keeps
+      // `llama` out of first position.
+      'finetuned-llama': 'meta.com',
+      // Meta's named open families — Muse Glimmer and Muse Spark sit beside Llama without it.
+      'muse': 'meta.com',
+      'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
+      // Reflection AI's Beam. The alias map at the top of sources.js names it
+      // `reflection/beam-*`, and Ollama and Airforce publish the bare id for the same weights.
+      'beam': 'reflection.ai', 'reflection': 'reflection.ai',
+      // GPTFree's only model is `auto`, which names no brand; its label names one instead
+      // ("Auto (GPTFree)"), which is what the parenthesised candidate above is for.
+      'gptfree': 'gptfree.com',
+      'gpt': 'openai.com', 'openai': 'openai.com',
+      // OpenAI's other wire names: the Codex models that do not say `gpt`, the bare o-series
+      // ids an aggregator relays, a gateway's own name for a GPT chat model, and OpenAI's
+      // `chatgpt-*`/`chat-latest` aliases.
+      'codex': 'openai.com', 'o1': 'openai.com', 'o3': 'openai.com', 'o4': 'openai.com',
+      'chatgpt': 'openai.com', 'chat-latest': 'openai.com', 'unmoderated-gpt': 'openai.com',
+      'mistral': 'mistral.ai', 'mistralai': 'mistral.ai', 'magistral': 'mistral.ai',
+      'ministral': 'mistral.ai', 'codestral': 'mistral.ai', 'voxtral': 'mistral.ai',
+      'devstral': 'mistral.ai', 'pixtral': 'mistral.ai', 'mixtral': 'mistral.ai',
+      // Mistral's own `open-*` aliases for the models it opens.
+      'open-mistral-nemo': 'mistral.ai',
+      // --- The open-weight labs behind the aggregators' catalogs ---
+      'morph': 'morphllm.com', 'relace': 'relace.ai', 'writer': 'writer.com', 'palmyra': 'writer.com',
+      'inception': 'inceptionlabs.ai',
+      'liquid': 'liquid.ai',
+      'sakana': 'sakana.ai', 'fugu': 'sakana.ai',
+      'thinkingmachines': 'thinkingmachines.ai', 'inkling': 'thinkingmachines.ai',
+      'perplexity': 'perplexity.ai', 'sonar': 'perplexity.ai',
+      'nousresearch': 'nousresearch.com', 'nous': 'nousresearch.com', 'hermes': 'nousresearch.com',
+      'databricks': 'databricks.com', 'dbrx': 'databricks.com',
+      'adept': 'adept.ai', 'fuyu': 'adept.ai',
+      'perceptron': 'perceptron.inc',
+      'allenai': 'allenai.org', 'olmocr': 'allenai.org',
+      'venice': 'venice.ai',
+      'prism-ml': 'prismml.com',
+      'essentialai': 'essential.ai', 'rnj': 'essential.ai',
+      'zyphra': 'zyphra.com', 'zamba': 'zyphra.com',
+      'speakleash': 'speakleash.org', 'bielik': 'speakleash.org',
+      'swiss-ai': 'swiss-ai.org', 'apertus': 'swiss-ai.org',
+      'aisingapore': 'aisingapore.org', 'sea-lion': 'aisingapore.org',
+      'bigcode': 'bigcode-project.org', 'starcoder': 'bigcode-project.org',
+      '01-ai': '01.ai', 'yi': '01.ai',
+      // GitHub's own Copilot-only catalog: its agent, search and compaction models exist
+      // nowhere else, so GitHub is their vendor as well as their host.
+      'exec-agent': 'github.com', 'copilot-search': 'github.com', 'trajectory-compaction': 'github.com',
+      // The gateways' own router rows. Their id *is* the gateway's product, which is the
+      // opposite of a third-party model relayed by one — there the vendor is the brand.
+      'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai', 'requesty': 'requesty.ai',
+      // Agnes AI's ids are its own product (`agnes-2.5-flash`), the same case as the rows
+      // above rather than a third-party model relayed by the gateway.
+      'agnes': 'agnes-ai.com',
+      // G4F's own router row follows the same rule — the row is the gateway's product, and its
+      // label says which gateway ("Auto (G4F)"), which is what the parenthesis reader is for.
+      'g4f': 'g4f.dev',
+      // xAI appears as `x-ai`, `xai-org` and g4f's `xai-z`, all of them its own name.
+      'grok': 'x.ai', 'x-ai': 'x.ai', 'xai': 'x.ai',
+      'microsoft': 'microsoft.com', 'phi': 'microsoft.com', 'mai': 'microsoft.com', 'wizardlm': 'microsoft.com',
+      'command': 'cohere.com', 'north': 'cohere.com', 'cohere': 'cohere.com',
+      // Cohere Labs' multilingual family, under every org name its ids carry — HuggingFace's
+      // current `CohereLabs/`, the `CohereForAI/` these weights were first published under —
+      // and under the bare C4AI/aya ids an aggregator publishes (`c4ai-aya-expanse-32b`).
+      'coherelabs': 'cohere.com', 'cohereforai': 'cohere.com', 'c4ai': 'cohere.com',
+      'tiny-aya': 'cohere.com', 'aya': 'cohere.com',
+      // Cohere's Parse family is its own model and says so only in the id (`parse-v5.0`).
+      'parse': 'cohere.com',
+      'aria': 'ai21.com', 'jamba': 'ai21.com',
+      'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com', 'titan': 'aws.amazon.com',
+      'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
+      'laguna': 'poolside.ai', 'poolside': 'poolside.ai',
+      'granite': 'ibm.com', 'ibm': 'ibm.com',
+      // ALLaM is SDAIA's model, but the family lives with its steward now: the Hugging Face org
+      // `ALLaM-AI` is `humain-ai`, and sdaia.gov.sa serves no icon the proxy can fetch.
+      'allam': 'humain.ai',
+      'stockmark': 'stockmark.co.jp',
+      'colosseum': 'igenius.ai', 'igenius': 'igenius.ai',
+      'orpheus': 'canopylabs.ai', 'canopylabs': 'canopylabs.ai',
+      'compound': 'groq.com',
+      'solar': 'upstage.ai', 'upstage': 'upstage.ai',
+      'dolphin': 'cognitivecomputations.com',
+      'falcon': 'tii.ae', 'olmo': 'allenai.org', 'exaone': 'lgresearch.ai',
+    };
+    // Token-aware brand lookup. A key only matches when it names the model's
+    // LEADING word(s), so "dolphin-mistral" no longer borrows Microsoft's "phi"
+    // icon and "novita" no longer borrows Amazon's "nova". A trailing version
+    // suffix is allowed ("qwen" matches qwen3, "gemma" matches gemma3), but
+    // arbitrary trailing letters are not. The full id is tried first so vendor
+    // names still resolve (igenius/colosseum→), then the model part alone
+    // (z-ai/glm5 → glm5, @cf/qwen/qwen3.8-27b → qwen3.8-27b).
+    //
+    // A gateway also names the backend it routed through, in front of the model it
+    // routed to (`Airforce:claude-fable-5.1`, `community/user/o3-mini`), so the part
+    // after that namespace is offered beside the whole id — the brand is in the model
+    // name, never in the gateway's own prefix. And when no name in the id resolves at
+    // all, the row's label gets the last word: it is hammer's name for the model.
+    const DOMAIN_SPLIT_RE = /[-_./:\s]+/;
+    function domainTokens(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/(?::(?:free|optimized|cloud))+$/i, '')
+        .split(DOMAIN_SPLIT_RE)
+        .filter(Boolean);
+    }
+    function isDomainKeyPrefix(keyTokens, modelTokens) {
+      if (!keyTokens.length || keyTokens.length > modelTokens.length) return false;
+      for (let i = 0; i < keyTokens.length; i++) {
+        const key = keyTokens[i], token = modelTokens[i];
+        if (key === token) continue;
+        const suffix = token.startsWith(key) ? token.slice(key.length) : null;
+        if (i !== keyTokens.length - 1 || suffix == null || !/^\d[\d.-]*$/.test(suffix)) return false;
+      }
+      return true;
+    }
+    // The names one row offers, most authoritative first: the id's own leading word, then the
+    // part a gateway namespaced behind its `/` or `:`.
+    function domainNameCandidates(name) {
+      const value = String(name || '').toLowerCase().replace(/^srv_[a-z0-9]+:/i, '');
+      if (!value) return [];
+      return [
+        domainTokens(value),
+        domainTokens(value.split('/').pop()),
+        domainTokens(value.split(':').pop()),
+        // A label that names its vendor in parentheses — `Auto (GPTFree)` — still names it:
+        // the brackets are punctuation, not part of the brand.
+        domainTokens((value.match(/\(([^)]+)\)/) || [])[1] || ''),
+      ].filter(tokens => tokens.length > 0);
+    }
+    function domainForNames(candidates) {
+      if (!candidates.length) return '';
+      for (const [key, domain] of Object.entries(MODEL_DOMAINS)) {
+        const keyTokens = String(key).split(DOMAIN_SPLIT_RE).filter(Boolean);
+        if (candidates.some(tokens => isDomainKeyPrefix(keyTokens, tokens))) return domain;
+      }
+      return '';
+    }
+    // The label is the last word, and only when the id names no brand at all. An anonymous id
+    // keeps resolving to '' on purpose: a stealth model's monogram is the honest mark, since
+    // there is no brand to draw.
+    function getModelDomain(m) {
+      return domainForNames(domainNameCandidates(m.modelId))
+        || domainForNames(domainNameCandidates(m.label));
+    }
+
+    // The table draws the same brand mark on its rows. It renders before this pass on the first
+    // snapshot, and hydrates its logos once the plots have run (see modelDomainFor).
+    const modelDomainFor = getModelDomain
 
     // ── A model's colour comes from its mark ───────────────────────────────────────────
     //
@@ -754,9 +875,8 @@
     }
 
     /**
-     * The hrefs for one model's own mark — its vendor's, never its provider's, the same rule
-     * the topology's model node draws by. One composition, so the colour a row wears and the
-     * icon the plot draws cannot disagree.
+     * The hrefs for one model's own mark — its vendor's, never its provider's. One composition,
+     * so the colour a row wears and the icon the row draws cannot disagree.
      */
     function modelMarkHrefs(m) {
       return faviconHrefs([modelDomainFor(m)])
@@ -799,17 +919,6 @@
       const m = allModels.find((row) => row && row.providerKey === providerKey && String(row.modelId) === modelId)
       return m ? modelAccent(m) : null
     };
-
-    // Named when it is the exception, silent when it is not: a stale router is worth one line on
-    // the plot, and a healthy one is worth none.
-    function updateLogoSourceNote() {
-      const el = document.getElementById('topo-logo-note');
-      if (!el) return;
-      el.textContent = faviconProxyAvailable
-        ? ''
-        : 'Logos are being fetched from a third party because this page is newer than the running router. Restart it to serve them locally.';
-      el.style.display = faviconProxyAvailable ? 'none' : 'block';
-    }
 
     function updateProxyErrorBanner(error) {
       const el = document.getElementById('proxy-error-banner');
@@ -895,24 +1004,16 @@
     }
 
     // The provider roster behind the table's decorations: the domains whose favicons may mark a
-    // provider in the topology plot, and whether this router serves those marks itself
+    // provider in the table's rows, and whether this router serves those marks itself
     // (see fetchFavicon in lib/server.js). Applied when the roster arrives rather than as a step
     // of the snapshot, because the two arrive independently now.
     function applyProviderRoster(providers) {
       if (!Array.isArray(providers)) return;
-      providerFaviconDomainLists = new Map(
-        providers
-          .filter(p => p && p.key)
-          .map(p => [p.key, (Array.isArray(p.faviconDomains) && p.faviconDomains.length > 0
-            ? p.faviconDomains
-            : (p.faviconDomain ? [p.faviconDomain] : []))]),
-      );
       faviconProxyAvailable = providers.some(p => p && Object.prototype.hasOwnProperty.call(p, 'faviconDomain'));
-      updateLogoSourceNote();
     }
 
     // The most recent roster /api/config delivered, or null. Held so the staged passes — the
-    // plot's brand marks and the provider grid — read it without awaiting the same promise again,
+    // table's brand marks and the provider grid — read it without awaiting the same promise again,
     // and so a snapshot that outlives the roster still has one to hand.
     let lastProviderRoster = null;
     // Where the provider grid is in its life: 'idle' (never built), 'building' (a build has been
@@ -1055,18 +1156,16 @@
         updateKpiNumbers(allModels, currentBestModelId, currentBestProviderKey, displayGroups);
 
         // 3. Everything else, after the table is interactive. The roster is awaited inside this
-        //    pass because the plot's brand marks are resolved from it; if the router answered
-        //    slowly the monograms carry the plot and the marks arrive on the redraw (see
-        //    faviconHrefs and the `dec` term in the topology's rebuild key).
+        //    pass because the table resolves each row's brand mark from it; if the router
+        //    answered slowly the first paint is monograms and the marks arrive on the redraw.
         whenIdle(async () => {
           const roster = await providersPromise;
           if (Array.isArray(roster)) lastProviderRoster = roster;
           applyProviderRoster(lastProviderRoster);
           decorationsReady = true;
-          drawPlots(allModels, currentBestModelId, currentBestProviderKey);
           // The table's logo column is monograms until brand marks are allowed (faviconHrefs
-          // answers nothing before the flag above), and the resolver only exists once the plots
-          // have drawn. One re-render swaps the marks in; later refreshes resolve them directly.
+          // answers nothing before the flag above). One re-render swaps the marks in; later
+          // refreshes resolve them directly.
           render(false);
           perfMark('plots');
           // The grid is only touched when it is on screen (the models or settings tab). It is the
@@ -1358,28 +1457,10 @@
 
     }
 
-    // Both plots, from one snapshot. Deferred to idle by the boot sequence and immediate for every
-    // caller that is painting a live event — a fallback must move the pictures on the SSE frame.
-    function drawPlots(models, bestModelId, bestProviderKey = null) {
-      // A just-onboarded provider is emphasized for a few seconds. The emphasis is read from state
-      // rather than passed in, so the idle repaint a finished run schedules cannot repaint the plot
-      // back to the router's pick a moment after the highlight was drawn (see emphasizeProviderPlots).
-      const highlight = onboardHighlight;
-      const effectiveId = highlight ? highlight.modelId : bestModelId;
-      const effectiveKey = highlight ? highlight.providerKey : bestProviderKey;
-      const bestModel = effectiveId
-        ? models.find(m => m.modelId === effectiveId && (!effectiveKey || m.providerKey === effectiveKey))
-        : null;
-      drawBipartiteTopology(models, bestModel);
-    }
-
-    // Numbers *and* both plots, together and immediately. This is the shape every live-event paint
-    // uses (a fallback, a provider bench, new evidence): the SSE frame names a model, and every
-    // surface that names it — including the pictures — has to move on that same frame. The boot
-    // sequence is the only caller that splits the two (see loadModelSnapshot).
+    // The readouts are the whole KPI paint now: the network plot that used to sit beside them
+    // is gone, so a live event only has to move the numbers.
     function updateKPIs(models, bestModelId, bestProviderKey = null) {
       updateKpiNumbers(models, bestModelId, bestProviderKey);
-      drawPlots(models, bestModelId, bestProviderKey);
     }
 
     // ---- Intelligence-vs-speed scatter plot ----
@@ -2066,1209 +2147,6 @@
       label.style.cssText = 'font-size:0.68rem; color:var(--text-muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;';
       label.textContent = `${Math.round(totalTokens).toLocaleString()} tokens`;
       container.appendChild(label);
-    }
-
-    // Spring-layout topology: provider nodes (favicon or monogram + ring + name)
-    // anchor clusters of model circles with tiny labels. Drag to pan, scroll to
-    // zoom, click a provider to highlight its cluster, dblclick to reset.
-    // The currently selected/best model pulses blue. Spread fits the card laterally.
-    function drawBipartiteTopology(models, bestModel = null) {
-      const svg = document.getElementById('bg-topology-svg');
-      if (!svg) return;
-
-      // ---- Filter to exactly the primary-table model set ----
-      // Mirror the main table: drop noauth rows (no API key), and drop any row
-      // that would be struck through (paid / dead / incompatible / micro-context)
-      // — those live in the graveyard table, not the primary table.
-      const primaryModels = models.filter(m => {
-        if (m.status === 'noauth') return false;
-        if (isRowStruck(m)) return false;
-        return true;
-      });
-      // Which of the four buckets a model group falls in, from the same verdicts the table
-      // paints its dots with (see rowVerdict), so the picture cannot claim a model is up while
-      // its row shows a clock. One predicate, read twice: the group filter below keeps only the
-      // 'up' bucket, and modelStatusCls() colours whatever survives, so the two cannot
-      // disagree about which models the plot is showing or how it is describing them.
-      function modelGroupStatus(members) {
-        const kinds = members.map(m => rowVerdict(m));
-        if (kinds.some(kind => kind === 'up')) return 'up';
-        if (kinds.some(kind => BENCHED_VERDICTS.has(kind))) return 'benched';
-        const allInert = kinds.length > 0
-          && kinds.every(kind => STRUCK_VERDICTS.has(kind) || kind === 'banned' || kind === 'excluded');
-        return allInert ? 'disabled' : 'down';
-      }
-
-      // Always return a clean display name — never raw modelId with '/' or internal names
-      function modelDisplayName(m) {
-        const raw = (m.label && m.label.trim())
-          ? m.label.trim()
-          // Fallback: strip provider prefixes from modelId
-          : (m.modelId || '').replace(/^[a-z0-9_-]+\//i, '').replace(/[-_](free|latest|snapshot|preview)$/i, '').trim() || m.modelId || 'Unknown';
-        // "Free" is the row's tier, not part of the model's name: the same weights are sold
-        // paid under the same label. The label keeps the marker (the table needs it to tell a
-        // free row from its paid twin); the printed name does not.
-        return raw.replace(/\s*\(free\)\s*$/i, '').replace(/\s+free\s*$/i, '').trim() || raw;
-      }
-
-      // ---- Build one node per model group using the exact same grouping as the
-      // main table (canonical modelId key, then label-name merge), then keep only the groups
-      // something can serve right now. This card counts "Models Online" and draws the network
-      // behind that number — the KPI reads groupModels(models.filter(isRowUp)) — so a model that
-      // cannot take a request has no business being a node on it. That is true whether the model
-      // is broken (down) or merely waiting on a provider window (rate-limited / timed out): the
-      // plot is a picture of what is live, and nothing else.
-      //
-      // The drop is per *group*, not per row: a provider keeps its place while one of its rows is
-      // live for a model on the plot, and leaves with its last live row. Within a surviving group
-      // only the live rows are kept, so a benched or down sibling is neither a link from the model
-      // node nor a node on the provider ring.
-      const uniqueModels = groupModels(primaryModels).map(g => ({
-        ...g.members[0],
-        label: g.label,
-        _groupKey: g.key,
-        _providers: g.members.map(m => ({ key: providerInstanceKey(m), model: m })),
-      }))
-        .filter(um => modelGroupStatus(um._providers.map(p => p.model)) === 'up')
-        .map(um => ({ ...um, _providers: um._providers.filter(p => isRowUp(p.model)) }));
-      const numModels = uniqueModels.length;
-
-      // One node per provider *instance*, over the models that survived. A federated
-      // provider's origins are separate servers with separate uptimes, their own set of models,
-      // and their own outages, so they get their own nodes: one gateway hub would hide which
-      // upstream a model hangs off, which is the whole reason the origins are tracked at all.
-      //
-      // Derived from the surviving groups rather than from every primary-table row, so a
-      // provider whose models are all down drops out with them. Keeping the ring would leave a
-      // node with no links — a picture of a server with nothing behind it — which is the same
-      // claim the plot just stopped making about those models.
-      const plotRows = uniqueModels.flatMap(um => um._providers.map(p => p.model));
-      const plotProviders = [...new Set(plotRows.map(m => providerInstanceKey(m)))]
-        .sort();
-      const numProvs = plotProviders.length;
-
-      // Which models are in use right now. Every conversation routes on its own slope, so several
-      // can be answering at once, and the table already lights each of them (isCurrentBestRow).
-      // The exported `best` belongs to the set as well: it is what the router answers with when a
-      // caller names no conversation, and on a router with no console attached it is the only
-      // live pick there is. Pairs, not ids — the same weights served by two origins are two
-      // different serving paths, and the ring marks the origin that actually serves them.
-      const activePicks = activePickRows
-        .filter(pick => pick && pick.modelId)
-        .map(pick => ({ modelId: String(pick.modelId), providerKey: pick.providerKey || '' }));
-      if (bestModel) {
-        activePicks.push({ modelId: bestModel.modelId, providerKey: bestModel.providerKey || '' });
-      }
-      const isActivePick = (modelId, providerKey = '') => activePicks.some(pick =>
-        pick.modelId === modelId
-        && (!pick.providerKey || !providerKey || pick.providerKey === providerKey));
-
-      // Model-family → favicon domain (model's own brand, not the provider hosting it).
-      // Matched by prefix (raw.includes(prefix)); first matching key wins, so overlapping
-      // prefixes are ordered to prefer the more specific brand. Covers every model family
-      // defined in sources.js so the plot can resolve a brand icon for each.
-      const MODEL_DOMAINS = {
-        // --- Chinese open-weight labs ---
-        'deepseek': 'deepseek.com', 'deepseek-ai': 'deepseek.com',
-        'qwen': 'qwen.ai', 'qwq': 'qwen.ai', 'qvq': 'qwen.ai',
-        'glm': 'zhipuai.cn', 'z-ai': 'zhipuai.cn', 'zai': 'zhipuai.cn',
-        'moonshot': 'moonshot.ai', 'kimi': 'moonshot.ai',
-        'minimax': 'minimax.io', 'minimaxai': 'minimax.io', 'abab': 'minimax.io',
-        'step': 'stepfun.com', 'stepfun': 'stepfun.com', 'stepfun-ai': 'stepfun.com',
-        // Baidu's ERNIE, and the two labs whose HF org name is all a node ever carries.
-        'baidu': 'baidu.com', 'ernie': 'baidu.com',
-        'nex-agi': 'nex-agi.com', 'dots-studio': 'dots.studio',
-        // iFlytek's Spark: its brand site is the console it sends users to, not the cloud host.
-        'sparkdesk': 'xfyun.cn',
-        'mimo': 'xiaomi.com', 'xiaomi': 'xiaomi.com',
-        'inclusionai': 'inclusioncloud.com', 'ling': 'inclusioncloud.com', 'ring': 'inclusioncloud.com',
-        'bytedance': 'bytedance.com', 'bytedance-seed': 'bytedance.com', 'seed': 'bytedance.com', 'dola': 'bytedance.com',
-        'hy3': 'hunyuan.cloud.tencent.com', 'hunyuan': 'hunyuan.cloud.tencent.com', 'tencent': 'hunyuan.cloud.tencent.com',
-        'cogito': 'deepcogito.com',
-        'swe': 'cognition.ai',
-        // --- Western labs / providers ---
-        'gemini': 'ai.google.dev', 'gemma': 'ai.google.dev', 'google': 'ai.google.dev', 'learnlm': 'ai.google.dev',
-        'claude': 'anthropic.com', 'anthropic': 'anthropic.com',
-        'llama': 'meta.com', 'meta': 'meta.com',
-        // A fine-tune's own leading word still names Llama: `finetuned-llama-3-70b` keeps
-        // `llama` out of first position.
-        'finetuned-llama': 'meta.com',
-        // Meta's named open families — Muse Glimmer and Muse Spark sit beside Llama without it.
-        'muse': 'meta.com',
-        'nemotron': 'nvidia.com', 'nvidia': 'nvidia.com',
-        // Reflection AI's Beam. The alias map at the top of sources.js names it
-        // `reflection/beam-*`, and Ollama and Airforce publish the bare id for the same weights.
-        'beam': 'reflection.ai', 'reflection': 'reflection.ai',
-        // GPTFree's only model is `auto`, which names no brand; its label names one instead
-        // ("Auto (GPTFree)"), which is what the parenthesised candidate above is for.
-        'gptfree': 'gptfree.com',
-        'gpt': 'openai.com', 'openai': 'openai.com',
-        // OpenAI's other wire names: the Codex models that do not say `gpt`, the bare o-series
-        // ids an aggregator relays, a gateway's own name for a GPT chat model, and OpenAI's
-        // `chatgpt-*`/`chat-latest` aliases.
-        'codex': 'openai.com', 'o1': 'openai.com', 'o3': 'openai.com', 'o4': 'openai.com',
-        'chatgpt': 'openai.com', 'chat-latest': 'openai.com', 'unmoderated-gpt': 'openai.com',
-        'mistral': 'mistral.ai', 'mistralai': 'mistral.ai', 'magistral': 'mistral.ai',
-        'ministral': 'mistral.ai', 'codestral': 'mistral.ai', 'voxtral': 'mistral.ai',
-        'devstral': 'mistral.ai', 'pixtral': 'mistral.ai', 'mixtral': 'mistral.ai',
-        // Mistral's own `open-*` aliases for the models it opens.
-        'open-mistral-nemo': 'mistral.ai',
-        // --- The open-weight labs behind the aggregators' catalogs ---
-        'morph': 'morphllm.com', 'relace': 'relace.ai', 'writer': 'writer.com', 'palmyra': 'writer.com',
-        'inception': 'inceptionlabs.ai',
-        'liquid': 'liquid.ai',
-        'sakana': 'sakana.ai', 'fugu': 'sakana.ai',
-        'thinkingmachines': 'thinkingmachines.ai', 'inkling': 'thinkingmachines.ai',
-        'perplexity': 'perplexity.ai', 'sonar': 'perplexity.ai',
-        'nousresearch': 'nousresearch.com', 'nous': 'nousresearch.com', 'hermes': 'nousresearch.com',
-        'databricks': 'databricks.com', 'dbrx': 'databricks.com',
-        'adept': 'adept.ai', 'fuyu': 'adept.ai',
-        'perceptron': 'perceptron.inc',
-        'allenai': 'allenai.org', 'olmocr': 'allenai.org',
-        'venice': 'venice.ai',
-        'prism-ml': 'prismml.com',
-        'essentialai': 'essential.ai', 'rnj': 'essential.ai',
-        'zyphra': 'zyphra.com', 'zamba': 'zyphra.com',
-        'speakleash': 'speakleash.org', 'bielik': 'speakleash.org',
-        'swiss-ai': 'swiss-ai.org', 'apertus': 'swiss-ai.org',
-        'aisingapore': 'aisingapore.org', 'sea-lion': 'aisingapore.org',
-        'bigcode': 'bigcode-project.org', 'starcoder': 'bigcode-project.org',
-        '01-ai': '01.ai', 'yi': '01.ai',
-        // GitHub's own Copilot-only catalog: its agent, search and compaction models exist
-        // nowhere else, so GitHub is their vendor as well as their host.
-        'exec-agent': 'github.com', 'copilot-search': 'github.com', 'trajectory-compaction': 'github.com',
-        // The gateways' own router rows. Their id *is* the gateway's product, which is the
-        // opposite of a third-party model relayed by one — there the vendor is the brand.
-        'kilo-auto': 'kilocode.com', 'openrouter': 'openrouter.ai', 'requesty': 'requesty.ai',
-        // Agnes AI's ids are its own product (`agnes-2.5-flash`), the same case as the rows
-        // above rather than a third-party model relayed by the gateway.
-        'agnes': 'agnes-ai.com',
-        // G4F's own router row follows the same rule — the row is the gateway's product, and its
-        // label says which gateway ("Auto (G4F)"), which is what the parenthesis reader is for.
-        'g4f': 'g4f.dev',
-        // xAI appears as `x-ai`, `xai-org` and g4f's `xai-z`, all of them its own name.
-        'grok': 'x.ai', 'x-ai': 'x.ai', 'xai': 'x.ai',
-        'microsoft': 'microsoft.com', 'phi': 'microsoft.com', 'mai': 'microsoft.com', 'wizardlm': 'microsoft.com',
-        'command': 'cohere.com', 'north': 'cohere.com', 'cohere': 'cohere.com',
-        // Cohere Labs' multilingual family, under every org name its ids carry — HuggingFace's
-        // current `CohereLabs/`, the `CohereForAI/` these weights were first published under —
-        // and under the bare C4AI/aya ids an aggregator publishes (`c4ai-aya-expanse-32b`).
-        'coherelabs': 'cohere.com', 'cohereforai': 'cohere.com', 'c4ai': 'cohere.com',
-        'tiny-aya': 'cohere.com', 'aya': 'cohere.com',
-        // Cohere's Parse family is its own model and says so only in the id (`parse-v5.0`).
-        'parse': 'cohere.com',
-        'aria': 'ai21.com', 'jamba': 'ai21.com',
-        'amazon': 'aws.amazon.com', 'nova': 'aws.amazon.com', 'titan': 'aws.amazon.com',
-        'trinity': 'arcee.ai', 'arcee': 'arcee.ai',
-        'laguna': 'poolside.ai', 'poolside': 'poolside.ai',
-        'granite': 'ibm.com', 'ibm': 'ibm.com',
-        // ALLaM is SDAIA's model, but the family lives with its steward now: the Hugging Face org
-        // `ALLaM-AI` is `humain-ai`, and sdaia.gov.sa serves no icon the proxy can fetch.
-        'allam': 'humain.ai',
-        'stockmark': 'stockmark.co.jp',
-        'colosseum': 'igenius.ai', 'igenius': 'igenius.ai',
-        'orpheus': 'canopylabs.ai', 'canopylabs': 'canopylabs.ai',
-        'compound': 'groq.com',
-        'solar': 'upstage.ai', 'upstage': 'upstage.ai',
-        'dolphin': 'cognitivecomputations.com',
-        'falcon': 'tii.ae', 'olmo': 'allenai.org', 'exaone': 'lgresearch.ai',
-      };
-      // Token-aware brand lookup. A key only matches when it names the model's
-      // LEADING word(s), so "dolphin-mistral" no longer borrows Microsoft's "phi"
-      // icon and "novita" no longer borrows Amazon's "nova". A trailing version
-      // suffix is allowed ("qwen" matches qwen3, "gemma" matches gemma3), but
-      // arbitrary trailing letters are not. The full id is tried first so vendor
-      // names still resolve (igenius/colosseum→), then the model part alone
-      // (z-ai/glm5 → glm5, @cf/qwen/qwen3.8-27b → qwen3.8-27b).
-      //
-      // A gateway also names the backend it routed through, in front of the model it
-      // routed to (`Airforce:claude-fable-5.1`, `community/user/o3-mini`), so the part
-      // after that namespace is offered beside the whole id — the brand is in the model
-      // name, never in the gateway's own prefix. And when no name in the id resolves at
-      // all, the row's label gets the last word: it is hammer's name for the model.
-      const DOMAIN_SPLIT_RE = /[-_./:\s]+/;
-      function domainTokens(value) {
-        return String(value || '')
-          .toLowerCase()
-          .replace(/(?::(?:free|optimized|cloud))+$/i, '')
-          .split(DOMAIN_SPLIT_RE)
-          .filter(Boolean);
-      }
-      function isDomainKeyPrefix(keyTokens, modelTokens) {
-        if (!keyTokens.length || keyTokens.length > modelTokens.length) return false;
-        for (let i = 0; i < keyTokens.length; i++) {
-          const key = keyTokens[i], token = modelTokens[i];
-          if (key === token) continue;
-          const suffix = token.startsWith(key) ? token.slice(key.length) : null;
-          if (i !== keyTokens.length - 1 || suffix == null || !/^\d[\d.-]*$/.test(suffix)) return false;
-        }
-        return true;
-      }
-      // The names one row offers, most authoritative first: the id's own leading word, then the
-      // part a gateway namespaced behind its `/` or `:`.
-      function domainNameCandidates(name) {
-        const value = String(name || '').toLowerCase().replace(/^srv_[a-z0-9]+:/i, '');
-        if (!value) return [];
-        return [
-          domainTokens(value),
-          domainTokens(value.split('/').pop()),
-          domainTokens(value.split(':').pop()),
-          // A label that names its vendor in parentheses — `Auto (GPTFree)` — still names it:
-          // the brackets are punctuation, not part of the brand.
-          domainTokens((value.match(/\(([^)]+)\)/) || [])[1] || ''),
-        ].filter(tokens => tokens.length > 0);
-      }
-      function domainForNames(candidates) {
-        if (!candidates.length) return '';
-        for (const [key, domain] of Object.entries(MODEL_DOMAINS)) {
-          const keyTokens = String(key).split(DOMAIN_SPLIT_RE).filter(Boolean);
-          if (candidates.some(tokens => isDomainKeyPrefix(keyTokens, tokens))) return domain;
-        }
-        return '';
-      }
-      // The label is the last word, and only when the id names no brand at all. An anonymous id
-      // keeps resolving to '' on purpose: a stealth model's monogram is the honest mark, since
-      // there is no brand to draw.
-      function getModelDomain(m) {
-        return domainForNames(domainNameCandidates(m.modelId))
-          || domainForNames(domainNameCandidates(m.label));
-      }
-
-      // The table draws the same brand mark on its rows. It renders before this pass on the first
-      // snapshot, and hydrates its logos once the plots have run (see modelDomainFor).
-      modelDomainFor = getModelDomain;
-
-      // Display identity per node. A federated origin is named by its catalog and marked by
-      // its own hostname; a provider keeps the name and icon it always had. One entry per
-      // scope, from its first row — every row of a scope names it the same way.
-      const providerNodeInfo = new Map();
-      for (const m of plotRows) {
-        const id = providerInstanceKey(m);
-        if (providerNodeInfo.has(id)) continue;
-        providerNodeInfo.set(id, {
-          name: providerInstanceName(m),
-          // What a name shared with another node gets qualified by: the upstream's own label
-          // when its catalog gave one, else the identity the router routes by, else the plain
-          // fact that nothing named an upstream. Nothing here is invented.
-          qualifier: m.originLabel || (m.originId ? String(m.originId) : 'no origin'),
-          // The node's own hostname first — a federated origin's catalog name is usually its own
-          // host, which is a truer brand mark than the gateway's — and then every site the
-          // provider behind it names, so a node whose own host resolves to no icon is still drawn
-          // with a mark instead of an empty disc. An origin that names itself `ollama.truenas` is a
-          // machine on the relay's LAN, not a site: it is honest about its hostname, has no logo to
-          // fetch, and the gateway that relays it does. The label beside the node keeps the two
-          // distinguishable.
-          domains: faviconHrefs([originFaviconDomain(m), ...(providerFaviconDomainLists.get(m.providerKey) || [])]),
-        });
-      }
-      // A federated provider can hand two of its nodes the same name — its own bucket and the
-      // rows it does not attribute to any upstream both read "G4F" — so only a shared name is
-      // qualified, by the identity that actually tells the two apart. Distinct names (every
-      // ordinary provider, and every catalog-named origin) are left exactly as they were.
-      const nodeNameCounts = new Map();
-      for (const info of providerNodeInfo.values()) {
-        const key = info.name.toLowerCase();
-        nodeNameCounts.set(key, (nodeNameCounts.get(key) || 0) + 1);
-      }
-      for (const info of providerNodeInfo.values()) {
-        if ((nodeNameCounts.get(info.name.toLowerCase()) || 0) > 1) info.name = `${info.name} · ${info.qualifier}`;
-      }
-      const providerNodeName = (pk) => providerNodeInfo.get(pk)?.name || pk;
-      // The brand-mark hrefs to try for a node, best first (see providerNodeInfo.domains).
-      const providerNodeMarkHrefs = (pk) => providerNodeInfo.get(pk)?.domains || [];
-
-      // Fit the viewBox to the card's actual pixel size. A federated provider multiplies the
-      // node count several times over, and node labels are the one thing that has to stay
-      // legible when it does, so past a couple of dozen nodes the rings shrink and the labels
-      // shorten: neighbours on the ellipse are only a few tens of pixels apart at that size.
-      const card = svg.parentElement;
-      const W = card ? card.clientWidth : 600;
-      const H = card ? card.clientHeight : 140;
-      const cx = W / 2, cy = H / 2;
-      const crowded = numProvs > 24;
-      const provR = crowded
-        ? Math.min(5.5, Math.max(4, Math.min(W, H) * 0.032))
-        : Math.min(7.5, Math.max(5.5, Math.min(W, H) * 0.05));
-      const faviconSz = Math.round(provR * 1.6);
-      const clipR = Math.round(faviconSz / 2);
-      // The label budget is in characters, so the crowded plot's smaller font (3.4px against
-      // 4px, see .topo-provider-label.crowded) buys back the width the shorter text gives up:
-      // at 18 characters the labels occupy about what 15 did at full size, and the extra room
-      // is what keeps two origins' shortened names from printing identically.
-      const providerLabelMax = crowded ? 18 : 22;
-      const providerNodeLabel = (pk) => {
-        const name = providerNodeName(pk);
-        if (name.length <= providerLabelMax) return name;
-        // Shorten from the middle rather than the end. The end is where the router's own
-        // disambiguation lives ("qwen · 920d", see labelOrigins): cutting the tail would print
-        // two different origins as the same node name, which is the one thing a node per origin
-        // exists to prevent. Names with no such suffix shorten exactly as they did before.
-        const sep = name.lastIndexOf(' · ');
-        const tail = sep > 0 ? name.slice(sep) : '';
-        const head = providerLabelMax - tail.length - 1;
-        if (tail && head >= 4) return `${name.slice(0, head)}…${tail}`;
-        return `${name.slice(0, providerLabelMax - 1)}…`;
-      };
-
-      // Rebuild whenever the actual model membership changes (not just the
-      // count), so the plot stays in lock-step with the primary table as models
-      // come and go between the main and graveyard tables in real time.
-      const membershipSig = plotRows.map(m => getModelRowKey(m)).sort().join('|');
-      const providerSig = plotProviders.join('|');
-      // Which links are blue is a function of the *active* models as much as of the membership,
-      // so the active pairs belong in the rebuild key: the classes are refreshed every render,
-      // but a pick that moves to a pair the plot has not drawn yet needs the plot to redraw — a
-      // signature that only watched membership would leave that serving path unmarked.
-      const bestSig = activePicks
-        .map(pick => `${pick.modelId}@${pick.providerKey}`)
-        .sort()
-        .join('|');
-      // `dec` is in the key because whether the node marks exist is a property of what was drawn
-      // (see faviconHrefs): a plot built before the idle pass is a different picture from the same
-      // plot built after it, even though every model in it is identical.
-      const svgHash = `${membershipSig}:${providerSig}:${bestSig}:${W}:${H}:dec=${decorationsReady ? 1 : 0}`;
-      if (svg.dataset.hash !== svgHash) {
-        svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-        svg.innerHTML = '';
-        // Whatever placeholder the loading shell put here is gone with the markup above; the flag
-        // goes with it, so "this element holds a placeholder" stays true of the element rather
-        // than of what it used to hold (see setTopologyPlaceholder).
-        delete svg.dataset.placeholder;
-        svg.dataset.hash = svgHash;
-        svg._topoZoom = 1;
-        svg._topoPanX = 0;
-        svg._topoPanY = 0;
-        svg._topoHighlight = null;
-        svg._topoDragging = false;
-
-        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-        g.setAttribute('id', 'topo-layer');
-        svg.appendChild(g);
-
-        // --- Build nodes (models first, then providers) ---
-        const nodes = [];
-        let seed = 0;
-        for (let i = 0; i < plotProviders.length; i++) {
-          for (let j = 0; j < plotProviders[i].length; j++) seed = ((seed << 5) - seed + plotProviders[i].charCodeAt(j)) | 0;
-        }
-        function lcg() { seed = (seed * 1664525 + 1013904223) | 0; return (seed >>> 0) / 4294967296; }
-
-        // Provider nodes on a wide ellipse
-        const rProvX = Math.min(W * 0.42, 8 + numProvs * 11);
-        const rProvY = Math.min(H * 0.32, 6 + numProvs * 6);
-        const provNodes = [];
-        for (let i = 0; i < numProvs; i++) {
-          const angle = (2 * Math.PI * i) / numProvs + (lcg() - 0.5) * 0.25;
-          provNodes.push({
-            id: `p:${plotProviders[i]}`, type: 'provider',
-            providerKey: plotProviders[i],
-            // The brand-mark hrefs for this provider node, best first.
-            markHrefs: providerNodeMarkHrefs(plotProviders[i]),
-            x: cx + rProvX * Math.cos(angle),
-            y: cy + rProvY * Math.sin(angle),
-            mass: 3.5
-          });
-        }
-
-        // One node per unique model (models first in array for index lookups).
-        // Each group is attached to at least one provider node, because the provider list is
-        // derived from these same groups — nothing floats unattached.
-        for (let i = 0; i < numModels; i++) {
-          const um = uniqueModels[i];
-          const connectedKeys = um._providers.map(p => p.key);
-          // Anchor on the provider that's up when there is one.
-          const bestProv = um._providers.find(p => isRowUp(p.model)) || um._providers[0];
-          const anchorProv = provNodes.find(p => p.providerKey === bestProv.key);
-          const angle = lcg() * 2 * Math.PI;
-          const dist = 5 + lcg() * 14;
-          nodes.push({
-            id: `m:${um.modelId}`, type: 'model',
-            model: um,
-            providers: connectedKeys,
-            providerKey: bestProv.key,
-            umIdx: i,
-            x: (anchorProv ? anchorProv.x : cx) + Math.cos(angle) * dist,
-            y: (anchorProv ? anchorProv.y : cy) + Math.sin(angle) * dist,
-            mass: 1.5
-          });
-        }
-        for (const pn of provNodes) nodes.push(pn);
-
-        // --- Edges: each model connects to EVERY provider that can serve it ---
-        // One array, two jobs: these are the springs the layout reads (a model settles beside
-        // the providers that can serve it) and the links drawn below are the same pairs. The
-        // mesh is the picture of what *could* serve; which single one of them is serving is a
-        // class decision made in the refresh below, where the router's pick is known.
-        const edges = [];
-        for (const node of nodes) {
-          if (node.type !== 'model') continue;
-          for (const pk of node.providers) {
-            const prov = provNodes.find(p => p.providerKey === pk);
-            if (prov) edges.push({ from: node, to: prov, providerKey: pk });
-          }
-        }
-
-        // --- Real-time spring simulation: nodes glide from their seeded start
-        // positions and settle under pairwise repulsion, edge springs, a gentle
-        // centre pull, and friction. Integrated live each frame in
-        // startTopologyAnimation, so the layout visibly "relaxes" into place. ---
-        const marginX = provR + 8;
-        const marginTop = provR + 6;
-        const marginBottom = provR + 18;
-        for (const n of nodes) { n.vx = 0; n.vy = 0; }
-
-        // --- Draw edges ---
-        // A path per pair, all of them muted-green once the refresh classifies them; the one
-        // the router is actually using is painted blue there (see 'selected' below).
-        for (const e of edges) {
-          const mx = (e.from.x + e.to.x) / 2, my = (e.from.y + e.to.y) / 2;
-          const dx = e.to.x - e.from.x, dy = e.to.y - e.from.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          let cxOff = 0, cyOff = 0;
-          if (dist > 2) {
-            const curvature = Math.min(5, dist * 0.20);
-            cxOff = (-dy / dist) * curvature;
-            cyOff = (dx / dist) * curvature;
-          }
-          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-          path.setAttribute('d', `M${e.from.x.toFixed(1)} ${e.from.y.toFixed(1)} Q${(mx + cxOff).toFixed(1)} ${(my + cyOff).toFixed(1)} ${e.to.x.toFixed(1)} ${e.to.y.toFixed(1)}`);
-          path.setAttribute('class', 'topo-link');
-          path.dataset.from = nodes.indexOf(e.from);
-          path.dataset.to = nodes.indexOf(e.to);
-          path.dataset.uidx = e.from.umIdx;
-          path.dataset.pkey = e.providerKey;
-          g.appendChild(path);
-        }
-
-        // --- Draw model nodes (circle + model favicon + tiny name label) ---
-        for (const node of nodes) {
-          if (node.type !== 'model') continue;
-          const m = node.model;
-          const ni = nodes.indexOf(node);
-          const px = node.x.toFixed(1), py = node.y.toFixed(1);
-          // 1. Background circle (status colour)
-          const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          el.setAttribute('cx', px); el.setAttribute('cy', py); el.setAttribute('r', 5);
-          el.setAttribute('class', 'topo-model');
-          el.dataset.midx = ni; el.dataset.uidx = node.umIdx;
-          el.dataset.pkeys = node.providers.join('|');
-          const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-          title.textContent = `${modelDisplayName(m)} · ${node.providers.map(p => providerNodeName(p)).join(', ')}`;
-          el.appendChild(title);
-          g.appendChild(el);
-          // 2. Monogram disc + letter — always drawn so every model node shows a
-          // branded glyph even when no favicon domain resolves (or the remote
-          // request fails). The favicon image below sits on top and, on a
-          // successful load, covers the monogram; on error it hides and the
-          // monogram remains, exactly like the provider nodes.
-          const monogram = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          monogram.setAttribute('cx', px); monogram.setAttribute('cy', py); monogram.setAttribute('r', 4.5);
-          monogram.setAttribute('class', 'topo-model-mono');
-          monogram.dataset.midx = ni; monogram.dataset.uidx = node.umIdx;
-          monogram.dataset.pkeys = node.providers.join('|');
-          const monoTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-          monoTitle.textContent = modelDisplayName(m);
-          monogram.appendChild(monoTitle);
-          g.appendChild(monogram);
-
-          const shortName = modelDisplayName(m);
-          const glyphText = (shortName.match(/[a-z0-9]/i) || ['?'])[0].toUpperCase();
-          const glyph = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          glyph.setAttribute('x', px); glyph.setAttribute('y', py);
-          glyph.setAttribute('class', 'topo-model-glyph');
-          glyph.dataset.midx = ni; glyph.dataset.uidx = node.umIdx;
-          glyph.textContent = glyphText;
-          g.appendChild(glyph);
-
-          // 3. Model-specific favicon (the model's own brand icon), overlaid on
-          // the monogram. Only attempted when a domain resolved; an error hides
-          // the (failed) remote image so the monogram shows through.
-          const modelDom = getModelDomain(m);
-          if (modelDom) {
-            const mcId = `mclip-${ni}`;
-            const defs = g.querySelector('defs') || (() => { const d = document.createElementNS('http://www.w3.org/2000/svg', 'defs'); g.insertBefore(d, g.firstChild); return d; })();
-            const cp = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
-            cp.setAttribute('id', mcId);
-            const cc = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            cc.setAttribute('cx', px); cc.setAttribute('cy', py); cc.setAttribute('r', 4.5);
-            cc.dataset.midx = ni;
-            cp.appendChild(cc); defs.appendChild(cp);
-            const img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
-            img.setAttribute('x', (node.x - 4).toFixed(1)); img.setAttribute('y', (node.y - 4).toFixed(1));
-            img.setAttribute('width', '8'); img.setAttribute('height', '8');
-            // A model node's mark is its vendor's, never its provider's: the node stands for the
-            // model, and a gateway's logo on it would name the wrong thing. No vendor domain, or
-            // a vendor with no icon, leaves the model's monogram showing.
-            img.setAttribute('href', modelMarkHrefs(m)[0] || '');
-            img.setAttribute('clip-path', `url(#${mcId})`);
-            img.setAttribute('class', 'topo-model-img');
-            img.dataset.midx = ni; img.dataset.uidx = node.umIdx;
-            img.dataset.pkeys = node.providers.join('|');
-            // A blocked/blank favicon must not erase the node: hide it so the
-            // monogram beneath stays visible. The router answers 404 for a domain it
-            // could not fetch an icon for, so a miss lands here rather than drawing a
-            // placeholder brand mark.
-            img.addEventListener('error', () => { img.style.display = 'none'; });
-            const imgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            imgTitle.textContent = modelDisplayName(m);
-            img.appendChild(imgTitle);
-            g.appendChild(img);
-          }
-          // 4. Tiny name label below (use display name)
-          const trunc = shortName.length > 12 ? shortName.slice(0, 11) + '…' : shortName;
-          if (trunc) {
-            const lbl = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-            lbl.setAttribute('x', px); lbl.setAttribute('y', (node.y + 9).toFixed(1));
-            lbl.setAttribute('class', 'topo-model-label');
-            lbl.dataset.midx = ni; lbl.dataset.uidx = node.umIdx;
-            lbl.dataset.pkeys = node.providers.join('|');
-            lbl.textContent = trunc;
-            g.appendChild(lbl);
-          }
-        }
-
-        // --- Draw provider nodes (ring + favicon or monogram + name) ---
-        for (const node of provNodes) {
-          const pk = node.providerKey, hasDomain = node.markHrefs.length > 0;          // Status ring
-          const ring = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-          ring.setAttribute('cx', node.x.toFixed(1));
-          ring.setAttribute('cy', node.y.toFixed(1));
-          ring.setAttribute('r', provR);
-          ring.setAttribute('class', 'topo-provider-ring');
-          ring.dataset.pkey = pk;
-          const ringTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-          ringTitle.textContent = providerNodeName(pk);
-          ring.appendChild(ringTitle);
-          g.appendChild(ring);
-
-          if (hasDomain) {
-            const clipId = `topo-clip-${pk}-${numModels}`;
-            const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-            const clipPath = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
-            clipPath.setAttribute('id', clipId);
-            const clipCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            clipCircle.setAttribute('cx', node.x.toFixed(1));
-            clipCircle.setAttribute('cy', node.y.toFixed(1));
-            clipCircle.setAttribute('r', clipR);
-            // The spring animation moves this provider node; keep its clip
-            // geometry attached to the same node or the favicon gets clipped
-            // at its old position after the first animation frame.
-            clipCircle.dataset.midx = nodes.indexOf(node);
-            clipPath.appendChild(clipCircle);
-            defs.appendChild(clipPath);
-            g.insertBefore(defs, g.firstChild);
-
-            // Keep a visible monogram underneath the remote image. It prevents
-            // a blocked favicon request from making the provider node disappear;
-            // the real logo remains on top whenever it loads successfully.
-            const mono = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            mono.setAttribute('cx', node.x.toFixed(1));
-            mono.setAttribute('cy', node.y.toFixed(1));
-            mono.setAttribute('r', clipR);
-            mono.setAttribute('class', 'topo-provider-mono');
-            mono.dataset.pkey = pk;
-            const monoTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            monoTitle.textContent = providerNodeName(pk);
-            mono.appendChild(monoTitle);
-            g.appendChild(mono);
-
-            const img = document.createElementNS('http://www.w3.org/2000/svg', 'image');
-            img.setAttribute('x', (node.x - clipR).toFixed(1));
-            img.setAttribute('y', (node.y - clipR).toFixed(1));
-            img.setAttribute('width', faviconSz);
-            img.setAttribute('height', faviconSz);
-            img.setAttribute('preserveAspectRatio', 'xMidYMid slice');
-            const iconHref = node.markHrefs[0];
-            img.setAttribute('href', iconHref);
-            img.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', iconHref);
-            // Every candidate the router offered, walked in order on a failed load: the node's own
-            // hostname first, then the sites the provider behind it names. A node whose hostname
-            // resolves to no icon (a relay's LAN name, say) is therefore drawn with a real mark,
-            // and one whose provider names no site at all still lands on the monogram rather than
-            // on a broken image. The walk is finite because every candidate is compared against
-            // what is already set, so an image that has exhausted the list hides itself.
-            const markHrefs = node.markHrefs;
-            let markIdx = 0;
-            img.setAttribute('clip-path', `url(#${clipId})`);
-            img.setAttribute('class', 'topo-provider-img');
-            img.dataset.pkey = pk;
-            const imgTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            imgTitle.textContent = providerNodeName(pk);
-            img.appendChild(imgTitle);
-            img.addEventListener('error', () => {
-              let next = '';
-              while (++markIdx < markHrefs.length && !next) {
-                if (markHrefs[markIdx] !== img.getAttribute('href')) next = markHrefs[markIdx];
-              }
-              if (next) {
-                img.setAttribute('href', next);
-                img.setAttributeNS('http://www.w3.org/1999/xlink', 'xlink:href', next);
-                return;
-              }
-              // The monogram is already beneath the image, so just hide the
-              // failed remote resource instead of inserting another node.
-              img.style.display = 'none';
-            });
-            g.appendChild(img);
-          } else {
-            const mono = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-            mono.setAttribute('cx', node.x.toFixed(1));
-            mono.setAttribute('cy', node.y.toFixed(1));
-            mono.setAttribute('r', clipR);
-            mono.setAttribute('class', 'topo-provider-mono');
-            mono.dataset.pkey = pk;
-            const mTitle = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-            mTitle.textContent = providerNodeName(pk);
-            mono.appendChild(mTitle);
-            g.appendChild(mono);
-          }
-
-          // Provider name label below the ring
-          const displayName = providerNodeLabel(pk);
-          const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-          label.setAttribute('x', node.x.toFixed(1));
-          label.setAttribute('y', (node.y + provR + 8).toFixed(1));
-          label.setAttribute('class', crowded ? 'topo-provider-label crowded' : 'topo-provider-label');
-          label.setAttribute('data-pkey', pk);
-          label.dataset.pkey = pk;
-          label.textContent = displayName;
-          g.appendChild(label);
-        }
-
-        // ---- Attach pan/zoom/highlight interactivity ----
-        attachTopologyInteractivity(svg, g, W, H, plotProviders, primaryModels, numModels);
-        const tz = svg._topoZoom || 1;
-        const tpx = svg._topoPanX || 0;
-        const tpy = svg._topoPanY || 0;
-        g.setAttribute('transform', `translate(${tpx},${tpy}) scale(${tz})`);
-
-        // ---- Kick off spring animation ----
-        startTopologyAnimation(svg, g, nodes, edges, provNodes, provR, W, H);
-
-      }
-
-      // ---- Refresh colours, labels, and tooltips each render ----
-      const gLayer = svg.querySelector('#topo-layer');
-      if (!gLayer) return;
-      const modelEls = gLayer.querySelectorAll('.topo-model');
-      const links = gLayer.querySelectorAll('.topo-link');
-      const rings = gLayer.querySelectorAll('.topo-provider-ring');
-      const imgs = gLayer.querySelectorAll('.topo-provider-img');
-      const monos = gLayer.querySelectorAll('.topo-provider-mono');
-
-      const providerHealth = {};
-      for (const pk of plotProviders) {
-        const provModels = primaryModels.filter(m => providerInstanceKey(m) === pk);
-        const upCount = provModels.filter(isRowUp).length;
-        providerHealth[pk] = { upCount, total: provModels.length };
-      }
-
-      // Model status: the same verdict the table colours its dots with, so the picture
-      // cannot claim a model is up while its row shows a clock or a red dot.
-      function modelStatusCls(um, isBest) {
-        // The same bucket the group filter above keeps on, and every survivor's links are the
-        // live rows it kept, so this reads 'up' for anything on the plot. The verdict is still
-        // asked for rather than assumed: if that filter ever lets a benched or down group
-        // through, the colouring says so instead of quietly dressing it as a working model.
-        const cls = modelGroupStatus(um._providers.map(p => p.model)) === 'up' ? ' up' : ' down';
-        return `${cls}${isBest ? ' best' : ''}`;
-      }
-      // "Best" is really "in use": every model a conversation is routed to right now, which is
-      // more than one whenever more than one conversation is working. The name is kept because
-      // every class it drives (`.best`, `.selected`, the ring and the flowing link) is the same
-      // accent, and one lit node per live model is exactly what that accent should draw.
-      function isModelBest(um) {
-        return um._providers.some(p => isActivePick(p.model.modelId, p.model.providerKey));
-      }
-      // The provider nodes serving a live pick, by instance key: a federated origin gets its own
-      // ring, so the ring that lights is the one that actually answers for the model.
-      const activeProviderKeys = new Set();
-      for (const um of uniqueModels) {
-        for (const p of um._providers) {
-          if (isActivePick(p.model.modelId, p.model.providerKey)) activeProviderKeys.add(p.key);
-        }
-      }
-
-      modelEls.forEach(el => {
-        const mi = Number(el.dataset.uidx || 0);
-        if (mi >= 0 && mi < numModels) {
-          const um = uniqueModels[mi];
-          if (!um) { el.setAttribute('class', 'topo-model'); return; }
-          const isBest = isModelBest(um);
-          const cls = `topo-model${modelStatusCls(um, isBest)}${isBest ? ' selected' : ''}`;
-          if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
-          const title = el.querySelector('title');
-          if (title) title.textContent = `${modelDisplayName(um)} · ${um._providers.map(p => providerNodeName(p.key)).join(', ')}`;
-        }
-      });
-
-      // Refresh model favicon images (and their monogram/glyph fallbacks)
-      gLayer.querySelectorAll('.topo-model-img').forEach(el => {
-        const mi = Number(el.dataset.uidx || 0);
-        if (mi >= 0 && mi < numModels) {
-          const um = uniqueModels[mi];
-          if (!um) return;
-          const isBest = isModelBest(um);
-          const cls = `topo-model-img${isBest ? ' best' : ''}`;
-          if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
-          const title = el.querySelector('title');
-          if (title) title.textContent = modelDisplayName(um);
-        }
-      });
-      // Monogram + glyph always reflect the model's current health colour
-      gLayer.querySelectorAll('.topo-model-mono, .topo-model-glyph').forEach(el => {
-        const mi = Number(el.dataset.uidx || 0);
-        if (mi >= 0 && mi < numModels) {
-          const um = uniqueModels[mi];
-          if (!um) return;
-          const isBest = isModelBest(um);
-          const cls = `topo-${el.classList.contains('topo-model-mono') ? 'model-mono' : 'model-glyph'}${modelStatusCls(um, isBest)}`;
-          if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
-        }
-      });
-
-      // Refresh model labels (class + text) so they never go stale between rebuilds
-      gLayer.querySelectorAll('.topo-model-label').forEach(el => {
-        const mi = Number(el.dataset.uidx || 0);
-        if (mi >= 0 && mi < numModels) {
-          const um = uniqueModels[mi];
-          if (!um) return;
-          const isBest = isModelBest(um);
-          const cls = `topo-model-label${modelStatusCls(um, isBest)}`;
-          if (el.getAttribute('class') !== cls) el.setAttribute('class', cls);
-          const shortName = modelDisplayName(um);
-          const trunc = shortName.length > 12 ? shortName.slice(0, 11) + '…' : shortName;
-          if (trunc && el.textContent !== trunc) el.textContent = trunc;
-        }
-      });
-
-      links.forEach(line => {
-        const mi = Number(line.dataset.uidx || 0);
-        if (mi >= 0 && mi < numModels) {
-          const um = uniqueModels[mi];
-          if (!um) { line.setAttribute('class', 'topo-link'); return; }
-          // Every drawn link comes from a live row (see the group filter above), so there is
-          // no benched or down link left for 'warn' or the bare muted stroke to describe.
-          //
-          // The links that wear the flowing blue are the serving paths: one per model in use, to
-          // the provider instance that serves that exact row (the pair the selected ring marks
-          // too). Every other drawn link stays the plain maroon mesh — those providers can serve
-          // the model, but the router is not using them. Matching the pair rather than the model
-          // is what keeps one model's mesh from lighting up with it.
-          const isServingPath = um._providers.some(p => p.key === line.dataset.pkey
-            && isActivePick(p.model.modelId, p.model.providerKey));
-          const cls = `topo-link active${isServingPath ? ' selected' : ''}`;
-          if (line.getAttribute('class') !== cls) line.setAttribute('class', cls);
-        }
-      });
-
-      rings.forEach(ring => {
-        const pk = ring.dataset.pkey;
-        const h = providerHealth[pk];
-        if (!h) return;
-        // Green means the provider has at least one live model. Only providers with one are
-        // drawn at all (see the group filter above), so this is 'green' by construction — the
-        // count is still read rather than hardcoded, so a node that outlived its last live
-        // model reads red instead of lying about it.
-        // The providers serving a live model also get the selected ring (the accent, matching
-        // the model they serve) — one per model in use, not only the exported best.
-        const servesBest = activeProviderKeys.has(pk);
-        ring.setAttribute('class', `topo-provider-ring${h.upCount > 0 ? ' green' : ' red'}${servesBest ? ' selected' : ''}`);
-        const title = ring.querySelector('title');
-        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
-      });
-
-      imgs.forEach(img => {
-        const pk = img.dataset.pkey;
-        const h = providerHealth[pk];
-        if (!h) return;
-        const title = img.querySelector('title');
-        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
-      });
-
-      monos.forEach(mono => {
-        const pk = mono.dataset.pkey;
-        const h = providerHealth[pk];
-        if (!h) return;
-        mono.setAttribute('class', `topo-provider-mono${h.upCount === h.total && h.total > 0 ? ' green' : (h.upCount > 0 ? ' amber' : ' red')}`);
-        const title = mono.querySelector('title');
-        if (title) title.textContent = `${providerNodeName(pk)} · ${h.upCount}/${h.total} up`;
-      });
-
-      // Re-apply highlight dimming
-      applyTopologyHighlight(svg, gLayer);
-    }
-
-    // ---- Interactivity: pan, zoom, click/dblclick ----
-    function attachTopologyInteractivity(svg, _g, W, H, plotProviders, primaryModels, numModels) {
-      if (svg._topoListenersAttached) return;
-      svg._topoListenersAttached = true;
-
-      if (!svg._topoZoom) svg._topoZoom = 1;
-      if (!svg._topoPanX) svg._topoPanX = 0;
-      if (!svg._topoPanY) svg._topoPanY = 0;
-
-      let dragStart = null, dragPanStart = null, didDrag = false;
-
-      function getG() { return svg.querySelector('#topo-layer'); }
-
-      function getMouse(e) {
-        const rect = svg.getBoundingClientRect();
-        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
-      }
-
-      function applyTransform() {
-        const g = getG(); if (!g) return;
-        const z = svg._topoZoom || 1;
-        const px = svg._topoPanX || 0;
-        const py = svg._topoPanY || 0;
-        g.setAttribute('transform', `translate(${px},${py}) scale(${z})`);
-      }
-
-      svg.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.topo-provider-ring') || e.target.closest('.topo-provider-img') || e.target.closest('.topo-provider-mono')) return;
-        dragStart = getMouse(e);
-        dragPanStart = { x: svg._topoPanX || 0, y: svg._topoPanY || 0 };
-        didDrag = false;
-        svg.classList.add('dragging');
-        e.preventDefault();
-      });
-
-      window.addEventListener('mousemove', (e) => {
-        if (!dragStart) return;
-        const m = getMouse(e);
-        const dx = m.x - dragStart.x, dy = m.y - dragStart.y;
-        if (Math.abs(dx) < 2 && Math.abs(dy) < 2) return;
-        didDrag = true;
-        svg._topoPanX = dragPanStart.x + dx;
-        svg._topoPanY = dragPanStart.y + dy;
-        applyTransform();
-      });
-
-      window.addEventListener('mouseup', () => {
-        dragStart = null;
-        svg.classList.remove('dragging');
-      });
-
-      svg.addEventListener('wheel', (e) => {
-        e.preventDefault();
-        const m = getMouse(e);
-        const oldZoom = svg._topoZoom || 1;
-        const delta = -e.deltaY * 0.002;
-        const newZoom = Math.max(0.4, Math.min(4, oldZoom + delta * oldZoom));
-        const px = svg._topoPanX || 0, py = svg._topoPanY || 0;
-        svg._topoPanX = m.x - (m.x - px) * (newZoom / oldZoom);
-        svg._topoPanY = m.y - (m.y - py) * (newZoom / oldZoom);
-        svg._topoZoom = newZoom;
-        applyTransform();
-      }, { passive: false });
-
-      svg.addEventListener('click', (e) => {
-        if (didDrag) return;
-        const provEl = e.target.closest('.topo-provider-ring') || e.target.closest('.topo-provider-img') || e.target.closest('.topo-provider-mono');
-        const modelEl = e.target.closest('.topo-model') || e.target.closest('.topo-model-img') || e.target.closest('.topo-model-label');
-        if (provEl) {
-          const next = { type: 'provider', key: provEl.dataset.pkey };
-          const current = svg._topoHighlight;
-          svg._topoHighlight = current && current.type === next.type && current.key === next.key ? null : next;
-          applyTopologyHighlight(svg, getG());
-        } else if (modelEl) {
-          const next = {
-            type: 'model',
-            index: Number(modelEl.dataset.uidx),
-            providers: (modelEl.dataset.pkeys || '').split('|').filter(Boolean),
-          };
-          const current = svg._topoHighlight;
-          svg._topoHighlight = current && current.type === next.type && current.index === next.index ? null : next;
-          applyTopologyHighlight(svg, getG());
-        } else if (svg._topoHighlight) {
-          svg._topoHighlight = null;
-          applyTopologyHighlight(svg, getG());
-        }
-      });
-
-      svg.addEventListener('dblclick', () => {
-        svg._topoZoom = 1;
-        svg._topoPanX = 0;
-        svg._topoPanY = 0;
-        svg._topoHighlight = null;
-        applyTransform();
-        applyTopologyHighlight(svg, getG());
-      });
-    }
-
-    function applyTopologyHighlight(svg, g) {
-      const selection = svg._topoHighlight;
-      const allEls = g.querySelectorAll('.topo-model, .topo-model-img, .topo-model-label, .topo-provider-ring, .topo-provider-img, .topo-provider-mono, .topo-link, .topo-provider-label');
-      allEls.forEach(el => {
-        if (!selection) {
-          el.classList.remove('dimmed');
-          return;
-        }
-
-        const elPk = el.dataset.pkey || el.getAttribute('data-pkey') || '';
-        const elModelIndex = el.dataset.uidx == null ? null : Number(el.dataset.uidx);
-        const elProviders = (el.dataset.pkeys || '').split('|').filter(Boolean);
-        let isTarget = false;
-
-        if (selection.type === 'provider') {
-          // Keep the selected provider, every model it serves, and only the
-          // links belonging to that provider visible.
-          isTarget = elPk === selection.key
-            || elProviders.includes(selection.key)
-            || (el.classList.contains('topo-link') && el.dataset.pkey === selection.key);
-        } else if (selection.type === 'model') {
-          // Keep the selected model, every provider node connected to it, and
-          // only the selected model's own links. Links also carry data-pkey,
-          // so they must not match via the provider rule — otherwise lines
-          // from the connected providers to other models would stay lit.
-          const isLink = el.classList.contains('topo-link');
-          isTarget = elModelIndex === selection.index
-            || (!isLink && elPk && selection.providers.includes(elPk))
-            || (isLink && Number(el.dataset.uidx) === selection.index);
-        }
-        el.classList.toggle('dimmed', !isTarget);
-      });
-    }
-
-    // Where the last layout came to rest, so the next build of the same graph can start there.
-    let settledTopologySignature = null;
-    let settledTopologyPositions = new Map();
-    function recordSettledTopology(signature, nodes) {
-      settledTopologySignature = signature;
-      settledTopologyPositions = new Map(nodes.map(n => [n.id, { x: n.x, y: n.y }]));
-    }
-
-    // ---- Live spring layout: integrates repulsion + edge springs + gravity +
-    // friction every frame until the graph settles. Nodes glide from their
-    // seeded start positions and relax organically into place. ----
-    function startTopologyAnimation(svg, g, nodes, edges, provNodes, provR, W, H) {
-      if (svg._topoAnimFrame) cancelAnimationFrame(svg._topoAnimFrame);
-      svg._topoAnimDone = false;
-
-      const N = nodes.length;
-
-      // Reuse the settled position of each node when this is the same graph drawn at the same
-      // size. The layout is a relaxation, so starting from its own previous solution reaches the
-      // same place in a few frames instead of scattering the picture and re-running a simulation
-      // whose frames cost tens of milliseconds each — and every refresh rebuilds this graph, so
-      // without this the page spends each refresh re-relaxing a picture the user already watched
-      // settle. A different node set, or a resized card, is a new picture and is seeded fresh,
-      // which is what keeps the relaxation visible where it means something.
-      const graphSignature = `${W}x${H}|${nodes.map(n => n.id).join('|')}`;
-      if (graphSignature === settledTopologySignature) {
-        for (const n of nodes) {
-          const settled = settledTopologyPositions.get(n.id);
-          if (settled) { n.x = settled.x; n.y = settled.y; }
-        }
-      }
-
-      // Build element lookup: nodeIndex → { circle, img, label, clipCircle }
-      const elMap = new Array(N);
-      for (let i = 0; i < N; i++) elMap[i] = {};
-
-      // Model elements
-      g.querySelectorAll('.topo-model').forEach(el => {
-        const mi = Number(el.dataset.midx);
-        if (mi >= 0 && mi < N) elMap[mi].circle = el;
-      });
-      g.querySelectorAll('.topo-model-img').forEach(el => {
-        const mi = Number(el.dataset.midx);
-        if (mi >= 0 && mi < N) elMap[mi].img = el;
-      });
-      g.querySelectorAll('.topo-model-mono').forEach(el => {
-        const mi = Number(el.dataset.midx);
-        if (mi >= 0 && mi < N) elMap[mi].mono = el;
-      });
-      g.querySelectorAll('.topo-model-glyph').forEach(el => {
-        const mi = Number(el.dataset.midx);
-        if (mi >= 0 && mi < N) elMap[mi].glyph = el;
-      });
-      g.querySelectorAll('.topo-model-label').forEach(el => {
-        const mi = Number(el.dataset.midx);
-        if (mi >= 0 && mi < N) elMap[mi].label = el;
-      });
-
-      // Provider elements
-      provNodes.forEach(pn => {
-        const ni = nodes.indexOf(pn);
-        if (ni < 0) return;
-        elMap[ni] = {
-          ring: g.querySelector(`.topo-provider-ring[data-pkey="${pn.providerKey}"]`),
-          img: g.querySelector(`.topo-provider-img[data-pkey="${pn.providerKey}"]`),
-          mono: g.querySelector(`.topo-provider-mono[data-pkey="${pn.providerKey}"]`),
-          label: g.querySelector(`.topo-provider-label[data-pkey="${pn.providerKey}"]`),
-        };
-      });
-
-      // Clip path circles (model favicons)
-      const clipCircles = g.querySelectorAll('clipPath circle');
-
-      // Edge path elements (matched by from/to indices)
-      const edgeEls = [];
-      g.querySelectorAll('.topo-link').forEach(el => {
-        edgeEls.push({ el, fi: Number(el.dataset.from), ti: Number(el.dataset.to) });
-      });
-
-      // ---- Spring-physics constants ----
-      // Anisotropic metric: vertical distances are weighted by the card's
-      // aspect ratio, so a wide/short card spreads the graph horizontally
-      // instead of piling nodes into vertical stripes.
-      const aspect = Math.max(1, W / Math.max(1, H));
-      const ideal = Math.sqrt((W * H) / Math.max(6, N));   // Fruchterman–Reingold spacing
-      const restLen = ideal * 0.85;                        // spring natural length (weighted px)
-      const springK = 0.05;                                // spring stiffness
-      const repulsion = ideal * ideal;                     // k²/d² pairwise push
-      const repulsionCap = 50;
-      const gravity = 0.03;                                // weak pull to centre
-      const friction = 0.85;                               // velocity damping per frame
-      const maxSpeed = 12;                                 // px/frame speed clamp
-      const marginX = provR + 8;
-      const marginTop = provR + 6;
-      const marginBottom = provR + 18;
-
-      let alpha = 1;          // cooling multiplier — guarantees convergence
-      let frame = 0;
-      let settleFrames = 0;
-      // A frame cap cannot bound the time this spends on the main thread: at a few hundred nodes a
-      // frame costs tens of milliseconds, so 240 of them starve the page for minutes rather than
-      // the few seconds the cap is meant to promise. Whichever limit is reached first ends the
-      // animation, so the budget is expressed in wall time and the frame cap stays as a backstop.
-      const MAX_FRAMES = 240;
-      const MAX_ANIMATION_MS = 4000; // avoid monopolizing the main thread
-      const animationDeadline = performance.now() + MAX_ANIMATION_MS;
-
-      function applyForces() {
-        for (const n of nodes) { n.fx = 0; n.fy = 0; }
-        // Pairwise repulsion (gradient under the weighted-distance metric)
-        for (let a = 0; a < N; a++) {
-          const na = nodes[a];
-          for (let b = a + 1; b < N; b++) {
-            const nb = nodes[b];
-            let dx = nb.x - na.x, dy = (nb.y - na.y) * aspect;
-            let d2 = dx * dx + dy * dy;
-            if (d2 < 0.25) {
-              // Deterministic jitter for coincident points
-              dx = ((a * 31 + b * 17) % 11) - 5 || 0.7;
-              dy = (((a * 13 + b * 7) % 7) - 3) || 0.4;
-              d2 = dx * dx + dy * dy;
-            }
-            const d = Math.sqrt(d2);
-            const f = Math.min(repulsion / d2, repulsionCap) * alpha;
-            const ux = dx / d, uy = dy / d;
-            na.fx -= ux * f / na.mass; na.fy -= uy * f * aspect / na.mass;
-            nb.fx += ux * f / nb.mass; nb.fy += uy * f * aspect / nb.mass;
-          }
-        }
-        // Edge springs
-        for (const e of edges) {
-          const dx = e.to.x - e.from.x, dy = (e.to.y - e.from.y) * aspect;
-          const d = Math.sqrt(dx * dx + dy * dy) || 0.001;
-          const f = springK * (d - restLen) * alpha;
-          const fx = (dx / d) * f, fy = (dy / d) * f * aspect;
-          e.from.fx += fx / e.from.mass; e.from.fy += fy / e.from.mass;
-          e.to.fx -= fx / e.to.mass; e.to.fy -= fy / e.to.mass;
-        }
-        // Gentle gravity toward the card centre
-        for (const n of nodes) {
-          n.fx += (W / 2 - n.x) * gravity * alpha / n.mass;
-          n.fy += (H / 2 - n.y) * gravity * alpha / n.mass;
-        }
-      }
-
-      function integrate() {
-        let maxV = 0;
-        for (const n of nodes) {
-          n.vx = (n.vx + n.fx) * friction;
-          n.vy = (n.vy + n.fy) * friction;
-          const sp = Math.hypot(n.vx, n.vy);
-          if (sp > maxSpeed) { n.vx *= maxSpeed / sp; n.vy *= maxSpeed / sp; }
-          n.x += n.vx; n.y += n.vy;
-          // Soft walls
-          if (n.x < marginX) { n.x = marginX; n.vx = 0; }
-          else if (n.x > W - marginX) { n.x = W - marginX; n.vx = 0; }
-          if (n.y < marginTop) { n.y = marginTop; n.vy = 0; }
-          else if (n.y > H - marginBottom) { n.y = H - marginBottom; n.vy = 0; }
-          if (sp > maxV) maxV = sp;
-        }
-        return maxV;
-      }
-
-      function tick() {
-        if (svg._topoAnimDone || frame >= MAX_FRAMES || performance.now() > animationDeadline) {
-          svg._topoAnimDone = true;
-          svg.classList.remove('topo-animating');
-          recordSettledTopology(graphSignature, nodes);
-          updateAllPositions();
-          return;
-        }
-        frame++;
-        applyForces();
-        const maxV = integrate();
-        updateAllPositions();
-        // Settled once everything is barely moving for a few consecutive frames
-        settleFrames = maxV < 0.06 ? settleFrames + 1 : 0;
-        if (settleFrames >= 10) {
-          svg._topoAnimDone = true;
-          svg.classList.remove('topo-animating');
-          recordSettledTopology(graphSignature, nodes);
-          return;
-        }
-        alpha = Math.max(0.02, alpha * 0.988);
-        svg._topoAnimFrame = requestAnimationFrame(tick);
-      }
-
-      function updateAllPositions() {
-        // Update node elements
-        for (let i = 0; i < N; i++) {
-          const n = nodes[i];
-          const px = n.x.toFixed(1), py = n.y.toFixed(1);
-          const els = elMap[i];
-          if (els.circle) { els.circle.setAttribute('cx', px); els.circle.setAttribute('cy', py); }
-          if (els.img) { els.img.setAttribute('x', (n.x - 4).toFixed(1)); els.img.setAttribute('y', (n.y - 4).toFixed(1)); }
-          if (els.mono) { els.mono.setAttribute('cx', px); els.mono.setAttribute('cy', py); }
-          if (els.glyph) { els.glyph.setAttribute('x', px); els.glyph.setAttribute('y', py); }
-          if (els.label) { els.label.setAttribute('x', px); els.label.setAttribute('y', (n.y + 9).toFixed(1)); }
-          if (els.ring) { els.ring.setAttribute('cx', px); els.ring.setAttribute('cy', py); }
-          if (els.img && els.img.classList.contains('topo-provider-img')) {
-            els.img.setAttribute('x', (n.x - provR * 0.8).toFixed(1));
-            els.img.setAttribute('y', (n.y - provR * 0.8).toFixed(1));
-          }
-          if (els.mono) { els.mono.setAttribute('cx', px); els.mono.setAttribute('cy', py); }
-          if (els.label && els.label.classList.contains('topo-provider-label')) {
-            els.label.setAttribute('y', (n.y + provR + 8).toFixed(1));
-          }
-        }
-        // Update clip path circles via the node index stored at creation time
-        // (avoids an O(N²) positional match on every animation frame).
-        clipCircles.forEach(cc => {
-          const ci = Number(cc.dataset.midx);
-          if (ci >= 0 && ci < N) {
-            cc.setAttribute('cx', nodes[ci].x.toFixed(1));
-            cc.setAttribute('cy', nodes[ci].y.toFixed(1));
-          }
-        });
-        // Update edge paths
-        edgeEls.forEach(({ el, fi, ti }) => {
-          if (fi < 0 || fi >= N || ti < 0 || ti >= N) return;
-          const f = nodes[fi], t2 = nodes[ti];
-          const mx = (f.x + t2.x) / 2, my = (f.y + t2.y) / 2;
-          const dx = t2.x - f.x, dy = t2.y - f.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          let cxOff = 0, cyOff = 0;
-          if (dist > 2) {
-            const curvature = Math.min(5, dist * 0.20);
-            cxOff = (-dy / dist) * curvature;
-            cyOff = (dx / dist) * curvature;
-          }
-          el.setAttribute('d', `M${f.x.toFixed(1)} ${f.y.toFixed(1)} Q${(mx + cxOff).toFixed(1)} ${(my + cyOff).toFixed(1)} ${t2.x.toFixed(1)} ${t2.y.toFixed(1)}`);
-        });
-      }
-
-      // Disable the 1.5s CSS transitions while JS drives geometry every frame;
-      // they'd otherwise try to interpolate cx/cy/x/y and cause massive jank.
-      svg.classList.add('topo-animating');
-      svg._topoAnimFrame = requestAnimationFrame(tick);
     }
 
     function drawCurrentModelAnimation(hasActiveModel) {
@@ -3969,8 +2847,8 @@
     }
 
     /**
-     * One model's logo for the table: its own vendor mark — the same favicon the topology draws on
-     * the model's node — over the model's initial, so the cell is identifiable while the image
+     * One model's logo for the table: its own vendor mark over the model's initial, so the cell is
+     * identifiable while the image
      * loads and stays that way when no vendor domain resolves. The image removes itself on error,
      * which leaves the monogram standing rather than a broken-image glyph in the column. A stealth
      * preview has no vendor at all: its lab is anonymous until it reveals itself, so it gets a
@@ -5777,7 +4655,7 @@
 
     function updateRowCells(row, m) {
       // Mark the currently routed model (pin > slope-line pick > intelligence) so the
-      // table always shows the same model the KPI, topology and scatter plot do.
+      // table always shows the same model the KPI readouts do.
       row.classList.toggle('row-best', isCurrentBestRow(m));
 
       // Paid / dead rows stay struck through even as other values refresh
@@ -8644,22 +7522,6 @@
     async function finishProviderOnboarding(job) {
       await fetchData();
       await loadSettings();
-      emphasizeProviderPlots(job);
-    }
-
-    function emphasizeProviderPlots(job) {
-      const best = (Array.isArray(job.results) ? job.results : []).find(r => r.tested && r.ok);
-      if (!best) return;
-      if (onboardHighlightTimer) clearTimeout(onboardHighlightTimer);
-      // Hold the emphasis in state (see drawPlots) so the idle repaint fetchData just scheduled —
-      // which would otherwise draw the router's pick — keeps the new provider's model highlighted.
-      onboardHighlight = { modelId: best.modelId, providerKey: job.providerKey };
-      drawPlots(allModels, currentBestModelId, currentBestProviderKey);
-      onboardHighlightTimer = setTimeout(() => {
-        onboardHighlightTimer = null;
-        onboardHighlight = null;
-        drawPlots(allModels, currentBestModelId, currentBestProviderKey);
-      }, 5000);
     }
 
     function cancelProviderOnboardingOrClose() {
@@ -12036,7 +10898,7 @@
 
         // Paint the event before starting the relatively expensive snapshot request. A fallback
         // is a live routing decision, so every surface that names the current model — the table
-        // highlight, KPI, topology, and speed/intelligence plot — must move on the SSE frame.
+        // highlight and the KPI readouts — must move on the SSE frame.
         if (payload.type === 'selection' && payload.source === 'fallback'
           && payload.modelId && payload.providerKey) {
           routerFallbackSelection = {

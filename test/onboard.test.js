@@ -178,7 +178,7 @@ test('the onboarding job is wired to the shared test path and the verdict helper
   assert.match(server, /await refreshQualityScores\(false, true\);/)
 })
 
-test('the dashboard popup drives, polls, and hands off to the plots', () => {
+test('the dashboard popup drives, polls, and hands off to the table', () => {
   assert.match(index, /id="provider-onboard-modal"/)
   assert.match(index, /id="provider-onboard-stages"/)
   assert.match(index, /id="provider-onboard-body"/)
@@ -189,15 +189,10 @@ test('the dashboard popup drives, polls, and hands off to the plots', () => {
   assert.match(dashboard, /function runProviderOnboarding\(/)
   assert.match(dashboard, /function pollOnboardJob\(/)
   assert.match(dashboard, /function resumeOnboardingIfRunning\(/)
-  // The handoff: a completed run repaints and briefly highlights the provider on the plots. The
-  // emphasis lives in state so the idle repaint the completion schedules cannot clobber it.
+  // The handoff: a completed run repaints and waits for the new models. The network plot the run
+  // used to highlight is gone, so there is no emphasis state left to hold.
   assert.match(dashboard, /async function finishProviderOnboarding\(/)
-  assert.match(dashboard, /function emphasizeProviderPlots\(/)
-  assert.match(
-    dashboard,
-    /onboardHighlight = \{ modelId: best\.modelId, providerKey: job\.providerKey \}/,
-  )
-  assert.match(dashboard, /const highlight = onboardHighlight/)
+  assert.doesNotMatch(dashboard, /emphasizeProviderPlots|onboardHighlight/)
   // Closing the popup must not let an in-flight poll or start reopen it.
   assert.match(dashboard, /onboardSession \+= 1/)
   assert.match(dashboard, /session !== onboardSession \|\| onboardJobId !== jobId/)

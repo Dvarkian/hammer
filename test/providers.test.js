@@ -691,11 +691,11 @@ test('the favicon endpoint accepts a hostname and nothing else', () => {
   }
 })
 
-test('the plot asks one place for a brand mark, and keeps no second domain list', () => {
-  // The plot's logos are decoration, so every way they can fail is silent: a failed image hides
-  // itself and the monogram underneath is what a domain with no icon draws as well. That is why
-  // the URL is spelled once — two builders drifting apart is how "the router is stale" came to
-  // look identical to "the favicon service is down", and why the domain map lives on the router
+test('the table asks one place for a brand mark, and keeps no second domain list', () => {
+  // A row's logo is decoration, so every way it can fail is silent: a failed image hides itself
+  // and the monogram underneath is what a domain with no icon draws as well. That is why the URL
+  // is spelled once — two builders drifting apart is how "the router is stale" came to look
+  // identical to "the favicon service is down" — and why the domain map lives on the router
   // rather than in a list here that covers hammer's own providers and nothing else.
   const src = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
   assert.equal(
@@ -704,34 +704,22 @@ test('the plot asks one place for a brand mark, and keeps no second domain list'
     'one third-party fallback',
   )
   assert.equal((src.match(/\/api\/favicon\?domain=/g) || []).length, 1, 'one router URL')
-  // The helper's definition and its callers — the model node and the provider node in the plot,
-  // and the models table's logo column. The old singular helper is gone: a node carries a list
-  // now, and one name for the URL is what keeps the third-party fallback and the router's own
-  // route from being spelled twice.
+  // The helper's definition and its callers — the models table's logo column and the accent
+  // reader. One name for the URL keeps the third-party fallback and the router's own route from
+  // being spelled twice.
   assert.equal((src.match(/function faviconHrefs\(/g) || []).length, 1, 'one URL builder')
-  assert.equal((src.match(/faviconHrefs\(/g) || []).length, 4, 'every image builder must ask it')
+  assert.equal((src.match(/faviconHrefs\(/g) || []).length, 3, 'every image builder must ask it')
   assert.ok(!src.includes('PROVIDER_DOMAINS'), 'the hand-written domain list must not come back')
-  // The provider node walks its candidates on a failed load, and the walk is bounded by the list
-  // it was given: a node whose every candidate 404s must still end on its monogram. A handler
-  // that could loop would hang the render, and one that stops at the first failure is exactly the
-  // bug this replaces — the node's own LAN hostname had no icon and the provider's mark was never
-  // tried.
-  assert.match(src, /const markHrefs = node\.markHrefs\b/, 'the node must carry its candidates')
-  assert.match(
-    src,
-    /while \(\+\+markIdx < markHrefs\.length/,
-    'the walk must be bounded by the list',
-  )
 })
 
-// The plot keeps its model→brand map in the dashboard source, so the tests evaluate exactly the
-// block the page runs (the map, its tokenizer, the prefix test and the resolver) instead of a copy
-// of it here that could drift away from what the nodes actually draw.
 function modelDomainResolverFromPlot() {
   const src = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
   const from = src.indexOf('const MODEL_DOMAINS = {')
   const fnStart = src.indexOf('function getModelDomain(m)', from)
-  assert.ok(from !== -1 && fnStart !== -1, 'the plot must keep its model→brand map and resolver')
+  assert.ok(
+    from !== -1 && fnStart !== -1,
+    'the dashboard must keep its model→brand map and resolver',
+  )
   // The block runs to the end of `getModelDomain`, brace-matched so the helpers beside it come
   // with it. A rename that breaks this is a changed shape, which is what the assertion means.
   let depth = 0,
@@ -750,7 +738,7 @@ function modelDomainResolverFromPlot() {
   return new Function(`${src.slice(from, end)}; return getModelDomain;`)()
 }
 
-test('a model node resolves its brand from the id, its gateway namespace, or its label', () => {
+test('a model row resolves its brand from the id, its gateway namespace, or its label', () => {
   const getModelDomain = modelDomainResolverFromPlot()
 
   // The nodes that drew a blank disc: Cohere Labs' Tiny Aya family — under the org name
@@ -3187,10 +3175,10 @@ test('the models table leads with a logo column for the model brand', () => {
   const table = html.slice(html.indexOf('id="models-table"'), html.indexOf('id="graveyard-table"'))
   assert.match(table, /<th>Logo<\/th>\s*<th>Model<\/th>/)
 
-  // The cell reuses the plot's own model-family → vendor domain (published by drawPlots) and the
-  // router's favicon proxy, over the model's initial so a row is never blank.
-  assert.match(js, /let modelDomainFor = \(\) => ''/)
-  assert.match(js, /modelDomainFor = getModelDomain/)
+  // The cell reuses the model-family → vendor domain resolver and the router's favicon proxy,
+  // over the model's initial so a row is never blank.
+  assert.match(js, /function getModelDomain\(m\) \{/)
+  assert.match(js, /const modelDomainFor = getModelDomain/)
   assert.match(js, /function modelLogoHTML\(m\)/)
   assert.match(js, /class="model-logo-cell">\$\{modelLogoHTML\(first\)\}/)
   assert.match(js, /<td class="model-logo-cell"><\/td>/)

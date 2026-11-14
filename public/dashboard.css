@@ -271,31 +271,6 @@
       overflow: hidden;
     }
 
-    .topology-card {
-      min-height: 340px;
-    }
-
-    /* SVG Animations */
-    .kpi-bg-svg {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 0;
-      opacity: 0.6;
-    }
-
-    #bg-topology-svg {
-      opacity: 1;
-      pointer-events: all;
-      cursor: grab;
-      will-change: transform;
-    }
-    #bg-topology-svg.dragging {
-      cursor: grabbing;
-    }
-
     /* Readout strip: sits above the two plots, states the three
        headline counts the KPI card otherwise summarizes in dots. */
     .readout-strip {
@@ -329,21 +304,6 @@
     /* Side-by-side plots row: the provider/model network plot and the
        Intelligence-vs-speed scatter share one row on wide screens and stack
        on narrow ones. */
-    .plots-grid {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 18px;
-      align-items: stretch;
-    }
-
-    @media (max-width: 900px) {
-      .plots-grid {
-        grid-template-columns: 1fr;
-      }
-    }
-
-
-
     .kpi-content {
       position: relative;
       z-index: 1;
@@ -356,124 +316,6 @@
     .kpi-content > * {
       pointer-events: all;
     }
-
-    /* --- KPI background topology: spring-layout model shapes + provider nodes (favicon or monogram) + curved links --- */
-    /* The plot draws live models only — a rate-limited, timed-out, down or struck model is not
-       a node on it at all, so there is no waiting/broken colour to carry here. 'down' remains
-       the guard for a node whose provider count says it stopped being live after it was drawn.
-       The palette is deliberately two-tone: maroon is the resting state (nodes, rings, the link
-       mesh), and the blue marks what the router is actually using — the best model, its serving
-       ring, its serving link and the core pulse — so the highlight never reads as just another
-       healthy neighbour. */
-    .topo-model { fill: var(--text-muted); opacity: 0.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
-    .topo-model.up { fill: var(--accent); opacity: 0.7; filter: drop-shadow(0 0 1.5px var(--accent)); }
-    .topo-model.down { fill: var(--error); opacity: 0.4; }
-    .topo-model:hover { opacity: 0.95 !important; filter: drop-shadow(0 0 4px var(--success)); }
-    .topo-model.best { fill: var(--success); opacity: 0.9; filter: drop-shadow(0 0 6px var(--success)); }
-
-    /* 'selected' carries the much stronger pulse: two layered drop-shadows sweeping
-       between a tight glow and a wide halo so the best model reads instantly. */
-    .topo-model.selected { filter: drop-shadow(0 0 8px var(--success)) drop-shadow(0 0 18px var(--success)); animation: topo-selected-pulse 1.6s ease-in-out infinite; }
-
-    .topo-model-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
-    .topo-model-img.best { opacity: 1; }
-
-    /* Monogram fallback behind every model favicon — guarantees a branded
-       glyph (first letter of the display name) is visible even when no
-       favicon domain resolves or the remote image fails to load. */
-    .topo-model-mono { fill: var(--surface-alt); stroke: var(--text-muted); stroke-width: 0.4; transition: all 1.5s ease-in-out; pointer-events: all; cursor: default; }
-    .topo-model-mono.up { stroke: var(--accent); }
-    .topo-model-mono.down { stroke: var(--error); }
-    .topo-model-mono.best { stroke: var(--success); }
-    .topo-model-glyph { fill: var(--text-muted); font-size: 4.5px; font-weight: 700; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; dominant-baseline: middle; opacity: 0.55; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-glyph.up { fill: var(--accent); opacity: 0.7; }
-    .topo-model-glyph.down { fill: var(--error); opacity: 0.6; }
-    .topo-model-glyph.best { fill: var(--success); opacity: 0.85; }
-
-    .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-label.up { fill: var(--accent); opacity: 0.55; }
-    .topo-model-label.down { fill: var(--error); opacity: 0.35; }
-    .topo-model-label.best { fill: var(--success); opacity: 0.7; }
-
-    /* While the spring layout is settling, geometry is driven by JS every frame —
-       disable the 1.5s CSS transitions so the browser doesn't try to interpolate
-       cx/cy/x/y, which is the main source of animation jank. Re-enabled on settle. */
-    #bg-topology-svg.topo-animating .topo-model,
-    #bg-topology-svg.topo-animating .topo-model-img,
-    #bg-topology-svg.topo-animating .topo-model-mono,
-    #bg-topology-svg.topo-animating .topo-model-glyph,
-    #bg-topology-svg.topo-animating .topo-model-label,
-    #bg-topology-svg.topo-animating .topo-provider-ring,
-    #bg-topology-svg.topo-animating .topo-provider-img,
-    #bg-topology-svg.topo-animating .topo-provider-mono,
-    #bg-topology-svg.topo-animating .topo-link,
-    #bg-topology-svg.topo-animating .topo-provider-label {
-      transition: none !important;
-    }
-
-    /* Highlight modes: when a provider is focused, dim everything else */
-    .topo-model.dimmed, .topo-model-img.dimmed, .topo-model-mono.dimmed, .topo-model-glyph.dimmed, .topo-model-label.dimmed, .topo-provider-ring.dimmed, .topo-provider-img.dimmed, .topo-provider-mono.dimmed, .topo-link.dimmed, .topo-provider-label.dimmed {
-      opacity: 0.05 !important;
-      filter: none !important;
-    }
-    .topo-model-label.dimmed { opacity: 0.02 !important; }
-    .topo-link.dimmed { stroke-width: 0.3; opacity: 0.03 !important; }
-    .topo-provider-ring.dimmed { stroke-width: 0.8; }
-
-    @keyframes topo-best-pulse {
-      0%, 100% { filter: drop-shadow(0 0 4px var(--success)); }
-      50% { filter: drop-shadow(0 0 10px var(--success)); }
-    }
-
-   @keyframes topo-selected-pulse {
-     0%, 100% { filter: drop-shadow(0 0 10px var(--success)) drop-shadow(0 0 22px var(--success)); }
-     50% { filter: drop-shadow(0 0 18px var(--success)) drop-shadow(0 0 44px var(--success)); }
-   }
-
-    .topo-provider-ring { fill: none; stroke-width: 1.2; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
-    .topo-provider-ring.green { stroke: var(--accent); opacity: 0.55; }
-    .topo-provider-ring.amber { stroke: var(--warning); opacity: 0.45; }
-    .topo-provider-ring.red { stroke: var(--error); opacity: 0.35; }
-    .topo-provider-ring:hover { stroke-width: 2.4; opacity: 0.9; filter: drop-shadow(0 0 4px currentColor); }
-    /* The ring of the provider actively serving the selected (best) model takes the highlight
-       blue; declared after .green/.amber/.red so it wins the cascade at equal specificity. */
-    .topo-provider-ring.selected { stroke: var(--success); opacity: 0.95; stroke-width: 1.8; filter: drop-shadow(0 0 5px var(--success)); }
-
-    .topo-provider-img { opacity: 1; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
-
-    .topo-provider-mono { opacity: 1; fill: var(--surface-alt); stroke: var(--text-muted); stroke-width: 0.5; transition: all 1.5s ease-in-out; pointer-events: all; cursor: pointer; }
-    .topo-provider-mono.green,
-    .topo-provider-mono.amber,
-    .topo-provider-mono.red,
-    .topo-provider-mono:hover { opacity: 1; }
-
-    /* One link per model↔provider pair that can serve it right now (see the group filter in
-       drawBipartiteTopology), so 'active' is the state every drawn link reaches and there is no
-       benched or down link to style separately. Exactly one of them is the serving path, which
-       'selected' below marks. */
-    .topo-link { fill: none; stroke: var(--text-muted); stroke-width: 0.8; opacity: 0.12; transition: all 1.5s ease-in-out; }
-    .topo-link.active { stroke: var(--accent); stroke-width: 1.4; opacity: 0.45; }
-    /* The serving link — the active model to the provider serving it, out of the whole maroon
-       mesh the one path in blue, with a flowing dash animation so it reads at a glance, pulsing
-       *into* the model from the provider that serves it. The path is drawn model -> provider (see the edge
-       construction in drawBipartiteTopology) and a positive stroke-dashoffset shifts the dash
-       pattern back toward the path's start, so the offset animates 0 -> +14 to send the pulses
-       the other way. The negative value it used to carry read forwards instead and pulsed
-       model -> provider, i.e. away from the model. */
-    .topo-link.selected { stroke: var(--success); stroke-width: 1.8; opacity: 0.95; stroke-dasharray: 4 3; filter: drop-shadow(0 0 3px var(--success)); animation: topo-link-flow 0.9s linear infinite; }
-    @keyframes topo-link-flow { to { stroke-dashoffset: 14; } }
-
-    .topo-provider-label { fill: var(--text); font-size: 4px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.45; transition: all 1.5s ease-in-out; pointer-events: none; }
-
-    /* A federated provider multiplies the node count several times over, and past a couple of
-       dozen nodes the labels are shortened and drawn a touch smaller (see drawBipartiteTopology).
-       A class, not a font-size attribute: a stylesheet rule beats a presentation attribute, so
-       the attribute silently did nothing and the crowded plot kept its full-size labels. */
-    .topo-provider-label.crowded { font-size: 3.4px; }
-
-    .topo-model-label { fill: var(--text-muted); font-size: 2.5px; font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; opacity: 0.3; transition: all 1.5s ease-in-out; pointer-events: none; }
-    .topo-model-label.up { fill: var(--accent); opacity: 0.5; }
-    .topo-model-label.down { fill: var(--error); opacity: 0.35; }
 
     .current-core {
       fill: none;

@@ -289,24 +289,8 @@
           <span class="readout-label">Rows</span>
           <span class="readout-value is-loading" id="readout-rows"></span>
         </div>
-      </div>
-      <div class="plots-grid">
-        <div class="kpi-card topology-card">
-        <svg class="kpi-bg-svg" id="bg-topology-svg" preserveAspectRatio="xMidYMid slice"></svg>
-        <div class="kpi-content">
-          <div style="display:flex; gap:24px; align-items:flex-start;">
-            <div style="margin-left:auto; display:flex; align-items:center; gap:12px;">
-              <button type="button" class="pin-badge" id="pin-badge" style="display:none;" onclick="pinModel('')"
-                title="Click to unpin">📌 Pinned ×</button>
-            </div>
-          </div>
-          <!-- Shown only when this page is newer than the running router, so the plot's logos
-               cannot come from it. A stale router used to look exactly like a favicon service
-               outage: every image failed silently and the monogram stood in for it. -->
-          <div id="topo-logo-note" style="display:none; margin-top:auto; padding-top:8px; max-width:70ch; font-size:0.7rem; line-height:1.4; color:var(--text-muted);"></div>
-        </div>
-        </div>
-
+        <button type="button" class="pin-badge" id="pin-badge" style="display:none; margin-left:auto;" onclick="pinModel('')"
+          title="Click to unpin">📌 Pinned ×</button>
       </div>
     </div>
 

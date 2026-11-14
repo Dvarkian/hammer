@@ -416,9 +416,9 @@ test('a live fallback is painted across the dashboard before the next snapshot',
   assert.match(dashboard, /payload\.type === 'evidence'/)
   assert.match(dashboard, /routerEventRevisionAtStart !== routerEventRevision/)
   assert.match(dashboard, /function updateKPIs\(models, bestModelId, bestProviderKey = null\)/)
-  // The routed pair reaches the picture through drawPlots' own lookup. The "Current" readout that
-  // used to read it as well is gone, so the assertion follows the pair into the plot instead.
-  assert.match(dashboard, /m\.providerKey === effectiveKey/)
+  // The pair still updates state; the KPI readouts are the only surface left to paint it, since
+  // the network plot that used to look it up is gone.
+  assert.doesNotMatch(dashboard, /drawPlots|effectiveKey/)
 })
 
 test('the slope plot lives in the composer popup, not on the router page', () => {

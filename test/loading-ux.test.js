@@ -28,9 +28,8 @@ test('the shell states that it is loading instead of printing zeroes', () => {
     assert.match(html, new RegExp(`class="readout-value is-loading" id="${id}"`))
     assert.doesNotMatch(html, new RegExp(`id="${id}">\\d`))
   }
-  // The network plot's card carried a "Current" readout of the routed model. The plot marks
-  // the models in use itself (see the topology test below), so the card no longer names one of
-  // them in text above the picture, and nothing has to be seeded for it.
+  // The plot's card carried a "Current" readout of the routed model; the card is gone, and
+  // nothing else names it, so nothing has to be seeded for it.
   assert.doesNotMatch(html, /id="kpi-best"/)
   assert.doesNotMatch(dashboard, /kpi-best|setKpiBest/)
   // The scatter moved into the composer popup, so the shell no longer seeds it.
@@ -98,26 +97,6 @@ test('placeholder rows and cards keep the layout and are removed before real dat
   assert.match(css, /@keyframes skeleton-sweep/)
   assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[\s\S]{0,300}\.skeleton,/)
   assert.match(css, /\.skeleton-card \{/)
-
-  // The network plot is the largest and last thing drawn, and it has no empty-state text of its
-  // own, so it carries a placeholder until its first draw — which clears it, because both draw
-  // paths empty the element before painting into it.
-  assert.match(dashboard, /function setTopologyPlaceholder\(visible\)/)
-  assert.match(dashboard, /svg\.dataset\.placeholder = '1';/)
-  assert.match(
-    dashboard,
-    /if \(svg\.dataset\.placeholder !== '1'\) return; \/\/ never clear a real plot/,
-  )
-  // And the first real draw drops the flag along with the markup it replaces.
-  assert.match(
-    dashboard,
-    /svg\.innerHTML = '';\s*\/\/[\s\S]{0,300}delete svg\.dataset\.placeholder;/,
-  )
-  assert.match(dashboard, /setTopologyPlaceholder\(true\);/)
-  assert.match(
-    dashboard,
-    /function failLoadingState\(err\) \{[\s\S]{0,600}setTopologyPlaceholder\(false\);/,
-  )
 })
 
 test('a failed first snapshot is reported with a way back, and only the first one owns it', () => {
@@ -194,18 +173,19 @@ test('one grouping per snapshot serves both the table and the readouts', () => {
   )
 })
 
-test('a live event still paints numbers and both plots on its own frame', () => {
+test('a live event still paints the numbers on its own frame', () => {
   // The staging above applies to the boot only. A fallback names a model on the SSE frame, and
-  // every surface that names it — pictures included — has to move on that same frame.
+  // every surface that names it has to move on that same frame. The wrapper is numbers-only now
+  // that the network plot is gone.
   assert.match(
     dashboard,
-    /function updateKPIs\(models, bestModelId, bestProviderKey = null\) \{\s*updateKpiNumbers\(models, bestModelId, bestProviderKey\);\s*drawPlots\(models, bestModelId, bestProviderKey\);\s*\}/,
+    /function updateKPIs\(models, bestModelId, bestProviderKey = null\) \{\s*updateKpiNumbers\(models, bestModelId, bestProviderKey\);\s*\}/,
   )
   assert.match(
     dashboard,
     /render\(\);\s*updateKPIs\(allModels, currentBestModelId, currentBestProviderKey\);/,
   )
-  assert.match(dashboard, /function drawPlots\(models, bestModelId, bestProviderKey = null\)/)
+  assert.doesNotMatch(dashboard, /drawPlots|drawBipartiteTopology|bg-topology-svg/)
 })
 
 test('brand marks are decoration and arrive after the first paint', () => {
@@ -214,13 +194,10 @@ test('brand marks are decoration and arrive after the first paint', () => {
     dashboard,
     /function faviconHrefs\(domains\) \{\s*if \(!decorationsReady\) return \[\];/,
   )
-  // In the rebuild key, or a plot drawn during the wait would keep its monograms until its
-  // membership happened to change.
-  assert.match(dashboard, /\$\{W\}:\$\{H\}:dec=\$\{decorationsReady \? 1 : 0\}/)
-  assert.match(
-    dashboard,
-    /decorationsReady = true;\s*drawPlots\(allModels, currentBestModelId, currentBestProviderKey\);/,
-  )
+  // The idle pass flips the flag and re-renders once, which is what swaps the monograms for the
+  // marks in the table.
+  assert.match(dashboard, /decorationsReady = true;[\s\S]{0,500}render\(false\);/)
+  assert.doesNotMatch(dashboard, /:dec=\$\{decorationsReady/)
 })
 
 test('the ping history is no longer shipped on every row', () => {
@@ -442,31 +419,6 @@ test('a live wait below the spine runs on the model’s own TTFT', () => {
   assert.doesNotMatch(harnessCss, /@keyframes hx-ttft-run/)
   assert.match(harnessCss, /\.hx-ttft-ring \{[\s\S]{0,220}margin-left: -11px;/)
   assert.match(harnessCss, /@media \(prefers-reduced-motion: reduce\)/)
-})
-
-test('the network plot lights every model in use, not just the routed one', () => {
-  // Each conversation routes on its own slope, so several models can be answering at once —
-  // `/api/models` reports them as `activePicks`, and the table has always lit every one. The
-  // plot lit only the exported best, so a page with three conversations on three models showed a
-  // single blue node and the picture disagreed with the table beside it. The picks drive the
-  // model node, the link to the provider serving it, and that provider's ring alike.
-  assert.match(dashboard, /const activePicks = activePickRows/)
-  assert.match(dashboard, /activePicks\.push\(\{ modelId: bestModel\.modelId/)
-  assert.match(
-    dashboard,
-    /function isModelBest\(um\) \{\s*return um\._providers\.some\(p => isActivePick\(/,
-  )
-  assert.match(
-    dashboard,
-    /const isServingPath = um\._providers\.some\(p => p\.key === line\.dataset\.pkey/,
-  )
-  assert.match(dashboard, /const servesBest = activeProviderKeys\.has\(pk\)/)
-  // The rebuild key watches the picks: a pick that moves to a pair the plot has not drawn would
-  // otherwise leave its serving path unmarked until the membership changed.
-  assert.match(
-    dashboard,
-    /const bestSig = activePicks\n\s*\.map\(pick => `\$\{pick\.modelId\}@\$\{pick\.providerKey\}`\)/,
-  )
 })
 
 test('the rail estimates a quota ceiling the way the table does, and says so', () => {
