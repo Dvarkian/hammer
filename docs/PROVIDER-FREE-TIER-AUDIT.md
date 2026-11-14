@@ -158,11 +158,12 @@ this document.
 | `huggingchat`       | Free, but HF OAuth + session cookie + a create-conversation round trip before any message                                                                                              | [IN] live probe 2026-09-22; [ARef]                      |
 | `inferx`            | Per-token gateway at `model.inferx.net/endpoints/v1`; its list publishes no pricing, so rows are classified by live probes and errors rather than a curated Paid set. Added 2026-11-10 | live key probe 2026-11-10                               |
 
-## U. Unresolved — nothing verifiable published (1)
+## U. Unresolved — nothing verifiable published (0)
 
-| Provider | State of the evidence                                                                                                                                   |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `reka`   | [ARef] carries **no free-tier note**; no published free allowance found; ToS restricts sublicensing. Recorded as unresolved rather than "no free tier". |
+Both rows this section carried have since left the roster. `nous-research` was removed by
+request; `reka` followed on 2026-11-14, when a real key answered `/v1/models` and every chat
+completion with HTTP 403 "Your account has an insufficient balance" — an account-level refusal,
+not a rate limit, so there was no free allowance left to describe.
 
 ## E. The corrections this second pass made to the first
 

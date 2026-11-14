@@ -438,20 +438,6 @@
       "activation": "staged",
       "reason": "Qwen Chat issues no API key — the bearer its registry entry names is a logged-in browser session token, and the chat endpoint sits behind an Aliyun WAF interstitial (a bodyless POST returns the WAF challenge page rather than an auth error, verified 2026-09-22), so it needs a wire adapter"
     },
-    "reka": {
-      "activation": "active",
-      "chatUrl": "https://api.reka.ai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 3,
-        "declaredModels": ["reka-flash-3", "reka-flash", "reka-edge-2603"]
-      }
-    },
     "t3-web": {
       "activation": "staged",
       "reason": "t3.chat authenticates with a session cookie and streams its own frame shape, so it needs a wire adapter"

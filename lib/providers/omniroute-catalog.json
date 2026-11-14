@@ -167,12 +167,6 @@
       "note": "No terms permit a self-hosted proxy using session tokens against the web chat."
     },
     {
-      "key": "reka",
-      "access": "keyless",
-      "tos": "caution",
-      "modelCount": 2
-    },
-    {
       "key": "t3-web",
       "access": "keyless",
       "tos": "avoid",

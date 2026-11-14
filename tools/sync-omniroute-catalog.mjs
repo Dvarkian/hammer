@@ -218,6 +218,15 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // The exclusion is what makes the removal stick: the next sync would otherwise put the row
   // back, along with its resolution, key page and quota table.
   'nous-research',
+  // `reka` (2026-11-14): removed after testing a real key. The key authenticates — the platform
+  // does not answer 401 — but every call is refused with HTTP 403 "Your account has an
+  // insufficient balance and is unable to complete this request": `/v1/models` and chat
+  // completions for `reka-flash`, `reka-core` and `reka-edge-2603`, under both the `Bearer` and
+  // `X-Api-Key` header styles. The roster row also claims `access: keyless`, which the endpoint
+  // contradicts, and the audit could never confirm the monthly credits its quota table
+  // described. No key can make it serve without a funded account, so there is no free usage to
+  // hold a row for.
+  'reka',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
