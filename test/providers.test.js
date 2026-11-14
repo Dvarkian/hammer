@@ -3248,6 +3248,14 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(js, /const perHour = capacityRatePerHour\(w\)/)
   // A cap that refills inside the run is lifted one step, not two.
   assert.match(js, /CAPACITY_QUICK_PERIODS\.has\(w\.period\)/)
+  // A ceiling guessed from thin traffic is not a cap: it is dropped wherever a provider
+  // publishes a real limit for the same metric, which is how one guessed "1 of 2 left per
+  // day" held a heading of thirty-nine rows at Scarce while its siblings published 200 a day.
+  assert.match(js, /const publishedMetrics = new Set\(/)
+  assert.match(
+    js,
+    /entry\.window\.estimated !== true \|\| !publishedMetrics\.has\(entry\.window\.metric\)/,
+  )
   // Silence is unknown, and 'Unlimited' only ever comes from a stated cap — one whose provider
   // says so, even when the heading's other providers meter, which is what GPTFree's auto needs.
   assert.match(

@@ -5324,12 +5324,25 @@
       // heading is staffed entirely by providers that publish nothing.
       const unlimitedMembers = members.filter((m) => m?.knownQuota?.unlimited === true);
       const unlimited = unlimitedMembers.length > 0;
-      const windows = [
+      const rawWindows = [
         ...quotaGroupCapacityWindows(quotaGroupViews(capacityMembers)),
         ...groupLimitViews(capacityMembers, 'rate-limit'),
       ]
         .map((window) => ({ window, band: capacityBandForWindow(window, now) }))
         .filter((entry) => entry.band != null);
+      // A ceiling inferred from thin traffic is a bound, not a cap. A provider that has carried a
+      // single request reads "1 of 2 left per day", and because an estimate carries its own owner
+      // key it never merges with the 50/day and 200/day its siblings publish — so one guessed
+      // number dragged a heading of thirty-nine rows down to 'Scarce Quota'. An estimate speaks
+      // only where no provider publishing that metric states a real limit.
+      const publishedMetrics = new Set(
+        rawWindows
+          .filter((entry) => entry.window.estimated !== true)
+          .map((entry) => entry.window.metric),
+      );
+      const windows = rawWindows.filter(
+        (entry) => entry.window.estimated !== true || !publishedMetrics.has(entry.window.metric),
+      );
       if (windows.length === 0) {
         return unlimited
           ? {
