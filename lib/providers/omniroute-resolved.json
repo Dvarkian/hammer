@@ -257,58 +257,6 @@
       "activation": "staged",
       "reason": "executor \"kiro\" frames its own request and response with no declarative equivalent"
     },
-    "glm-cn": {
-      "activation": "active",
-      "chatUrl": "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "shaping": {
-        "requestDefaults": {
-          "max_tokens": 16384
-        },
-        "timeoutMs": 3000000
-      },
-      "provenance": {
-        "executor": "glm",
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
-    "baidu": {
-      "activation": "active",
-      "chatUrl": "https://qianfan.baidubce.com/v2/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 16,
-        "declaredModels": [
-          "ernie-5.1",
-          "ernie-5.0",
-          "ernie-x1.1",
-          "ernie-4.5-turbo-128k",
-          "ernie-4.5-turbo-32k",
-          "ernie-4.5-turbo-vl",
-          "ernie-4.5-21b-a3b",
-          "ernie-4.5-0.3b",
-          "ernie-4.0-8k",
-          "ernie-4.0-turbo-128k",
-          "ernie-4.0-turbo-8k",
-          "ernie-3.5-8k",
-          "ernie-speed-128k",
-          "ernie-speed-8k",
-          "ernie-lite-8k",
-          "ernie-tiny-8k"
-        ]
-      }
-    },
     "qoder": {
       "activation": "active",
       "chatUrl": "https://api.qoder.com/v1/chat/completions",

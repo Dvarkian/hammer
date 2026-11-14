@@ -96,21 +96,6 @@
       "note": "Kiro FAQ explicitly prohibits use with third-party harnesses, which is what a self-hosted proxy is."
     },
     {
-      "key": "glm-cn",
-      "access": "permanent",
-      "signupCreditTokens": 20000000,
-      "tos": "ok",
-      "modelCount": 4,
-      "note": "GLM-4-Flash / 4.5-Flash / 4.7-Flash permanently free, rate-limited, no published token cap."
-    },
-    {
-      "key": "baidu",
-      "access": "permanent",
-      "tos": "caution",
-      "modelCount": 1,
-      "note": "ERNIE Speed/Lite/Tiny free; platform requires real-name authentication."
-    },
-    {
       "key": "qoder",
       "access": "signup-credit",
       "signupCreditTokens": 1000000,

@@ -239,6 +239,16 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // it as refused for terms. `sparkdesk` was already excluded as a second key for the same
   // xfyun host, so nothing else names this endpoint.
   'iflytek',
+  // `baidu` (2026-11-14): removed on request. The row's recurring free access is real — Qianfan
+  // serves ERNIE Speed/Lite/Tiny free to real-name-verified accounts under a per-model flow
+  // control — so nothing about it was contradicted; it is simply not wanted in the roster. The
+  // exclusion takes the row, its resolution, its key page and its quota table with it.
+  'baidu',
+  // `glm-cn` (2026-11-14): removed on request. Its BigModel row is the same kind of real
+  // recurring access (GLM-4.7/4.5/4.6V Flash permanently free at 0 元, concurrent-request
+  // capped), and the chat API does not require real-name verification. Nothing was wrong with
+  // the row; it is excluded because it was asked for, not because the free tier fails.
+  'glm-cn',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }

@@ -624,8 +624,6 @@ test("a chat endpoint names the site a provider's brand mark comes from", () => 
   // served from — Google's API platform, which resolves to no icon at all. The import is now
   // excluded as a duplicate of googleai, so `gemini` is no longer a provider at all.
   assert.equal(getProvider('gemini'), null)
-  // A provider reached through a cloud is named by its own site rather than the cloud's.
-  assert.equal(providerFaviconDomain('baidu'), 'baidu.com')
   assert.equal(providerFaviconDomain('no-such-provider'), '')
   assert.equal(providerFaviconDomain(''), '')
 
@@ -868,12 +866,13 @@ test('the 23 hammer-owned signup URLs survive the import, which is additive', ()
 
 test('every curated key page is HTTPS and records the evidence behind it', () => {
   const pages = loadKeyPages()
-  // 13 after `iflytek` was removed (2026-11-14), 14 after `sambanova`, 15 after `reka`, 16 after
-  // `nous-research`, 17 after `siliconflow` and `sparkdesk`, 19 after `morph` and `friendliai`
-  // (2026-11-13), 21 after `huggingface` (2026-11-10), behind `coze`, `bytez`, the duplicate
-  // `ollama-cloud` row (2026-11-08) and `nlpcloud` (2026-11-09) (it was 26). The floor moves only
-  // when a provider leaves the roster; it still has to cover the imported fleet that remains.
-  assert.ok(Object.keys(pages).length >= 13, 'the table should cover the imported fleet')
+  // 11 after `baidu` and `glm-cn` were removed (2026-11-14), 13 after `iflytek`, 14 after
+  // `sambanova`, 15 after `reka`, 16 after `nous-research`, 17 after `siliconflow` and
+  // `sparkdesk`, 19 after `morph` and `friendliai` (2026-11-13), 21 after `huggingface`
+  // (2026-11-10), behind `coze`, `bytez`, the duplicate `ollama-cloud` row (2026-11-08) and
+  // `nlpcloud` (2026-11-09) (it was 26). The floor moves only when a provider leaves the roster;
+  // it still has to cover the imported fleet that remains.
+  assert.ok(Object.keys(pages).length >= 11, 'the table should cover the imported fleet')
   for (const [key, entry] of Object.entries(pages)) {
     assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
     assert.ok(
@@ -1079,10 +1078,10 @@ test('the vendored catalog parses and carries provenance', () => {
   const { source, providers } = loadOmniRouteCatalog()
   assert.equal(source.project, 'OmniRoute')
   assert.equal(source.license, 'MIT')
-  // 20 after `iflytek` was excluded from the sync (2026-11-14), 21 after `sambanova`, 22 after
-  // `reka`, 23 after `nous-research`, 24 after `siliconflow` and `sparkdesk`, 26 after `morph`
-  // and `friendliai` (2026-11-13).
-  assert.ok(providers.length >= 20, `expected a substantial roster, got ${providers.length}`)
+  // 18 after `baidu` and `glm-cn` were excluded from the sync (2026-11-14), 20 after `iflytek`,
+  // 21 after `sambanova`, 22 after `reka`, 23 after `nous-research`, 24 after `siliconflow` and
+  // `sparkdesk`, 26 after `morph` and `friendliai` (2026-11-13).
+  assert.ok(providers.length >= 18, `expected a substantial roster, got ${providers.length}`)
 })
 
 test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
@@ -1130,10 +1129,10 @@ test('every imported provider is active, staged or refused — never undefined',
 
 test('the import actually resolves providers to real endpoints', () => {
   const active = activationOf('active')
-  // 10 after `iflytek` was excluded from the sync (2026-11-14), 11 after `sambanova`, 12 after
-  // `reka`, 13 after `nous-research`, 14 after `siliconflow` and `sparkdesk`, 16 after `morph`
-  // and `friendliai` (2026-11-13).
-  assert.ok(active.length >= 10, `expected a substantial routable import, got ${active.length}`)
+  // 8 after `baidu` and `glm-cn` were excluded from the sync (2026-11-14), 10 after `iflytek`,
+  // 11 after `sambanova`, 12 after `reka`, 13 after `nous-research`, 14 after `siliconflow` and
+  // `sparkdesk`, 16 after `morph` and `friendliai` (2026-11-13).
+  assert.ok(active.length >= 8, `expected a substantial routable import, got ${active.length}`)
   for (const provider of active) {
     assert.match(provider.chatUrl, /^https:\/\//, `${provider.key} needs a real https endpoint`)
     assert.ok(
@@ -2974,11 +2973,27 @@ test('lazyProviderSourceEntries only exposes active providers', () => {
 // proxy calls, or a descriptor that reads correctly is still inert.
 
 test('a declared request default fills a blank without overruling the caller', () => {
-  const bare = buildProviderRequestBody('glm-cn', { messages: [] }, 'glm-4.7')
-  assert.equal(bare.max_tokens, 16384)
-  const asked = buildProviderRequestBody('glm-cn', { messages: [], max_tokens: 256 }, 'glm-4.7')
-  assert.equal(asked.max_tokens, 256)
-  assert.equal(shapedTimeoutMs('glm-cn'), 3000000)
+  // `glm-cn` was the only roster row that froze a request default; it left on 2026-11-14, so
+  // the builder is exercised through a fixture descriptor rather than a live provider.
+  registerProvider('shaping-fixture', {
+    label: 'Shaping fixture',
+    chatUrl: 'https://shaping.test/v1/chat/completions',
+    auth: { kind: 'bearer', headerName: 'Authorization', scheme: 'Bearer' },
+    shaping: { requestDefaults: { max_tokens: 16384 }, timeoutMs: 3_000_000 },
+  })
+  try {
+    const bare = buildProviderRequestBody('shaping-fixture', { messages: [] }, 'fixture-model')
+    assert.equal(bare.max_tokens, 16384)
+    const asked = buildProviderRequestBody(
+      'shaping-fixture',
+      { messages: [], max_tokens: 256 },
+      'fixture-model',
+    )
+    assert.equal(asked.max_tokens, 256)
+    assert.equal(shapedTimeoutMs('shaping-fixture'), 3000000)
+  } finally {
+    initProviders({ reset: true })
+  }
 })
 
 test('a provider that refuses content-part arrays gets a plain string', () => {

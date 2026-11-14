@@ -55,20 +55,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "glm-cn": {
-      "url": "https://open.bigmodel.cn/usercenter/apikeys",
-      "evidence": "BigModel (Zhipu) user center; API keys page",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment; the exact path is cited by Zhipu-facing tooling."
-    },
-    "baidu": {
-      "url": "https://console.bce.baidu.com/qianfan/ais/console/applicationConsole/application",
-      "evidence": "Baidu Qianfan console; the application page that issues the key",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment; the path comes from Qianfan's own SDK docs."
-    },
     "qoder": {
       "url": "https://qoder.com/",
       "evidence": "Qoder homepage; the account behind signup issues the API key",
