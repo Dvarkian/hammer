@@ -7614,14 +7614,13 @@
       return INTEL_BAND_CLASSES[String(band || '').trim().toLowerCase()] || '';
     }
 
-    // The tag names the band; the index it was banded from rides in the tooltip, the way the
-    // Speed column keeps its ttft and tok/s out of the cell. An estimate keeps its asterisk —
-    // the number moved out of the cell, not the reason to distrust it.
-    function intelTagHTML(band, title, estimated = false) {
+    // The tag names the band and nothing else; the index it was banded from, and whether that
+    // index is an estimate, ride in the tooltip the way the Speed column keeps its ttft and
+    // tok/s out of the cell.
+    function intelTagHTML(band, title) {
       const cls = intelTagClass(band);
       if (!cls) return '';
-      const label = String(band).trim();
-      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(title)}">${escapeHtml(label)}${estimated ? '<span class="pill-estimate">*</span>' : ''}</span>`;
+      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(title)}">${escapeHtml(String(band).trim())}</span>`;
     }
 
     // The hover text a rating wears: the band, the index it was banded from, whether that index
@@ -7667,8 +7666,8 @@
     // source it came from. A rating with no band keeps the muted dash it had before the bands
     // existed — an unmeasured model is not a dumb one, and a bare number is what this replaced.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
-      const { title, estimated, sourceTitle } = intelRatingTitle(band, aa, source, detail);
-      if (title) return intelTagHTML(band, title, estimated);
+      const { title, sourceTitle } = intelRatingTitle(band, aa, source, detail);
+      if (title) return intelTagHTML(band, title);
       const score = Number(value);
       const local = Number.isFinite(score) && score > 0 ? ` — local score ${Math.round(score * 100)}` : '';
       return `<span style="font-size:0.75rem;color:var(--text-muted);" title="${escapeAttr(`${sourceTitle}${local}`)}">—</span>`;

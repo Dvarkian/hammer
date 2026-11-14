@@ -3222,7 +3222,9 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
   assert.match(models, /intelBand: intelligenceBandForAa\(r\.aa\),/)
   // The model heading is the only cell that prints the model-level rating, so it carries the
   // pill, built from the same member whose rating is drawn.
-  assert.match(js, /function intelTagHTML\(band, title, estimated = false\)/)
+  assert.match(js, /function intelTagHTML\(band, title\)/)
+  // The estimate marker lives in the tooltip only; the pill prints the band and nothing else.
+  assert.doesNotMatch(js, /\$\{estimated \? '<span class="pill-estimate">/)
   assert.match(js, /class="onboard-pill intel-tag intel-\$\{cls\}"/)
   // The cell prints the band, not the index: the number is in the tag's tooltip, like the Speed
   // column's ttft and tok/s. The asterisk that marks an estimate stays on the pill.
