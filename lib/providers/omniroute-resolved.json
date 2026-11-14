@@ -167,20 +167,6 @@
         ]
       }
     },
-    "sambanova": {
-      "activation": "active",
-      "chatUrl": "https://api.sambanova.ai/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "bazaarlink": {
       "activation": "active",
       "chatUrl": "https://bazaarlink.ai/api/v1/chat/completions",

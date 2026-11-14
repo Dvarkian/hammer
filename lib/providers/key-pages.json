@@ -43,13 +43,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "sambanova": {
-      "url": "https://cloud.sambanova.ai/apis",
-      "evidence": "SambaNova Cloud; API keys page",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment; the page itself is named verbatim by SambaNova's own docs."
-    },
     "bazaarlink": {
       "url": "https://bazaarlink.ai/",
       "evidence": "project homepage; signup lives here",

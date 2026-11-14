@@ -59,13 +59,6 @@
       "modelCount": 22
     },
     {
-      "key": "sambanova",
-      "access": "recurring",
-      "steadyTokensPerMonth": 6000000,
-      "tos": "caution",
-      "modelCount": 5
-    },
-    {
       "key": "bazaarlink",
       "access": "recurring",
       "steadyTokensPerMonth": 4000000,

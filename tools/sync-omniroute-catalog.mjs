@@ -227,6 +227,12 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // described. No key can make it serve without a funded account, so there is no free usage to
   // hold a row for.
   'reka',
+  // `sambanova` (2026-11-14): its docs define a Free Tier for accounts with no payment method
+  // linked, but that tier does not hold in practice — without a card the account is refused, and
+  // the roster's own resolution carried no models for it anyway (`modelCount: 0`). Removed on
+  // request; the audit's row records the same contradiction (docs vs. the reports that new
+  // accounts are pushed to credits).
+  'sambanova',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }
