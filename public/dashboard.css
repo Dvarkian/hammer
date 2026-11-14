@@ -59,11 +59,12 @@
       /* One hue per rung of the tag ladder, shared by the Speed and Intelligence columns so a
          band and a verdict that mean the same thing read the same. Blue for anything better
          than normal (--status-success), maroon for anything worse (--status-info), and purple
-         at normal, which is neither and so borrows neither hue. The superlatives keep the gold
-         in --status-warning. */
-      --tag-purple-bg: #f5f3ff;
-      --tag-purple-text: #5b21b6;
-      --tag-purple-border: #ddd6fe;
+         at normal — which is neither, so it sits halfway between the two: 287° on the wheel,
+         the midpoint of the blue at 224° and the maroon at 350°, with their saturation and
+         lightness averaged too. The superlatives keep the gold in --status-warning. */
+      --tag-purple-bg: #f8f0fb;
+      --tag-purple-text: #8c22a8;
+      --tag-purple-border: #dcbfe6;
       --title-glow: rgba(125, 34, 49, 0.14);
     }
 
@@ -123,9 +124,9 @@
       --tier-c-bg: #450a0a;
       --tier-c-text: #f87171;
       --tier-c-border: #991b1b;
-      --tag-purple-bg: #2e1065;
-      --tag-purple-text: #c4b5fd;
-      --tag-purple-border: #4c1d95;
+      --tag-purple-bg: #341b3b;
+      --tag-purple-text: #d89be9;
+      --tag-purple-border: #88399d;
     }
 
     [data-theme="dark"] input,
