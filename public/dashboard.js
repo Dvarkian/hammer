@@ -5180,7 +5180,7 @@
               : '';
             return `${ratingHtml}${smartest}`;
           })()}</div></td>
-          ${speedTagCell(s.speedMember?.verdict, s.minTtft, s.maxTps, s.speedMember ? rowTtftLabel(s.speedMember) : 'ttft', s.speedMember != null && getModelRowKey(s.speedMember) === fastestRowKey)}
+          ${speedTagCell(s.speedMember?.verdict, s.minTtft, s.maxTps, s.speedMember ? rowTtftLabel(s.speedMember) : 'ttft', s.speedMember != null && getModelRowKey(s.speedMember) === fastestRowKey, s.usable.length > 0)}
           <!-- Combined usage of every provider under this heading. The heading row is the
                one row that stays on screen when a group is collapsed, so it is where the
                sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
@@ -5466,7 +5466,7 @@
       // Update the Speed tag (col 3): the verdict pill plus the tooltip's ttft/tok/s, rebuilt
       // on every refresh because both the verdict and the measurements move with traffic.
       const speedCell = row.cells[3];
-      if (speedCell) speedCell.innerHTML = speedTagInner(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey);
+      if (speedCell) speedCell.innerHTML = speedTagInner(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey, isRowUsable(m));
     }
 
     // Formats a raw token count like the catalog's context strings: "128k", "1.5M", "32000".
@@ -5543,9 +5543,13 @@
       return parts.join(' · ');
     }
 
-    function speedTagInner(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false) {
+    // `active` is whether the row can take a request right now (see isRowUsable). A measured
+    // band on a row that cannot serve is history rather than a claim about today, so it is
+    // drawn in greyscale: the wording and the measurements stay, the colour stops implying
+    // that this is a live choice.
+    function speedTagInner(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false, active = true) {
       const label = String(verdict || '').trim();
-      const title = speedTagTitle(ttft, tps, ttftLabel);
+      const title = active ? speedTagTitle(ttft, tps, ttftLabel) : `${speedTagTitle(ttft, tps, ttftLabel)} · not serving right now`;
       // The superlative outranks the band: the fastest row that could take a request right now
       // says so, whatever its measured tag would have been.
       if (fastest) {
@@ -5556,11 +5560,11 @@
       if (!label || label === 'Not Active') {
         return `<span class="speed-tag-none" title="${escapeAttr(title)}">—</span>`;
       }
-      return `<span class="onboard-pill speed-tag ${speedTagClass(verdict)}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
+      return `<span class="onboard-pill speed-tag ${speedTagClass(verdict)}${active ? '' : ' inactive'}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
     }
 
-    function speedTagCell(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false) {
-      return `<td class="text-right">${speedTagInner(verdict, ttft, tps, ttftLabel, fastest)}</td>`;
+    function speedTagCell(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false, active = true) {
+      return `<td class="text-right">${speedTagInner(verdict, ttft, tps, ttftLabel, fastest, active)}</td>`;
     }
 
     // The test response a model heading should show, plus the row it came from (so the
@@ -6536,7 +6540,7 @@
       const row = document.querySelector(`[data-row-key="${CSS.escape(rowKey)}"]`);
       if (!row) return;
       const speedCell = row.cells[3];
-      if (speedCell) speedCell.innerHTML = speedTagInner(model.verdict, rowTtft(model), rowTps(model), rowKey.startsWith('g:') ? 'ttft' : rowTtftLabel(model), rowKey === fastestRowKey);
+      if (speedCell) speedCell.innerHTML = speedTagInner(model.verdict, rowTtft(model), rowTps(model), rowKey.startsWith('g:') ? 'ttft' : rowTtftLabel(model), rowKey === fastestRowKey, isRowUsable(model));
     }
 
     // Paints a Test outcome into its Response cell, for both the result and the failure path.
@@ -7483,7 +7487,7 @@
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
-          ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey)}
+          ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey, isRowUsable(m))}
           <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
           ${quotaRowCell(m)}
           ${rateLimitCell(m)}
