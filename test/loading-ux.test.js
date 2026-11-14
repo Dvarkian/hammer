@@ -528,3 +528,30 @@ test('the rail compaction buttons are bound through the panel element', () => {
   assert.match(harness, /compactionPanel\s*\??\.\s*querySelector\('\[data-compaction-now\]'\)/)
   assert.match(harness, /compactionPanel\s*\??\.\s*querySelector\('\[data-compaction-toggle\]'\)/)
 })
+
+// ── The models table order ──────────────────────────────────────────────────────────────
+//
+// The table has exactly one order: intelligence descending. The key it sorts on has to be the
+// number the INT cell prints, or the column and the order disagree — a 40.9 heading above a 30
+// one read as a bug because the comparator was reading the leading provider's own score and the
+// heading was printing the strongest listed one.
+
+test('the models table orders headings by the rating they print', () => {
+  // The printed number: the AA index when the row carries one, else the local score as a
+  // percentage — the same two branches getBenchmarkDisplayValue renders.
+  assert.match(
+    dashboard,
+    /function benchmarkDisplayNumber\(m\) \{[\s\S]*?Number\.isFinite\(aa\) && aa > 0\) return aa;[\s\S]*?getBenchmarkSortValue\(m\.intell\) \* 100;/,
+  )
+  // Read from the strongest provider still listed: struck rows are summarised out of the
+  // heading before it is drawn, so a paid row's better rating must not pull its model up.
+  assert.match(
+    dashboard,
+    /function groupSortIntell\(group\) \{[\s\S]*?if \(isRowStruck\(m\)\) continue;[\s\S]*?return benchmarkDisplayNumber\(bestMember\);/,
+  )
+  // Intelligence descending is the primary key, ahead of the status/QoS/name tiebreakers.
+  assert.match(
+    dashboard,
+    /const intellDelta = groupSortIntell\(b\) - groupSortIntell\(a\);\s*\n\s*if \(intellDelta !== 0\) return intellDelta;/,
+  )
+})

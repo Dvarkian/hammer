@@ -3838,10 +3838,46 @@
       return aPing - bPing;
     }
 
+    // The number a heading prints, in its own units: the catalogue's AA index when the row
+    // carries one, otherwise the local score as the percentage getBenchmarkDisplayValue
+    // renders. Reading the same fields the cell reads is what keeps the order and the column
+    // from disagreeing.
+    function benchmarkDisplayNumber(m) {
+      if (!m) return 0;
+      const aa = Number(m.aa);
+      if (Number.isFinite(aa) && aa > 0) return aa;
+      return getBenchmarkSortValue(m.intell) * 100;
+    }
+
+    // The rating a heading prints is the strongest one any of the model's *listed* providers
+    // carries: splitDisplayGroups moves struck rows to the unavailable table before the heading
+    // is summarised, and getGroupSummary renders the score of the member with the highest
+    // `intell`. Ordering on anything else put the table out of order — by the healthiest
+    // provider's value, a 40.9 model sank below a 30 one whenever its leading member was the
+    // unrated copy; by every member, a model whose paid rows carry the better rating floated
+    // up while its heading still printed the weaker listed one.
+    function groupSortIntell(group) {
+      let bestIntell = 0;
+      let bestMember = null;
+      for (const m of group.members) {
+        if (isRowStruck(m)) continue;
+        if (!bestMember) bestMember = m;
+        const value = Number(m.intell) || 0;
+        if (value > bestIntell) {
+          bestIntell = value;
+          bestMember = m;
+        }
+      }
+      return benchmarkDisplayNumber(bestMember);
+    }
+
     function sortedGroups(groups) {
       return groups
         .map(g => ({ ...g, members: [...g.members].sort(compareProviders) }))
         .sort((a, b) => {
+          // Intelligence descending, strongest first, on the number the heading shows.
+          const intellDelta = groupSortIntell(b) - groupSortIntell(a);
+          if (intellDelta !== 0) return intellDelta;
           const cmp = compareModels(a.members[0], b.members[0]);
           if (cmp !== 0) return cmp;
           return sortableModelName(a.label).localeCompare(sortableModelName(b.label));
