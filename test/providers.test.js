@@ -3233,8 +3233,15 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(js, /const perHour = capacityRatePerHour\(w\)/)
   // A cap that refills inside the run is lifted one step, not two.
   assert.match(js, /CAPACITY_QUICK_PERIODS\.has\(w\.period\)/)
-  // Silence is unknown, and 'Unlimited' only ever comes from a stated cap.
-  assert.match(js, /return unlimited\s*\? \{ band: 'Unlimited'/)
+  // Silence is unknown, and 'Unlimited' only ever comes from a stated cap — one whose provider
+  // says so, even when the heading's other providers meter, which is what GPTFree's auto needs.
+  assert.match(
+    js,
+    /const unlimitedMembers = members\.filter\(\(m\) => m\?\.knownQuota\?\.unlimited === true\)/,
+  )
+  assert.match(js, /const unlimited = unlimitedMembers\.length > 0/)
+  // The word says what it is about: 'Ample Quota', not 'Ample' beside a traffic chart.
+  assert.match(js, />\$\{escapeHtml\(info\.band\)\} Quota\$\{info\.shared/)
   // The tag has its own Usage column, beside a History column that keeps the chart.
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
   assert.match(html, /<th id="th-usage"[^>]*>Usage<\/th>/)
@@ -3349,7 +3356,7 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
     css,
     /\.intel-tag\.intel-genius,\s*\.intel-tag\.intel-very-smart,\s*\.intel-tag\.intel-smart \{[^}]*var\(--status-success-bg\)/,
   )
-  assert.match(css, /\.intel-tag\.intel-normal \{[^}]*var\(--tag-purple-bg\)/)
+  assert.match(css, /\.intel-tag\.intel-average \{[^}]*var\(--tag-purple-bg\)/)
   assert.match(
     css,
     /\.intel-tag\.intel-dumb,\s*\.intel-tag\.intel-very-dumb \{[^}]*var\(--status-info-bg\)/,
@@ -3360,6 +3367,6 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
   // The superlatives keep the gold; the ladder is documented on the column header it sorts.
   assert.match(
     table,
-    /Bands: Genius 55\+, Very Smart 45\+, Smart 33\.9\+, Normal 20\+, Dumb 12\+, Very Dumb below 12/,
+    /Bands: Genius 55\+, Very Smart 45\+, Smart 33\.9\+, Average 20\+, Dumb 12\+, Very Dumb below 12/,
   )
 })

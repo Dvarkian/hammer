@@ -1741,7 +1741,7 @@
     .intel-tag.intel-genius,
     .intel-tag.intel-very-smart,
     .intel-tag.intel-smart { background: var(--status-success-bg); border-color: var(--status-success-border); color: var(--status-success-text); }
-    .intel-tag.intel-normal { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
+    .intel-tag.intel-average { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
     .intel-tag.intel-dumb,
     .intel-tag.intel-very-dumb { background: var(--status-info-bg); border-color: var(--status-info-border); color: var(--status-info-text); }
     .intel-tag.inactive {

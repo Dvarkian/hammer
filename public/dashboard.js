@@ -5318,7 +5318,12 @@
       if (members.length === 0) return null;
       const capacityMembers = groupCapacityMembers(members);
       if (capacityMembers.length === 0) return null;
-      const unlimited = groupsUnlimited(capacityMembers);
+      // 'Unlimited' is a provider stating there is no allowance cap at all, and one such route is
+      // enough for a heading: the group can take work without a quota wall even where its other
+      // providers meter. Demanding that every member say so meant the word never appeared — no
+      // heading is staffed entirely by providers that publish nothing.
+      const unlimitedMembers = members.filter((m) => m?.knownQuota?.unlimited === true);
+      const unlimited = unlimitedMembers.length > 0;
       const windows = [
         ...quotaGroupCapacityWindows(quotaGroupViews(capacityMembers)),
         ...groupLimitViews(capacityMembers, 'rate-limit'),
@@ -5327,8 +5332,30 @@
         .filter((entry) => entry.band != null);
       if (windows.length === 0) {
         return unlimited
-          ? { band: 'Unlimited', binding: null, windows: 0, shared: false, unlimited: true }
+          ? {
+              band: 'Unlimited',
+              binding: null,
+              windows: 0,
+              providers: capacityMembers.length,
+              unlimitedProviders: unlimitedMembers.length,
+              shared: false,
+              unlimited: true,
+            }
           : null;
+      }
+      // A stated absence of any cap outranks the metered windows beside it: the throttle a
+      // sibling publishes limits how fast the run goes, not how much it can do.
+      if (unlimited) {
+        return {
+          band: 'Unlimited',
+          binding: null,
+          windows: windows.length,
+          providers: capacityMembers.length,
+          unlimitedProviders: unlimitedMembers.length,
+          shared: false,
+          clamped: false,
+          unlimited: true,
+        };
       }
       const binding = windows.reduce((tightest, entry) => {
         const delta = capacitySeverity(entry.band) - capacitySeverity(tightest.band);
@@ -5370,8 +5397,12 @@
       const parts = [];
       const w = info.binding;
       if (!w) {
-        parts.push('the provider states no cap');
-        return `${info.band} capacity — ${parts.join(' · ')}`;
+        const stated = info.unlimitedProviders
+          ? `${info.unlimitedProviders} of ${info.providers || info.unlimitedProviders} providers state no allowance cap`
+          : 'the provider states no allowance cap';
+        parts.push(stated);
+        if (info.windows > 0) parts.push(`${info.windows} throttle windows still apply`);
+        return `${info.band} quota — ${parts.join(' · ')}`;
       }
       const unit = capacityUnit(w);
       const total = capacityNumber(w.total);
@@ -5410,7 +5441,7 @@
       } else if (info.providers > 1) {
         parts.push(`its only window, summed across ${info.providers} providers`);
       }
-      return `${info.band} capacity — ${parts.join(' · ')}`;
+      return `${info.band} quota — ${parts.join(' · ')}`;
     }
 
     // In the Usage column, above the token sparkline: the word summarises both families of
@@ -5419,7 +5450,9 @@
       const info = capacityBandForGroup(g);
       if (!info) return '';
       const title = capacityTagTitle(info);
-      return `<span class="onboard-pill capacity-tag cap-${info.band.toLowerCase()}" title="${escapeAttr(title)}">${escapeHtml(info.band)}${info.shared ? '†' : ''}</span>`;
+      // The word carries its own subject: 'Ample' alone beside a chart could be read as a
+      // judgement on the traffic rather than on the allowance left.
+      return `<span class="onboard-pill capacity-tag cap-${info.band.toLowerCase()}" title="${escapeAttr(title)}">${escapeHtml(info.band)} Quota${info.shared ? '†' : ''}</span>`;
     }
 
     function groupRowInnerHTML(g) {
@@ -7885,7 +7918,7 @@
       'genius': 'genius',
       'very smart': 'very-smart',
       'smart': 'smart',
-      'normal': 'normal',
+      'average': 'average',
       'dumb': 'dumb',
       'very dumb': 'very-dumb',
     };
