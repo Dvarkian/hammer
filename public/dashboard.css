@@ -56,21 +56,14 @@
       /* The intelligence bands. Six hues in one ramp, strongest first, so the INT column's
          tags read as a scale rather than six unrelated badges; 'Normal' leans on the neutral
          tokens because it is the unremarkable middle of the field. */
-      --intel-genius-bg: #f5f3ff;
-      --intel-genius-text: #5b21b6;
-      --intel-genius-border: #ddd6fe;
-      --intel-very-smart-bg: #eff6ff;
-      --intel-very-smart-text: #1d4ed8;
-      --intel-very-smart-border: #bfdbfe;
-      --intel-smart-bg: #ecfdf5;
-      --intel-smart-text: #047857;
-      --intel-smart-border: #a7f3d0;
-      --intel-dumb-bg: #fffbeb;
-      --intel-dumb-text: #92400e;
-      --intel-dumb-border: #fef3c7;
-      --intel-very-dumb-bg: #fef2f2;
-      --intel-very-dumb-text: #991b1b;
-      --intel-very-dumb-border: #fee2e2;
+      /* One hue per rung of the tag ladder, shared by the Speed and Intelligence columns so a
+         band and a verdict that mean the same thing read the same. Blue for anything better
+         than normal (--status-success), maroon for anything worse (--status-info), and purple
+         at normal, which is neither and so borrows neither hue. The superlatives keep the gold
+         in --status-warning. */
+      --tag-purple-bg: #f5f3ff;
+      --tag-purple-text: #5b21b6;
+      --tag-purple-border: #ddd6fe;
       --title-glow: rgba(125, 34, 49, 0.14);
     }
 
@@ -130,21 +123,9 @@
       --tier-c-bg: #450a0a;
       --tier-c-text: #f87171;
       --tier-c-border: #991b1b;
-      --intel-genius-bg: #2e1065;
-      --intel-genius-text: #c4b5fd;
-      --intel-genius-border: #4c1d95;
-      --intel-very-smart-bg: #172554;
-      --intel-very-smart-text: #93c5fd;
-      --intel-very-smart-border: #1e40af;
-      --intel-smart-bg: #052e2b;
-      --intel-smart-text: #6ee7b7;
-      --intel-smart-border: #065f46;
-      --intel-dumb-bg: #451a03;
-      --intel-dumb-text: #fbbf24;
-      --intel-dumb-border: #92400e;
-      --intel-very-dumb-bg: #450a0a;
-      --intel-very-dumb-text: #f87171;
-      --intel-very-dumb-border: #991b1b;
+      --tag-purple-bg: #2e1065;
+      --tag-purple-text: #c4b5fd;
+      --tag-purple-border: #4c1d95;
     }
 
     [data-theme="dark"] input,
@@ -1722,6 +1703,10 @@
     }
 
     .onboard-pill.up { background: var(--status-success-bg); border-color: var(--status-success-border); color: var(--status-success-text); }
+    /* Normal is neither better nor worse than the field, so it takes the one hue that says
+       neither: purple. Speed and Intelligence both use it, so 'Normal' looks identical in
+       either column. */
+    .onboard-pill.normal { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
     .onboard-pill.slow { background: var(--status-info-bg); border-color: var(--status-info-border); color: var(--status-info-text); }
     .onboard-pill.limited { background: var(--status-warning-bg); border-color: var(--status-warning-border); color: var(--status-warning-text); }
     .onboard-pill.unstable { background: var(--status-warning-bg); border-color: var(--status-warning-border); color: var(--status-warning-text); }
@@ -1746,16 +1731,18 @@
       opacity: 0.7;
     }
     /* The Intelligence column's tag, beside the rating it describes: the same pill the Speed
-       column wears, one hue per band, strongest first. Unlike a speed verdict this is a
-       property of the model, so it keeps its colour on a row that cannot serve right now —
-       the heading mutes the whole cell instead (see groupRowInnerHTML). */
+       column wears, on the same three-hue ladder — blue for anything above normal, purple at
+       normal, maroon below it — so 'Smart' and 'Fast' agree that a model is better than most,
+       and 'Dumb' and 'Slow' agree that it is not. Unlike a speed verdict this is a property of
+       the model, so it keeps its colour on a row that cannot serve right now — the heading
+       mutes the whole cell instead (see groupRowInnerHTML). */
     .intel-tag { display: inline-block; margin-left: 6px; }
-    .intel-tag.intel-genius { background: var(--intel-genius-bg); border-color: var(--intel-genius-border); color: var(--intel-genius-text); }
-    .intel-tag.intel-very-smart { background: var(--intel-very-smart-bg); border-color: var(--intel-very-smart-border); color: var(--intel-very-smart-text); }
-    .intel-tag.intel-smart { background: var(--intel-smart-bg); border-color: var(--intel-smart-border); color: var(--intel-smart-text); }
-    .intel-tag.intel-normal { background: var(--status-neutral-bg); border-color: var(--status-neutral-border); color: var(--status-neutral-text); }
-    .intel-tag.intel-dumb { background: var(--intel-dumb-bg); border-color: var(--intel-dumb-border); color: var(--intel-dumb-text); }
-    .intel-tag.intel-very-dumb { background: var(--intel-very-dumb-bg); border-color: var(--intel-very-dumb-border); color: var(--intel-very-dumb-text); }
+    .intel-tag.intel-genius,
+    .intel-tag.intel-very-smart,
+    .intel-tag.intel-smart { background: var(--status-success-bg); border-color: var(--status-success-border); color: var(--status-success-text); }
+    .intel-tag.intel-normal { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
+    .intel-tag.intel-dumb,
+    .intel-tag.intel-very-dumb { background: var(--status-info-bg); border-color: var(--status-info-border); color: var(--status-info-text); }
 
     .onboard-actions {
       display: flex;

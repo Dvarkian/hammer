@@ -5566,7 +5566,10 @@
     // The tooltip carries the measurements the TTFT and Tok/s columns used to print.
     function speedTagClass(verdict) {
       const v = String(verdict || '').toLowerCase();
-      if (v === 'very fast' || v === 'fast' || v === 'normal') return 'up';
+      // Three hues, one per rung, matching the Intelligence column's bands: blue above normal,
+      // purple at normal, maroon below it.
+      if (v === 'normal') return 'normal';
+      if (v === 'very fast' || v === 'fast') return 'up';
       if (v === 'slow' || v === 'very slow') return 'slow';
       if (v === 'unstable') return 'unstable';
       return 'down';
@@ -8075,7 +8078,9 @@
     // status dot in the table.
     function onboardPillClass(verdict) {
       const v = String(verdict || '').toLowerCase();
-      if (v === 'very fast' || v === 'fast' || v === 'normal') return 'up';
+      // Same ladder as the table's tags, so 'Normal' is purple here too (see speedTagClass).
+      if (v === 'normal') return 'normal';
+      if (v === 'very fast' || v === 'fast') return 'up';
       if (v === 'slow' || v === 'very slow') return 'slow';
       if (v === 'unstable') return 'unstable';
       return 'down';

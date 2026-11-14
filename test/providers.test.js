@@ -3242,10 +3242,21 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
     2,
     'both the live heading and the graveyard heading band their rating',
   )
-  // One hue per band, and the ladder is documented on the column header it sorts.
-  for (const band of ['genius', 'very-smart', 'smart', 'normal', 'dumb', 'very-dumb']) {
-    assert.match(css, new RegExp(`\\.intel-tag\\.intel-${band} \\{`))
-  }
+  // Three hues, one per rung: blue above normal, purple at normal, maroon below — the same
+  // ladder the Speed column uses, so 'Smart' and 'Fast' agree and 'Dumb' and 'Slow' agree.
+  assert.match(
+    css,
+    /\.intel-tag\.intel-genius,\s*\.intel-tag\.intel-very-smart,\s*\.intel-tag\.intel-smart \{[^}]*var\(--status-success-bg\)/,
+  )
+  assert.match(css, /\.intel-tag\.intel-normal \{[^}]*var\(--tag-purple-bg\)/)
+  assert.match(
+    css,
+    /\.intel-tag\.intel-dumb,\s*\.intel-tag\.intel-very-dumb \{[^}]*var\(--status-info-bg\)/,
+  )
+  assert.match(css, /\.onboard-pill\.normal \{[^}]*var\(--tag-purple-bg\)/)
+  assert.match(js, /if \(v === 'normal'\) return 'normal';/)
+  assert.match(js, /if \(v === 'very fast' \|\| v === 'fast'\) return 'up';/)
+  // The superlatives keep the gold; the ladder is documented on the column header it sorts.
   assert.match(
     table,
     /Bands: Genius 55\+, Very Smart 45\+, Smart 33\.9\+, Normal 20\+, Dumb 12\+, Very Dumb below 12/,
