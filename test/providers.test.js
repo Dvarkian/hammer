@@ -3400,7 +3400,15 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
   // The band is the server's answer, carried on the row beside the speed verdict, so the table
   // cannot band a number differently from the API that ships it.
   assert.match(utils, /export function intelligenceBandForAa\(aa\)/)
-  assert.match(models, /intelBand: intelligenceBandForAa\(r\.aa\),/)
+  // `effectiveAa` is the row's own rating, or the one borrowed from the model its heading
+  // names when the row is a relay that cannot name its backend.
+  assert.match(models, /intelBand: intelligenceBandForAa\(effectiveAa\),/)
+  // A row with no rating of its own takes the rating of the model its heading names — g4f's
+  // `ChatGPT:auto` answers `"model":"auto"`, which names no backend, so it sat at "—" inside a
+  // heading full of scored DeepSeek V4 Flash rows.
+  assert.match(models, /const groupScoreByRowKey = new Map\(\)/)
+  assert.match(models, /qualitySource: 'group-model'/)
+  assert.match(js, /case 'group-model'/)
   // The model heading is the only cell that prints the model-level rating, so it carries the
   // pill, built from the same member whose rating is drawn.
   assert.match(js, /function intelTagHTML\(band, title, inactive = false\)/)

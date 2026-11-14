@@ -7948,6 +7948,7 @@
         case 'swe_bench_pro': return { short: 'SBP*', label: 'SWE-bench Pro, AA-calibrated' };
         case 'openai_swe_bench_verified': return { short: 'SBV*', label: 'SWE-bench Verified, AA-calibrated' };
         case 'unscored': return { short: '', label: 'No benchmarklist intelligence evidence for this model' };
+        case 'group-model': return { short: 'Same model', label: 'The rating of the model this row is grouped under' };
         default: return { short: 'Estimate*', label: 'Estimated intelligence score' };
       }
     }
