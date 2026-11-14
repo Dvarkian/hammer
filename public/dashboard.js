@@ -7612,28 +7612,44 @@
       return INTEL_BAND_CLASSES[String(band || '').trim().toLowerCase()] || '';
     }
 
-    // The rating already carries the number, so the tag names the band and its tooltip says
-    // where that band begins; the ladder itself is written on the column header.
-    function intelTagHTML(band, shown) {
+    // The tag names the band; the index it was banded from rides in the tooltip, the way the
+    // Speed column keeps its ttft and tok/s out of the cell. An estimate keeps its asterisk —
+    // the number moved out of the cell, not the reason to distrust it.
+    function intelTagHTML(band, title, estimated = false) {
       const cls = intelTagClass(band);
       if (!cls) return '';
       const label = String(band).trim();
-      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(`${label} intelligence \u2014 AA index ${shown}`)}">${escapeHtml(label)}</span>`;
+      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(title)}">${escapeHtml(label)}${estimated ? '<span class="pill-estimate">*</span>' : ''}</span>`;
     }
 
+    // The column prints the band, not the number: the index is in the tag's tooltip, beside the
+    // source it came from. A rating with no band keeps the muted dash it had before the bands
+    // existed — an unmeasured model is not a dumb one, and a bare number is what this replaced.
     function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
-      const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);
+      // The evidence line usually opens with the source's own name, and the tag's tooltip is now
+      // the only place it is read: name it once rather than twice in a row.
+      const detailText = String(detail || '').trim();
+      const sourceTitle = !detailText
+        ? sourceDisplay.label
+        : detailText.toLowerCase().startsWith(sourceDisplay.label.toLowerCase())
+          ? detailText
+          : `${sourceDisplay.label} — ${detailText}`;
       const n = Number(aa);
-      if (Number.isFinite(n) && n > 0) {
-        const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
-        const marker = source === 'artificial-analysis' || source === 'benchmarklist-aa-index' ? '' : '<span class="pill-estimate">*</span>';
-        return `<span title="${title}">${shown}${marker}</span>${intelTagHTML(band, shown)}`;
+      const shown =
+        Number.isFinite(n) && n > 0 ? (Number.isInteger(n) ? String(n) : n.toFixed(1)) : null;
+      const estimated = !(
+        source === 'artificial-analysis' || source === 'benchmarklist-aa-index'
+      );
+      if (shown && intelTagClass(band)) {
+        const parts = [`${String(band).trim()} intelligence`, `AA index ${shown}`];
+        if (estimated) parts.push('estimate');
+        parts.push(sourceTitle);
+        return intelTagHTML(band, parts.join(' · '), estimated);
       }
-      // Degraded/offline mode: no AA value at all, show the local score.
       const score = Number(value);
-      if (!Number.isFinite(score) || score <= 0) return '—';
-      return `<span title="${title}">${Math.round(score * 100)}<span class="pill-estimate">${sourceDisplay.short}</span></span>`;
+      const local = Number.isFinite(score) && score > 0 ? ` — local score ${Math.round(score * 100)}` : '';
+      return `<span style="font-size:0.75rem;color:var(--text-muted);" title="${escapeAttr(`${sourceTitle}${local}`)}">—</span>`;
     }
 
     function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null, band = null) {

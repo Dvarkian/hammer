@@ -537,8 +537,8 @@ test('the rail compaction buttons are bound through the panel element', () => {
 // heading was printing the strongest listed one.
 
 test('the models table orders headings by the rating they print', () => {
-  // The printed number: the AA index when the row carries one, else the local score as a
-  // percentage — the same two branches getBenchmarkDisplayValue renders.
+  // The number a heading is banded and ordered by: the AA index when the row carries one, else
+  // the local score as a percentage (the column itself now prints the band; see providers).
   assert.match(
     dashboard,
     /function benchmarkDisplayNumber\(m\) \{[\s\S]*?Number\.isFinite\(aa\) && aa > 0\) return aa;[\s\S]*?getBenchmarkSortValue\(m\.intell\) \* 100;/,
