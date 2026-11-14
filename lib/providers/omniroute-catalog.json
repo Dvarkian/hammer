@@ -95,13 +95,6 @@
       "modelCount": 4
     },
     {
-      "key": "morph",
-      "access": "recurring",
-      "steadyTokensPerMonth": 400000,
-      "tos": "ok",
-      "modelCount": 2
-    },
-    {
       "key": "kiro",
       "access": "recurring",
       "steadyTokensPerMonth": 25000,

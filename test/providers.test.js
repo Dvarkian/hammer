@@ -860,11 +860,11 @@ test('the 22 hammer-owned signup URLs survive the import, which is additive', ()
 
 test('every curated key page is HTTPS and records the evidence behind it', () => {
   const pages = loadKeyPages()
-  // 20 after `friendliai` was removed (2026-11-13), 21 after `huggingface` (2026-11-10), behind
-  // `coze`, `bytez`, the duplicate `ollama-cloud` row (2026-11-08) and `nlpcloud` (2026-11-09)
-  // (it was 26). The floor moves only when a provider leaves the roster; it still has to cover
-  // the imported fleet that remains.
-  assert.ok(Object.keys(pages).length >= 20, 'the table should cover the imported fleet')
+  // 19 after `morph` and `friendliai` were removed (2026-11-13), 21 after `huggingface`
+  // (2026-11-10), behind `coze`, `bytez`, the duplicate `ollama-cloud` row (2026-11-08) and
+  // `nlpcloud` (2026-11-09) (it was 26). The floor moves only when a provider leaves the
+  // roster; it still has to cover the imported fleet that remains.
+  assert.ok(Object.keys(pages).length >= 19, 'the table should cover the imported fleet')
   for (const [key, entry] of Object.entries(pages)) {
     assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
     assert.ok(
@@ -1070,8 +1070,8 @@ test('the vendored catalog parses and carries provenance', () => {
   const { source, providers } = loadOmniRouteCatalog()
   assert.equal(source.project, 'OmniRoute')
   assert.equal(source.license, 'MIT')
-  // 27 after `friendliai` was excluded from the sync (2026-11-13).
-  assert.ok(providers.length >= 27, `expected a substantial roster, got ${providers.length}`)
+  // 26 after `morph` and `friendliai` were excluded from the sync (2026-11-13).
+  assert.ok(providers.length >= 26, `expected a substantial roster, got ${providers.length}`)
 })
 
 test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
@@ -1119,8 +1119,8 @@ test('every imported provider is active, staged or refused — never undefined',
 
 test('the import actually resolves providers to real endpoints', () => {
   const active = activationOf('active')
-  // 17 after `friendliai` was excluded from the sync (2026-11-13).
-  assert.ok(active.length >= 17, `expected a substantial routable import, got ${active.length}`)
+  // 16 after `morph` and `friendliai` were excluded from the sync (2026-11-13).
+  assert.ok(active.length >= 16, `expected a substantial routable import, got ${active.length}`)
   for (const provider of active) {
     assert.match(provider.chatUrl, /^https:\/\//, `${provider.key} needs a real https endpoint`)
     assert.ok(

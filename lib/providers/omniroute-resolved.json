@@ -267,20 +267,6 @@
       "activation": "staged",
       "reason": "HuggingChat signs in through HuggingFace OAuth (an unauthenticated GET answers 302 to /oauth/authorize, verified 2026-09-22) and then needs a session cookie plus a create-conversation round trip before any message is sent, so it needs a wire adapter"
     },
-    "morph": {
-      "activation": "active",
-      "chatUrl": "https://api.morphllm.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 0,
-        "declaredModels": []
-      }
-    },
     "kiro": {
       "activation": "staged",
       "reason": "executor \"kiro\" frames its own request and response with no declarative equivalent"

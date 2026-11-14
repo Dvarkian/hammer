@@ -62,13 +62,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "morph": {
-      "url": "https://morphllm.com/dashboard",
-      "evidence": "Morph dashboard; API keys",
-      "verifiedAt": null,
-      "httpStatus": 429,
-      "note": "Reachable but rate-limits automated checks (HTTP 429)."
-    },
     "glm-cn": {
       "url": "https://open.bigmodel.cn/usercenter/apikeys",
       "evidence": "BigModel (Zhipu) user center; API keys page",

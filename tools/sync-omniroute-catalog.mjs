@@ -147,6 +147,13 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // row was ToS `avoid` (personal use; no resale or sublicensing).
   'coze',
   'bytez',
+  // `morph` (2026-11-13): the key authenticates — `/v1/models` lists its five serverless ids
+  // and the roster row is ToS `ok` — but every completion is refused with HTTP 402 "Monthly
+  // quota exceeded. Upgrade to a paid plan" on every model tried (morph-v3-fast, morph-kimik31,
+  // morph-glm53-744b). The published free tier is real (200 requests and 250K credits a
+  // month), and this key's month is spent, so there is nothing to serve here until it resets.
+  // Removed on request; re-adding the row is all it takes if a fresh key is supplied.
+  'morph',
   // `friendliai` (2026-11-13): the key authenticates — `/serverless/v1/models` lists five
   // models — but every completion is refused with HTTP 403 "Your team has no remaining
   // credits. Please purchase credits at https://friendli.ai/suite to continue." on every id
