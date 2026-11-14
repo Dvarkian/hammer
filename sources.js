@@ -664,7 +664,13 @@ export function isSameModelIdentity(a, b) {
   // not different weights — the same rows already carry the same catalogue score. A lone
   // trailing `t` is therefore a route marker; anything longer ("…-T-Pro") is a real variant
   // and keeps its own group.
-  if (extra.length === 1 && extra[0] === 't') return true
+  //
+  // `thinking` is the same marker spelled out. CrowLLM lists `caw/glm-5.3-flash-thinking:free`
+  // beside `caw/glm-5.3-flash:free`, Moonshot publishes `kimi-k2-thinking` beside `kimi-k2`, and
+  // the model reasons either way — the suffix names the route a gateway takes to the weights,
+  // not a second model. Two headings for one model split its providers, its allowance and its
+  // traffic across rows that cannot be compared.
+  if (extra.length === 1 && (extra[0] === 't' || extra[0] === 'thinking')) return true
   return extra.every(
     (token, index) =>
       isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,4}$/.test(token)),

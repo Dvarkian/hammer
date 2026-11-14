@@ -69,6 +69,31 @@ test('server grouping keeps size-distinct model families separate across alias s
   )
 })
 
+test('a "Thinking" suffix is the same model on a reasoning route, not a second heading', () => {
+  // The gateways list the reasoning route as its own id — `caw/glm-5.3-flash-thinking:free`
+  // beside `caw/glm-5.3-flash:free`, `kimi-k2-thinking` beside `kimi-k2` — while the model
+  // reasons either way. Two headings split one model's providers, allowance and traffic across
+  // rows that cannot be compared; a lone trailing `T` (g4f's spelling) is the same marker.
+  const rows = [
+    row('crowllm', 'caw/glm-5.3-flash:free', 'Glm 5.3 Flash'),
+    row('crowllm', 'caw/glm-5.3-flash-thinking:free', 'Glm 5.3 Flash Thinking'),
+    row('g4f', 'DeepSeek-V4.1-Flash', 'DeepSeek V4.1 Flash'),
+    row('g4f', 'DeepSeek-V4.1-Flash-T', 'DeepSeek V4.1 Flash T'),
+    // A real variant keeps its own heading: the marker is a lone trailing token.
+    row('other', 'glm-5.3-flash-thinking-pro', 'Glm 5.3 Flash Thinking Pro'),
+  ]
+
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  const groupOf = (modelId) =>
+    groups.find((group) => group.models.some((model) => model.modelId === modelId))
+
+  assert.equal(groupOf('caw/glm-5.3-flash-thinking:free'), groupOf('caw/glm-5.3-flash:free'))
+  assert.equal(groupOf('DeepSeek-V4.1-Flash-T'), groupOf('DeepSeek-V4.1-Flash'))
+  assert.notEqual(groupOf('glm-5.3-flash-thinking-pro'), groupOf('caw/glm-5.3-flash:free'))
+  // The heading is the plain name, not the route marker.
+  assert.equal(groupOf('caw/glm-5.3-flash-thinking:free').label, 'Glm 5.3 Flash')
+})
+
 test('server grouping applies the shared alias catalog across model families', () => {
   const families = [
     ['gpt-oss:20b', 'openai/gpt-oss-20b'],
