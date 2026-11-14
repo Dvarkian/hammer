@@ -3130,9 +3130,9 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /const speedCell = row\.cells\[3\];/)
   // Usage (col 4) carries the capacity tag in the heading and stays empty on provider rows;
   // History (col 5) is the sparkline cell the plotter draws into.
-  assert.match(js, /const usageCell = row\.cells\[5\];/)
-  assert.match(js, /const quotaCell = row\.cells\[6\];/)
-  assert.match(js, /const ctxCell = row\.cells\[8\];/)
+  assert.match(js, /const usageCell = row\.cells\[6\];/)
+  assert.match(js, /const quotaCell = row\.cells\[7\];/)
+  assert.match(js, /const ctxCell = row\.cells\[5\];/)
   // Status no longer owns a column: its verdict trails the model name inside the Model cell,
   // in a slot every repaint path targets by class, so the name is never overwritten and the
   // response column that followed Status takes the last index.
@@ -3158,7 +3158,22 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
   assert.match(js, /\$\{rateLimitCell\(m\)\}/)
   // The refresh path keeps the throttle column in step with the quota column beside it.
-  assert.match(js, /const rateLimitCellEl = row\.cells\[7\];/)
+  assert.match(js, /const rateLimitCellEl = row\.cells\[8\];/)
+  // Context moved up beside Usage, ahead of the History chart.
+  assert.match(table, /id="th-usage"[^]*?id="th-ctx"[^]*?id="th-history"[^]*?id="th-quota"/)
+  // INT, Speed, Usage and Context are centred in header and cells; a numeric column ragged to
+  // one side reads as a list, which these four are not.
+  assert.match(css, /\.text-center \{ text-align: center; \}/)
+  assert.match(table, /<th class="text-center" title="How fast this endpoint answers/)
+  assert.match(table, /id="th-usage" class="text-center"/)
+  assert.match(js, /<td class="text-center">\$\{speedTagInner\(verdict, ttft, tps, ttftLabel/)
+  // The Test control lives in the name cell; the Response column holds only what a test said.
+  assert.match(js, /function testControlHTML\(opts\)/)
+  assert.match(js, /\$\{testControlHTML\(\{ rowKey: getModelRowKey\(m\)/)
+  assert.match(js, /\$\{testControlHTML\(\{ rowKey: 'g:' \+ g\.key/)
+  // A plain 'up' draws nothing: a column of blue dots states only that all is well.
+  assert.match(js, /if \(kind === 'up' && special == null\) return '';/)
+  assert.match(css, /\.status-slot:empty \{ display: none; \}/)
   assert.match(js, /rateLimitCellEl\.innerHTML = rateLimitCellInnerHTML\(m\)/)
 })
 

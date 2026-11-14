@@ -1230,6 +1230,12 @@
     }
 
 
+    .text-center { text-align: center; }
+
+    /* A healthy row carries no status mark, and an empty slot must not leave a gap where the
+       dot used to sit. The element stays in the DOM — later verdicts paint into it. */
+    .status-slot:empty { display: none; }
+
     .text-right {
       text-align: right;
     }
@@ -1759,6 +1765,7 @@
        to the first should not scroll past the second. */
     .usage-cell,
     .history-cell { vertical-align: top; }
+    .usage-cell { text-align: center; }
     .usage-tag-slot { line-height: 1; }
     .usage-tag-slot .capacity-tag { margin-left: 0; }
     .capacity-tag.cap-unlimited,
@@ -1892,6 +1899,15 @@
       flex-direction: column;
       gap: 4px;
       align-items: flex-start;
+    }
+
+    /* The Test control rides in the name row, so it stays inline instead of stacking, and
+       keeps the button beside the name it acts on. */
+    .test-cell.test-control {
+      display: inline-flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
     }
 
     .test-btn {

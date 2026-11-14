@@ -5482,9 +5482,11 @@
         .map(member => providerOutageTitle(member))
         .filter(Boolean)
         .join(' \u00b7 ');
-      const groupStatusHtml = members.length === 1
-        ? statusCellHTML(first)
-        : `<div style="display: flex; align-items: center; gap: 6px;">${verdictIndicatorHTML(groupKind, groupOutageTitle ? `${groupStatusText} \u00b7 ${groupOutageTitle}` : groupStatusText)}</div>`;
+      const groupStatusHtml = groupKind === 'up'
+        ? ''
+        : members.length === 1
+          ? statusCellHTML(first)
+          : `<div style="display: flex; align-items: center; gap: 6px;">${verdictIndicatorHTML(groupKind, groupOutageTitle ? `${groupStatusText} \u00b7 ${groupOutageTitle}` : groupStatusText)}</div>`;
       const emoji = first.status === 'banned' ? '🚫 ' : (first.status === 'excluded' ? '⛔ ' : '');
 
       return `
@@ -5492,13 +5494,14 @@
           <td>
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${emoji}${escapeHtml(cleanHeadingModelName(g.label))}</span>
+              ${testControlHTML({ rowKey: 'g:' + g.key, members: g.members, hasAuth: g.members.some(m => m.status !== 'noauth') })}
               <span class="status-slot">${groupStatusHtml}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
-          <td><div style="font-weight: 600; display:flex; align-items:center; gap:6px;">${(() => {
+          <td class="text-center"><div style="font-weight: 600; display:flex; align-items:center; justify-content:center; gap:6px;">${(() => {
             // The rating describes the model rather than any one provider, so it stays here
             // when nothing is available — but beside a "0/N providers" subtitle it must not
             // read as live capacity, so the tag is drawn greyscale and its tooltip says why.
@@ -5529,12 +5532,14 @@
                columns because they answer different questions: can this model work, and what
                has it been doing. -->
           <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g)}</div></td>
+          <!-- Context sits beside Usage: how much is left and how much fits in one request are
+               the two numbers a route is chosen on. -->
+          <td class="text-center">
+            <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
+          </td>
           <td class="history-cell"><div id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></div></td>
           ${quotaGroupCell(g)}
           ${rateLimitGroupCell(g)}
-          <td>
-            <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${s.bestCtxMember && s.bestCtxMember.contextSource === 'observed' ? 'Bounds inferred from real requests' : (s.bestCtxMember && s.bestCtxMember.context ? 'Known context window' : 'Largest context window among providers')}">${s.bestCtxMember && s.bestCtxMember.context ? escapeHtml(s.bestCtxMember.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
-          </td>
           <td>${(() => {
             // Group response: the most recent test across every provider under this
             // heading, judged against the row it came from (see groupLastResponse)
@@ -5768,9 +5773,9 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds) — col 8, after quota (col 6) and
-      // the rate-limit column (col 7); the logo column leads the row.
-      const ctxCell = row.cells[8];
+      // Update context window (known limit or observed bounds) — col 5, between Usage and the
+      // History chart; the logo column leads the row.
+      const ctxCell = row.cells[5];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -5780,20 +5785,20 @@
       const intellCell = row.cells[2];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // History sparkline (col 5); never clobber an in-flight test.
-      const usageCell = row.cells[5];
+      // History sparkline (col 6); never clobber an in-flight test.
+      const usageCell = row.cells[6];
       const usageSpark = usageCell && usageCell.querySelector('.usage-sparkline-cell');
       if (usageSpark) {
         usageSpark.id = `usage-cell-${getModelRowKey(m)}`;
         drawUsageSparklineInto(usageSpark, getModelRowKey(m));
       }
-      // Quota (col 6) is rebuilt on every refresh: a published window counts down on the
+      // Quota (col 7) is rebuilt on every refresh: a published window counts down on the
       // clock, and observed rate-limit windows arrive with new traffic.
-      const quotaCell = row.cells[6];
+      const quotaCell = row.cells[7];
       if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
-      // Rate limit (col 7) is rebuilt alongside it: the throttle counters and bench state
+      // Rate limit (col 8) is rebuilt alongside it: the throttle counters and bench state
       // change with every response, just as the quota windows do.
-      const rateLimitCellEl = row.cells[7];
+      const rateLimitCellEl = row.cells[8];
       if (rateLimitCellEl) rateLimitCellEl.innerHTML = rateLimitCellInnerHTML(m);
       // Update the status that trails the model name (it lives in the Model cell, col 1, now
       // that the Status column is gone) and the response cell (col 9); never clobber an
@@ -5911,7 +5916,7 @@
     }
 
     function speedTagCell(verdict, ttft, tps, ttftLabel = 'ttft', fastest = false, active = true) {
-      return `<td class="text-right">${speedTagInner(verdict, ttft, tps, ttftLabel, fastest, active)}</td>`;
+      return `<td class="text-center">${speedTagInner(verdict, ttft, tps, ttftLabel, fastest, active)}</td>`;
     }
 
     // The test response a model heading should show, plus the row it came from (so the
@@ -5975,6 +5980,16 @@
       return `<button class="test-btn" onclick="event.stopPropagation(); ${action}(this, ${btnArgs})" title="Send 'Please respond with a creative, funny, inspiring 30 words about hammers.' to this model">Test</button>`;
     }
 
+    // Where the Test control lives: beside the model or provider name, so the thing you click
+    // sits with the thing it tests. What the test produced stays in the Response column, which
+    // is what makes that column readable — a button in front of every result pushed the text
+    // out to the width of the action.
+    const TEST_CONTROL_MARK = 'test-control';
+    function testControlHTML(opts) {
+      if (!opts || opts.hasAuth === false) return '';
+      return `<span class="test-cell ${TEST_CONTROL_MARK}">${testBtnHTML(opts)}${autoRetestNote(opts.rowKey)}</span>`;
+    }
+
     // Builds the Response cell: the Test button, and the text of a *failed* response. A clean
     // answer is not printed here — it is the status icon's tooltip instead (see
     // statusCellHTML), so a successful row stays one line instead of growing a box of prose
@@ -5985,13 +6000,12 @@
     function responseCellHTML(lastResponse, opts) {
       // Models with no API key / auth configured show a placeholder.
       if (opts && opts.hasAuth === false) {
-        return '<div class="test-cell"><span class="test-meta" style="color:var(--text-muted);">—</span></div>';
+        return '<div class="test-cell test-results"><span class="test-meta" style="color:var(--text-muted);">—</span></div>';
       }
-      const btn = testBtnHTML(opts);
-      // The retry clock sits beside the button so a click does not look like the only way
-      // the row will be tested again; it is empty for anything not on that schedule.
-      const retry = autoRetestNote(opts && opts.rowKey);
-      if (!lastResponse) return `<div class="test-cell">${btn}${retry}</div>`;
+      // The Test button is not part of this cell (see testControlHTML); nothing to show yet
+      // leaves the column empty — but the wrapper stays, because the button finds the cell it
+      // paints into by this class, and an absent wrapper made an untested row's Test do nothing.
+      if (!lastResponse) return '<div class="test-cell test-results"></div>';
       // Timeout errors carry an expiry; once it passes, treat the result as absent
       // so a stale timeout no longer populates the test result field.
       const expired = lastResponse.expiresAt != null && Date.now() > Number(lastResponse.expiresAt);
@@ -6092,7 +6106,7 @@
         : (errText
           ? `<div class="test-response err"${expAttr} title="${escapeAttr(text)}">${text ? escapeHtml(text) : `HTTP ${lastResponse.status}`}</div>`
           : '');
-      return `<div class="test-cell">${btn}${retry}${body}${meta}</div>`;
+      return `<div class="test-cell test-results">${body}${meta}</div>`;
     }
 
     function escapeAttr(s) {
@@ -6918,18 +6932,20 @@
     // response (or error) into the Response cell, then refreshes the table so TTFT /
     // Tok/s / Context pick up the stats recorded from it.
     async function testModelButton(btn, opts) {
-      const cell = btn.closest('td');
+      // The control sits in the Model cell and the result is painted into the Response cell,
+      // two columns away, so each is resolved on its own rather than through the button's td.
+      const control = btn.closest('.test-cell');
+      const tr = btn.closest('tr');
+      const cell = tr?.querySelector('.test-cell.test-results');
       const rowKey = opts && opts.rowKey;
       if (testAllRunning && testAllCurrentRowKey !== rowKey) return;
       if (!cell || !rowKey || inflightTests.has(rowKey)) return;
       inflightTests.add(rowKey);
-      cell.innerHTML = '<div class="test-cell"><button class="test-btn" disabled>⏳ Testing…</button></div>';
-      const tr = cell.closest('tr');
+      if (control) control.innerHTML = '<button class="test-btn" disabled>⏳ Testing…</button>';
       tr?.classList.add('row-testing');
+      // No separate spinner in the status slot: the button beside it already says ⏳ Testing…,
+      // and since both now sit in the name row that was the same word printed twice.
       const statusCell = tr && tr.cells[1] && tr.cells[1].querySelector('.status-slot');
-      if (statusCell) {
-        statusCell.innerHTML = '<div style="display: flex; align-items: center; gap: 6px;"><span style="color: var(--text-muted); font-size: 0.75rem;">⏳ Testing…</span></div>';
-      }
       let refreshAfterTest = false;
       try {
         const res = await fetch('/api/test-model', {
@@ -7009,6 +7025,11 @@
       } finally {
         inflightTests.delete(rowKey);
         tr?.classList.remove('row-testing');
+        // The button no longer lives in a cell the result repaints, so it is handed back
+        // explicitly: without this the row keeps the spinner for the rest of the session.
+        if (control && control.isConnected) {
+          control.innerHTML = testControlHTML({ ...opts, hasAuth: true });
+        }
         if (refreshAfterTest) scheduleRefresh(); // catch up the stats a completed test recorded
       }
     }
@@ -7542,6 +7563,11 @@
       // successful text (see responseCellHTML), so the tooltip is where the words live now —
       // shown only while the answer is still this row's verdict.
       const answer = kind === 'up' ? readyAnswerText(m) : '';
+      // A plain 'up' renders as one blue dot and nothing else. A table whose every healthy row
+      // carries that mark is a column of blue saying only "all is well"; the absence of a mark
+      // says the same thing without the noise. Every state that is worth a glance keeps its
+      // glyph, its countdown or its word.
+      if (kind === 'up' && special == null) return '';
       const inner = special != null
         ? special
         : `${verdictIndicatorHTML(kind, answer ? `Up — ${answer}` : plainStatusTitle(kind))}${label ? `<span style="font-size: 0.75rem; font-weight: 500; text-transform: capitalize;">${escapeHtml(label)}</span>` : ''}`;
@@ -7792,6 +7818,7 @@
           <td>
             <div style="font-weight: 700; font-size: 0.92rem; display:flex; align-items:center; gap:8px;">
               <span title="${escapeHtml(cleanHeadingModelName(g.label))}">${escapeHtml(cleanHeadingModelName(g.label))}</span>
+              ${testControlHTML({ rowKey: 'g:' + g.key, members, hasAuth })}
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(providerInstanceName(first))}</div>
           </td>
@@ -7829,20 +7856,21 @@
           <td>
             <div style="display:flex; align-items:center; gap:8px;">
               <span style="font-weight: 600;" title="${escapeHtml(providerRowLabel(m))}">${escapeHtml(providerRowLabel(m))}</span>
+              ${testControlHTML({ rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth' })}
               <span class="status-slot">${statusCellHTML(m)}</span>
               <button type="button" class="pin-row-btn ${isPinnedRow ? 'pinned' : ''}" data-pin-model="${escapeAttr(m.modelId)}" data-pin-provider="${escapeAttr(m.providerKey)}" title="${isPinnedRow ? 'Unpin exact provider row' : 'Pin exact provider row'}">📌</button>
             </div>
             <div class="provider-subtext" title="${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ' &#8594; ' + escapeHtml(m.realModelId) : ''}">${escapeHtml(m.modelId)}${m.realModelId && m.realModelId !== m.modelId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(m.realModelId)}</span>` : ''}</div>
           </td>
-          <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
+          <td class="text-center"><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey, isRowUsable(m))}
           <td class="usage-cell"></td>
+          <td class="text-center">
+            <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
+          </td>
           <td class="history-cell"><div id="usage-cell-${rowKey}" class="usage-sparkline-cell"></div></td>
           ${quotaRowCell(m)}
           ${rateLimitCell(m)}
-          <td>
-            <div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : (m.context ? 'Known context window' : 'No context data yet — will fill in as the model is used')}">${m.context ? escapeHtml(m.context) : '<span style="font-size:0.75rem;color:var(--text-muted);">—</span>'}</div>
-          </td>
           <td>${responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status })}</td>
         `;
       bindPinButton(tr.querySelector('.pin-row-btn'), {
@@ -7852,7 +7880,7 @@
       });
       // The usage cell is filled here rather than by id, because the row is not in the
       // document yet: getElementById cannot see it until reconcileTable attaches it.
-      drawUsageSparklineInto(tr.cells[5]?.querySelector('.usage-sparkline-cell'), rowKey);
+      drawUsageSparklineInto(tr.cells[6]?.querySelector('.usage-sparkline-cell'), rowKey);
       return tr;
     }
 

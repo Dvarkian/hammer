@@ -367,15 +367,15 @@
             <tr>
               <th>Logo</th>
               <th>Model</th>
-              <th class="sort-active" id="th-intell" title="The intelligence band a model's Artificial Analysis Index falls in — AA's own rating, or an estimate from fetched benchmark evidence. Hover a tag for the index it was banded from, its source, and whether that index is an estimate. The table is always ordered by this column, strongest first. Bands: Genius 55+, Very Smart 45+, Smart 33.9+, Average 20+, Dumb 12+, Very Dumb below 12.">INT <i class="sort-arrow"
+              <th class="sort-active text-center" id="th-intell" title="The intelligence band a model's Artificial Analysis Index falls in — AA's own rating, or an estimate from fetched benchmark evidence. Hover a tag for the index it was banded from, its source, and whether that index is an estimate. The table is always ordered by this column, strongest first. Bands: Genius 55+, Very Smart 45+, Smart 33.9+, Average 20+, Dumb 12+, Very Dumb below 12.">INT <i class="sort-arrow"
                   id="arrow-intell">↓</i></th>
-              <th class="text-right" title="How fast this endpoint answers: the same speed tag the provider setup popup shows. Hover a tag for its measured time-to-first-token and tokens-per-second.">Speed</th>
-              <th id="th-usage" title="How much this model can still take, in one word: Unlimited, Ample, Limited, Scarce or Exhausted. It sums every provider under the heading from the same windows the Quota and Rate-limit columns draw; hover it for the window that decided it. Blank means nothing is published, which is not the same as ample.">Usage</th>
+              <th class="text-center" title="How fast this endpoint answers: the same speed tag the provider setup popup shows. Hover a tag for its measured time-to-first-token and tokens-per-second.">Speed</th>
+              <th id="th-usage" class="text-center" title="How much this model can still take, in one word: Unlimited, Ample, Limited, Scarce or Exhausted. It sums every provider under the heading from the same windows the Quota and Rate-limit columns draw; hover it for the window that decided it. Blank means nothing is published, which is not the same as ample.">Usage</th>
+              <th id="th-ctx" class="text-center"
+                title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
               <th id="th-history" title="Tokens over time for this model+provider row; each column's area is the tokens it accounts for, and idle gaps are collapsed">History</th>
               <th id="th-quota" title="Requests and token quota windows for this endpoint: usage against each published or observed limit, the total allowance per window, the remainder, and when the window resets. Every known minute/day/week/month window is shown.">Quota</th>
               <th id="th-rate-limit" title="Throttle windows for this endpoint: the requests and tokens the provider reports per minute or hour, drawn as a bar against that window. Every row shows a bar, or ∞ when no rate limit is published or has been observed.">Rate limit</th>
-              <th id="th-ctx"
-                title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>
               <th title="Click Test to ask the model for a short answer; the full response (or error) is shown here">Response</th>
             </tr>
           </thead>
