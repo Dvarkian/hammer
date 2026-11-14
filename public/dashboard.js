@@ -5199,7 +5199,7 @@
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
           <td><div style="font-weight: 600; display:flex; align-items:center; gap:6px;">${(() => {
-            const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa);
+            const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa, s.bestIntellMember.intelBand);
             // The rating describes the model rather than any one provider, so it stays
             // readable when nothing is available — but beside a "0/N providers" subtitle
             // it must not read as live capacity, so it is muted and labelled for what it
@@ -7482,7 +7482,7 @@
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(providerInstanceName(first))}</div>
           </td>
-          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa)}</div></td>
+          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa, s.bestIntellMember.intelBand)}</div></td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td></td>
@@ -7595,14 +7595,40 @@
     // Every row displays one number: the Artificial Analysis Intelligence Index.
     // Benchmarklist measurements are projected onto the AA index scale and marked as
     // estimates. A model benchmarklist does not cover shows a dash, never a guess.
-    function getBenchmarkDisplayValue(value, source, detail = '', aa = null) {
+    // The Intelligence column's tag: the band the printed rating falls in, in the same pill
+    // vocabulary as the Speed column's verdict. The band is the server's `intelBand`
+    // (intelligenceBandForAa in lib/utils.js), carried on the row, so the table cannot band a
+    // number differently from the API that ships it.
+    const INTEL_BAND_CLASSES = {
+      'genius': 'genius',
+      'very smart': 'very-smart',
+      'smart': 'smart',
+      'normal': 'normal',
+      'dumb': 'dumb',
+      'very dumb': 'very-dumb',
+    };
+
+    function intelTagClass(band) {
+      return INTEL_BAND_CLASSES[String(band || '').trim().toLowerCase()] || '';
+    }
+
+    // The rating already carries the number, so the tag names the band and its tooltip says
+    // where that band begins; the ladder itself is written on the column header.
+    function intelTagHTML(band, shown) {
+      const cls = intelTagClass(band);
+      if (!cls) return '';
+      const label = String(band).trim();
+      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(`${label} intelligence \u2014 AA index ${shown}`)}">${escapeHtml(label)}</span>`;
+    }
+
+    function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
       const sourceDisplay = getQualitySourceDisplay(source);
       const title = escapeHtml(`${sourceDisplay.label}${detail ? ` — ${detail}` : ''}`);
       const n = Number(aa);
       if (Number.isFinite(n) && n > 0) {
         const shown = Number.isInteger(n) ? String(n) : n.toFixed(1);
         const marker = source === 'artificial-analysis' || source === 'benchmarklist-aa-index' ? '' : '<span class="pill-estimate">*</span>';
-        return `<span title="${title}">${shown}${marker}</span>`;
+        return `<span title="${title}">${shown}${marker}</span>${intelTagHTML(band, shown)}`;
       }
       // Degraded/offline mode: no AA value at all, show the local score.
       const score = Number(value);
@@ -7610,8 +7636,8 @@
       return `<span title="${title}">${Math.round(score * 100)}<span class="pill-estimate">${sourceDisplay.short}</span></span>`;
     }
 
-    function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null) {
-      return getBenchmarkDisplayValue(value, source, detail, aa);
+    function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null, band = null) {
+      return getBenchmarkDisplayValue(value, source, detail, aa, band);
     }
 
     function renderLoggingSettings(logging) {

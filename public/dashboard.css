@@ -53,6 +53,24 @@
       --tier-c-bg: #fef2f2;
       --tier-c-text: #991b1b;
       --tier-c-border: #fee2e2;
+      /* The intelligence bands. Six hues in one ramp, strongest first, so the INT column's
+         tags read as a scale rather than six unrelated badges; 'Normal' leans on the neutral
+         tokens because it is the unremarkable middle of the field. */
+      --intel-genius-bg: #f5f3ff;
+      --intel-genius-text: #5b21b6;
+      --intel-genius-border: #ddd6fe;
+      --intel-very-smart-bg: #eff6ff;
+      --intel-very-smart-text: #1d4ed8;
+      --intel-very-smart-border: #bfdbfe;
+      --intel-smart-bg: #ecfdf5;
+      --intel-smart-text: #047857;
+      --intel-smart-border: #a7f3d0;
+      --intel-dumb-bg: #fffbeb;
+      --intel-dumb-text: #92400e;
+      --intel-dumb-border: #fef3c7;
+      --intel-very-dumb-bg: #fef2f2;
+      --intel-very-dumb-text: #991b1b;
+      --intel-very-dumb-border: #fee2e2;
       --title-glow: rgba(125, 34, 49, 0.14);
     }
 
@@ -112,6 +130,21 @@
       --tier-c-bg: #450a0a;
       --tier-c-text: #f87171;
       --tier-c-border: #991b1b;
+      --intel-genius-bg: #2e1065;
+      --intel-genius-text: #c4b5fd;
+      --intel-genius-border: #4c1d95;
+      --intel-very-smart-bg: #172554;
+      --intel-very-smart-text: #93c5fd;
+      --intel-very-smart-border: #1e40af;
+      --intel-smart-bg: #052e2b;
+      --intel-smart-text: #6ee7b7;
+      --intel-smart-border: #065f46;
+      --intel-dumb-bg: #451a03;
+      --intel-dumb-text: #fbbf24;
+      --intel-dumb-border: #92400e;
+      --intel-very-dumb-bg: #450a0a;
+      --intel-very-dumb-text: #f87171;
+      --intel-very-dumb-border: #991b1b;
     }
 
     [data-theme="dark"] input,
@@ -1712,6 +1745,17 @@
       filter: grayscale(1);
       opacity: 0.7;
     }
+    /* The Intelligence column's tag, beside the rating it describes: the same pill the Speed
+       column wears, one hue per band, strongest first. Unlike a speed verdict this is a
+       property of the model, so it keeps its colour on a row that cannot serve right now —
+       the heading mutes the whole cell instead (see groupRowInnerHTML). */
+    .intel-tag { display: inline-block; margin-left: 6px; }
+    .intel-tag.intel-genius { background: var(--intel-genius-bg); border-color: var(--intel-genius-border); color: var(--intel-genius-text); }
+    .intel-tag.intel-very-smart { background: var(--intel-very-smart-bg); border-color: var(--intel-very-smart-border); color: var(--intel-very-smart-text); }
+    .intel-tag.intel-smart { background: var(--intel-smart-bg); border-color: var(--intel-smart-border); color: var(--intel-smart-text); }
+    .intel-tag.intel-normal { background: var(--status-neutral-bg); border-color: var(--status-neutral-border); color: var(--status-neutral-text); }
+    .intel-tag.intel-dumb { background: var(--intel-dumb-bg); border-color: var(--intel-dumb-border); color: var(--intel-dumb-text); }
+    .intel-tag.intel-very-dumb { background: var(--intel-very-dumb-bg); border-color: var(--intel-very-dumb-border); color: var(--intel-very-dumb-text); }
 
     .onboard-actions {
       display: flex;

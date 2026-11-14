@@ -3206,3 +3206,37 @@ test('a stealth preview gets a badge, not its gateway’s logo', () => {
   assert.match(js, /model-logo-stealth/)
   assert.match(css, /\.model-logo-stealth \{/)
 })
+
+test('the INT column bands its rating the way the Speed column tags speed', () => {
+  const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+  const utils = readFileSync(new URL('../lib/utils.js', import.meta.url), 'utf8')
+  const models = readFileSync(new URL('../lib/http/routes/models.js', import.meta.url), 'utf8')
+  const table = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+
+  // The band is the server's answer, carried on the row beside the speed verdict, so the table
+  // cannot band a number differently from the API that ships it.
+  assert.match(utils, /export function intelligenceBandForAa\(aa\)/)
+  assert.match(models, /intelBand: intelligenceBandForAa\(r\.aa\),/)
+  // The model heading is the only cell that prints the model-level rating, so it carries the
+  // pill, built from the same member whose rating is drawn.
+  assert.match(js, /function intelTagHTML\(band, shown\)/)
+  assert.match(js, /class="onboard-pill intel-tag intel-\$\{cls\}"/)
+  assert.equal(
+    (
+      js.match(
+        /getBenchmarkTableDisplayValue\(s\.bestIntellMember\.intell, s\.bestIntellMember\.qualitySource, s\.bestIntellMember\.qualityDetail, s\.bestIntellMember\.aa, s\.bestIntellMember\.intelBand\)/g,
+      ) || []
+    ).length,
+    2,
+    'both the live heading and the graveyard heading band their rating',
+  )
+  // One hue per band, and the ladder is documented on the column header it sorts.
+  for (const band of ['genius', 'very-smart', 'smart', 'normal', 'dumb', 'very-dumb']) {
+    assert.match(css, new RegExp(`\\.intel-tag\\.intel-${band} \\{`))
+  }
+  assert.match(
+    table,
+    /Bands: Genius 55\+, Very Smart 45\+, Smart 32\+, Normal 20\+, Dumb 12\+, Very Dumb below 12/,
+  )
+})

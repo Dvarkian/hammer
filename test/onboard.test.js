@@ -8,7 +8,12 @@ import {
   sortOnboardResults,
   summarizeOnboardResults,
 } from '../lib/provider-onboard.js'
-import { getVerdict, VERDICT_ORDER } from '../lib/utils.js'
+import {
+  getVerdict,
+  INTELLIGENCE_BANDS,
+  intelligenceBandForAa,
+  VERDICT_ORDER,
+} from '../lib/utils.js'
 
 const server = readFileSync(new URL('../lib/server.js', import.meta.url), 'utf8')
 const dashboard = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
@@ -200,4 +205,34 @@ test('the dashboard popup drives, polls, and hands off to the plots', () => {
   // A key save or an OAuth connect is the trigger.
   assert.match(dashboard, /maybeOnboardProvider\(key\)/)
   assert.match(dashboard, /maybeOnboardProvider\('github-copilot'\)/)
+})
+
+test('the intelligence bands cut the AA index at 12, 20, 32, 45 and 55', () => {
+  // Fixed points on the index, like the speed bands' milliseconds: a model's band must not move
+  // because another model joined the catalogue. The anchors are the models the cut-offs were
+  // calibrated on — the two Nemotrons, GLM 5.3 Flash, DeepSeek V4.1 Flash and GPT 6 Luna.
+  assert.deepEqual(
+    INTELLIGENCE_BANDS.map((band) => band.from),
+    [55, 45, 32, 20, 12, 0],
+  )
+  assert.equal(intelligenceBandForAa(3.5), 'Very Dumb')
+  assert.equal(intelligenceBandForAa(10.3), 'Very Dumb', 'Nemotron 3 Nano')
+  assert.equal(intelligenceBandForAa(11.9), 'Very Dumb')
+  assert.equal(intelligenceBandForAa(12), 'Dumb', 'Nemotron 3 Super')
+  assert.equal(intelligenceBandForAa(19.9), 'Dumb')
+  assert.equal(intelligenceBandForAa(20), 'Normal')
+  assert.equal(intelligenceBandForAa(27.8), 'Normal', 'GLM 5.3 Flash')
+  assert.equal(intelligenceBandForAa(31.9), 'Normal')
+  assert.equal(intelligenceBandForAa(32), 'Smart')
+  assert.equal(intelligenceBandForAa(34.6), 'Smart', 'GPT 6 Luna')
+  assert.equal(intelligenceBandForAa(39.5), 'Smart', 'DeepSeek V4.1 Flash')
+  assert.equal(intelligenceBandForAa(44.9), 'Smart')
+  assert.equal(intelligenceBandForAa(45), 'Very Smart')
+  assert.equal(intelligenceBandForAa(54.9), 'Very Smart')
+  assert.equal(intelligenceBandForAa(55), 'Genius')
+  assert.equal(intelligenceBandForAa(59.4), 'Genius', 'Gemini 4 Carbon')
+  // No rating, no band: an unmeasured model keeps its dash rather than a tier nobody measured.
+  for (const empty of [null, undefined, '', 0, -3, 'wide open', NaN]) {
+    assert.equal(intelligenceBandForAa(empty), null)
+  }
 })
