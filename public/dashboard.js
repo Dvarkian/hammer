@@ -1899,7 +1899,7 @@
       for (const tbody of [document.getElementById('table-body'), document.getElementById('graveyard-body')]) {
         if (!tbody) continue;
         for (const row of tbody.querySelectorAll('tr.model-group-row')) {
-          const cell = row.querySelector('td.usage-sparkline-cell');
+          const cell = row.querySelector('.usage-sparkline-cell');
           if (!cell) continue;
           const groupKey = (row.dataset.rowKey || '').slice(2); // strip the 'g:' prefix
           const group = lastMainGroups.find(g => g.key === groupKey)
@@ -5180,6 +5180,9 @@
     const CAPACITY_RATE_SCARCE = 12;
     const CAPACITY_RATE_LIMITED = 60;
     const CAPACITY_REFILL_GRACE_MS = 5 * 60 * 1000;
+    // A reading old enough to have been overtaken by the provider's own refill clock cannot be
+    // the reason a model is declared out. The bars keep showing it, dated; the word does not.
+    const CAPACITY_READING_MAX_AGE_MS = 60 * 60 * 1000;
     const CAPACITY_QUICK_PERIODS = new Set(['minute', 'hour', 'rolling']);
     const CAPACITY_ORDER = ['Exhausted', 'Scarce', 'Limited', 'Ample'];
 
@@ -5189,16 +5192,21 @@
     function capacityRatePerHour(w) {
       const periodMs = CAPACITY_PERIOD_MS[w.period];
       if (!periodMs) return null;
-      const total = Number(w.total);
-      const remaining = Number(w.remaining);
+      const total = capacityNumber(w.total);
+      const remaining = capacityNumber(w.remaining);
       const perWindow =
-        Number.isFinite(total) && total > 0
-          ? total
-          : Number.isFinite(remaining) && remaining > 0
-            ? remaining
-            : null;
+        total != null && total > 0 ? total : remaining != null && remaining > 0 ? remaining : null;
       if (perWindow == null) return null;
       return perWindow * (60 * 60 * 1000 / periodMs);
+    }
+
+    // A window can publish a shape without the numbers: a limit with no observed remaining, or a
+    // percentage that has not been read yet. Number(null) is 0, which turned 'not measured' into
+    // 'nothing left' and drew Exhausted over models that answer fine. Absent stays absent here.
+    function capacityNumber(value) {
+      if (value === null || value === undefined || value === '') return null;
+      const n = Number(value);
+      return Number.isFinite(n) ? n : null;
     }
 
     function capacitySeverity(band) {
@@ -5209,11 +5217,11 @@
     // How far through its window a reading is, whatever unit it was stated in — used only to
     // break ties, so the tooltip names the window that will actually stop a run first.
     function capacityTightness(w) {
-      const usedPercent = Number(w?.usedPercent);
-      if (Number.isFinite(usedPercent)) return usedPercent;
-      const total = Number(w?.total);
-      const remaining = Number(w?.remaining);
-      if (Number.isFinite(total) && total > 0 && Number.isFinite(remaining)) {
+      const usedPercent = capacityNumber(w?.usedPercent);
+      if (usedPercent != null) return usedPercent;
+      const total = capacityNumber(w?.total);
+      const remaining = capacityNumber(w?.remaining);
+      if (total != null && total > 0 && remaining != null) {
         return 100 - (remaining / total) * 100;
       }
       return 0;
@@ -5224,16 +5232,29 @@
     // converting them into calls would be an assumption wearing a measurement's clothes.
     function capacityBandForWindow(w, now) {
       if (!w) return null;
-      const total = Number(w.total);
-      const remaining = Number(w.remaining);
-      const usedPercent = Number(w.usedPercent);
-      const hasTotal = Number.isFinite(total) && total > 0;
-      const hasRemaining = Number.isFinite(remaining) && remaining >= 0;
-      const hasPercent = Number.isFinite(usedPercent);
-      // A zero allowance is spent, not unknown (the bars make the same distinction).
-      if (w.unavailable === true && !hasTotal) return 'Exhausted';
-      if (hasRemaining && remaining <= 0) return 'Exhausted';
-      if (hasPercent && usedPercent >= 100) return 'Exhausted';
+      // A window whose reset has already passed describes a span that ended: whatever it last
+      // reported, the allowance has refilled since. The bars keep drawing it until the next
+      // refresh; the tag must not condemn a model on a reading that is already history — that
+      // is how a healthy heading came to read 'Exhausted · 0 req left'.
+      const resetAt = capacityNumber(w.resetAt);
+      if (resetAt != null && resetAt > 0 && resetAt <= now) return null;
+      const total = capacityNumber(w.total);
+      const remaining = capacityNumber(w.remaining);
+      const usedPercent = capacityNumber(w.usedPercent);
+      const hasTotal = total != null && total > 0;
+      const hasRemaining = remaining != null && remaining >= 0;
+      const hasPercent = usedPercent != null;
+      // A zero allowance is spent, not unknown (the bars make the same distinction) — but only
+      // while the reading is still current. An observation from yesterday that says 0% is
+      // history, and providers refill on their own clock, not on the reset we recorded.
+      const observedAt = capacityNumber(w.observedAt);
+      const readingIsFresh =
+        observedAt == null || now - observedAt <= CAPACITY_READING_MAX_AGE_MS;
+      const spent =
+        (w.unavailable === true && !hasTotal) ||
+        (hasRemaining && remaining <= 0) ||
+        (hasPercent && usedPercent >= 100);
+      if (spent) return readingIsFresh ? 'Exhausted' : null;
       let band;
       if (w.metric === 'requests' && hasRemaining) {
         const perHour = capacityRatePerHour(w);
@@ -5266,19 +5287,32 @@
               ? 'Limited'
               : 'Ample';
       }
-      const resetAt = Number(w.resetAt);
       const refillsSoon =
-        Number.isFinite(resetAt) && resetAt > now && resetAt - now <= CAPACITY_REFILL_GRACE_MS;
+        resetAt != null && resetAt > now && resetAt - now <= CAPACITY_REFILL_GRACE_MS;
       if (band === 'Scarce' && refillsSoon && CAPACITY_QUICK_PERIODS.has(w.period)) return 'Limited';
       return band;
+    }
+
+    // Whether one provider is provably out: it publishes windows, and every one of them is
+    // spent. A provider that publishes nothing is unknown, not spent.
+    function capacityMemberSpent(m, now) {
+      const views = quotaRowViews(m).filter((v) => v.kind === 'quota' || v.kind === 'rate-limit');
+      if (views.length === 0) return false;
+      return views.every((v) => capacityBandForWindow(v, now) === 'Exhausted');
     }
 
     // What one heading wears, or null when nothing is known: no published window and no stated
     // cap is a blank cell, never 'Ample'. Silence is not a promise of capacity.
     //
+    // 'Exhausted' is a claim about the heading, not about one window: a spent weekly allowance
+    // on a sibling provider is not a wall while another can still answer. So the word is only
+    // drawn when every provider that could route is provably out; a spent family beside a
+    // provider with no published window reads 'Scarce', which says "do not lean on this"
+    // without claiming the model cannot answer.
+    //
     // A rate-limit bench is deliberately not forced to 'Exhausted' here: it is a per-provider
-    // state, and the merged windows already carry its effect (a benched provider reports no
-    // remaining requests), so one benched alias must not condemn a heading another can serve.
+    // state, and the merged windows already carry its effect, so one benched alias must not
+    // condemn a heading another can serve.
     function capacityBandForGroup(g, now = Date.now()) {
       const members = g?.members || [];
       if (members.length === 0) return null;
@@ -5303,11 +5337,24 @@
           ? entry
           : tightest;
       });
+      // Every row under the heading counts here, not only the ones that can route this instant:
+      // a provider listed as paid or benched still holds an allowance, and claiming 'Exhausted'
+      // over a group of seven providers because one account's window is spent is the error this
+      // guard exists to prevent.
+      const anyHeadroom = (g.members || capacityMembers).some(
+        (m) => !capacityMemberSpent(m, now),
+      );
+      // The heading's own verdict is the last word: a model the table just marked as answering
+      // is not out of capacity, whatever a bar beside it says.
+      const serving = bestGroupVerdict(members) === 'up';
+      const clamped = binding.band === 'Exhausted' && (serving || anyHeadroom);
       return {
-        band: binding.band,
+        band: clamped ? 'Scarce' : binding.band,
         binding: binding.window,
         windows: windows.length,
+        providers: capacityMembers.length,
         shared: Number(binding.window.rows) > 1,
+        clamped,
         unlimited,
       };
     }
@@ -5327,34 +5374,47 @@
         return `${info.band} capacity — ${parts.join(' · ')}`;
       }
       const unit = capacityUnit(w);
-      const total = Number(w.total);
-      const remaining = Number(w.remaining);
-      const usedPercent = Number(w.usedPercent);
+      const total = capacityNumber(w.total);
+      const remaining = capacityNumber(w.remaining);
+      const usedPercent = capacityNumber(w.usedPercent);
       const periodWord = w.period && w.period !== 'window' ? ` per ${w.period}` : '';
-      if (w.metric === 'requests' && Number.isFinite(remaining)) {
+      if (w.metric === 'requests' && remaining != null) {
         const ofTotal = Number.isFinite(total) && total > 0 ? `/${fmtCompactTokens(total)}` : '';
         parts.push(`${fmtCompactTokens(remaining)}${ofTotal} req left${periodWord}`);
         const perHour = capacityRatePerHour(w);
         if (perHour != null) parts.push(`≈${fmtCompactTokens(perHour)}/hour`);
-      } else if (Number.isFinite(remaining) && Number.isFinite(total) && total > 0) {
+      } else if (remaining != null && total != null && total > 0) {
         parts.push(
           `${fmtCompactTokens(remaining)} of ${fmtCompactTokens(total)} ${unit} left${periodWord}`,
         );
-      } else if (Number.isFinite(usedPercent)) {
+      } else if (usedPercent != null) {
         parts.push(`${Math.round(100 - Math.min(100, usedPercent))}% left${periodWord}`);
       }
-      const resetIn = Number.isFinite(Number(w.resetAt))
+      const resetIn = capacityNumber(w.resetAt) != null
         ? formatQuotaReset(Number(w.resetAt) - now)
         : '';
       if (resetIn) parts.push(`resets in ${resetIn}`);
+      if (info.clamped) parts.push('this window is spent; another provider still has allowance');
       if (info.shared) parts.push(`shared by ${w.rows} rows`);
       if (w.estimated === true || w.mixed === true) parts.push('estimated');
-      if (info.windows > 1) parts.push(`tightest of ${info.windows} windows`);
+      // The windows a heading compares are not three readings off one provider: each is the
+      // gross of every provider publishing that family, so 'tightest of three windows' alone
+      // would describe them as alternatives on one account. Naming the provider span keeps the
+      // ranking honest — this model's worst allowance across all of them.
+      if (info.windows > 1) {
+        parts.push(
+          info.providers > 1
+            ? `tightest of ${info.windows} windows across ${info.providers} providers`
+            : `tightest of ${info.windows} windows`,
+        );
+      } else if (info.providers > 1) {
+        parts.push(`its only window, summed across ${info.providers} providers`);
+      }
       return `${info.band} capacity — ${parts.join(' · ')}`;
     }
 
-    // Beside the model name rather than inside either limit column: the word summarises both
-    // families of window, and those columns keep their bars.
+    // In the Usage column, above the token sparkline: the word summarises both families of
+    // window, and the Quota and Rate-limit columns keep their bars.
     function capacityTagHTML(g) {
       const info = capacityBandForGroup(g);
       if (!info) return '';
@@ -5402,7 +5462,6 @@
               <span class="status-slot">${groupStatusHtml}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
-              ${capacityTagHTML(g)}
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
@@ -5433,7 +5492,9 @@
                one row that stays on screen when a group is collapsed, so it is where the
                sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
                since the id does not resolve until then. -->
-          <td id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></td>
+          <!-- Usage: the capacity word, then the token sparkline it summarises. The plot is
+               drawn into its own child so a repaint cannot wipe the tag. -->
+          <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g)}</div><div id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></div></td>
           ${quotaGroupCell(g)}
           ${rateLimitGroupCell(g)}
           <td>
@@ -5686,10 +5747,10 @@
 
       // Usage sparkline (col 4); never clobber an in-flight test.
       const usageCell = row.cells[4];
-      if (usageCell) {
-        usageCell.className = 'usage-sparkline-cell';
-        usageCell.id = `usage-cell-${getModelRowKey(m)}`;
-        drawUsageSparklineInto(usageCell, getModelRowKey(m));
+      const usageSpark = usageCell && usageCell.querySelector('.usage-sparkline-cell');
+      if (usageSpark) {
+        usageSpark.id = `usage-cell-${getModelRowKey(m)}`;
+        drawUsageSparklineInto(usageSpark, getModelRowKey(m));
       }
       // Quota (col 5) is rebuilt on every refresh: a published window counts down on the
       // clock, and observed rate-limit windows arrive with new traffic.
@@ -7740,7 +7801,7 @@
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey, isRowUsable(m))}
-          <td id="usage-cell-${rowKey}" class="usage-sparkline-cell"></td>
+          <td class="usage-cell"><div id="usage-cell-${rowKey}" class="usage-sparkline-cell"></div></td>
           ${quotaRowCell(m)}
           ${rateLimitCell(m)}
           <td>
@@ -7755,7 +7816,7 @@
       });
       // The usage cell is filled here rather than by id, because the row is not in the
       // document yet: getElementById cannot see it until reconcileTable attaches it.
-      drawUsageSparklineInto(tr.cells[4], rowKey);
+      drawUsageSparklineInto(tr.cells[4]?.querySelector('.usage-sparkline-cell'), rowKey);
       return tr;
     }
 

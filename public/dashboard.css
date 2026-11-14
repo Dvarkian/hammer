@@ -1754,6 +1754,11 @@
        judgement while the columns keep the numbers. It shares the three-rung ladder: ample is
        blue, metered is the purple of 'neither', and scarce or spent is the maroon of 'worse'. */
     .capacity-tag { display: inline-block; margin-left: 2px; }
+    /* The tag leads the Usage column and the sparkline sits under it: the column answers the
+       question in words first, then shows the traffic that produced them. */
+    .usage-cell { vertical-align: top; }
+    .usage-tag-slot { margin-bottom: 3px; line-height: 1; }
+    .usage-tag-slot .capacity-tag { margin-left: 0; }
     .capacity-tag.cap-unlimited,
     .capacity-tag.cap-ample { background: var(--status-success-bg); border-color: var(--status-success-border); color: var(--status-success-text); }
     .capacity-tag.cap-limited { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }

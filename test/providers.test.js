@@ -3233,6 +3233,29 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(js, /CAPACITY_QUICK_PERIODS\.has\(w\.period\)/)
   // Silence is unknown, and 'Unlimited' only ever comes from a stated cap.
   assert.match(js, /return unlimited\s*\? \{ band: 'Unlimited'/)
+  // The tag lives in the Usage column above the sparkline, not in the model name.
+  assert.match(
+    js,
+    /<td class="usage-cell"><div class="usage-tag-slot">\$\{capacityTagHTML\(g\)\}<\/div>/,
+  )
+  // Windows a heading compares are grossed per family, so the ranking names the provider span
+  // rather than implying three readings off one account.
+  assert.match(js, /tightest of \$\{info\.windows\} windows across \$\{info\.providers\} providers/)
+  assert.match(js, /providers: capacityMembers\.length/)
+  // 'Exhausted' is a claim about the heading: a spent sibling window is not a wall while a
+  // provider with no published window can still answer, and a window whose reset has passed
+  // is a finished span, not evidence of one.
+  assert.match(js, /function capacityMemberSpent\(m, now\)/)
+  // Number(null) is 0: a window that publishes a shape but no numbers must not read '0 left'.
+  assert.match(js, /function capacityNumber\(value\)/)
+  assert.match(js, /\(g\.members \|\| capacityMembers\)\.some\(/)
+  // An exhausted reading is only evidence while it is current, and the table's own verdict on
+  // the model outranks a bar beside it.
+  assert.match(js, /const CAPACITY_READING_MAX_AGE_MS = 60 \* 60 \* 1000/)
+  assert.match(js, /if \(spent\) return readingIsFresh \? 'Exhausted' : null/)
+  assert.match(js, /bestGroupVerdict\(members\) === 'up'/)
+  assert.match(js, /band: clamped \? 'Scarce' : binding\.band/)
+  assert.match(js, /resetAt > 0 && resetAt <= now\) return null/)
   // Additive: the heading draws the pill and still draws both bars.
   assert.match(js, /\$\{capacityTagHTML\(g\)\}/)
   assert.match(js, /\$\{quotaGroupCell\(g\)\}/)
