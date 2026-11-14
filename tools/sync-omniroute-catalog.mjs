@@ -213,6 +213,11 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   'monsterapi',
   // Closed to new use rather than dead: key registration is closed, so nothing can configure it.
   'uncloseai',
+  // `nous-research` (2026-11-14): removed on request. The row's access is a Nous Portal API key
+  // rather than a keyless free tier, and the roster's own terms flag for it was `ambiguous`.
+  // The exclusion is what makes the removal stick: the next sync would otherwise put the row
+  // back, along with its resolution, key page and quota table.
+  'nous-research',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }

@@ -379,20 +379,6 @@
       "activation": "staged",
       "reason": "Muse Spark is a cookie-authenticated GraphQL endpoint, not a chat-completions API, so it needs a wire adapter"
     },
-    "nous-research": {
-      "activation": "active",
-      "chatUrl": "https://inference-api.nousresearch.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 2,
-        "declaredModels": ["Hermes-4-405B", "Hermes-4-70B"]
-      }
-    },
     "nvidia": {
       "activation": "active",
       "chatUrl": "https://integrate.api.nvidia.com/v1/chat/completions",

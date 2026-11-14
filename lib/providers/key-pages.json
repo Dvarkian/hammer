@@ -90,12 +90,6 @@
       "httpStatus": 200,
       "note": "Timed out from this environment."
     },
-    "nous-research": {
-      "url": "https://portal.nousresearch.com/",
-      "evidence": "Nous Research portal; API keys",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "reka": {
       "url": "https://platform.reka.ai/",
       "evidence": "Reka platform; API keys in the dashboard",

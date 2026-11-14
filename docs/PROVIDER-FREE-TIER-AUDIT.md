@@ -158,12 +158,11 @@ this document.
 | `huggingchat`       | Free, but HF OAuth + session cookie + a create-conversation round trip before any message                                                                                              | [IN] live probe 2026-09-22; [ARef]                      |
 | `inferx`            | Per-token gateway at `model.inferx.net/endpoints/v1`; its list publishes no pricing, so rows are classified by live probes and errors rather than a curated Paid set. Added 2026-11-10 | live key probe 2026-11-10                               |
 
-## U. Unresolved — nothing verifiable published (2)
+## U. Unresolved — nothing verifiable published (1)
 
-| Provider        | State of the evidence                                                                                                                                                                                                                                            |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nous-research` | [ARef] 2026-08-21 carries **no free-tier note**; the roster's upstream research recorded "$0.10/month recurring credits" (2026-06-17). Not confirmed either way — treat as unresolved until someone reads the Nous Portal billing page from a signed-in account. |
-| `reka`          | [ARef] carries **no free-tier note**; no published free allowance found; ToS restricts sublicensing. Recorded as unresolved rather than "no free tier".                                                                                                          |
+| Provider | State of the evidence                                                                                                                                   |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `reka`   | [ARef] carries **no free-tier note**; no published free allowance found; ToS restricts sublicensing. Recorded as unresolved rather than "no free tier". |
 
 ## E. The corrections this second pass made to the first
 

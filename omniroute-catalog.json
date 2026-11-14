@@ -153,12 +153,6 @@
       "note": "Meta terms prohibit automated access without prior permission."
     },
     {
-      "key": "nous-research",
-      "access": "keyless",
-      "tos": "ambiguous",
-      "modelCount": 2
-    },
-    {
       "key": "nvidia",
       "access": "keyless",
       "tos": "caution",
