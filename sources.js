@@ -264,6 +264,216 @@ export const MODEL_CONTEXT_OVERRIDES = {
   'nemotron-3-ultra-free': '1M',
   'north-mini-code-free': '256k',
   'tencent/hy3': '262k',
+
+  // ── Hosts that publish a lower window than the model's maker ───────────────────────────
+  // The map below states what each model's *maker* publishes. A host is free to serve less,
+  // and several do: these are the ids where the host's own docs state a smaller number, so
+  // the vendor figure would overstate what that route accepts.
+  'fireworks/nemotron-3-ultra-nvfp4': '262k',
+  'deepinfra/NVIDIA-Nemotron-3-Ultra-550B-A55B': '262k',
+  'deepinfra/Qwen/Qwen3.8-27B': '262k',
+  // Azure/Foundry caps Grok where xAI serves 256k and 1M, and caps Opus 4.8 where Anthropic
+  // serves 1M.
+  'azure/grok-4': '128k',
+  'azure/grok-4.3': '200k',
+  'azure/claude-opus-4-8': '200k',
+  'azure/claude-opus-4.8': '200k',
+  // Together launched Llama 4 Scout below the 10M its maker documents.
+  'together/meta/llama-4-scout-17b-16e-instruct': '327k',
+}
+
+/**
+ * The context window each model's maker publishes, keyed by bare model id.
+ *
+ * A provider's `/v1/models` usually states this itself, and a reported number always wins
+ * (see resolveModelContext). This table is for the catalogues that omit it — requesty's whole
+ * listing, NIM's older ids, every id an aggregator resells without metadata — so the Context
+ * column can state the published window instead of leaving a dash where a real number exists.
+ *
+ * Sourced from the makers' own model pages in November 2026: developers.openai.com, ai.google.dev,
+ * platform.claude.com, api-docs.deepseek.com, platform.moonshot.ai, docs.z.ai, help.aliyun.com,
+ * platform.minimaxi.com, mimo.mi.com, docs.mistral.ai, build.nvidia.com, docs.x.ai, llama.com.
+ * Where a maker states a range ("up to 1M") the top of it is used, and where a maker's page
+ * contradicts itself the specification table wins over the marketing line.
+ *
+ * These are the model's window, not a promise about any one route: MODEL_CONTEXT_OVERRIDES
+ * carries the ids where a host documents something smaller, and is consulted first.
+ */
+export const MODEL_CONTEXT_BY_NAME = {
+  // OpenAI
+  'gpt-5': '400k',
+  'gpt-5-mini': '400k',
+  'gpt-5-nano': '400k',
+  'gpt-5.1': '400k',
+  'gpt-5.4': '1.05M',
+  'gpt-5.4-mini': '400k',
+  'gpt-5.4-nano': '400k',
+  'gpt-5.5': '1.05M',
+  'gpt-5.5-pro': '1.05M',
+  'gpt-5.6-luna': '1.05M',
+  'gpt-5.6-sol': '1.05M',
+  'gpt-5.6-terra': '1.05M',
+  'gpt-6-luna': '1.05M',
+  'gpt-6-astra': '1.05M',
+  'gpt-6.1-terra': '1.05M',
+  'gpt-6.1-sol': '1.05M',
+  'gpt-4.1': '1M',
+  'gpt-4.1-nano': '1M',
+  'gpt-6-sol': '1.05M',
+  // The chat-latest snapshots predate the 400k/1M windows and stayed at 128k.
+  'gpt-5-chat-latest': '128k',
+  'gpt-5.1-chat-latest': '128k',
+  'gpt-5.2-chat-latest': '128k',
+  'gpt-3.5-turbo': '16k',
+  'gpt-4': '8k',
+  o1: '200k',
+  'o4-mini': '200k',
+  'gpt-oss-20b': '131k',
+  'gpt-oss-120b': '131k',
+
+  // Google
+  'gemini-2.5-flash': '1M',
+  'gemini-2.5-flash-lite': '1M',
+  'gemini-2.5-pro': '1M',
+  'gemini-3-flash-preview': '1M',
+  'gemini-3.1-flash-lite': '1M',
+  'gemini-3.1-pro-preview': '1M',
+  'gemini-3.5-flash': '1M',
+  'gemini-3.5-flash-lite': '1M',
+  'gemini-3.6-flash': '1M',
+  'gemini-3.7-flash': '1M',
+  'gemini-3.8-flash': '1M',
+  'gemini-4-hydrogen': '1M',
+  'gemini-4-argon': '1M',
+  'gemini-4-carbon': '1M',
+  'gemma-4-31b-it': '256k',
+  'gemma-4-26b-a4b-it': '262k',
+  // The `latest` aliases hot-swap, and every 3.x target they have pointed at is 1M.
+  'gemini-pro-latest': '1M',
+  'gemini-flash-latest': '1M',
+  'gemini-flash-lite-latest': '1M',
+
+  // Anthropic — 1M is the default now, no beta header; Batch API is a separate 300k product
+  'claude-opus-5': '1M',
+  'claude-opus-5-5': '1M',
+  'claude-opus-4-6': '1M',
+  'claude-opus-4-7': '1M',
+  'claude-opus-4-8': '1M',
+  'claude-sonnet-5': '1M',
+  'claude-sonnet-5-5': '1M',
+  'claude-sonnet-4-6': '1M',
+  'claude-fable-5': '1M',
+  'claude-fable-5-1': '1M',
+  'claude-fable-5.1': '1M',
+  'claude-fable-5-2': '1M',
+  'claude-fable-5.2': '1M',
+  // Haiku 5.5 is on the 1M window; the earlier 4.5 generation (and Opus/Sonnet 4.5) are not.
+  'claude-haiku-5-5': '1M',
+  'claude-haiku-4-5': '200k',
+  'claude-opus-4-5': '200k',
+  'claude-sonnet-4-5': '200k',
+
+  // DeepSeek — the -0424/-0731/-0813/-1017 strings are versions, all on the 1M window
+  'deepseek-flash': '1M',
+  'deepseek-v4-flash': '1M',
+  'deepseek-v4-flash-0424': '1M',
+  'deepseek-v4-flash-0731': '1M',
+  'deepseek-v4-pro': '1M',
+  'deepseek-v4-pro-0424': '1M',
+  'deepseek-v4-pro-0813': '1M',
+  'deepseek-v4.1-flash': '1M',
+  'deepseek-v4.1-flash-1017': '1M',
+
+  // Moonshot Kimi — K3 series 1M, K2 series 256k
+  'kimi-k3': '1M',
+  'kimi-k3.1-pro': '1M',
+  'kimi-k3.1-pro-highspeed': '1M',
+  'kimi-k2.6': '262k',
+  'kimi-k2.7-code': '262k',
+
+  // Z.ai GLM
+  'glm-5.1': '200k',
+  'glm-5.2': '1M',
+  'glm-5.3': '1M',
+  'glm-5.3-flash': '1M',
+  // Flash and FlashX share one card.
+  'glm-5.3-flashx': '1M',
+
+  // Alibaba Qwen
+  'qwen3.8-max': '1M',
+  'qwen3.8-27b': '1M',
+  'qwen3.7-max': '1M',
+  'qwen3.7-flash': '1M',
+  'qwen3.6-flash': '1M',
+  'qwen3.8-flash': '1M',
+  'qwen3.8-2.4t-a95b': '1M',
+  'qwen3.6-27b': '262k',
+  'qwen3.5-27b': '262k',
+  'qwen3-coder-next': '262k',
+  'qwen3-vl-235b-a22b-instruct': '131k',
+
+  // MiniMax and Xiaomi MiMo
+  'minimax-m3': '1M',
+  'minimax-m3.1-flash': '1M',
+  'minimax-m2.7': '205k',
+  'mimo-v2.6-pro': '1M',
+  'mimo-v2.6-flash': '1M',
+  'mimo-v2.6-pro-ultraspeed': '1M',
+  'mimo-v2.5-pro': '1M',
+
+  // Mistral
+  'mistral-large-4': '1M',
+  'mistral-large-4-1t-a52b': '1M',
+  'mistral-large': '1M',
+  // Mistral states "256k" on every one of these cards; the -latest aliases resolve to them.
+  'mistral-medium-3-5': '256k',
+  'mistral-medium-3.5': '256k',
+  'mistral-medium': '256k',
+  'mistral-medium-latest': '256k',
+  'mistral-small-2603': '256k',
+  'mistral-small-latest': '256k',
+  'ministral-3b-2512': '256k',
+  'ministral-8b-2512': '256k',
+  'ministral-14b-2512': '256k',
+  'ministral-3b-latest': '256k',
+  'ministral-8b-latest': '256k',
+  'ministral-14b-latest': '256k',
+  'codestral-latest': '131k',
+  'codestral-2508': '131k',
+  'devstral-2-123b': '262k',
+  'voxtral-small-2507': '32k',
+
+  // NVIDIA Nemotron — the specification table, where a page claims "up to 1M" and specs 262k
+  'nemotron-3-ultra-550b-a55b': '1M',
+  'nemotron-3-nano-omni-30b-a3b-reasoning': '262k',
+  'nemotron-3.5-lightning-30b-a3b': '1M',
+  'nemotron-3.5-super-vl': '262k',
+  'nemotron-3.5-super-vl-120b-a12b': '262k',
+  'nemotron-3-nano-30b-a3b': '262k',
+  'nemotron-nano-3-30b-a3b': '262k',
+
+  // xAI and Meta
+  'grok-4': '256k',
+  'grok-4-0709': '256k',
+  'grok-4.3': '1M',
+  'grok-4.5': '500k',
+  'grok-4.6': '500k',
+  'grok-4.7': '500k',
+  'grok-code-fast-1': '256k',
+  'llama-4-scout': '10M',
+  'llama-4-scout-17b-16e-instruct': '10M',
+  'llama-4-maverick': '1M',
+  'llama-4-maverick-17b-128e-instruct': '1M',
+  'llama-3.3-70b': '131k',
+  'llama-3.3-70b-instruct': '131k',
+
+  // ByteDance, StepFun and Tencent
+  'seed-2.0-mini': '256k',
+  'doubao-seed-2-0-mini-260428': '256k',
+  'step-5-preview': '1M',
+  hy3: '256k',
+  hy4: '1M',
+  'hy4-preview': '1M',
 }
 
 /**
@@ -505,9 +715,46 @@ export function getPreferredModelLabel(modelId, fallback = null) {
   return cleanedFallback || fallback
 }
 
+// Every spelling of a model id that MODEL_CONTEXT_BY_NAME is keyed by: the id as published,
+// the id after the runtime/provider prefixes come off (`vertex/`, `models/`, `srv_…:`), and
+// without a region suffix (`gemini-4-hydrogen@eu` is the same model in another region).
+function contextLookupNames(modelId) {
+  const names = []
+  const add = (name) => {
+    if (name && !names.includes(name)) names.push(name)
+  }
+  const push = (value) => {
+    const name = String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/@[a-z0-9_-]+$/i, '')
+      .replace(/^srv_[a-z0-9]+:/i, '')
+      .replace(/^models\//i, '')
+    add(name)
+    // A serving tier (`gpt-6.1-terra:flex`) and a dated snapshot (`-2026-03-17`, `-20260317`,
+    // `-0613`) are the same model on the same window as the id they hang off: the maker
+    // publishes one figure for it, and a snapshot never widens it.
+    add(name.replace(/:(flex|priority)$/i, ''))
+    add(name.replace(/-\d{4}-\d{2}-\d{2}$/, ''))
+    add(name.replace(/-\d{8}$/, '').replace(/-\d{4}$/, ''))
+  }
+  push(modelId)
+  push(resolveAliasedModelId(modelId))
+  const { base, unprefixed } = canonicalizeModelId(modelId)
+  push(base)
+  push(unprefixed)
+  return names
+}
+
 export function getPreferredModelContext(modelId, fallback = null) {
   const resolved = resolveAliasedModelId(modelId)
-  return MODEL_CONTEXT_OVERRIDES[modelId] || MODEL_CONTEXT_OVERRIDES[resolved] || fallback
+  // An exact id first: a host's documented cap beats the maker's window for the same model.
+  const override = MODEL_CONTEXT_OVERRIDES[modelId] || MODEL_CONTEXT_OVERRIDES[resolved]
+  if (override) return override
+  for (const name of contextLookupNames(modelId)) {
+    if (MODEL_CONTEXT_BY_NAME[name]) return MODEL_CONTEXT_BY_NAME[name]
+  }
+  return fallback
 }
 
 export const sources = {

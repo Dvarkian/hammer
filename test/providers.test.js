@@ -114,7 +114,13 @@ import {
   resolveRequestModels,
 } from '../lib/providers/discovery.js'
 import { API_KEY_SIGNUP_URLS } from '../lib/providerLinks.js'
-import { sources, canonicalizeModelId, MODELS } from '../sources.js'
+import {
+  sources,
+  canonicalizeModelId,
+  getPreferredModelContext,
+  MODEL_CONTEXT_BY_NAME,
+  MODELS,
+} from '../sources.js'
 import { getApiKey } from '../lib/config.js'
 import {
   isAccountBudgetRefusalText,
@@ -1472,6 +1478,37 @@ test('InferX rows are left to response classification instead of a paid allowlis
     toOpenAICompatibleDiscoveredModelMeta({ id: 'deepseek-v4.1-flash-1017-basic' }, 'inferx').ctx,
     '262k',
   )
+})
+
+test('the context table states published windows, and a host cap beats the maker count', () => {
+  // Maker-published windows fill the catalogues that omit one entirely, however the id is
+  // spelled: a gateway namespaces it, Vertex adds a region, g4f prefixes its own server.
+  assert.equal(getPreferredModelContext('openai/gpt-6.1-terra'), '1.05M')
+  assert.equal(getPreferredModelContext('vertex/gemini-4-hydrogen@eu'), '1M')
+  assert.equal(getPreferredModelContext('models/gemini-4-hydrogen'), '1M')
+  assert.equal(getPreferredModelContext('srv_mrgy0nmbc8a86c407f17:models/gemini-3.7-flash'), '1M')
+  assert.equal(getPreferredModelContext('anthropic/claude-opus-5-5'), '1M')
+  // A serving tier and a dated snapshot are the same model on the same window.
+  assert.equal(getPreferredModelContext('gemini-3.6-flash:flex'), '1M')
+  assert.equal(getPreferredModelContext('gpt-5.4-mini-2026-03-17'), '400k')
+  assert.equal(getPreferredModelContext('claude-sonnet-4-5-20250929'), '200k')
+
+  // A host that documents a smaller window keeps its own number: the maker's 1M would
+  // overstate what Azure serves for Grok, or what Fireworks serves for Nemotron Ultra.
+  assert.equal(getPreferredModelContext('azure/grok-4'), '128k')
+  assert.equal(getPreferredModelContext('azure/grok-4.3'), '200k')
+  assert.equal(getPreferredModelContext('fireworks/nemotron-3-ultra-nvfp4'), '262k')
+  assert.equal(getPreferredModelContext('deepinfra/Qwen/Qwen3.8-27B'), '262k')
+  // …while the same model on its maker's own route is still the maker's window.
+  assert.equal(getPreferredModelContext('nvidia/nemotron-3-ultra-550b-a55b'), '1M')
+
+  // A model nobody documents stays blank rather than borrowing a neighbour's number.
+  assert.equal(getPreferredModelContext('mixtral-8x22b-instruct-v0.1'), null)
+  // Every entry is a figure the column can print, never a guess dressed as one.
+  for (const [name, value] of Object.entries(MODEL_CONTEXT_BY_NAME)) {
+    assert.match(value, /^\d+(\.\d+)?[kM]$/, `${name} has a printable window`)
+    assert.equal(name, name.toLowerCase(), `${name} is keyed in lower case`)
+  }
 })
 
 test('OrcaRouter serves only its -free ids at zero, and everything else is metered', () => {
