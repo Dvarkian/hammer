@@ -3166,7 +3166,7 @@ test('the table badges the fastest and smartest rows that could serve right now'
   assert.match(js, /getModelRowKey\(s\.speedMember\) === fastestRowKey/)
   assert.match(js, /getModelRowKey\(m\) === fastestRowKey/)
   assert.match(js, /if \(g\.key === smartestGroupKey\) \{/)
-  assert.match(js, /return ratingHtml/)
+  assert.match(js, /return rating;/)
   // Nothing is lost by dropping the tag: the badge's tooltip carries the band and the index.
   assert.match(js, /intelBandTitleSuffix\(s\.bestIntellMember\)/)
   assert.match(css, /\.speed-tag\.fastest,[\s\S]*?\.speed-tag\.smartest/)
@@ -3222,10 +3222,16 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
   assert.match(models, /intelBand: intelligenceBandForAa\(r\.aa\),/)
   // The model heading is the only cell that prints the model-level rating, so it carries the
   // pill, built from the same member whose rating is drawn.
-  assert.match(js, /function intelTagHTML\(band, title\)/)
+  assert.match(js, /function intelTagHTML\(band, title, inactive = false\)/)
   // The estimate marker lives in the tooltip only; the pill prints the band and nothing else.
   assert.doesNotMatch(js, /\$\{estimated \? '<span class="pill-estimate">/)
-  assert.match(js, /class="onboard-pill intel-tag intel-\$\{cls\}"/)
+  assert.match(
+    js,
+    /class="onboard-pill intel-tag intel-\$\{cls\}\$\{inactive \? ' inactive' : ''\}"/,
+  )
+  // A row that cannot serve draws its band greyscale, the same rule the Speed column applies.
+  assert.match(css, /\.intel-tag\.inactive \{[^}]*grayscale\(1\)/)
+  assert.match(js, /intelTagHTML\(band, `\$\{title\}\$\{note\}`, inactive\)/)
   // The cell prints the band, not the index: the number is in the tag's tooltip, like the Speed
   // column's ttft and tok/s. The asterisk that marks an estimate stays on the pill.
   assert.doesNotMatch(js, /<span title="\$\{title\}">\$\{shown\}\$\{marker\}<\/span>/)
@@ -3234,11 +3240,7 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
     /const parts = \[`\$\{String\(band\)\.trim\(\)\} intelligence`, `AA index \$\{shown\}`\]/,
   )
   assert.equal(
-    (
-      js.match(
-        /getBenchmarkTableDisplayValue\(s\.bestIntellMember\.intell, s\.bestIntellMember\.qualitySource, s\.bestIntellMember\.qualityDetail, s\.bestIntellMember\.aa, s\.bestIntellMember\.intelBand\)/g,
-      ) || []
-    ).length,
+    (js.match(/s\.bestIntellMember\.intelBand/g) || []).length,
     2,
     'both the live heading and the graveyard heading band their rating',
   )

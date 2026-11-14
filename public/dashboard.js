@@ -5199,14 +5199,18 @@
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
           <td><div style="font-weight: 600; display:flex; align-items:center; gap:6px;">${(() => {
-            const rating = getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa, s.bestIntellMember.intelBand);
-            // The rating describes the model rather than any one provider, so it stays
-            // readable when nothing is available — but beside a "0/N providers" subtitle
-            // it must not read as live capacity, so it is muted and labelled for what it
-            // is. Every measured cell next to it is blank by then (see getGroupSummary).
-            const ratingHtml = s.usable.length === 0
-              ? `<span style="opacity:0.55;" title="No provider available — this is the model's rating, not a live measurement">${rating}</span>`
-              : rating;
+            // The rating describes the model rather than any one provider, so it stays here
+            // when nothing is available — but beside a "0/N providers" subtitle it must not
+            // read as live capacity, so the tag is drawn greyscale and its tooltip says why.
+            // Every measured cell next to it is blank by then (see getGroupSummary).
+            const rating = getBenchmarkTableDisplayValue(
+              s.bestIntellMember.intell,
+              s.bestIntellMember.qualitySource,
+              s.bestIntellMember.qualityDetail,
+              s.bestIntellMember.aa,
+              s.bestIntellMember.intelBand,
+              s.usable.length === 0,
+            );
             // The superlative takes the rating's place rather than stacking beside it: one pill
             // per model. It crowns the smartest model that could take a request right now, out
             // of the same usable set the router chooses from, and carries the band and index it
@@ -5214,7 +5218,7 @@
             if (g.key === smartestGroupKey) {
               return `<span class="onboard-pill speed-tag smartest" title="${escapeAttr(`Smartest of the models that can serve right now${intelBandTitleSuffix(s.bestIntellMember)}`)}">Smartest</span>`;
             }
-            return ratingHtml;
+            return rating;
           })()}</div></td>
           ${speedTagCell(s.speedMember?.verdict, s.minTtft, s.maxTps, s.speedMember ? rowTtftLabel(s.speedMember) : 'ttft', s.speedMember != null && getModelRowKey(s.speedMember) === fastestRowKey, s.usable.length > 0)}
           <!-- Combined usage of every provider under this heading. The heading row is the
@@ -7487,7 +7491,8 @@
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(providerInstanceName(first))}</div>
           </td>
-          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa, s.bestIntellMember.intelBand)}</div></td>
+          <!-- Every graveyard row is struck, so its band is greyscale like any unusable row. -->
+          <td><div style="font-weight: 600;">${getBenchmarkTableDisplayValue(s.bestIntellMember.intell, s.bestIntellMember.qualitySource, s.bestIntellMember.qualityDetail, s.bestIntellMember.aa, s.bestIntellMember.intelBand, true)}</div></td>
           ${formatTtftCell(s.minTtft, 'ttft')}
           ${formatTpsCell(s.maxTps, 'tok/s')}
           <td></td>
@@ -7619,11 +7624,13 @@
 
     // The tag names the band and nothing else; the index it was banded from, and whether that
     // index is an estimate, ride in the tooltip the way the Speed column keeps its ttft and
-    // tok/s out of the cell.
-    function intelTagHTML(band, title) {
+    // tok/s out of the cell. 'inactive' marks a row that cannot serve right now: the band is
+    // history rather than a claim about what you can use, so the hue comes off (see the
+    // .intel-tag.inactive rule).
+    function intelTagHTML(band, title, inactive = false) {
       const cls = intelTagClass(band);
       if (!cls) return '';
-      return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(title)}">${escapeHtml(String(band).trim())}</span>`;
+      return `<span class="onboard-pill intel-tag intel-${cls}${inactive ? ' inactive' : ''}" title="${escapeAttr(title)}">${escapeHtml(String(band).trim())}</span>`;
     }
 
     // The hover text a rating wears: the band, the index it was banded from, whether that index
@@ -7668,16 +7675,17 @@
     // The column prints the band, not the number: the index is in the tag's tooltip, beside the
     // source it came from. A rating with no band keeps the muted dash it had before the bands
     // existed — an unmeasured model is not a dumb one, and a bare number is what this replaced.
-    function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
+    function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null, inactive = false) {
       const { title, sourceTitle } = intelRatingTitle(band, aa, source, detail);
-      if (title) return intelTagHTML(band, title);
+      const note = inactive ? ' · no provider can serve right now' : '';
+      if (title) return intelTagHTML(band, `${title}${note}`, inactive);
       const score = Number(value);
       const local = Number.isFinite(score) && score > 0 ? ` — local score ${Math.round(score * 100)}` : '';
-      return `<span style="font-size:0.75rem;color:var(--text-muted);" title="${escapeAttr(`${sourceTitle}${local}`)}">—</span>`;
+      return `<span style="font-size:0.75rem;color:var(--text-muted);" title="${escapeAttr(`${sourceTitle}${local}${note}`)}">—</span>`;
     }
 
-    function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null, band = null) {
-      return getBenchmarkDisplayValue(value, source, detail, aa, band);
+    function getBenchmarkTableDisplayValue(value, source, detail = '', aa = null, band = null, inactive = false) {
+      return getBenchmarkDisplayValue(value, source, detail, aa, band, inactive);
     }
 
     function renderLoggingSettings(logging) {
