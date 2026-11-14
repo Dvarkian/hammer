@@ -3159,14 +3159,16 @@ test('the table badges the fastest and smartest rows that could serve right now'
   assert.match(js, /function rowRoutingIntelligence\(m\)/)
   assert.match(js, /Number\(m\?\.routingSpeed\)/)
   assert.match(js, /Number\(m\?\.routingIntell\)/)
-  // The Fastest tag replaces the speed band on the one row that wins it, in the heading and
-  // the provider row and both repaint paths; Smartest sits beside the INT rating on the
-  // model's heading, the only cell that carries the model-level number.
+  // Both superlatives replace the band tag on the one row that wins them rather than sitting
+  // beside it — one pill per cell — so Smartest returns before the INT rating is rendered.
   assert.match(js, /speed-tag fastest/)
   assert.match(js, /speed-tag smartest/)
   assert.match(js, /getModelRowKey\(s\.speedMember\) === fastestRowKey/)
   assert.match(js, /getModelRowKey\(m\) === fastestRowKey/)
-  assert.match(js, /g\.key === smartestGroupKey/)
+  assert.match(js, /if \(g\.key === smartestGroupKey\) \{/)
+  assert.match(js, /return ratingHtml/)
+  // Nothing is lost by dropping the tag: the badge's tooltip carries the band and the index.
+  assert.match(js, /intelBandTitleSuffix\(s\.bestIntellMember\)/)
   assert.match(css, /\.speed-tag\.fastest,[\s\S]*?\.speed-tag\.smartest/)
 })
 

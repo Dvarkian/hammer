@@ -5207,12 +5207,14 @@
             const ratingHtml = s.usable.length === 0
               ? `<span style="opacity:0.55;" title="No provider available — this is the model's rating, not a live measurement">${rating}</span>`
               : rating;
-            // The superlative sits beside the rating it crowns: the smartest model that could
-            // take a request right now, out of the same usable set the router chooses from.
-            const smartest = g.key === smartestGroupKey
-              ? `<span class="onboard-pill speed-tag smartest" title="Smartest of the models that can serve right now">Smartest</span>`
-              : '';
-            return `${ratingHtml}${smartest}`;
+            // The superlative takes the rating's place rather than stacking beside it: one pill
+            // per model. It crowns the smartest model that could take a request right now, out
+            // of the same usable set the router chooses from, and carries the band and index it
+            // displaced in its own tooltip so nothing is lost by dropping the tag.
+            if (g.key === smartestGroupKey) {
+              return `<span class="onboard-pill speed-tag smartest" title="${escapeAttr(`Smartest of the models that can serve right now${intelBandTitleSuffix(s.bestIntellMember)}`)}">Smartest</span>`;
+            }
+            return ratingHtml;
           })()}</div></td>
           ${speedTagCell(s.speedMember?.verdict, s.minTtft, s.maxTps, s.speedMember ? rowTtftLabel(s.speedMember) : 'ttft', s.speedMember != null && getModelRowKey(s.speedMember) === fastestRowKey, s.usable.length > 0)}
           <!-- Combined usage of every provider under this heading. The heading row is the
@@ -7622,13 +7624,13 @@
       return `<span class="onboard-pill intel-tag intel-${cls}" title="${escapeAttr(title)}">${escapeHtml(label)}${estimated ? '<span class="pill-estimate">*</span>' : ''}</span>`;
     }
 
-    // The column prints the band, not the number: the index is in the tag's tooltip, beside the
-    // source it came from. A rating with no band keeps the muted dash it had before the bands
-    // existed — an unmeasured model is not a dumb one, and a bare number is what this replaced.
-    function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
+    // The hover text a rating wears: the band, the index it was banded from, whether that index
+    // is an estimate, and the evidence behind it. Shared with the Smartest badge, which stands
+    // where the band tag would have been and must still answer "how smart is it?".
+    function intelRatingTitle(band, aa, source, detail = '') {
       const sourceDisplay = getQualitySourceDisplay(source);
-      // The evidence line usually opens with the source's own name, and the tag's tooltip is now
-      // the only place it is read: name it once rather than twice in a row.
+      // The evidence line usually opens with the source's own name, and the tooltip is now the
+      // only place it is read: name it once rather than twice in a row.
       const detailText = String(detail || '').trim();
       const sourceTitle = !detailText
         ? sourceDisplay.label
@@ -7641,12 +7643,32 @@
       const estimated = !(
         source === 'artificial-analysis' || source === 'benchmarklist-aa-index'
       );
-      if (shown && intelTagClass(band)) {
-        const parts = [`${String(band).trim()} intelligence`, `AA index ${shown}`];
-        if (estimated) parts.push('estimate');
-        parts.push(sourceTitle);
-        return intelTagHTML(band, parts.join(' · '), estimated);
-      }
+      const cls = intelTagClass(band);
+      if (!shown || !cls) return { title: null, shown, estimated, cls, sourceTitle };
+      const parts = [`${String(band).trim()} intelligence`, `AA index ${shown}`];
+      if (estimated) parts.push('estimate');
+      parts.push(sourceTitle);
+      return { title: parts.join(' · '), shown, estimated, cls, sourceTitle };
+    }
+
+    // ' · Very Smart intelligence · AA index 51 · …' for a badge that has displaced the band
+    // tag, or '' for a model with no band to carry.
+    function intelBandTitleSuffix(member) {
+      const { title } = intelRatingTitle(
+        member?.intelBand,
+        member?.aa,
+        member?.qualitySource,
+        member?.qualityDetail,
+      );
+      return title ? ` · ${title}` : '';
+    }
+
+    // The column prints the band, not the number: the index is in the tag's tooltip, beside the
+    // source it came from. A rating with no band keeps the muted dash it had before the bands
+    // existed — an unmeasured model is not a dumb one, and a bare number is what this replaced.
+    function getBenchmarkDisplayValue(value, source, detail = '', aa = null, band = null) {
+      const { title, estimated, sourceTitle } = intelRatingTitle(band, aa, source, detail);
+      if (title) return intelTagHTML(band, title, estimated);
       const score = Number(value);
       const local = Number.isFinite(score) && score > 0 ? ` — local score ${Math.round(score * 100)}` : '';
       return `<span style="font-size:0.75rem;color:var(--text-muted);" title="${escapeAttr(`${sourceTitle}${local}`)}">—</span>`;
