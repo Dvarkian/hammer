@@ -109,6 +109,47 @@ test('codex device-code reports the flow expiry the client should count down', a
   })
 })
 
+test('codex device-code counts down the expiry OpenAI stated, not a guess', async () => {
+  // The code now lives fifteen minutes on OpenAI's clock; the page counts down what the
+  // provider said, so an expired code is never advertised as live.
+  await withApp(
+    registerCodexOAuthRoutes,
+    makeDeps({
+      startDeviceAuth: async () => ({
+        deviceAuthId: 'device-auth-id',
+        userCode: 'H8EJ-KSMGO',
+        verificationUri: 'https://auth.openai.com/codex/device',
+        expiresAtMs: Date.now() + 600_000,
+        interval: 5,
+      }),
+    }),
+    async (base) => {
+      const body = await (await fetch(`${base}/api/oauth/openai-codex/device-code`)).json()
+      assert.ok(body.expiresIn > 590 && body.expiresIn <= 600, `expiresIn was ${body.expiresIn}`)
+      assert.equal(body.userCode, 'H8EJ-KSMGO')
+    },
+  )
+})
+
+test('codex poll reports slow_down as a longer wait, still pending', async () => {
+  await withApp(
+    registerCodexOAuthRoutes,
+    makeDeps({ pollDeviceToken: async () => ({ pending: true, slowDown: true }) }),
+    async (base) => {
+      const started = await (await fetch(`${base}/api/oauth/openai-codex/device-code`)).json()
+      const res = await fetch(`${base}/api/oauth/openai-codex/poll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ flowId: started.flowId }),
+      })
+      const body = await res.json()
+      assert.equal(res.status, 200)
+      assert.equal(body.pending, true)
+      assert.ok(body.interval >= 10, 'the next poll waits longer than the plain interval')
+    },
+  )
+})
+
 test('codex poll refuses a flow id it never issued', async () => {
   await withApp(registerCodexOAuthRoutes, makeDeps(), async (base) => {
     const res = await fetch(`${base}/api/oauth/openai-codex/poll`, {
@@ -325,4 +366,45 @@ test('devin exchange passes flow id, code and state straight to the engine', asy
     },
   )
   assert.deepEqual(calls, [{ flowId: 'f1', code: 'auth-code', state: 'st', hasOnToken: true }])
+})
+
+test('codex poll reads a 400 pending answer as "wait", and repeats OpenAI in an error', async () => {
+  // Not every account answers an unapproved authorization with 403; some send 400 carrying
+  // deviceauth_authorization_pending. Reading that as a failure ended the sign-in while the user
+  // was still typing the code on the verification page.
+  const { pollOpenAICodexDeviceToken } = await import('../lib/server.js')
+  const realFetch = globalThis.fetch
+  const answers = [
+    new Response(
+      JSON.stringify({
+        error: {
+          code: 'deviceauth_authorization_pending',
+          message: 'Device authorization is pending. Please try again.',
+        },
+      }),
+      { status: 400 },
+    ),
+    new Response(
+      JSON.stringify({
+        error: {
+          code: 'deviceauth_user_code_mismatch',
+          message: 'Failed to process device authorization.',
+        },
+      }),
+      { status: 400 },
+    ),
+  ]
+  let call = 0
+  globalThis.fetch = async () => answers[call++]
+  try {
+    assert.deepEqual(await pollOpenAICodexDeviceToken('device-auth-id', 'H8EJ-KSMGO'), {
+      pending: true,
+    })
+    const failed = await pollOpenAICodexDeviceToken('device-auth-id', 'H8EJ-KSMGO')
+    assert.equal(failed.pending, false)
+    assert.match(failed.error, /Failed to process device authorization\./)
+    assert.match(failed.error, /deviceauth_user_code_mismatch/)
+  } finally {
+    globalThis.fetch = realFetch
+  }
 })

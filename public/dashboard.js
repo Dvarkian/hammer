@@ -9381,7 +9381,7 @@
             const codexDeviceAuthHtml = codexDeviceAuthState ? `
               <div style="margin-top:14px; padding:12px 14px; background:var(--input-bg-alt); border:1px solid var(--border); border-radius:10px;">
                 <div style="font-size:0.82rem; font-weight:700; color:var(--text); margin-bottom:6px;">ChatGPT sign-in in progress</div>
-                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Open the verification page on any device and enter the code. Hammer finishes the connection automatically.</div>
+                <div style="font-size:0.76rem; color:var(--text-muted); margin-bottom:10px;">Open the verification page on any device and enter the code exactly as shown — it is nine characters and the dash is part of it. It expires in ${escapeHtml(String(Math.max(1, Math.round((Number(codexDeviceAuthState.expiresIn) || 900) / 60))))} minutes; Hammer finishes the connection automatically.</div>
                 <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
                   <input type="text" id="codex-device-verify-url" readonly value="${escapeHtml(codexDeviceAuthState.verificationUri || '')}" style="flex:1; background:var(--input-bg); color:var(--text); font-size:0.76rem;">
                   <button onclick="copyCodexVerificationUrl()" style="border:1px solid var(--border); background:var(--input-bg); color:var(--text); cursor:pointer; padding:8px 12px; border-radius:6px; font-size:0.78rem; font-weight:600; white-space:nowrap;">Copy Link</button>
@@ -10646,12 +10646,14 @@
           throw new Error(data.error || 'Failed to start ChatGPT device authorization.');
         }
 
+        const expiresIn = Math.max(60, Number(data.expiresIn || 900));
         codexDeviceAuthState = {
           flowId: data.flowId,
           userCode: data.userCode,
           verificationUri: data.verificationUri,
           interval: Math.max(3, Number(data.interval || 5)),
-          expiresAt: Date.now() + (Math.max(60, Number(data.expiresIn || 900)) * 1000),
+          expiresIn,
+          expiresAt: Date.now() + (expiresIn * 1000),
         };
         await loadSettings();
 
@@ -10711,7 +10713,9 @@
         }
 
         if (data.pending) {
-          const nextInterval = Math.max(3, Number(codexDeviceAuthState.interval || 5));
+          // The provider can ask for a longer gap (slow_down); the server forwards its answer.
+          const nextInterval = Math.max(3, Number(data.interval || codexDeviceAuthState.interval || 5));
+          codexDeviceAuthState.interval = nextInterval;
           clearCodexDevicePollTimer();
           codexDevicePollTimer = setTimeout(() => {
             pollCodexDeviceAuth().catch(err => {
