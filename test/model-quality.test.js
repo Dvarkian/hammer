@@ -863,7 +863,9 @@ test('SWE-2 Flash is scored on its own published benchmarks, not the flagship', 
     }, 0) / direct.contributions.reduce((sum, contribution) => sum + contribution.weight, 0)
   assert.ok(direct.aa < rawBlend, 'the vendor estimate is reported conservatively')
 
-  // The table is keyed to Flash's identity, so the flagship's effort tiers stay unaffected.
+  // The table is keyed to Flash's identity, so the flagship's own rows stay untouched. The
+  // medium tier is a *different size* from the Flash this table rates, and a different size is
+  // never borrowed — not as its own score and not as a family estimate either.
   assert.equal(resolveBenchmarkListQuality(quality.benchmarklist, 'swe-2-medium'), null)
 })
 
@@ -1260,9 +1262,57 @@ test('a re-spelled row borrows the catalog row that is its model', async () => {
   assert.notEqual(dotted.source, 'unscored')
   assert.ok(dotted.aa > 0 && dotted.aa <= 100)
 
-  // A different variant is a different model and must never answer for this one: `plus` and
-  // `lite` are tiers with their own benchmarks (SWE-2 Flash against SWE-2 is the same rule).
-  assert.equal(resolveModelQuality(quality, 'Qwen:qwen3-coder-plus').source, 'unscored')
+  // A different variant is a different model: `plus` gets a labelled family estimate from the
+  // base row and never that row's number passed off as its own.
+  const plus = resolveModelQuality(quality, 'Qwen:qwen3-coder-plus')
+  assert.notEqual(plus.source, 'unscored')
+  assert.match(plus.detail, /family estimate, a different model/)
+  // A different *size* does not even get that: `lite` is a smaller model with its own rows, so
+  // the full weights must not be scored from its numbers.
   assert.equal(resolveModelQuality(quality, 'deepseek-coder-v2').source, 'unscored')
   assert.equal(resolveModelQuality(quality, 'deepseek-coder-v2:latest').source, 'unscored')
+})
+
+test('a row with no rated sibling in its line borrows the nearest one, and says so', async () => {
+  // The free hosts serve the smaller and newer members of a line whose full size is rated.
+  // `glm-4.6v-flash` is not `glm-4.6v` and `ling-3.2-flash` is not `ling-3.0-flash`, so neither
+  // may take those rows' numbers as its own — but a labelled estimate from the closest row in
+  // the same line beats the dash it used to show, as long as the row says where it came from.
+  const catalog = Array.from({ length: 10 }, (_, i) =>
+    catalogModel(`openai/gpt-${i}`, { intelligence: 10 + i * 8 }),
+  )
+  const rows = [
+    benchmarklistRow('glm-4.6v', 'GLM 4.6V', 22),
+    benchmarklistRow('ling-3.0-flash', 'Ling 3.0 Flash', 21),
+    benchmarklistRow('ling-3.0-tiny', 'Ling 3.0 Tiny', 6),
+    benchmarklistRow('deepseek-coder-v2-lite-instruct', 'DeepSeek Coder V2 Lite', 14),
+    benchmarklistRow('v3-0324', 'DeepSeek V3', 33),
+    ...catalog.map((_, i) => benchmarklistRow(`openai-gpt-${i}`, `GPT ${i}`, 10 + i * 8)),
+  ]
+  const fetchImpl = async () => ({
+    ok: true,
+    json: async () => ({ snapshots: [benchmarklistSnapshot(rows)] }),
+  })
+  const quality = {
+    benchmarklistOnly: true,
+    benchmarklist: await buildBenchmarkListQualityIndex(catalog, { fetchImpl }),
+  }
+
+  // A Flash of a rated line: same line, different size word, and the detail names the row.
+  const flash = resolveModelQuality(quality, 'srv_mp1v9cyha31b95fa8c9a:z-ai/glm-4.6v-flash')
+  assert.notEqual(flash.source, 'unscored')
+  assert.equal(flash.isEstimated, true)
+  assert.match(flash.detail, /matched catalog spelling: glm-4\.6v/)
+  assert.match(flash.detail, /family estimate, a different model/)
+
+  // A newer point release of a rated line: the same size word, the donor one version back.
+  const ling = resolveModelQuality(quality, 'inclusionai/ling-3.2-flash:free')
+  assert.notEqual(ling.source, 'unscored')
+  assert.match(ling.detail, /ling-3\.0-flash/)
+  assert.doesNotMatch(ling.detail, /ling-3\.0-tiny/, 'the same size wins over a shorter key')
+
+  // A different size is a different model at every distance, and a video model has no line of
+  // language models to borrow from at all.
+  assert.equal(resolveModelQuality(quality, 'deepseek-coder-v2').source, 'unscored')
+  assert.equal(resolveModelQuality(quality, 'kling/kling-v3').source, 'unscored')
 })
