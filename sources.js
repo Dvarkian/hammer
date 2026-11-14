@@ -441,6 +441,8 @@ export const MODEL_CONTEXT_BY_NAME = {
   'codestral-latest': '131k',
   'codestral-2508': '131k',
   'devstral-2-123b': '262k',
+  'devstral-2-123b-instruct': '262k',
+  'devstral-2-123b-instruct-2512': '262k',
   'voxtral-small-2507': '32k',
 
   // NVIDIA Nemotron — the specification table, where a page claims "up to 1M" and specs 262k
@@ -737,6 +739,10 @@ function contextLookupNames(modelId) {
     add(name.replace(/:(flex|priority)$/i, ''))
     add(name.replace(/-\d{4}-\d{2}-\d{2}$/, ''))
     add(name.replace(/-\d{8}$/, '').replace(/-\d{4}$/, ''))
+    // A hosted checkpoint's quantisation tag (`-FP8`, `-int4-AutoRound`) is the same weights on
+    // the same window.
+    add(name.replace(/-(fp8|fp4|bf16)$/i, ''))
+    add(name.replace(/-int[48](?:-[a-z]+)?$/i, ''))
   }
   push(modelId)
   push(resolveAliasedModelId(modelId))
