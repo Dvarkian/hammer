@@ -249,6 +249,12 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // capped), and the chat API does not require real-name verification. Nothing was wrong with
   // the row; it is excluded because it was asked for, not because the free tier fails.
   'glm-cn',
+  // `qoder` (2026-11-14): removed on request, because it offers no recurring free API usage.
+  // The row's own access class agrees: it is `signup-credit` — a one-time 1M-token grant and a
+  // 14-day Pro trial worth 300 credits — and Qoder publishes no recurring API allowance. The
+  // daily-limited "Free plan" the audit table describes belongs to the IDE product, not to the
+  // chat-completions endpoint this roster would route.
+  'qoder',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }

@@ -94,7 +94,10 @@ the two dead services (`predibase`, `monsterapi`) appears anywhere any more.
 
 `blackbox` was audited into this bucket but left Hammer on 2026-11-08: every path on `api.blackbox.ai` answers HTTP 404, so there is no free tier left to measure. `coze` left on the same day for the opposite reason: its daily credits are real, but they never cover API calls (Coze's billing FAQ: API/SDK calls "do not consume credits, only tokens") and the API's only free allowance is a one-time 30 calls per account, so nothing recurring is reachable through an API row. Both still count in _Total audited_ (71), which is why the buckets now sum to 69. `baidu` and
 `glm-cn` left Hammer on 2026-11-14 at the operator's request; their rows below stay as audited,
-because the access they describe is real — the roster simply no longer carries them.
+because the access they describe is real — the roster simply no longer carries them. `qoder`
+followed the same day for a different reason: its only API grant is one-time (a 14-day Pro trial
+with 300 credits), so the daily-limited Free plan in its row is the IDE's allowance, not a
+recurring API one.
 
 | Provider      | What recurs                                                                                                                                                                                                                                                                                           | Source                                                                                                               |
 | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |

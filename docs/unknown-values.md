@@ -105,7 +105,6 @@ Tool-level rows on the same page are not model allowances and are deliberately n
 - [x] **cohere** — tokens 800000/month, requests 20/minute, requests 1000/month
 - [x] **morph** — tokens 400000/month, requests 200/month, credits 250000/month
 - [x] **siliconflow** — requests 1000/minute, tokens 50000/minute
-- [x] **qoder** — tokens 1000000/lifetime, credits 300/lifetime
 - [x] **friendliai** — requests 5000/minute, tokens 50000/minute
 - [x] **sparkdesk** — requests 120/minute
 - [x] **huggingchat** — tokens 500000/month
@@ -164,7 +163,7 @@ No row is missing an intelligence value. These rows carry an estimated score rat
 
 ## Research log
 
-Encoded with source URLs in `lib/providers/catalog.js`: BluesMinds, Cloudflare Workers AI, Cohere, FriendliAI, Mistral, Codestral, Morph, Qoder, SiliconFlow, Kiro, MoonMath, G4F.
+Encoded with source URLs in `lib/providers/catalog.js`: BluesMinds, Cloudflare Workers AI, Cohere, FriendliAI, Mistral, Codestral, Morph, SiliconFlow, Kiro, MoonMath, G4F.
 
 Confirmed unpublished after checking the vendor's own pages on 2026-11-11: InferX, Puter, Devin. Google AI Studio's per-model free-tier table was read the same day and encoded in `MODEL_QUOTAS.googleai`: 23 positive limits, 13 explicit zeros, and 12 model ids absent from the table. Google Antigravity publishes a weekly quota with no counts. GPTFree is a true ∞.
 

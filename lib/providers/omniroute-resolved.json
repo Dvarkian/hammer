@@ -257,36 +257,6 @@
       "activation": "staged",
       "reason": "executor \"kiro\" frames its own request and response with no declarative equivalent"
     },
-    "qoder": {
-      "activation": "active",
-      "chatUrl": "https://api.qoder.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "token-mint",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "shaping": {
-        "headers": {
-          "User-Agent": "Qoder-Cli"
-        }
-      },
-      "provenance": {
-        "executor": "qoder",
-        "modelCount": 9,
-        "declaredModels": [
-          "qwen3.8-max-preview",
-          "qwen3.7-max",
-          "qwen3.7-plus",
-          "kimi-k3",
-          "kimi-k2.7-code",
-          "glm-5.2",
-          "deepseek-v4-pro",
-          "deepseek-v4-flash",
-          "minimax-m3"
-        ]
-      }
-    },
     "agy": {
       "activation": "staged",
       "reason": "Antigravity needs an OAuth device flow and a bespoke request frame (upstream's executor is ~2,000 lines), so it needs a wire adapter"

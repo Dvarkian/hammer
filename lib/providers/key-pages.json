@@ -55,13 +55,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "qoder": {
-      "url": "https://qoder.com/",
-      "evidence": "Qoder homepage; the account behind signup issues the API key",
-      "verifiedAt": null,
-      "httpStatus": null,
-      "note": "Timed out from this environment."
-    },
     "huggingchat": {
       "url": "https://huggingface.co/chat/",
       "evidence": "HuggingChat; a Hugging Face token is what authenticates it",

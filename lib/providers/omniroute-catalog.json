@@ -96,13 +96,6 @@
       "note": "Kiro FAQ explicitly prohibits use with third-party harnesses, which is what a self-hosted proxy is."
     },
     {
-      "key": "qoder",
-      "access": "signup-credit",
-      "signupCreditTokens": 1000000,
-      "tos": "caution",
-      "modelCount": 14
-    },
-    {
       "key": "agy",
       "access": "keyless",
       "tos": "avoid",

@@ -866,13 +866,13 @@ test('the 23 hammer-owned signup URLs survive the import, which is additive', ()
 
 test('every curated key page is HTTPS and records the evidence behind it', () => {
   const pages = loadKeyPages()
-  // 11 after `baidu` and `glm-cn` were removed (2026-11-14), 13 after `iflytek`, 14 after
+  // 10 after `qoder` was removed (2026-11-14), 11 after `baidu` and `glm-cn`, 13 after `iflytek`, 14 after
   // `sambanova`, 15 after `reka`, 16 after `nous-research`, 17 after `siliconflow` and
   // `sparkdesk`, 19 after `morph` and `friendliai` (2026-11-13), 21 after `huggingface`
   // (2026-11-10), behind `coze`, `bytez`, the duplicate `ollama-cloud` row (2026-11-08) and
   // `nlpcloud` (2026-11-09) (it was 26). The floor moves only when a provider leaves the roster;
   // it still has to cover the imported fleet that remains.
-  assert.ok(Object.keys(pages).length >= 11, 'the table should cover the imported fleet')
+  assert.ok(Object.keys(pages).length >= 10, 'the table should cover the imported fleet')
   for (const [key, entry] of Object.entries(pages)) {
     assert.match(entry.url, /^https:\/\//, `${key} must link over HTTPS`)
     assert.ok(
@@ -1078,10 +1078,10 @@ test('the vendored catalog parses and carries provenance', () => {
   const { source, providers } = loadOmniRouteCatalog()
   assert.equal(source.project, 'OmniRoute')
   assert.equal(source.license, 'MIT')
-  // 18 after `baidu` and `glm-cn` were excluded from the sync (2026-11-14), 20 after `iflytek`,
-  // 21 after `sambanova`, 22 after `reka`, 23 after `nous-research`, 24 after `siliconflow` and
-  // `sparkdesk`, 26 after `morph` and `friendliai` (2026-11-13).
-  assert.ok(providers.length >= 18, `expected a substantial roster, got ${providers.length}`)
+  // 17 after `qoder` was excluded from the sync (2026-11-14), 18 after `baidu` and `glm-cn`, 20
+  // after `iflytek`, 21 after `sambanova`, 22 after `reka`, 23 after `nous-research`, 24 after
+  // `siliconflow` and `sparkdesk`, 26 after `morph` and `friendliai` (2026-11-13).
+  assert.ok(providers.length >= 17, `expected a substantial roster, got ${providers.length}`)
 })
 
 test('every explicitly removed provider stays absent from every Hammer provider surface', () => {
@@ -1129,10 +1129,10 @@ test('every imported provider is active, staged or refused — never undefined',
 
 test('the import actually resolves providers to real endpoints', () => {
   const active = activationOf('active')
-  // 8 after `baidu` and `glm-cn` were excluded from the sync (2026-11-14), 10 after `iflytek`,
-  // 11 after `sambanova`, 12 after `reka`, 13 after `nous-research`, 14 after `siliconflow` and
-  // `sparkdesk`, 16 after `morph` and `friendliai` (2026-11-13).
-  assert.ok(active.length >= 8, `expected a substantial routable import, got ${active.length}`)
+  // 7 after `qoder` was excluded from the sync (2026-11-14), 8 after `baidu` and `glm-cn`, 10
+  // after `iflytek`, 11 after `sambanova`, 12 after `reka`, 13 after `nous-research`, 14 after
+  // `siliconflow` and `sparkdesk`, 16 after `morph` and `friendliai` (2026-11-13).
+  assert.ok(active.length >= 7, `expected a substantial routable import, got ${active.length}`)
   for (const provider of active) {
     assert.match(provider.chatUrl, /^https:\/\//, `${provider.key} needs a real https endpoint`)
     assert.ok(
@@ -3008,10 +3008,22 @@ test('a provider that refuses content-part arrays gets a plain string', () => {
 })
 
 test('a static header is sent, but never at the cost of the credential', () => {
-  assert.equal(shapedHeaders('qoder')['User-Agent'], 'Qoder-Cli')
-  const headers = buildProviderRequestHeaders('qoder', { apiKey: 'k' })
-  assert.equal(headers['User-Agent'], 'Qoder-Cli')
-  assert.equal(headers.Authorization, 'Bearer k')
+  // `qoder` was the only roster row that declared a static header; it left on 2026-11-14, so
+  // the descriptor is supplied here instead of read from the imported catalog.
+  registerProvider('header-fixture', {
+    label: 'Header fixture',
+    chatUrl: 'https://headers.test/v1/chat/completions',
+    auth: { kind: 'bearer', headerName: 'Authorization', scheme: 'Bearer' },
+    shaping: { headers: { 'User-Agent': 'Header-Fixture/1.0' } },
+  })
+  try {
+    assert.equal(shapedHeaders('header-fixture')['User-Agent'], 'Header-Fixture/1.0')
+    const headers = buildProviderRequestHeaders('header-fixture', { apiKey: 'k' })
+    assert.equal(headers['User-Agent'], 'Header-Fixture/1.0')
+    assert.equal(headers.Authorization, 'Bearer k')
+  } finally {
+    initProviders({ reset: true })
+  }
   // A descriptor cannot clobber the auth header by declaring one.
   assert.equal(buildProviderRequestHeaders('mistral', { apiKey: 'k' }).Authorization, 'Bearer k')
 })
