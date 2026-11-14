@@ -106,6 +106,7 @@ import {
   isProviderAuthOptional,
   lazyDiscoveryCandidates,
   markBazaarLinkPaidModels,
+  markCrowLLMPaidModels,
   markOrcaRouterPaidModels,
   markRequestyPaidModels,
   markTokenHarborPaidModels,
@@ -181,6 +182,7 @@ test('apiKeyEnvVarTable reproduces the old hand-maintained ENV_VARS exactly', ()
     puter: 'PUTER_AUTH_TOKEN',
     agnes: 'AGNES_API_KEY',
     requesty: 'REQUESTY_API_KEY',
+    crowllm: 'CROWLLM_API_KEY',
   })
 })
 
@@ -841,16 +843,16 @@ test('every model row hammer ships resolves to a brand mark unless it names no b
     )
   }
 })
-test('the 22 hammer-owned signup URLs survive the import, which is additive', () => {
+test('the 23 hammer-owned signup URLs survive the import, which is additive', () => {
   // The import adds URLs; it must not move or drop one of hammer's own. The old assertion
   // pinned the total at 18, which stopped being true the moment an imported provider got a
   // key page — and would have hidden a *removed* hammer URL behind an added import. Every
-  // descriptor ships a signup page today (22 with `requesty`), so the count and the table
-  // must agree.
+  // descriptor ships a signup page today (23 with `requesty` and `crowllm`), so the count and
+  // the table must agree.
   const hammerOwned = Object.keys(PROVIDER_DESCRIPTORS).filter(
     (key) => PROVIDER_DESCRIPTORS[key].signupUrl,
   )
-  assert.equal(hammerOwned.length, 22)
+  assert.equal(hammerOwned.length, 23)
   const table = signupUrlTable()
   for (const key of hammerOwned) {
     assert.equal(table[key], PROVIDER_DESCRIPTORS[key].signupUrl, `${key} must keep its signup URL`)
@@ -944,11 +946,11 @@ test('every registered descriptor is valid and unique', () => {
     )
   }
 })
-test('hammer ships 22 providers and none of them regressed', () => {
-  // 22 since `requesty` joined (21 with `agnes`, 20 with `moonmath`, 19 with `puter`, 18 with
-  // `tokenharbor`, 17 with `orcarouter`, 16 with `inferx`): all of them are hammer-owned,
-  // routable and carry a chatUrl, so they belong in the same table as the rest.
-  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 22)
+test('hammer ships 23 providers and none of them regressed', () => {
+  // 23 since `crowllm` joined (22 with `requesty`, 21 with `agnes`, 20 with `moonmath`, 19 with
+  // `puter`, 18 with `tokenharbor`, 17 with `orcarouter`, 16 with `inferx`): all of them are
+  // hammer-owned, routable and carry a chatUrl, so they belong in the same table as the rest.
+  assert.equal(Object.keys(PROVIDER_DESCRIPTORS).length, 23)
   for (const [key, descriptor] of Object.entries(PROVIDER_DESCRIPTORS)) {
     const registered = getProvider(key)
     assert.equal(registered.origin, 'hammer', `${key} must stay hammer-owned`)
@@ -1587,6 +1589,52 @@ test("Token Harbor's `:free` ids are the free tier, and the paid twin bills the 
   assert.equal(provider.chatUrl, 'https://tokenharbor.ai/v1/chat/completions')
   assert.equal(resolveDiscoveryModelsUrl(sources.tokenharbor), 'https://tokenharbor.ai/v1/models')
   assert.equal(provider.auth.envVar, 'TOKENHARBOR_API_KEY')
+})
+
+test('CrowLLM leaves its whole free shelf on and withholds only the wallet-billed ids', () => {
+  // 74 of the 76 ids a free key lists end in `:free`, and that suffix is the only statement of
+  // free-ness the anonymous catalogue carries — there is no price block to read. The free rows
+  // stay enabled: a row hammer has not probed is still a routing candidate, and one whose
+  // channel is empty today is left to the ordinary error path (503 names no channel, 429 waits
+  // out its window) instead of being withheld before it ever answers.
+  const models = [
+    { modelId: 'gpt-4o-mini:free' },
+    { modelId: 'gemini-3-flash:free' },
+    { modelId: 'deepseek-v4.1-flash:free' },
+    { modelId: 'caw/glm-5.3-flash:free' },
+    { modelId: 'MiniCPM-V-4.7-1B:free' },
+    // The two ids the live catalogue prices above zero.
+    { modelId: 'runpod/kimi-k3' },
+    { modelId: 'typhoon-v2.5-30b-a3b-instruct' },
+    // `free` as a substring is not the shelf marker.
+    { modelId: 'freeform-9b' },
+  ]
+  markCrowLLMPaidModels(models)
+  assert.deepEqual(
+    models.filter((model) => !model.paymentRequired).map((model) => model.modelId),
+    [
+      'gpt-4o-mini:free',
+      'gemini-3-flash:free',
+      'deepseek-v4.1-flash:free',
+      'caw/glm-5.3-flash:free',
+      'MiniCPM-V-4.7-1B:free',
+    ],
+  )
+  assert.equal(models.find((m) => m.modelId === 'runpod/kimi-k3').paymentRequired, true)
+  assert.equal(
+    models.find((m) => m.modelId === 'typhoon-v2.5-30b-a3b-instruct').paymentRequired,
+    true,
+  )
+  assert.equal(models.find((m) => m.modelId === 'freeform-9b').paymentRequired, true)
+
+  const provider = getProvider('crowllm')
+  assert.equal(provider.chatUrl, 'https://crowllm.com/v1/chat/completions')
+  assert.equal(resolveDiscoveryModelsUrl(sources.crowllm), 'https://crowllm.com/v1/models')
+  assert.equal(provider.auth.envVar, 'CROWLLM_API_KEY')
+  // The published free-tier figure is what the Quota column bands, and it is the measured one:
+  // the gateway refuses the sixth request in a minute in its own words.
+  assert.equal(provider.quota.limits[0].limit, 5)
+  assert.equal(provider.quota.limits[0].period, 'minute')
 })
 
 test('Requesty prices its free tier at zero and marks every other id Paid', () => {

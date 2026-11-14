@@ -1032,6 +1032,18 @@ export const sources = {
     discoverable: true,
     models: [],
   },
+  // --- CrowLLM ---------------------------------------------------------------
+  // One OpenAI-compatible gateway in front of every major vendor at `crowllm.com/v1`. Its
+  // catalogue is discovered rather than curated: /v1/models answers anonymously and narrows
+  // to the ids the key can reach once one is sent. The zero-priced shelf is the `:free` id
+  // suffix — 74 of the 76 ids a free key lists — and every other id bills the wallet.
+  crowllm: {
+    name: 'CrowLLM',
+    url: 'https://crowllm.com/v1/chat/completions',
+    contextUrl: 'https://crowllm.com/v1/models',
+    discoverable: true,
+    models: [],
+  },
   // --- Token Harbor ----------------------------------------------------------
   // One OpenAI-compatible gateway over ~80 frontier models. Its list is discovered rather
   // than curated, and it prices every row itself, so free-ness is decided by the `:free` id
