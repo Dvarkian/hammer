@@ -3122,15 +3122,17 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(css, /\.model-logo-img \{/)
 
   // Everything after the logo shifted by one, and each added column shifts the trailing cells
-  // again — the quota column first, then the rate-limit column beside it, and the Speed column
-  // replaced the old TTFT/Tok/s pair. A stale index writes context into the wrong cell and
-  // blanks the response, which is worse than no column at all.
+  // again — the quota column first, then the rate-limit column beside it, the Speed column in
+  // place of the old TTFT/Tok/s pair, and Usage split into a word and a chart. A stale index
+  // writes context into the wrong cell and blanks the response, which is worse than no column.
   assert.match(js, /const modelCell = row\.cells\[1\];/)
   assert.match(js, /const intellCell = row\.cells\[2\];/)
   assert.match(js, /const speedCell = row\.cells\[3\];/)
-  assert.match(js, /const usageCell = row\.cells\[4\];/)
-  assert.match(js, /const quotaCell = row\.cells\[5\];/)
-  assert.match(js, /const ctxCell = row\.cells\[7\];/)
+  // Usage (col 4) carries the capacity tag in the heading and stays empty on provider rows;
+  // History (col 5) is the sparkline cell the plotter draws into.
+  assert.match(js, /const usageCell = row\.cells\[5\];/)
+  assert.match(js, /const quotaCell = row\.cells\[6\];/)
+  assert.match(js, /const ctxCell = row\.cells\[8\];/)
   // Status no longer owns a column: its verdict trails the model name inside the Model cell,
   // in a slot every repaint path targets by class, so the name is never overwritten and the
   // response column that followed Status takes the last index.
@@ -3139,7 +3141,7 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /class="status-slot">\$\{groupStatusHtml\}/)
   assert.match(js, /class="status-slot">\$\{statusCellHTML\(m\)\}/)
   assert.match(js, /const statusCell = modelCell\.querySelector\('\.status-slot'\);/)
-  assert.match(js, /const responseCell = row\.cells\[8\];/)
+  assert.match(js, /const responseCell = row\.cells\[9\];/)
   // The Speed column is one cell carrying the provider-setup popup's verdict pill; the
   // measurements the TTFT and Tok/s columns printed moved into its tooltip.
   assert.match(js, /function speedTagInner\(verdict, ttft, tps, ttftLabel/)
@@ -3156,7 +3158,7 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
   assert.match(js, /\$\{rateLimitCell\(m\)\}/)
   // The refresh path keeps the throttle column in step with the quota column beside it.
-  assert.match(js, /const rateLimitCellEl = row\.cells\[6\];/)
+  assert.match(js, /const rateLimitCellEl = row\.cells\[7\];/)
   assert.match(js, /rateLimitCellEl\.innerHTML = rateLimitCellInnerHTML\(m\)/)
 })
 
@@ -3233,11 +3235,15 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(js, /CAPACITY_QUICK_PERIODS\.has\(w\.period\)/)
   // Silence is unknown, and 'Unlimited' only ever comes from a stated cap.
   assert.match(js, /return unlimited\s*\? \{ band: 'Unlimited'/)
-  // The tag lives in the Usage column above the sparkline, not in the model name.
+  // The tag has its own Usage column, beside a History column that keeps the chart.
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
+  assert.match(html, /<th id="th-usage"[^>]*>Usage<\/th>/)
+  assert.match(html, /<th id="th-history"[^>]*>History<\/th>/)
   assert.match(
     js,
-    /<td class="usage-cell"><div class="usage-tag-slot">\$\{capacityTagHTML\(g\)\}<\/div>/,
+    /<td class="usage-cell"><div class="usage-tag-slot">\$\{capacityTagHTML\(g\)\}<\/div><\/td>/,
   )
+  assert.match(js, /<td class="history-cell"><div id="usage-cell-g:\$\{escapeAttr\(g\.key\)\}"/)
   // Windows a heading compares are grossed per family, so the ranking names the provider span
   // rather than implying three readings off one account.
   assert.match(js, /tightest of \$\{info\.windows\} windows across \$\{info\.providers\} providers/)

@@ -5492,9 +5492,11 @@
                one row that stays on screen when a group is collapsed, so it is where the
                sparkline is worth putting. Drawn after attach by drawGroupUsageSparkline(),
                since the id does not resolve until then. -->
-          <!-- Usage: the capacity word, then the token sparkline it summarises. The plot is
-               drawn into its own child so a repaint cannot wipe the tag. -->
-          <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g)}</div><div id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></div></td>
+          <!-- Usage is the word on its own; History is the traffic behind it. They are separate
+               columns because they answer different questions: can this model work, and what
+               has it been doing. -->
+          <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g)}</div></td>
+          <td class="history-cell"><div id="usage-cell-g:${escapeAttr(g.key)}" class="usage-sparkline-cell"></div></td>
           ${quotaGroupCell(g)}
           ${rateLimitGroupCell(g)}
           <td>
@@ -5733,9 +5735,9 @@
         subtextEl.innerHTML = escapeHtml(m.modelId) + (realId ? ` <span style="opacity:0.7;">&#8594; ${escapeHtml(realId)}</span>` : '');
         subtextEl.title = realId ? `${m.modelId} &#8594; ${realId}` : m.modelId;
       }
-      // Update context window (known limit or observed bounds) — col 7, after quota (col 5) and
-      // the rate-limit column (col 6); the logo column leads the row.
-      const ctxCell = row.cells[7];
+      // Update context window (known limit or observed bounds) — col 8, after quota (col 6) and
+      // the rate-limit column (col 7); the logo column leads the row.
+      const ctxCell = row.cells[8];
       ctxCell.innerHTML = m.context
         ? `<div style="font-weight: 600; font-variant-numeric: tabular-nums;" title="${m.contextSource === 'observed' ? 'Bounds inferred from real requests' : 'Known context window'}">${escapeHtml(m.context)}</div>`
         : '<div style="font-weight: 600; font-variant-numeric: tabular-nums;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>';
@@ -5745,29 +5747,29 @@
       const intellCell = row.cells[2];
       intellCell.innerHTML = `<div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div>`;
 
-      // Usage sparkline (col 4); never clobber an in-flight test.
-      const usageCell = row.cells[4];
+      // History sparkline (col 5); never clobber an in-flight test.
+      const usageCell = row.cells[5];
       const usageSpark = usageCell && usageCell.querySelector('.usage-sparkline-cell');
       if (usageSpark) {
         usageSpark.id = `usage-cell-${getModelRowKey(m)}`;
         drawUsageSparklineInto(usageSpark, getModelRowKey(m));
       }
-      // Quota (col 5) is rebuilt on every refresh: a published window counts down on the
+      // Quota (col 6) is rebuilt on every refresh: a published window counts down on the
       // clock, and observed rate-limit windows arrive with new traffic.
-      const quotaCell = row.cells[5];
+      const quotaCell = row.cells[6];
       if (quotaCell) quotaCell.innerHTML = quotaRowCellInnerHTML(m);
-      // Rate limit (col 6) is rebuilt alongside it: the throttle counters and bench state
+      // Rate limit (col 7) is rebuilt alongside it: the throttle counters and bench state
       // change with every response, just as the quota windows do.
-      const rateLimitCellEl = row.cells[6];
+      const rateLimitCellEl = row.cells[7];
       if (rateLimitCellEl) rateLimitCellEl.innerHTML = rateLimitCellInnerHTML(m);
       // Update the status that trails the model name (it lives in the Model cell, col 1, now
-      // that the Status column is gone) and the response cell (col 8, which moved up one);
-      // never clobber an in-flight test.
+      // that the Status column is gone) and the response cell (col 9); never clobber an
+      // in-flight test.
       const statusCell = modelCell.querySelector('.status-slot');
       if (statusCell && !inflightTests.has(getModelRowKey(m))) {
         statusCell.innerHTML = `<div style="display: flex; align-items: center; gap: 6px;">${statusCellHTML(m)}</div>`;
       }
-      const responseCell = row.cells[8];
+      const responseCell = row.cells[9];
       if (responseCell && !inflightTests.has(getModelRowKey(m))) {
         responseCell.innerHTML = responseCellHTML(m.lastResponse, { rowKey: getModelRowKey(m), providerKey: m.providerKey, modelId: m.modelId, hasAuth: m.status !== 'noauth', status: m.status });
       }
@@ -7801,7 +7803,8 @@
           </td>
           <td><div style="font-weight: 600;"><span style="font-size:0.75rem;color:var(--text-muted);">—</span></div></td>
           ${speedTagCell(m.verdict, rowTtft(m), rowTps(m), rowTtftLabel(m), getModelRowKey(m) === fastestRowKey, isRowUsable(m))}
-          <td class="usage-cell"><div id="usage-cell-${rowKey}" class="usage-sparkline-cell"></div></td>
+          <td class="usage-cell"></td>
+          <td class="history-cell"><div id="usage-cell-${rowKey}" class="usage-sparkline-cell"></div></td>
           ${quotaRowCell(m)}
           ${rateLimitCell(m)}
           <td>
@@ -7816,7 +7819,7 @@
       });
       // The usage cell is filled here rather than by id, because the row is not in the
       // document yet: getElementById cannot see it until reconcileTable attaches it.
-      drawUsageSparklineInto(tr.cells[4]?.querySelector('.usage-sparkline-cell'), rowKey);
+      drawUsageSparklineInto(tr.cells[5]?.querySelector('.usage-sparkline-cell'), rowKey);
       return tr;
     }
 
