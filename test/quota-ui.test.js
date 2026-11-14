@@ -671,7 +671,12 @@ test('a cell never calls a row unused when its own plot shows traffic', () => {
   assert.match(dashboard, /function usageHasSamples\(usage\)/)
   assert.match(dashboard, /function quotaUnknownHtml\(kind, \{ meta \} = \{\}\)/)
   assert.match(dashboard, /no per-account usage recorded/)
-  assert.match(dashboard, /usage recorded · no limit published/)
+  // "limit not published" is the cell's own readout line now, so the meta says the traffic was
+  // recorded without repeating the claim about the limit.
+  assert.match(
+    dashboard,
+    /meta: usageHasSamples\(m\?\.recordedUsage\) \|\| usageHasSamples\(m\?\.providerRecordedUsage\)\s*\? 'usage recorded'/,
+  )
   assert.match(harness, /function railUsageHasSamples\(usage\)/)
   assert.match(harness, /function railQuotaUnknownHtml\(kind, meta\)/)
   assert.match(harness, /no per-account usage recorded/)

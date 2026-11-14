@@ -4455,9 +4455,8 @@
         ? w.detail
         : [totalText, remainingText, resetText].filter(Boolean).join(' · ');
       return `<div class="quota-row-window${w.stale ? ' is-stale' : ''}${w.unavailable ? ' is-unavailable' : ''}${w.estimated ? ' is-estimated' : ''}" data-quota-period="${escapeAttr(w.period)}" data-quota-metric="${escapeAttr(w.metric || 'tokens')}" data-quota-unavailable="${w.unavailable ? 'true' : 'false'}" data-quota-used-percent="${w.usedPercent == null ? '' : w.usedPercent.toFixed(2)}" title="${escapeAttr(titleParts.join(' · '))}">
-        <div class="quota-row-head"><span class="quota-row-pct">${escapeHtml(percentText)}</span></div>
         <div class="quota-row-track${(zeroAllowance || w.usedPercent != null) ? '' : ' quota-row-track-unknown'}" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${zeroAllowance ? 100 : w.usedPercent == null ? '' : Math.round(Math.min(100, w.usedPercent))}" aria-label="${escapeAttr(noFreeTier ? 'Free-tier quota' : `${periodLabel} quota`)}" aria-valuetext="${escapeAttr(percentText)}"><div class="quota-row-fill quota-row-fill-${tone}" style="width:${barWidth.toFixed(2)}%"></div></div>
-        <div class="quota-row-meta">${escapeHtml(meta)}</div>
+        <div class="quota-row-meta"><span class="quota-row-pct">${escapeHtml(percentText)}</span>${meta ? ` · ${escapeHtml(meta)}` : ''}</div>
       </div>`;
     }
 
@@ -4680,7 +4679,7 @@
         // recorded", which contradicted the usage plot in the same row.
         return quotaUnknownHtml('quota', {
           meta: usageHasSamples(m?.recordedUsage) || usageHasSamples(m?.providerRecordedUsage)
-            ? 'usage recorded · no limit published'
+            ? 'usage recorded'
             : undefined,
         });
       }
@@ -4699,8 +4698,8 @@
         ? 'The provider states there is no rate limit for this endpoint — nothing can exhaust it.'
         : 'The provider states there is no usage limit for this endpoint — nothing can exhaust it.';
       return `<div class="quota-row-window quota-row-infinity" data-quota-kind="${kind}" title="${escapeAttr(title)}">
-        <div class="quota-row-head"><span class="quota-row-period">${label}</span><span class="quota-row-pct">∞</span></div>
-        <div class="quota-row-meta">no usage limit published</div>
+        <div class="quota-row-head"><span class="quota-row-period">${label}</span></div>
+        <div class="quota-row-meta"><span class="quota-row-pct">∞</span> · no usage limit published</div>
       </div>`;
     }
 
@@ -4711,9 +4710,8 @@
       // row's traffic — which is what the two surfaces said together on the Google row.
       const line = meta || 'no usage recorded yet';
       return `<div class="quota-row-window quota-row-unknown-limit" data-quota-kind="${kind}" title="No limit is published or has been observed for this endpoint yet. The bar starts filling as Hammer records traffic; a ceiling is estimated once there is usage to learn from.">
-        <div class="quota-row-head"><span class="quota-row-pct">limit not published</span></div>
         <div class="quota-row-track quota-row-track-unknown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="" aria-valuetext="limit not published"><div class="quota-row-fill quota-row-fill-unknown" style="width:0%"></div></div>
-        <div class="quota-row-meta">${line}</div>
+        <div class="quota-row-meta"><span class="quota-row-pct">limit not published</span> · ${line}</div>
       </div>`;
     }
 
@@ -4757,7 +4755,7 @@
           ? quotaUnlimitedHtml('rate-limit')
           : quotaUnknownHtml('rate-limit', {
               meta: usageHasSamples(m?.recordedUsage) || usageHasSamples(m?.providerRecordedUsage)
-                ? 'usage recorded · no limit published'
+                ? 'usage recorded'
                 : undefined,
             });
         return `<div class="rl-cell">${bench}${empty}</div>`;
