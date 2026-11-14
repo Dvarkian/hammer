@@ -1748,6 +1748,17 @@
       filter: grayscale(1);
       opacity: 0.7;
     }
+    /* The Capacity tag: one word for what will stop a run — a stated absence of any cap, a
+       comfortable allowance, a metered one, a scarce one, or a wall. It summarises the Quota
+       and Rate-limit bars beside it rather than replacing them, so a heading carries the
+       judgement while the columns keep the numbers. It shares the three-rung ladder: ample is
+       blue, metered is the purple of 'neither', and scarce or spent is the maroon of 'worse'. */
+    .capacity-tag { display: inline-block; margin-left: 2px; }
+    .capacity-tag.cap-unlimited,
+    .capacity-tag.cap-ample { background: var(--status-success-bg); border-color: var(--status-success-border); color: var(--status-success-text); }
+    .capacity-tag.cap-limited { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
+    .capacity-tag.cap-scarce,
+    .capacity-tag.cap-exhausted { background: var(--status-info-bg); border-color: var(--status-info-border); color: var(--status-info-text); }
 
     .onboard-actions {
       display: flex;

@@ -3209,6 +3209,39 @@ test('the table badges the fastest and smartest rows that could serve right now'
   assert.match(css, /\.speed-tag\.fastest,[\s\S]*?\.speed-tag\.smartest/)
 })
 
+test('the capacity tag bands the windows the limit columns already draw', () => {
+  const js = readFileSync(new URL('../public/dashboard.js', import.meta.url), 'utf8')
+  const css = readFileSync(new URL('../public/dashboard.css', import.meta.url), 'utf8')
+
+  assert.match(js, /function capacityBandForGroup\(g, now = Date\.now\(\)\)/)
+  assert.match(js, /function capacityBandForWindow\(w, now\)/)
+  // One reading over both families of window, from the same gross those two cells draw.
+  assert.match(js, /quotaGroupCapacityWindows\(quotaGroupViews\(capacityMembers\)\)/)
+  assert.match(js, /groupLimitViews\(capacityMembers, 'rate-limit'\)/)
+  // Calls band on the count, because that is what a fan-out spends; tokens and credits band
+  // on the share left, because converting them into calls would be an invented assumption.
+  assert.match(js, /const CAPACITY_CALLS_SCARCE = 5/)
+  assert.match(js, /const CAPACITY_CALLS_LIMITED = 50/)
+  assert.match(js, /w\.metric === 'requests' && hasRemaining/)
+  // A per-minute cap is a supply, not an allowance: it bands on what it sustains per hour,
+  // because banding the snapshot would leave every rate-limited provider reading 'Limited'.
+  assert.match(js, /function capacityRatePerHour\(w\)/)
+  assert.match(js, /const CAPACITY_PERIOD_MS = \{ minute: 60 \* 1000, hour: 60 \* 60 \* 1000 \}/)
+  assert.match(js, /const CAPACITY_RATE_LIMITED = 60/)
+  assert.match(js, /const perHour = capacityRatePerHour\(w\)/)
+  // A cap that refills inside the run is lifted one step, not two.
+  assert.match(js, /CAPACITY_QUICK_PERIODS\.has\(w\.period\)/)
+  // Silence is unknown, and 'Unlimited' only ever comes from a stated cap.
+  assert.match(js, /return unlimited\s*\? \{ band: 'Unlimited'/)
+  // Additive: the heading draws the pill and still draws both bars.
+  assert.match(js, /\$\{capacityTagHTML\(g\)\}/)
+  assert.match(js, /\$\{quotaGroupCell\(g\)\}/)
+  assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
+  for (const band of ['unlimited', 'ample', 'limited', 'scarce', 'exhausted']) {
+    assert.match(css, new RegExp(`\\.capacity-tag\\.cap-${band}`))
+  }
+})
+
 test('the brand map names Beam, GPTFree and ALLaM', () => {
   const getModelDomain = modelDomainResolverFromPlot()
 

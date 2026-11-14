@@ -5155,6 +5155,213 @@
       })}</td>`;
     }
 
+    // ── Capacity: one word for how much more work a heading can take ──────────────────────
+    //
+    // The Quota and Rate-limit columns answer "how much is left" twice, in two units. A
+    // subagent run asks a third question — will this still be answering when I fan out? — and
+    // that has to be one reading rather than two bars to reconcile. The tag names the band the
+    // tightest window falls in, over the gross of every provider the heading can route to, from
+    // the same merged views those two cells draw: groupLimitViews sums totals when every
+    // contributor is authoritative and reports the tightest reading when one is an estimate.
+    //
+    // This is an addition, not a replacement. Both bars stay exactly as they are, and the
+    // tooltip names the window that decided the word so the tag and the bars cannot disagree
+    // without saying so.
+    const CAPACITY_CALLS_SCARCE = 5;
+    const CAPACITY_CALLS_LIMITED = 50;
+    const CAPACITY_PERCENT_SCARCE = 10;
+    const CAPACITY_PERCENT_LIMITED = 50;
+    // A per-minute cap is a supply, not an allowance: '5 requests left this minute' is 300 an
+    // hour, and banding the snapshot would leave every rate-limited provider reading 'Limited'
+    // forever. Windows whose length is known are therefore banded on what they can sustain
+    // over an hour; day-and-longer windows stay on the count, because a day does not refill
+    // inside a run. Rolling windows state no length, so they keep the snapshot reading.
+    const CAPACITY_PERIOD_MS = { minute: 60 * 1000, hour: 60 * 60 * 1000 };
+    const CAPACITY_RATE_SCARCE = 12;
+    const CAPACITY_RATE_LIMITED = 60;
+    const CAPACITY_REFILL_GRACE_MS = 5 * 60 * 1000;
+    const CAPACITY_QUICK_PERIODS = new Set(['minute', 'hour', 'rolling']);
+    const CAPACITY_ORDER = ['Exhausted', 'Scarce', 'Limited', 'Ample'];
+
+    // What a rate window can sustain over an hour, from the cap it states per window rather
+    // than from what is left of the current one: the allowance refills on its own clock, and a
+    // run that spans several windows is governed by the refill, not by this instant.
+    function capacityRatePerHour(w) {
+      const periodMs = CAPACITY_PERIOD_MS[w.period];
+      if (!periodMs) return null;
+      const total = Number(w.total);
+      const remaining = Number(w.remaining);
+      const perWindow =
+        Number.isFinite(total) && total > 0
+          ? total
+          : Number.isFinite(remaining) && remaining > 0
+            ? remaining
+            : null;
+      if (perWindow == null) return null;
+      return perWindow * (60 * 60 * 1000 / periodMs);
+    }
+
+    function capacitySeverity(band) {
+      const index = CAPACITY_ORDER.indexOf(band);
+      return index === -1 ? CAPACITY_ORDER.length : index;
+    }
+
+    // How far through its window a reading is, whatever unit it was stated in — used only to
+    // break ties, so the tooltip names the window that will actually stop a run first.
+    function capacityTightness(w) {
+      const usedPercent = Number(w?.usedPercent);
+      if (Number.isFinite(usedPercent)) return usedPercent;
+      const total = Number(w?.total);
+      const remaining = Number(w?.remaining);
+      if (Number.isFinite(total) && total > 0 && Number.isFinite(remaining)) {
+        return 100 - (remaining / total) * 100;
+      }
+      return 0;
+    }
+
+    // The band one window falls in. Calls are banded on the gross count, because that is what a
+    // fan-out spends; tokens and credits are banded on the share that is left, because
+    // converting them into calls would be an assumption wearing a measurement's clothes.
+    function capacityBandForWindow(w, now) {
+      if (!w) return null;
+      const total = Number(w.total);
+      const remaining = Number(w.remaining);
+      const usedPercent = Number(w.usedPercent);
+      const hasTotal = Number.isFinite(total) && total > 0;
+      const hasRemaining = Number.isFinite(remaining) && remaining >= 0;
+      const hasPercent = Number.isFinite(usedPercent);
+      // A zero allowance is spent, not unknown (the bars make the same distinction).
+      if (w.unavailable === true && !hasTotal) return 'Exhausted';
+      if (hasRemaining && remaining <= 0) return 'Exhausted';
+      if (hasPercent && usedPercent >= 100) return 'Exhausted';
+      let band;
+      if (w.metric === 'requests' && hasRemaining) {
+        const perHour = capacityRatePerHour(w);
+        if (perHour != null) {
+          band =
+            perHour < CAPACITY_RATE_SCARCE
+              ? 'Scarce'
+              : perHour < CAPACITY_RATE_LIMITED
+                ? 'Limited'
+                : 'Ample';
+        } else {
+          band =
+            remaining < CAPACITY_CALLS_SCARCE
+              ? 'Scarce'
+              : remaining < CAPACITY_CALLS_LIMITED
+                ? 'Limited'
+                : 'Ample';
+        }
+      } else {
+        const leftPercent = hasPercent
+          ? 100 - Math.min(100, usedPercent)
+          : hasRemaining && hasTotal
+            ? (remaining / total) * 100
+            : null;
+        if (leftPercent == null) return null;
+        band =
+          leftPercent < CAPACITY_PERCENT_SCARCE
+            ? 'Scarce'
+            : leftPercent < CAPACITY_PERCENT_LIMITED
+              ? 'Limited'
+              : 'Ample';
+      }
+      const resetAt = Number(w.resetAt);
+      const refillsSoon =
+        Number.isFinite(resetAt) && resetAt > now && resetAt - now <= CAPACITY_REFILL_GRACE_MS;
+      if (band === 'Scarce' && refillsSoon && CAPACITY_QUICK_PERIODS.has(w.period)) return 'Limited';
+      return band;
+    }
+
+    // What one heading wears, or null when nothing is known: no published window and no stated
+    // cap is a blank cell, never 'Ample'. Silence is not a promise of capacity.
+    //
+    // A rate-limit bench is deliberately not forced to 'Exhausted' here: it is a per-provider
+    // state, and the merged windows already carry its effect (a benched provider reports no
+    // remaining requests), so one benched alias must not condemn a heading another can serve.
+    function capacityBandForGroup(g, now = Date.now()) {
+      const members = g?.members || [];
+      if (members.length === 0) return null;
+      const capacityMembers = groupCapacityMembers(members);
+      if (capacityMembers.length === 0) return null;
+      const unlimited = groupsUnlimited(capacityMembers);
+      const windows = [
+        ...quotaGroupCapacityWindows(quotaGroupViews(capacityMembers)),
+        ...groupLimitViews(capacityMembers, 'rate-limit'),
+      ]
+        .map((window) => ({ window, band: capacityBandForWindow(window, now) }))
+        .filter((entry) => entry.band != null);
+      if (windows.length === 0) {
+        return unlimited
+          ? { band: 'Unlimited', binding: null, windows: 0, shared: false, unlimited: true }
+          : null;
+      }
+      const binding = windows.reduce((tightest, entry) => {
+        const delta = capacitySeverity(entry.band) - capacitySeverity(tightest.band);
+        if (delta !== 0) return delta < 0 ? entry : tightest;
+        return capacityTightness(entry.window) > capacityTightness(tightest.window)
+          ? entry
+          : tightest;
+      });
+      return {
+        band: binding.band,
+        binding: binding.window,
+        windows: windows.length,
+        shared: Number(binding.window.rows) > 1,
+        unlimited,
+      };
+    }
+
+    function capacityUnit(w) {
+      if (w.metric === 'requests') return 'req';
+      if (w.metric === 'credits') return 'credits';
+      return 'tok';
+    }
+
+    // Which window decided the word, in its own units, and when it refills.
+    function capacityTagTitle(info, now = Date.now()) {
+      const parts = [];
+      const w = info.binding;
+      if (!w) {
+        parts.push('the provider states no cap');
+        return `${info.band} capacity — ${parts.join(' · ')}`;
+      }
+      const unit = capacityUnit(w);
+      const total = Number(w.total);
+      const remaining = Number(w.remaining);
+      const usedPercent = Number(w.usedPercent);
+      const periodWord = w.period && w.period !== 'window' ? ` per ${w.period}` : '';
+      if (w.metric === 'requests' && Number.isFinite(remaining)) {
+        const ofTotal = Number.isFinite(total) && total > 0 ? `/${fmtCompactTokens(total)}` : '';
+        parts.push(`${fmtCompactTokens(remaining)}${ofTotal} req left${periodWord}`);
+        const perHour = capacityRatePerHour(w);
+        if (perHour != null) parts.push(`≈${fmtCompactTokens(perHour)}/hour`);
+      } else if (Number.isFinite(remaining) && Number.isFinite(total) && total > 0) {
+        parts.push(
+          `${fmtCompactTokens(remaining)} of ${fmtCompactTokens(total)} ${unit} left${periodWord}`,
+        );
+      } else if (Number.isFinite(usedPercent)) {
+        parts.push(`${Math.round(100 - Math.min(100, usedPercent))}% left${periodWord}`);
+      }
+      const resetIn = Number.isFinite(Number(w.resetAt))
+        ? formatQuotaReset(Number(w.resetAt) - now)
+        : '';
+      if (resetIn) parts.push(`resets in ${resetIn}`);
+      if (info.shared) parts.push(`shared by ${w.rows} rows`);
+      if (w.estimated === true || w.mixed === true) parts.push('estimated');
+      if (info.windows > 1) parts.push(`tightest of ${info.windows} windows`);
+      return `${info.band} capacity — ${parts.join(' · ')}`;
+    }
+
+    // Beside the model name rather than inside either limit column: the word summarises both
+    // families of window, and those columns keep their bars.
+    function capacityTagHTML(g) {
+      const info = capacityBandForGroup(g);
+      if (!info) return '';
+      const title = capacityTagTitle(info);
+      return `<span class="onboard-pill capacity-tag cap-${info.band.toLowerCase()}" title="${escapeAttr(title)}">${escapeHtml(info.band)}${info.shared ? '†' : ''}</span>`;
+    }
+
     function groupRowInnerHTML(g) {
       const members = g.members;
       const s = getGroupSummary(g, { onlyUsable: false });
@@ -5195,6 +5402,7 @@
               <span class="status-slot">${groupStatusHtml}</span>
               ${members.length > 1 ? `<button type="button" onclick="event.stopPropagation(); toggleModelGroup('${escapeAttr(g.key)}')" title="${collapsedModelGroups.has(g.key) ? 'Expand' : 'Collapse'} providers" style="border:0; background:transparent; color:var(--text-muted); cursor:pointer; padding:0 3px; font-size:0.85rem;">${collapsedModelGroups.has(g.key) ? '▶' : '▼'}</button>` : ''}
               <button type="button" class="pin-row-btn ${isPinned ? 'pinned' : ''}" data-pin-model="${escapeAttr(first.modelId)}" data-pin-group="${escapeAttr(g.key)}" title="${isPinned ? 'Unpin model family' : 'Pin model family'}">📌</button>
+              ${capacityTagHTML(g)}
             </div>
             <div style="font-size: 0.75rem; color: var(--text-muted);">${members.length === 1 ? escapeHtml(providerInstanceName(first)) : `${s.upCount}/${members.length} providers`}</div>
           </td>
