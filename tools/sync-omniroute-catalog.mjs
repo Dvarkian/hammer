@@ -233,6 +233,12 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // request; the audit's row records the same contradiction (docs vs. the reports that new
   // accounts are pushed to credits).
   'sambanova',
+  // `iflytek` (2026-11-14): removed on request. Only Spark Lite is free (2 QPS, no token cap);
+  // Pro/Max/4.0 Ultra are paid, and the agreement prohibits automated extraction and proxy or
+  // relay use — the roster's own row is ToS `avoid`, which is why the verification pass carried
+  // it as refused for terms. `sparkdesk` was already excluded as a second key for the same
+  // xfyun host, so nothing else names this endpoint.
+  'iflytek',
 ])
 
 const TOKEN_MULTIPLIERS = { k: 1_000, m: 1_000_000, b: 1_000_000_000 }

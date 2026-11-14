@@ -132,13 +132,6 @@
       "note": "Duck.ai terms prohibit automated querying and building AI services on it."
     },
     {
-      "key": "iflytek",
-      "access": "keyless",
-      "tos": "avoid",
-      "modelCount": 1,
-      "note": "Spark Lite is free but the agreement prohibits automated extraction and proxy/relay use."
-    },
-    {
       "key": "muse-spark-web",
       "access": "keyless",
       "tos": "avoid",
