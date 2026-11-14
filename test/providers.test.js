@@ -3244,6 +3244,6 @@ test('the INT column bands its rating the way the Speed column tags speed', () =
   }
   assert.match(
     table,
-    /Bands: Genius 55\+, Very Smart 45\+, Smart 32\+, Normal 20\+, Dumb 12\+, Very Dumb below 12/,
+    /Bands: Genius 55\+, Very Smart 45\+, Smart 33\.9\+, Normal 20\+, Dumb 12\+, Very Dumb below 12/,
   )
 })

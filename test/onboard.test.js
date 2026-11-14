@@ -207,13 +207,13 @@ test('the dashboard popup drives, polls, and hands off to the plots', () => {
   assert.match(dashboard, /maybeOnboardProvider\('github-copilot'\)/)
 })
 
-test('the intelligence bands cut the AA index at 12, 20, 32, 45 and 55', () => {
+test('the intelligence bands cut the AA index at 12, 20, 33.9, 45 and 55', () => {
   // Fixed points on the index, like the speed bands' milliseconds: a model's band must not move
   // because another model joined the catalogue. The anchors are the models the cut-offs were
   // calibrated on — the two Nemotrons, GLM 5.3 Flash, DeepSeek V4.1 Flash and GPT 6 Luna.
   assert.deepEqual(
     INTELLIGENCE_BANDS.map((band) => band.from),
-    [55, 45, 32, 20, 12, 0],
+    [55, 45, 33.9, 20, 12, 0],
   )
   assert.equal(intelligenceBandForAa(3.5), 'Very Dumb')
   assert.equal(intelligenceBandForAa(10.3), 'Very Dumb', 'Nemotron 3 Nano')
@@ -223,7 +223,11 @@ test('the intelligence bands cut the AA index at 12, 20, 32, 45 and 55', () => {
   assert.equal(intelligenceBandForAa(20), 'Normal')
   assert.equal(intelligenceBandForAa(27.8), 'Normal', 'GLM 5.3 Flash')
   assert.equal(intelligenceBandForAa(31.9), 'Normal')
-  assert.equal(intelligenceBandForAa(32), 'Smart')
+  assert.equal(intelligenceBandForAa(32), 'Normal', 'the floor moved up to 33.9')
+  assert.equal(intelligenceBandForAa(33.7), 'Normal', 'GLM 5.2')
+  assert.equal(intelligenceBandForAa(33.8), 'Normal')
+  assert.equal(intelligenceBandForAa(33.9), 'Smart')
+  assert.equal(intelligenceBandForAa(34), 'Smart', 'Gemini 3.6 Flash')
   assert.equal(intelligenceBandForAa(34.6), 'Smart', 'GPT 6 Luna')
   assert.equal(intelligenceBandForAa(39.5), 'Smart', 'DeepSeek V4.1 Flash')
   assert.equal(intelligenceBandForAa(44.9), 'Smart')
