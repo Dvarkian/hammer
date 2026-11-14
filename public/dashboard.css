@@ -1773,6 +1773,11 @@
     .capacity-tag.cap-limited { background: var(--tag-purple-bg); border-color: var(--tag-purple-border); color: var(--tag-purple-text); }
     .capacity-tag.cap-scarce,
     .capacity-tag.cap-exhausted { background: var(--status-info-bg); border-color: var(--status-info-border); color: var(--status-info-text); }
+    /* A model nothing can serve right now keeps the word and loses the colour: the ladder is
+       the signal a route is chosen on, and an allowance in green beside a row no provider will
+       answer reads as "send work here". Grey leaves the reading as a fact about the account.
+       Declared after the bands so an inactive tag overrides the one it was banded into. */
+    .capacity-tag.is-inactive { background: var(--input-bg-alt); border-color: var(--border); color: var(--text-muted); }
 
     .onboard-actions {
       display: flex;

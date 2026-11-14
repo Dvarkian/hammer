@@ -3319,8 +3319,12 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(html, /<th id="th-history"[^>]*>History<\/th>/)
   assert.match(
     js,
-    /<td class="usage-cell"><div class="usage-tag-slot">\$\{capacityTagHTML\(g\)\}<\/div><\/td>/,
+    /<td class="usage-cell"><div class="usage-tag-slot">\$\{capacityTagHTML\(g, \{ inactive: s\.usable\.length === 0 \}\)\}<\/div><\/td>/,
   )
+  // A heading no provider can serve keeps the word and loses the colour, so an allowance in
+  // green does not stand beside a model nothing will answer.
+  assert.match(js, /\$\{inactive \? ' is-inactive' : ''\}/)
+  assert.match(css, /\.capacity-tag\.is-inactive \{ background: var\(--input-bg-alt\)/)
   assert.match(js, /<td class="history-cell"><div id="usage-cell-g:\$\{escapeAttr\(g\.key\)\}"/)
   // Windows a heading compares are grossed per family, so the ranking names the provider span
   // rather than implying three readings off one account.
@@ -3341,7 +3345,7 @@ test('the capacity tag bands the windows the limit columns already draw', () => 
   assert.match(js, /band: clamped \? 'Scarce' : binding\.band/)
   assert.match(js, /resetAt > 0 && resetAt <= now\) return null/)
   // Additive: the heading draws the pill and still draws both bars.
-  assert.match(js, /\$\{capacityTagHTML\(g\)\}/)
+  assert.match(js, /\$\{capacityTagHTML\(g, \{ inactive:/)
   assert.match(js, /\$\{quotaGroupCell\(g\)\}/)
   assert.match(js, /\$\{rateLimitGroupCell\(g\)\}/)
   for (const band of ['unlimited', 'ample', 'limited', 'scarce', 'exhausted']) {

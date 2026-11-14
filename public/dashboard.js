@@ -5455,15 +5455,21 @@
       return `${info.band} quota — ${parts.join(' · ')}`;
     }
 
-    // In the Usage column, above the token sparkline: the word summarises both families of
-    // window, and the Quota and Rate-limit columns keep their bars.
-    function capacityTagHTML(g) {
+    // In the Usage column: the word summarises both families of window, and the Quota and
+    // Rate-limit columns keep their bars.
+    //
+    // A heading no provider can serve right now — every member down, benched, disabled or
+    // paid — keeps the word and loses the colour. The colours are the ladder a route is chosen
+    // on, so an allowance reading in green beside a model nothing will answer reads as "send
+    // work here", which is the one thing the row is not saying; grey states the allowance as a
+    // fact about the account rather than an invitation.
+    function capacityTagHTML(g, { inactive = false } = {}) {
       const info = capacityBandForGroup(g);
       if (!info) return '';
       const title = capacityTagTitle(info);
       // The word carries its own subject: 'Ample' alone beside a chart could be read as a
       // judgement on the traffic rather than on the allowance left.
-      return `<span class="onboard-pill capacity-tag cap-${info.band.toLowerCase()}" title="${escapeAttr(title)}">${escapeHtml(info.band)} Quota${info.shared ? '†' : ''}</span>`;
+      return `<span class="onboard-pill capacity-tag cap-${info.band.toLowerCase()}${inactive ? ' is-inactive' : ''}" title="${escapeAttr(title)}">${escapeHtml(info.band)} Quota${info.shared ? '†' : ''}</span>`;
     }
 
     function groupRowInnerHTML(g) {
@@ -5542,7 +5548,7 @@
           <!-- Usage is the word on its own; History is the traffic behind it. They are separate
                columns because they answer different questions: can this model work, and what
                has it been doing. -->
-          <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g)}</div></td>
+          <td class="usage-cell"><div class="usage-tag-slot">${capacityTagHTML(g, { inactive: s.usable.length === 0 })}</div></td>
           <!-- Context sits beside Usage: how much is left and how much fits in one request are
                the two numbers a route is chosen on. -->
           <td class="text-center">
