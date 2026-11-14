@@ -129,9 +129,12 @@ test('the slope popup plots the field the slider is choosing from', () => {
   // The line has to be the router's line, not a second scale invented for the picture.
   assert.match(harness, /const SLOPE_PLOT_REFERENCE_TOKENS = 500/)
   assert.match(harness, /const SLOPE_PLOT_HEADROOM = 1\.5/)
-  // The field is every measured row; the line is lowered onto the ones the router would use.
+  // The field is every measured row; the line and the pick are only ever lowered onto the ones
+  // the router would use — falling back to the unroutable dots rang a row the router skips.
   assert.match(harness, /row\.routingEligible/)
-  assert.match(harness, /const field = routable\.length >= 2 \? routable : points/)
+  assert.match(harness, /const field = points\.filter\(\(point\) => point\.routable\)/)
+  assert.doesNotMatch(harness, /const field = routable\.length >= 2 \? routable : points/)
+  assert.match(harness, /'no model the router would use'/)
   assert.match(harness, /if \(!row \|\| row\.status === 'noauth'\) continue/)
   // Shown when the control is taken, and the drag repaints it.
   assert.match(harness, /addEventListener\('pointerdown', \(\) => showSlopePlot/)
@@ -142,17 +145,31 @@ test('the slope popup plots the field the slider is choosing from', () => {
   assert.match(css, /\.hx-slope-line \{/)
 })
 
-test('the slope line turns from horizontal to upright with the thumb', () => {
-  // The angle belongs to the control, not to the data: the axes are scaled independently, so a
-  // data slope is an arbitrary screen angle — it sat near 45° for most of the track and needed a
-  // special case to be upright at the top. Horizontal at 0%, upright at 100%, even in between,
-  // and always drawn through the picked row (the pick is the router's own argmax).
+test('the slope line is the contour the pick maximises', () => {
+  // The line has to be the level set of `intelligence + slope × speed`, drawn at the gradient
+  // that slope and these axes give it: horizontal at 0%, leaning further as speed buys more, and
+  // through the picked row because the pick is the router's own argmax. Turning it by the thumb
+  // instead — tan(percentage) through the whole quadrant — drew a line the pick was not chosen
+  // on, so the picture showed one preference and the router applied another.
   const harness = read('public/harness.js')
+  assert.match(harness, /function slopeContourScreenSlope\(slope, plotH, ySpan, plotW, xSpan\)/)
   assert.match(
     harness,
-    /const screenSlope = Math\.tan\(\(clampedPct \/ 100\) \* \(Math\.PI \/ 2\)\)/,
+    /return \(slope \* plotH \* xSpan\) \/ \(ySpan \* plotW\)/,
+    'the gradient is the data slope carried through both axis scales',
   )
-  assert.match(harness, /const upright = clampedPct >= 100/)
+  assert.match(
+    harness,
+    /const screenSlope = slopeContourScreenSlope\(slope, plotH, ySpan, plotW, xSpan\)/,
+  )
+  assert.doesNotMatch(
+    harness,
+    /Math\.tan\(\(clampedPct/,
+    'the angle no longer comes from the thumb',
+  )
+  assert.doesNotMatch(harness, /const upright = clampedPct >= 100/)
+  // A contour steeper than the box is drawn upright through the pick — the same line in the limit.
+  assert.match(harness, /const upright = !Number\.isFinite\(screenSlope\) \|\| screenSlope > plotH/)
   // Both paths start at the pick: the upright line on its speed, the leaning one on its point.
   assert.match(
     harness,

@@ -3748,6 +3748,20 @@
    * track ends; clipping to the box keeps every frame inside the picture instead of letting a
    * steep line's endpoints run thousands of pixels off it.
    */
+  /**
+   * The screen gradient of a contour of `intelligence + slope × speed`.
+   *
+   * A contour holds one score: intelligence falls by `slope` for every unit of speed. The two
+   * axes are scaled independently — plotH pixels per ySpan of intelligence, plotW pixels per
+   * xSpan of speed — and screen y grows downward, which is what turns `intelligence` falling as
+   * speed rises into a line that descends to the right on the picture. This is the angle the
+   * pick maximises along; any other angle is a different line, drawn through the same dot.
+   */
+  function slopeContourScreenSlope(slope, plotH, ySpan, plotW, xSpan) {
+    if (!(slope > 0) || !(plotH > 0) || !(plotW > 0) || !(ySpan > 0) || !(xSpan > 0)) return 0
+    return (slope * plotH * xSpan) / (ySpan * plotW)
+  }
+
   function slopeLineSegment(px, py, screenSlope, pad, plotW, plotH) {
     const left = pad.left
     const right = pad.left + plotW
@@ -3809,10 +3823,12 @@
     const xOf = (speed) => pad.left + ((Math.min(speed, xMax) - xMin) / xSpan) * plotW
     const yOf = (intell) => pad.top + (1 - (intell - yMin) / ySpan) * plotH
 
-    // The line belongs to the rows the router would use; with fewer than two of them there is
-    // no slope to speak of, so the field is drawn and the line is left off.
-    const routable = points.filter((point) => point.routable)
-    const field = routable.length >= 2 ? routable : points
+    // The line and the pick belong to the rows the router would use, and to nothing else. With
+    // fewer than two of them there is no slope to speak of, so the scale is missing and the
+    // line is left off — but the pick still may not fall back to the dots the router would
+    // never choose: it used to, which is how the popup could ring a benched row at a
+    // percentage where the router would have taken a live one.
+    const field = points.filter((point) => point.routable)
     // The router filters this same field by its minimums before it picks, so the popup has to
     // as well: a line lowered onto rows the router will not consider names a model that will
     // not answer. With nothing clearing the minimums the router falls back to its ranking, and
@@ -3842,19 +3858,17 @@
         bestSpeed = point.speed
       }
     }
-    // The line is lowered until it touches the pick, and upright at 100% where the router's
-    // rule picks the fastest eligible row. Drawing it through the pick is what makes the
-    // picture say which row the line lands on.
-    //
-    // The line's angle is the slider's own, and reads as the control it belongs to: horizontal
-    // at 0%, upright at 100%, and turning evenly between them. The axes are scaled
-    // independently, so an angle derived from the data slope is an arbitrary one; deriving it
-    // from the thumb instead makes 0% look like "no speed preference" and 100% look like
-    // "speed only". It is drawn through the pick, so the line still rest on the row the router
-    // selects — the percentage turns the line, it does not choose the model.
-    const clampedPct = Math.max(0, Math.min(100, Number(percent) || 0))
-    const upright = clampedPct >= 100
-    const screenSlope = Math.tan((clampedPct / 100) * (Math.PI / 2))
+    // The line is lowered until it touches the pick, and drawn as the contour of the score the
+    // pick maximises — `intelligence + slope × speed`, at the gradient those two numbers and
+    // these axes give it. It used to be turned by the thumb instead, tan(percentage) through the
+    // whole quadrant whatever the data said, so the picture showed a steeper line than the pick
+    // maximised and the row it appeared to rest on was not the row the router took. Drawn
+    // through the pick, at its own angle, it now says exactly which row this percentage selects
+    // and why: the higher the percentage, the flatter the score still buys speed.
+    const screenSlope = slopeContourScreenSlope(slope, plotH, ySpan, plotW, xSpan)
+    // A contour steeper than the box is tall has left the box before moving a pixel sideways;
+    // upright through the pick is that same line in the limit.
+    const upright = !Number.isFinite(screenSlope) || screenSlope > plotH
     const pickX = pick ? xOf(pick.speed).toFixed(1) : '0'
     const line =
       !ceiling || !pick
@@ -4007,7 +4021,9 @@
     // Neither the pick's name nor its percentage is printed here: the composer bar under the text
     // field names the model, and the readout beside the slider carries the percentage the thumb
     // is on. The one message that stays is the case neither of them can explain.
-    const pickNote = pick ? '' : `<div class="hx-slope-pop-pick">nothing clears the minimums</div>`
+    const pickNote = pick
+      ? ''
+      : `<div class="hx-slope-pop-pick">${field.length ? 'nothing clears the minimums' : 'no model the router would use'}</div>`
     const minimums = [
       minSpeedSet ? `min ${fmtSlopeSpeed(minSpeedValue)} tok/s` : '',
       minIntellSet ? `min ${fmtSlopeIntell(minIntellValue)} int` : '',

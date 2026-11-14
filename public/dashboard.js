@@ -1438,16 +1438,11 @@
     // drawn at the edge with an arrow. Dimensionless: it describes the spread, not a speed.
     const SCATTER_OUTLIER_FACTOR = 2;
 
-    // ---- Slope-line selector overlay ----
-    // Two draggable threshold lines (minimum intelligence / minimum speed) and
-    // a slope-controlled line lowered onto the plot: the first eligible model
-    // it touches is the pick. The pick mirrors selectModelBySlope() in
-    // lib/utils.js; a manual pin (highlighted instead when active) outranks it.
-    // The slider spans the full rotation of the line: 0% is horizontal and 100%
-    // is vertical. The line's visual angle (not its numeric slope) advances
-    // evenly, so dragging the slider rotates the line smoothly the whole way.
-    // SLOPE_SLIDER_ANGLE_MAX is the angle at 100% (the line is drawn truly
-    // vertical there and the pick is the fastest eligible row).
+    // ---- The slope selector ----
+    // This scatter draws the field only: no selector line, no minimum lines. What the
+    // conversation's slope picks is shown in the composer's own popup (public/harness.js),
+    // which lowers the contour of `intelligence + slope × speed` onto the same rows — the
+    // route to that model is the pick the table's blue row names (pin > slope > ranking).
 
     // ──────── Usage plots ────────
     // Time-series usage plots: tokens/s over time, rendered as ~100 equal time buckets,
