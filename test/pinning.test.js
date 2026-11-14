@@ -449,3 +449,19 @@ test('a build stamp on a model id groups under the family it snapshots', () => {
   // The heading is the family, not the snapshot that happened to bring more providers.
   assert.equal(groupOf('deepseek-v4.1-flash').label, 'DeepSeek V4.1 Flash')
 })
+
+test("a mirror's route suffix groups under the model it serves", () => {
+  // g4f's Poe mirror lists "DeepSeek-V4.1-Flash-T" beside the plain id every other provider
+  // carries. The bot name describes how the mirror reaches those weights, not different
+  // weights, so the dashboard showed one model twice — once with 8 providers and once with 2.
+  const rows = [
+    row('puter', 'deepseek-v4.1-flash', 'DeepSeek V4.1 Flash'),
+    row('nvidia', 'deepseek-ai/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash'),
+    row('g4f', 'srv_mtsj8uzo97d3c0d49960:poe/DeepSeek-V4.1-Flash-T', 'DeepSeek V4.1 Flash T'),
+    row('g4f', 'srv_mv57e8714aedb1a00bf8:poe/DeepSeek-V4.1-Flash-T', 'DeepSeek V4.1 Flash T'),
+  ]
+  const groups = buildModelGroups(rows, canonicalizeModelId)
+  assert.equal(groups.length, 1)
+  assert.equal(groups[0].label, 'DeepSeek V4.1 Flash')
+  assert.equal(groups[0].models.length, 4)
+})

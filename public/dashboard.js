@@ -3550,6 +3550,9 @@
       }
       if (/^\d+$/.test(shortTokens[shortTokens.length - 1])) return false;
       const extra = longTokens.slice(shortTokens.length);
+      // A lone trailing `t` is a route marker on a mirror's bot name ("…-Flash-T"), not a
+      // different model — see the same rule in `sources.js`.
+      if (extra.length === 1 && extra[0] === 't') return true;
       return extra.every((token, index) => isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,2}$/.test(token)));
     }
 

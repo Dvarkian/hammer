@@ -447,6 +447,12 @@ export function isSameModelIdentity(a, b) {
   // stays a distinct snapshot, and a token after the stamp is a real variant, so
   // "…-1017-fast" keeps its own group.
   const extra = longTokens.slice(shortTokens.length)
+  // g4f's Poe mirror publishes DeepSeek V4.1 Flash as "DeepSeek-V4.1-Flash-T" beside the plain
+  // id every other provider serves, and `-T` names the route the bot takes to those weights,
+  // not different weights — the same rows already carry the same catalogue score. A lone
+  // trailing `t` is therefore a route marker; anything longer ("…-T-Pro") is a real variant
+  // and keeps its own group.
+  if (extra.length === 1 && extra[0] === 't') return true
   return extra.every(
     (token, index) =>
       isModelSizeToken(token) || (index === extra.length - 1 && /^\d{1,4}$/.test(token)),
