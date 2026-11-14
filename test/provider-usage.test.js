@@ -6,6 +6,22 @@ import {
   selectProviderUsageReport,
   serializeProviderUsage,
 } from '../lib/provider-usage.js'
+import { codexUsageWindowName } from '../lib/server.js'
+
+test('Codex plan windows are named by the duration OpenAI states, not by their slot', () => {
+  // A free account reports a 30-day window in `primary_window`; paid plans put a 5-hour
+  // session limit there and a weekly cap in the secondary slot, and move the survivor when
+  // they drop one. The duration is the only thing about the window that stays true.
+  assert.equal(codexUsageWindowName(5 * 60 * 60), '5-hour')
+  assert.equal(codexUsageWindowName(7 * 24 * 60 * 60), 'weekly')
+  assert.equal(codexUsageWindowName(30 * 24 * 60 * 60), 'monthly')
+  assert.equal(codexUsageWindowName(12 * 60 * 60), '12-hour')
+  assert.equal(codexUsageWindowName(60 * 24 * 60 * 60), '60-day')
+  // A payload that states no duration leaves the window as a rolling one rather than
+  // inventing a length for it.
+  assert.equal(codexUsageWindowName(undefined), 'rolling')
+  assert.equal(codexUsageWindowName(0), 'rolling')
+})
 
 test('quota reports preserve the original total, remaining amount, and period', () => {
   const [requests] = normalizeProviderUsageReport(

@@ -711,3 +711,16 @@ test('a stated allowance is a quota, and only a short clock makes it a rate limi
   assert.doesNotMatch(dashboard, /kind: 'rate-limit',\s*period: 'window'/)
   assert.doesNotMatch(harness, /kind: 'rate-limit',\s*period: 'window'/)
 })
+
+test('a Codex plan window reaches the model row as a percent-only quota', () => {
+  // The account endpoint answers with a percentage of a window it never sizes, and the row
+  // read only requests and tokens: a Codex model said "limit not published · no usage
+  // recorded yet" while the provider card beside it carried 0% of a 30-day window.
+  assert.match(server, /window: codexUsageWindowName\(window\.limit_window_seconds\)/)
+  assert.match(dashboard, /String\(report\.metric \|\| ''\)\.toLowerCase\(\) === 'percent'/)
+  assert.match(dashboard, /usedPercent: reportPercent,/)
+  assert.match(dashboard, /percentOnly: true,\s*\}\), true\)/)
+  // A percentage is the whole measurement: reading its 100 as a token total would draw
+  // "100 tok / MONTHLY · 0 left" over a window nobody sized.
+  assert.doesNotMatch(dashboard, /metric: 'percent',\s*rawWindow/)
+})

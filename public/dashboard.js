@@ -4226,7 +4226,29 @@
       }
       const report = m?.providerUsage;
       const reportMetric = report?.metric === 'requests' ? 'requests' : report?.metric === 'tokens' ? 'tokens' : null;
-      if (report && reportMetric) {
+      // A provider that reports how much of a window is spent without sizing the window —
+      // ChatGPT's Codex plan limits, Token Harbor's free allowance — states usage and no
+      // denominator. Reading only requests and tokens dropped those windows, so a Codex row
+      // read "limit not published · no usage recorded yet" while the account endpoint was
+      // reporting 0% of its window.
+      const reportPercent =
+        report && !reportMetric && String(report.metric || '').toLowerCase() === 'percent'
+          ? Number(report.used)
+          : NaN;
+      if (report && Number.isFinite(reportPercent)) {
+        add(quotaRowWindow({
+          period: quotaRowPeriod(report.window),
+          metric: 'tokens',
+          rawWindow: report.window,
+          usedPercent: reportPercent,
+          resetAt: report.resetAt,
+          source: 'provider',
+          scope: report.scope,
+          detail: report.accountLabel || report.model || report.window || 'provider usage',
+          stale: report.freshness === 'stale',
+          percentOnly: true,
+        }), true);
+      } else if (report && reportMetric) {
         add(quotaRowWindow({
           period: quotaRowPeriod(report.window),
           metric: reportMetric,
