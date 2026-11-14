@@ -147,6 +147,11 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // row was ToS `avoid` (personal use; no resale or sublicensing).
   'coze',
   'bytez',
+  // `sparkdesk` (2026-11-14): a second card for one xfyun host. Its row is ToS `caution` and
+  // it points at the same `spark-api-open.xf-yun.com` endpoint and the same Spark Lite App ID
+  // as `iflytek`, which stays — keyless, free, and ToS `avoid` — so removing this one leaves
+  // no host without a row, only two names for one account. Removed on request.
+  'sparkdesk',
   // `morph` (2026-11-13): the key authenticates — `/v1/models` lists its five serverless ids
   // and the roster row is ToS `ok` — but every completion is refused with HTTP 402 "Monthly
   // quota exceeded. Upgrade to a paid plan" on every model tried (morph-v3-fast, morph-kimik31,

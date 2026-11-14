@@ -108,13 +108,6 @@
       "verifiedAt": "2026-09-22",
       "httpStatus": 200
     },
-    "sparkdesk": {
-      "url": "https://console.xfyun.cn/",
-      "evidence": "iFlytek open platform console; Spark (SparkDesk) keys are issued here",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200,
-      "note": "Timed out from this environment."
-    },
     "huggingchat": {
       "url": "https://huggingface.co/chat/",
       "evidence": "HuggingChat; a Hugging Face token is what authenticates it",

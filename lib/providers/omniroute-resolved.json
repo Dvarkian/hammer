@@ -521,20 +521,6 @@
         "declaredModels": ["reka-flash-3", "reka-flash", "reka-edge-2603"]
       }
     },
-    "sparkdesk": {
-      "activation": "active",
-      "chatUrl": "https://spark-api-open.xf-yun.com/v1/chat/completions",
-      "modelsUrl": null,
-      "auth": {
-        "kind": "bearer",
-        "headerName": "Authorization",
-        "scheme": "Bearer"
-      },
-      "provenance": {
-        "modelCount": 4,
-        "declaredModels": ["4.0Ultra", "generalv3", "pro-128k", "lite"]
-      }
-    },
     "t3-web": {
       "activation": "staged",
       "reason": "t3.chat authenticates with a session cookie and streams its own frame shape, so it needs a wire adapter"

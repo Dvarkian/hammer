@@ -185,12 +185,6 @@
       "modelCount": 2
     },
     {
-      "key": "sparkdesk",
-      "access": "keyless",
-      "tos": "caution",
-      "modelCount": 1
-    },
-    {
       "key": "t3-web",
       "access": "keyless",
       "tos": "avoid",
