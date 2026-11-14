@@ -147,6 +147,14 @@ export const EXCLUDED_PROVIDER_KEYS = new Set([
   // row was ToS `avoid` (personal use; no resale or sublicensing).
   'coze',
   'bytez',
+  // `siliconflow` (2026-11-14): the key authenticates on `api.siliconflow.com` — `/v1/models`
+  // lists 80 ids — but every completion is refused with HTTP 402 `code 30001` "Sorry, your
+  // account balance is insufficient", including the free-tier Qwen3-8B the roster row is built
+  // on, and no `:free` alias exists. The `.cn` host rejects the same token outright (401
+  // `code 30014` "Token is invalid"), so the key is an international one with no allowance on
+  // it: SiliconFlow's free models are only free to an account that holds a balance. Removed on
+  // request.
+  'siliconflow',
   // `sparkdesk` (2026-11-14): a second card for one xfyun host. Its row is ToS `caution` and
   // it points at the same `spark-api-open.xf-yun.com` endpoint and the same Spark Lite App ID
   // as `iflytek`, which stays — keyless, free, and ToS `avoid` — so removing this one leaves

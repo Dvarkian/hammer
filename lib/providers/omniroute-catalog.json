@@ -118,12 +118,6 @@
       "note": "ERNIE Speed/Lite/Tiny free; platform requires real-name authentication."
     },
     {
-      "key": "siliconflow",
-      "access": "permanent",
-      "tos": "caution",
-      "modelCount": 10
-    },
-    {
       "key": "qoder",
       "access": "signup-credit",
       "signupCreditTokens": 1000000,

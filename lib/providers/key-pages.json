@@ -76,12 +76,6 @@
       "httpStatus": null,
       "note": "Timed out from this environment; the path comes from Qianfan's own SDK docs."
     },
-    "siliconflow": {
-      "url": "https://cloud.siliconflow.com/me/account/ak",
-      "evidence": "SiliconFlow console; API keys page",
-      "verifiedAt": "2026-09-22",
-      "httpStatus": 200
-    },
     "qoder": {
       "url": "https://qoder.com/",
       "evidence": "Qoder homepage; the account behind signup issues the API key",
