@@ -227,6 +227,15 @@ test('a console is offered the steps its model actually takes', () => {
       id,
     )
   }
+  // A gateway namespaces its catalog ids with the backend server (`srv_ab12:model`). The
+  // namespace picks who serves the row, not what the model is; leaving it in hid the steps
+  // on every child spawned through that gateway.
+  assert.deepEqual(thinkingChoicesFor('g4f', 'srv_ab12:deepseek-v4.1-flash-1017').levels, [
+    'off',
+    'low',
+    'medium',
+    'high',
+  ])
   // A plain chat model has no step but off, and says why: a slider offering three more would
   // move without changing the request.
   const plain = thinkingChoicesFor('groq', 'llama-3.3-70b-versatile')
@@ -262,19 +271,19 @@ test('a level never rides into a wire that builds its own payload', () => {
 
 test('the composer control follows the steps its route reports', () => {
   const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
-  assert.match(harness, /function paintThinking\(choices, level\)/)
+  assert.match(harness, /function paintThinking\(choices, level, hidden = false\)/)
   assert.match(harness, /slider\.disabled = inert/)
   // A route with one step has nothing to choose, so the block is hidden instead of showing a
   // slider that cannot move. The CSS has to say so too: the block's own `display` outranks the
   // browser's rule for [hidden].
   assert.match(harness, /const control = \$\('hx-thinking'\)/)
-  assert.match(harness, /if \(control\) control\.hidden = inert/)
+  assert.match(harness, /if \(control\) control\.hidden = hidden \|\| inert/)
   const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8')
   assert.match(html, /id="hx-thinking"/)
   const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
   assert.match(css, /\.hx-composer-thinking\[hidden\] \{[^}]*display: none/)
   assert.match(harness, /setThinkingLevel\(thinkingLevels\[Number\(slider\.value\)\] \|\| 'off'\)/)
-  assert.match(harness, /paintThinking\(data\.thinking, data\.thinkingLevel \|\| 'off'\)/)
+  assert.match(harness, /syncComposerMode\(ctx, data\.thinking, data\.thinkingLevel \|\| 'off'\)/)
   const pi = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
   // Every frame that carries a route carries its steps: one helper builds them for the status
   // broadcast and both opening hellos, and the status the control is drawn from answers with
@@ -285,4 +294,34 @@ test('the composer control follows the steps its route reports', () => {
     pi,
     /thinking:\s*\n?\s*plan\.routed && pick\s*\n?\s*\? thinkingChoicesFor\(pick\.providerKey, pick\.realModelId \|\| pick\.modelId\)/,
   )
+})
+
+test('a child console names its own model and hides the router-only controls', () => {
+  const harness = readFileSync(new URL('../public/harness.js', import.meta.url), 'utf8')
+  // The label comes from the child's record, not the parent router's pick.
+  assert.match(harness, /function subagentComposerModel\(ctx, statusModel\)/)
+  assert.match(
+    harness,
+    /const record = ctx\?\.subagentId \? subagentRecord\(ctx\.subagentId\) : null/,
+  )
+  assert.match(harness, /if \(ctx\.subagentId\) \{\s*const child = subagentComposerModel/)
+  // The slope and thinking controls are router controls. A child's selected row is fixed,
+  // so both leave the composer; the thinking block is explicitly hidden rather than merely
+  // showing one step.
+  assert.match(harness, /function syncComposerMode\(ctx, choices, level\)/)
+  assert.match(harness, /slope\.hidden = child/)
+  assert.match(harness, /paintThinking\(child \? null : choices, level \|\| 'off', child\)/)
+
+  const pi = readFileSync(new URL('../lib/http/routes/pi.js', import.meta.url), 'utf8')
+  // A child bridge's route fields carry its selected model's steps and no parent pick.
+  assert.match(pi, /const childBridgeFor = \(key\) =>/)
+  assert.match(pi, /const child = childBridgeFor\(key\)/)
+  assert.match(
+    pi,
+    /routedModel: null,[\s\S]*?thinking:[\s\S]*?thinkingChoicesFor\(providerKey, modelId\)/,
+  )
+
+  const policy = readFileSync(new URL('../lib/subagents/policy.js', import.meta.url), 'utf8')
+  // The chosen level travels with the record, so a reopened child reports the effort it runs at.
+  assert.match(policy, /thinking: record\.thinking \|\| null/)
 })

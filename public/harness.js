@@ -131,6 +131,16 @@
     attachments: [],
     sessions: [],
     sessionQuery: '',
+    /** Subagent records for the tree (the router is authoritative; this is its last paint). */
+    subagents: [],
+    /** The scoped UI token, fetched on boot; never a child's or the parent console's. */
+    subagentToken: '',
+    /** The root the active conversation owns, used to scope its tree. */
+    subagentRoot: null,
+    /** Whether the router reports subagents as available. */
+    subagentsAvailable: null,
+    /** The console to return to from a child view. */
+    subagentReturnId: 'main',
     /** The session file the rename dialog is editing, or null while it is closed. */
     /** Whether the next render should select the rename input's text (edit just opened). */
     renamingSelect: false,
@@ -155,10 +165,11 @@
   // console on screen, which is why every renderer below is still written against one
   // conversation.
 
-  function createConsole({ id, instanceId = null, sessionFile = null }) {
+  function createConsole({ id, instanceId = null, subagentId = null, sessionFile = null }) {
     const console = {
       id,
       instanceId,
+      subagentId,
       sessionFile,
       items: [],
       tools: new Map(),
@@ -197,6 +208,12 @@
 
   /** Where one console's routes live; the main console has no instance id. */
   function consoleApi(console, path = '') {
+    if (console && console.subagentId) {
+      const base = `/api/subagents/${encodeURIComponent(console.subagentId)}/console${path}`
+      const token = state.subagentToken
+      if (!token) return base
+      return `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`
+    }
     return console && console.instanceId
       ? `${API}/instances/${console.instanceId}/console${path}`
       : `${API}${path}`
@@ -220,6 +237,7 @@
     restoreDraft(console)
     renderQueue(console)
     if (console.status) renderRouting(console.status, console)
+    else syncComposerMode(console)
     renderUsage(console)
     // The details rail belongs to the conversation on screen. Repaint it here as well as on
     // status frames: a tab switch must not leave the previous conversation's compaction state
@@ -237,6 +255,10 @@
     // click had to activate, or the one a restart resumed mid-turn. Arm the stall check here so
     // the wait ends in the file being read rather than in an empty log.
     watchStalledHistory(console)
+    // The child strip and its tree record belong to the console on screen; repaint them on
+    // every activation so switching back to a parent cannot leave a child's brief behind.
+    renderSubagentChrome()
+    renderSubagents()
     // The rail follows the conversation on screen: the plot is this console's history now,
     // which is the difference between "the last hour" (the router's own view) and "this
     // conversation, all of it". A console with no file yet publishes the router's view back.
@@ -258,8 +280,17 @@
    * in front of the reader and left them on an empty console. This is that missing half,
    * written whenever a conversation takes the screen or starts writing its file.
    */
+  /**
+   * Whether a file belongs to a subagent rather than a top-level conversation. A child is
+   * opened from its tree, never adopted as the page's main session on the next boot.
+   * @param {string|null|undefined} file
+   */
+  function isSubagentSession(file) {
+    return typeof file === 'string' && /[\\/]sessions[\\/]subagents[\\/]/.test(file)
+  }
+
   function rememberViewed(console) {
-    if (!console?.sessionFile) return
+    if (!console?.sessionFile || console.subagentId || isSubagentSession(console.sessionFile)) return
     try {
       localStorage.setItem(LAST_KEY, console.sessionFile)
     } catch {
@@ -270,7 +301,14 @@
   /** The conversation the last page was showing, if it remembered one. */
   function lastViewedFile() {
     try {
-      return localStorage.getItem(LAST_KEY) || null
+      const file = localStorage.getItem(LAST_KEY) || null
+      // A page built before this guard may already have remembered a child's file. Forget it
+      // rather than resuming a subagent onto the main console where it has no tree identity.
+      if (isSubagentSession(file)) {
+        localStorage.removeItem(LAST_KEY)
+        return null
+      }
+      return file
     } catch {
       return null
     }
@@ -340,10 +378,17 @@
     if (Array.isArray(stored)) {
       for (const entry of stored) {
         // Older pages saved bare paths; a path is simply a tab that was not running.
-        if (typeof entry === 'string' && entry) openFiles.set(entry, false)
-        else if (entry && typeof entry.file === 'string' && entry.file) {
-          openFiles.set(entry.file, entry.running === true)
+        if (typeof entry === 'string' && entry && !isSubagentSession(entry)) {
+          openFiles.set(entry, false)
+        } else if (entry && typeof entry.file === 'string' && entry.file) {
+          if (!isSubagentSession(entry.file)) openFiles.set(entry.file, entry.running === true)
         }
+      }
+      // A child opened before this guard may still be in the saved tabs. It belongs to the
+      // tree, not to the page's parallel-console list, and would otherwise be reopened as a
+      // top-level conversation after a restart.
+      for (const file of [...openFiles.keys()]) {
+        if (isSubagentSession(file)) openFiles.delete(file)
       }
     }
   } catch {
@@ -360,7 +405,9 @@
           openFiles.set(ctx.sessionFile, Boolean(ctx.running))
         }
       }
-      const entries = [...openFiles].map(([file, running]) => ({ file, running }))
+      const entries = [...openFiles]
+        .filter(([file]) => !isSubagentSession(file))
+        .map(([file, running]) => ({ file, running }))
       // The conversation on screen goes last: a restore reopens the others quietly and then
       // puts the reader back on this one.
       // It is only reordered, never required: looking at the main console must not forget the
@@ -383,7 +430,7 @@
 
   /** Notes that a conversation is open, so the next page (or restart) reopens it. */
   function rememberOpenFile(file, running = false) {
-    if (!file || typeof file !== 'string') return
+    if (!file || typeof file !== 'string' || isSubagentSession(file)) return
     if (!openFiles.has(file)) {
       openFiles.set(file, Boolean(running))
     }
@@ -470,7 +517,10 @@
     // Where to land is decided before the tabs are reopened, because the remembered
     // conversation may need the main console itself. `hammer.hx.open` writes the conversation
     // on screen last, so its last entry is the fallback for a page from before LAST_KEY.
-    const lastFile = bootLastViewed || [...openFiles.keys()].at(-1) || null
+    const lastFile =
+      bootLastViewed ||
+      [...openFiles.keys()].filter((file) => !isSubagentSession(file)).at(-1) ||
+      null
     let focusFile = lastFile
     const main = state.consoles.get('main')
     if (lastFile && main && ![...state.consoles.values()].some((ctx) => ctx.sessionFile === lastFile)) {
@@ -1719,6 +1769,8 @@
   const providerNameByKey = new Map()
   /** modelId -> the provider that offers it, so an old message can still name who served it. */
   const providerKeyByModel = new Map()
+  /** Model group id (or row id) -> the router table's display label. */
+  const modelLabelByKey = new Map()
   /** providerKey::modelId -> that row's quota fields, from the same table read. */
   const quotaRowByModel = new Map()
   /** When the table must be read again; a failed read ages out like a successful one. */
@@ -1761,10 +1813,15 @@
           const data = await res.json()
           ttftByModel.clear()
           quotaRowByModel.clear()
+          modelLabelByKey.clear()
           for (const row of Array.isArray(data.models) ? data.models : []) {
             const id = row && (row.modelId || row.id)
+            const label = String(row?.label || '')
             const ms = row && row.ttft != null ? Number(row.ttft) : NaN
             if (id && Number.isFinite(ms) && ms > 0) ttftByModel.set(String(id), ms)
+            if (id && label) modelLabelByKey.set(String(id), label)
+            if (row?.modelGroupId && label)
+              modelLabelByKey.set(String(row.modelGroupId), row.modelGroupLabel || label)
             const providerKey = String(row?.providerKey || '')
             const providerName = String(row?.providerName || row?.brand || '')
             if (providerKey && providerName) providerNameByKey.set(providerKey, providerName)
@@ -1940,6 +1997,10 @@
       todo: '<path d="M12 0v3L5 10.5L12 18v6M12 3l7 7.5L12 18"/><path d="M9 10.5l2 2 4-4"/>',
       // Globe node with equator and meridians linking top and bottom to spine.
       webfetch: '<path d="M12 0v2.5C6.5 2.5 4 6.5 4 12c0 5.5 2.5 9.5 8 9.5v2.5M12 2.5c5.5 0 8 4 8 9.5s-2.5 9.5-8 9.5"/><path d="M4 12h16M12 2.5C8.5 6 8.5 18 12 21.5M12 2.5C15.5 6 15.5 18 12 21.5"/>',
+      // The same globe for Hammer's explicit web fetch tool.
+      web_fetch: '<path d="M12 0v2.5C6.5 2.5 4 6.5 4 12c0 5.5 2.5 9.5 8 9.5v2.5M12 2.5c5.5 0 8 4 8 9.5s-2.5 9.5-8 9.5"/><path d="M4 12h16M12 2.5C8.5 6 8.5 18 12 21.5M12 2.5C15.5 6 15.5 18 12 21.5"/>',
+      // The magnifier for a web search, sharing the grep glyph's spine geometry.
+      web_search: '<path d="M12 0v3C8 3 5.5 5.5 5.5 9.5C5.5 13.5 8 16 12 16v8M12 3C16 3 18.5 5.5 18.5 9.5C18.5 13.5 16 16 12 16"/><path d="M12 16l4.5 4.5M9 8.5h6M10 11h4"/>',
       // Question mark node branching out of the spine stream.
       question: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><path d="M10 8c0-1.2 1-2 2-2s2 .8 2 2c0 1.5-2 1.8-2 3.5M12 14v.5"/>',
       // Gear node woven into the spine stream.
@@ -1955,7 +2016,10 @@
    */
   function toolLabel(name) {
     const raw = String(name || 'tool')
-    return raw.toLowerCase() === 'bash' ? 'run' : raw
+    const key = raw.toLowerCase()
+    const label =
+      key === 'bash' ? 'run' : key === 'web_search' ? 'search' : key === 'web_fetch' ? 'fetch' : raw
+    return label
   }
 
   /** The before/after pairs an edit call asked for, one per replacement. */
@@ -2060,6 +2124,9 @@
   }
 
   function toolMarkup(item) {
+    // A subagent call is not a shell or a file read: its result is a child's lifecycle, so
+    // the generic command card would hide the name, model and open control that matter.
+    if (/^subagent$/i.test(String(item.name || ''))) return subagentToolMarkup(item)
     const output = item.result || item.partial || ''
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
     // A finished call's meta is its timing alone: the state label says nothing for it, so the
@@ -2104,6 +2171,11 @@
 
   function itemMarkup(item) {
     if (item.kind === 'user') {
+      const text = String(item.text || '')
+      // Background results and peer messages are injected into Pi as user-shaped text. They
+      // are cards here, never a message the user typed.
+      if (/^\s*<subagent-result\b/i.test(text)) return subagentWrapperMarkup('result', text)
+      if (/^\s*<agent-message\b/i.test(text)) return subagentWrapperMarkup('message', text)
       return `<div class="hx-role">You</div><div class="hx-turn-text">${escapeHtml(item.text)}</div>`
     }
     if (item.kind === 'assistant') return assistantMarkup(item)
@@ -2785,10 +2857,17 @@
       return
     }
     windowEl.hidden = false
-    const scale = (track - MINIMAP_TICK) / scrollable
-    const top = transcript.scrollTop * scale
-    const height = Math.max(transcript.clientHeight * scale, MINIMAP_TICK)
-    windowEl.style.top = `${Math.round(Math.min(top, track - height))}px`
+    // A window is a scrollbar thumb: its height is the viewport's share of the whole log, not
+    // its share of the scroll range. Scaling by the range made a barely-overflowing log's grab
+    // taller than the rail; `track - height` then went negative and parked it above the top of
+    // the screen. Cap it at the rail and clamp both ends of its travel.
+    const height = Math.min(
+      Math.max((track * transcript.clientHeight) / transcript.scrollHeight, MINIMAP_TICK),
+      track,
+    )
+    const maxTop = Math.max(track - height, 0)
+    const top = scrollable > 0 ? (transcript.scrollTop / scrollable) * maxTop : 0
+    windowEl.style.top = `${Math.round(Math.max(0, Math.min(top, maxTop)))}px`
     windowEl.style.height = `${Math.round(height)}px`
   }
 
@@ -2888,9 +2967,12 @@
       const onMove = (moveEvent) => {
         if (!minimapDragging) return
         const scrollable = transcript.scrollHeight - transcript.clientHeight
-        const scale = scrollable / Math.max(track - MINIMAP_TICK, 1)
+        // The grab can only travel as far as its own height leaves; using MINIMAP_TICK here
+        // let a taller window keep going after its bottom had left the rail.
+        const travel = Math.max(track - windowEl.offsetHeight, 0)
+        const scale = scrollable / Math.max(travel, 1)
         const next = startTop + (moveEvent.clientY - startY)
-        windowEl.style.top = `${Math.max(0, Math.min(next, track - MINIMAP_TICK))}px`
+        windowEl.style.top = `${Math.max(0, Math.min(next, travel))}px`
         transcript.scrollTop = windowEl.offsetTop * scale
       }
       const onUp = () => {
@@ -3460,7 +3542,7 @@
    * reported steps — one step disables it, with the route's reason on its title — and the
    * slider's value is the step the console is really on.
    */
-  function paintThinking(choices, level) {
+  function paintThinking(choices, level, hidden = false) {
     const levels =
       Array.isArray(choices?.levels) && choices.levels.length
         ? choices.levels
@@ -3470,7 +3552,7 @@
     // A route with one step has nothing to set, and a slider that cannot move reads as a broken
     // one — so the block is not shown at all. It returns the moment a route reports steps.
     const control = $('hx-thinking')
-    if (control) control.hidden = inert
+    if (control) control.hidden = hidden || inert
     const slider = $('hx-thinking-slider')
     if (slider) {
       slider.min = '0'
@@ -3486,6 +3568,20 @@
     // beside a disabled control would claim thinking this model never receives.
     const label = $('hx-thinking-level')
     if (label) label.textContent = inert ? 'off' : level || 'off'
+  }
+
+  /**
+   * The slope and thinking controls describe how the router would run this conversation.
+   * A child is already pinned to one model, so both are folded away there; switching back
+   * to a routed console restores the thinking control from that console's own status.
+   */
+  function syncComposerMode(ctx, choices, level) {
+    const child = Boolean(ctx?.subagentId)
+    const slope = document.querySelector('.hx-composer-slope')
+    if (slope) slope.hidden = child
+    const pop = $('hx-slope-pop')
+    if (child && pop) pop.hidden = true
+    paintThinking(child ? null : choices, level || 'off', child)
   }
 
   /** Paints the conversation's slope, which the router reports with every status. */
@@ -4508,12 +4604,44 @@
       : ''
   }
 
+  /**
+   * The model a child console is actually on. A child has no route of its own: its record
+   * names the model chosen at spawn, and the parent router's pick is a different console's.
+   */
+  function subagentComposerModel(ctx, statusModel) {
+    const record = ctx?.subagentId ? subagentRecord(ctx.subagentId) : null
+    const info = record || ctx?.subagent || ctx?.status?.subagent || null
+    const selected = String(info?.model?.selected || info?.model?.requested || '')
+    const statusRaw =
+      typeof statusModel === 'string' ? statusModel : statusModel?.name || statusModel?.id || ''
+    const raw = selected || statusRaw
+    const cut = raw.indexOf('/')
+    const providerKey = cut > 0 ? raw.slice(0, cut) : ''
+    const modelId = cut > 0 ? raw.slice(cut + 1) : raw
+    const display = record ? subagentDisplay(record) : null
+    const tail = modelId.includes(':') ? modelId.split(':').pop() : modelId
+    return {
+      label:
+        display?.label && display.label !== '—'
+          ? display.label
+          : printableModelName(tail || 'subagent model'),
+      provider: providerKey ? providerDisplayName(providerKey) : '',
+    }
+  }
+
   /** Paints the composer's model strip from the newest answer, or the router's current pick. */
   function paintModelLabel(ctx, statusModel) {
     const nameEl = $('hx-model-name')
     const providerEl = $('hx-model-provider')
     const viaEl = $('hx-model-via')
     if (!nameEl) return
+    if (ctx.subagentId) {
+      const child = subagentComposerModel(ctx, statusModel)
+      nameEl.textContent = [child.label, child.provider].filter(Boolean).join(' · ')
+      if (viaEl) viaEl.hidden = true
+      if (providerEl) providerEl.textContent = child.provider || '—'
+      return
+    }
     const routed = ctx.routedModel
     const answered = ctx.answeredModel
     const routedNames = routed
@@ -4585,8 +4713,10 @@
         : 'A model is named in ~/.hammer.json, so routing is bypassed for the agent.'
     }
     // The route names the steps its model takes; the control follows that, not a fixed four.
-    paintThinking(data.thinking, data.thinkingLevel || 'off')
-    if (data.slopePercent != null) paintSlopePercent(data.slopePercent)
+    // A child has no route to follow: its pinned model is named by its record and both
+    // router-only controls are hidden.
+    syncComposerMode(ctx, data.thinking, data.thinkingLevel || 'off')
+    if (!ctx.subagentId && data.slopePercent != null) paintSlopePercent(data.slopePercent)
     paintSlopeNotches()
     if (data.cwd) {
       const cwdEl = $('hx-cwd')
@@ -5748,10 +5878,20 @@
   async function refreshStatus(console = active()) {
     if (!console) return
     try {
+      // A child console may receive its hello and try to rebuild before the page has
+      // exchanged its UI token; the guard would answer 401 and leave the tab blank. Wait for
+      // the token rather than losing the first status frame.
+      if (console.subagentId && !state.subagentToken) await initSubagents()
       const res = await fetch(consoleApi(console, '/status'))
       const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error || `status ${res.status}`)
       console.status = data
+      if (data.rootId) {
+        console.rootId = data.rootId
+        if (console === active()) state.subagentRoot = data.rootId
+      }
+      if (data.subagent) console.subagent = data.subagent
+      if (data.subagents) state.subagentsAvailable = data.subagents.available === true
       if (data.sessionFile) rememberSessionFile(console, data.sessionFile)
       setPhase(data.phase, console)
       setRunning(
@@ -5780,7 +5920,9 @@
         }
       }
       if (console === active()) updateComposer()
+      if (console === active()) renderSubagentChrome()
       renderSessions()
+      renderSubagents()
       // A background console's status must not repaint the rail: the panel is one element, and
       // a running inactive tab would otherwise disable the button while the active tab is idle.
       if (console === active()) renderCompactionPanel(console)
@@ -5853,9 +5995,23 @@
       }
       if (payload.type === 'hello') {
         for (const entry of payload.consoles || []) {
-          const target = state.consoles.get(entry.id)
+          let target = state.consoles.get(entry.id)
+          // A child console is created by its first hello, so opening one from the tree is
+          // just an activate() rather than a second connection or a polling loop.
+          if (!target && String(entry.id).startsWith('sub-')) {
+            target = createConsole({
+              id: entry.id,
+              subagentId: entry.status?.subagent?.id || `sa_${String(entry.id).slice(4)}`,
+              sessionFile: entry.status?.sessionFile || null,
+            })
+          }
           if (target) applyHello(target, entry)
         }
+        return
+      }
+      if (payload.type === 'subagents') {
+        state.subagents = Array.isArray(payload.records) ? payload.records : []
+        renderSubagents()
         return
       }
       const target = state.consoles.get(payload.consoleId)
@@ -5922,6 +6078,7 @@
       void restoreHistory(ctx)
     }
     if (ctx === active()) updateComposer()
+    if (ctx === active()) renderSubagentChrome()
     syncTranscript({ reset: true }, ctx)
     renderSessions()
   }
@@ -5930,6 +6087,12 @@
   function applyStatusFrame(ctx, status) {
     if (!status) return
     ctx.status = status
+    if (status.rootId) {
+      ctx.rootId = status.rootId
+      if (ctx === active()) state.subagentRoot = status.rootId
+    }
+    if (status.subagent) ctx.subagent = status.subagent
+    if (status.subagents) state.subagentsAvailable = status.subagents.available === true
     if (status.sessionFile) rememberSessionFile(ctx, status.sessionFile)
     setPhase(status.phase, ctx)
     // Compaction is work even though it is not a turn: pi stops the agent, spends a model call
@@ -5965,6 +6128,7 @@
       }
     }
     if (ctx === active()) updateComposer()
+    if (ctx === active()) renderSubagentChrome()
 
     // Pi's context figure lives on the status, not the usage frame, after a rehydration — so a
     // page opened onto a full context sees the meter (not an empty one) on the first frame.
@@ -6461,6 +6625,514 @@
     }
   }
 
+  // ── Subagents ───────────────────────────────────────────────────────────────────────
+  //
+  // The router owns the records; this page paints them. A child uses the same console
+  // machinery as every other conversation, so opening one is activate(child), and the page's
+  // existing SSE stream already carries its transcript. The only special UI is the tree,
+  // the child strip, and the tool/notification cards that name a child.
+
+  const SUBAGENT_API = '/api/subagents'
+
+  function subagentChip(label, tone = '') {
+    if (!label) return ''
+    return `<span class="hx-subagent-tag${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`
+  }
+
+  function subagentElapsed(ms) {
+    const total = Math.max(0, Math.floor(Number(ms || 0) / 1000))
+    if (total < 60) return `${total}s`
+    const minutes = Math.floor(total / 60)
+    if (minutes < 60) return `${minutes}m`
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+  }
+
+  function subagentDisplay(record) {
+    const display = record?.display || {}
+    const key = record?.model?.group || record?.model?.requested || ''
+    return {
+      key,
+      label: display.label || key || '—',
+      intel: display.intelligence?.band || null,
+      speed: display.speed?.band || null,
+      usage: display.usage?.tag || null,
+      usageReason: display.usage?.reason || null,
+      rate: display.speed?.rate ?? null,
+      ttft: display.speed?.ttft ?? null,
+      aa: display.intelligence?.aa ?? null,
+      selected: record?.model?.selected || display.selected || null,
+    }
+  }
+
+  function subagentModelChips(record) {
+    const display = subagentDisplay(record)
+    return [
+      display.label !== '—' ? `<span class="hx-subagent-chip">${escapeHtml(display.label)}</span>` : '',
+      subagentChip(display.intel),
+      subagentChip(display.speed),
+      subagentChip(display.usage),
+    ].join('')
+  }
+
+  function subagentModelLine(record) {
+    const display = subagentDisplay(record)
+    const speed = [
+      display.rate != null ? `${Number(display.rate).toFixed(1)} tok/s` : '',
+      display.ttft != null ? `${Number(display.ttft).toFixed(2)}s ttft` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    const intel = display.intel
+      ? `${display.intel}${display.aa != null ? ` (${Number(display.aa).toFixed(1)})` : ''}`
+      : ''
+    return [intel, [display.speed, speed].filter(Boolean).join(' · '), display.usage]
+      .filter(Boolean)
+      .join(' · ')
+  }
+
+  function subagentRecord(id) {
+    return state.subagents.find((record) => record.id === id) || null
+  }
+
+  async function subagentRequest(path, options = {}) {
+    if (!state.subagentToken) return null
+    const response = await fetch(`${SUBAGENT_API}${path}`, {
+      ...options,
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${state.subagentToken}`,
+        ...(options.headers || {}),
+      },
+    })
+    const data = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      if (response.status === 401) state.subagentToken = ''
+      throw new Error(data.error?.message || data.error || `subagents ${response.status}`)
+    }
+    return data
+  }
+
+  async function initSubagents() {
+    try {
+      const response = await fetch(`${SUBAGENT_API}/ui-token`)
+      if (!response.ok) {
+        state.subagentsAvailable = false
+        renderSubagents()
+        return
+      }
+      const data = await response.json().catch(() => ({}))
+      state.subagentToken = data.token || ''
+      await loadSubagents()
+    } catch {
+      state.subagentsAvailable = false
+      renderSubagents()
+    }
+  }
+
+  async function loadSubagents() {
+    if (!state.subagentToken) return
+    try {
+      const data = await subagentRequest('')
+      if (!data) return
+      state.subagents = Array.isArray(data.subagents) ? data.subagents : []
+      state.subagentsAvailable = true
+      renderSubagents()
+    } catch {
+      // A router without the route, or a page that lost its token, simply has no tree.
+    }
+  }
+
+  async function openSubagent(id) {
+    const record = subagentRecord(id)
+    if (!record) return
+    if (!state.subagentToken) await initSubagents()
+    let ctx = [...state.consoles.values()].find((candidate) => candidate.subagentId === id)
+    if (!ctx) {
+      const consoleKey = `sub-${String(id).replace(/^sa_/, '')}`
+      ctx = createConsole({
+        id: consoleKey,
+        subagentId: id,
+        sessionFile: Array.isArray(record.runs) ? record.runs.at(-1)?.sessionFile || null : null,
+      })
+    }
+    // Opening the child that is already on screen must not make that child its own return
+    // target: the next click on “← parent” would activate the console already showing and
+    // look dead. Only a real move records where the reader came from.
+    const from = active()
+    if (!ctx || from?.id !== ctx.id) state.subagentReturnId = from?.id || 'main'
+    activate(ctx)
+    try {
+      await refreshStatus(ctx)
+      if (ctx.sessionFile) await restoreHistory(ctx)
+      closeDrawers()
+    } catch (err) {
+      setHint(err?.message || 'Could not open that subagent.', 'error', ctx)
+    }
+  }
+
+  async function stopSubagent(id) {
+    try {
+      await subagentRequest(`/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      await loadSubagents()
+    } catch (err) {
+      setHint(err?.message || 'Could not stop that subagent.', 'error')
+    }
+  }
+
+  async function deleteSubagent(id) {
+    if (!id) return
+    if (
+      !window.confirm(
+        'Delete this subagent, its saved transcript and its private files? This cannot be undone.',
+      )
+    )
+      return
+    try {
+      await subagentRequest(`/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      const key = `sub-${String(id).replace(/^sa_/, '')}`
+      const current = active()
+      if (current?.id === key || current?.subagentId === id) {
+        let back = state.consoles.get(state.subagentReturnId) || state.consoles.get('main')
+        if (back?.id === current.id) back = state.consoles.get('main')
+        if (back) activate(back)
+      }
+      state.consoles.delete(key)
+      await loadSubagents()
+    } catch (err) {
+      setHint(err?.message || 'Could not delete that subagent.', 'error')
+    }
+  }
+
+  function subagentRootForPage() {
+    return active()?.rootId || active()?.status?.rootId || state.subagentRoot || null
+  }
+
+  function renderSubagentDetail() {
+    const panel = $('hx-subagent-detail')
+    if (!panel) return
+    const id = active()?.subagentId
+    const record = id ? subagentRecord(id) : null
+    if (!record) {
+      panel.hidden = true
+      panel.innerHTML = ''
+      return
+    }
+    const display = subagentDisplay(record)
+    const fallback = (record.model?.fallback || []).filter(Boolean)
+    const session = Array.isArray(record.runs) ? record.runs.at(-1)?.sessionFile || null : null
+    const parent = record.parentId ? subagentRecord(record.parentId) : null
+    const limits = record.limits || {}
+    panel.hidden = false
+    panel.innerHTML = `
+      <div><strong>${escapeHtml(record.name)}</strong> · ${escapeHtml(record.status)} · ${subagentElapsed(record.elapsedMs)}</div>
+      <div class="hx-subagent-brief">${escapeHtml(record.task || '')}</div>
+      <div>${escapeHtml(display.label)}${display.selected && display.selected !== display.key ? ` <span class="hx-subagent-tag">ran ${escapeHtml(display.selected)}</span>` : ''}</div>
+      <div class="hx-subagent-model-line">${escapeHtml(subagentModelLine(record))}</div>
+      ${fallback.length ? `<div class="hx-subagent-tag">fallback ${fallback.map(escapeHtml).join(' → ')}</div>` : ''}
+      ${record.warning ? `<div class="hx-subagent-tag quiet">${escapeHtml(record.warning)}</div>` : ''}
+      <div>tools: ${(record.tools || []).map(escapeHtml).join(', ') || 'none'}</div>
+      <div>${Number(record.tokens || 0).toLocaleString()} tokens · ${Number(record.turns || 0)} turns · queue ${Number(record.queueLength || 0)}</div>
+      <div class="hx-subagent-tag">limits ${Number(limits.maxTurns || 0)} turns · ${subagentElapsed(limits.timeoutMs)} · ${Number(limits.tokenBudget || 0).toLocaleString()} tokens</div>
+      ${parent ? `<button class="hx-subagent-link" type="button" data-subagent-open="${escapeHtml(parent.id)}">parent · ${escapeHtml(parent.name)}</button>` : '<div class="hx-subagent-meta">parent · this conversation</div>'}
+      ${session ? `<div class="hx-mono hx-subagent-session">${escapeHtml(session)}</div>` : ''}
+      ${record.cwd ? `<div class="hx-mono">${escapeHtml(record.cwd)}</div>` : ''}
+      ${(record.tools || []).includes('bash') ? '<div class="hx-subagent-tag quiet">policy only · not a sandbox</div>' : ''}
+    `
+  }
+
+  function renderSubagentStrip() {
+    const strip = $('hx-subagent-strip')
+    if (!strip) return
+    const ctx = active()
+    if (!ctx?.subagentId) {
+      strip.hidden = true
+      return
+    }
+    const record = subagentRecord(ctx.subagentId)
+    const info = record || ctx.subagent || {}
+    const display = subagentDisplay(record || {})
+    strip.hidden = false
+    const label = $('hx-subagent-strip-label')
+    if (label) {
+      label.textContent = `subagent · ${info.name || ctx.subagentId} · ${display.label}${info.tools?.length ? ` · ${info.tools.join(', ')}` : ''}`
+    }
+    // The level this child was spawned with, read-only: the composer's thinking control is
+    // hidden on a child view, but the effort it was given is still a fact about the run.
+    const thinking = $('hx-subagent-strip-thinking')
+    if (thinking) {
+      const chosen = String(info.thinking || '')
+        .trim()
+        .toLowerCase()
+      const levels = ctx.status?.thinking?.levels
+      const applicable = chosen && (!Array.isArray(levels) || levels.includes(chosen))
+      thinking.hidden = !applicable
+      thinking.textContent = applicable ? `thinking ${chosen}` : ''
+      thinking.title = applicable ? 'Thinking effort recorded for this subagent' : ''
+    }
+    const stop = strip.querySelector('[data-subagent-stop]')
+    if (stop) stop.hidden = info.status !== 'running'
+  }
+
+  function renderSubagentChrome() {
+    renderSubagentStrip()
+    renderSubagentDetail()
+  }
+
+  /** One sidebar row and, recursively, the children it spawned. */
+  function subagentSidebarRow(record, depth, currentId, childrenByParent, seen) {
+    if (seen.has(record.id)) return ''
+    seen.add(record.id)
+    const display = subagentDisplay(record)
+    const quiet = Number(record.quietMs) >= 120000 && record.status === 'running'
+    const running = record.status === 'running'
+    const children = (childrenByParent.get(record.id) || [])
+      .map((child) => subagentSidebarRow(child, depth + 1, currentId, childrenByParent, seen))
+      .filter(Boolean)
+      .join('')
+    return `<div class="hx-subagent-node">
+      <div class="hx-subagent-row${running ? ' running' : ''}${record.status === 'failed' ? ' failed' : ''}${record.id === currentId ? ' current' : ''}" role="button" tabindex="0" data-subagent-open="${escapeHtml(record.id)}" title="${escapeHtml(record.task || record.name)}" style="padding-left:${7 + depth * 9}px">
+        <span class="hx-subagent-dot" aria-hidden="true"></span>
+        <span class="hx-subagent-name">${escapeHtml(record.name)}</span>
+        ${subagentChip(display.intel)}
+        ${subagentChip(display.speed)}
+        ${quiet ? '<span class="hx-subagent-tag quiet">quiet</span>' : ''}
+        <span class="hx-subagent-meta">${subagentElapsed(record.elapsedMs)} · ${Number(record.tokens || 0).toLocaleString()}t</span>
+        <span class="hx-subagent-actions">
+          ${running ? `<button type="button" data-subagent-stop="${escapeHtml(record.id)}" title="Stop ${escapeHtml(record.name)}" aria-label="Stop subagent">■</button>` : ''}
+        </span>
+      </div>
+      ${children ? `<div class="hx-subagent-children">${children}</div>` : ''}
+    </div>`
+  }
+
+  /** The branch of subagents spawned by one saved conversation. */
+  function subagentBranchForSession(session, childrenByParent, currentId) {
+    const currentFile = active()?.sessionFile
+    const roots = (state.subagents || [])
+      .filter((record) => !record.parentId)
+      .filter((record) => {
+        if (record.parentSessionFile) return record.parentSessionFile === session.file
+        // A record written before the parent file was known can still belong to the open one.
+        return currentFile === session.file && record.rootId === subagentRootForPage()
+      })
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    if (!roots.length) return ''
+    const seen = new Set()
+    return `<div class="hx-subagent-branch">${roots
+      .map((record) => subagentSidebarRow(record, 0, currentId, childrenByParent, seen))
+      .join('')}</div>`
+  }
+
+  function renderSubagents() {
+    renderSessions()
+    renderSubagentStrip()
+  }
+
+  /** A model-table pill, coloured by the same band classes the router's table uses. */
+  function subagentIntelTag(band) {
+    const value = String(band || '').trim()
+    if (!value || value === '—') return '<span class="hx-model-none">—</span>'
+    const cls = value.toLowerCase().replace(/\s+/g, '-')
+    return `<span class="onboard-pill intel-tag intel-${escapeHtml(cls)}">${escapeHtml(value)}</span>`
+  }
+
+  function subagentSpeedTag(band) {
+    const value = String(band || '').trim()
+    if (!value || value === '—') return '<span class="hx-model-none">—</span>'
+    const verdict = value.toLowerCase()
+    const cls =
+      verdict === 'normal'
+        ? 'normal'
+        : verdict === 'very fast' || verdict === 'fast'
+          ? 'up'
+          : verdict === 'slow' || verdict === 'very slow'
+            ? 'slow'
+            : 'down'
+    // "Normal" alone is ambiguous once the tags sit beside the model name; name the axis.
+    const label = verdict === 'normal' ? 'Normal Speed' : value
+    return `<span class="onboard-pill speed-tag ${cls}">${escapeHtml(label)}</span>`
+  }
+
+  function subagentUsageTag(tag) {
+    const value = String(tag || '').trim()
+    if (!value || value === '—') return '<span class="hx-model-none">—</span>'
+    const band = value.replace(/\s+quota$/i, '').toLowerCase()
+    const known = ['unlimited', 'ample', 'limited', 'scarce', 'exhausted'].includes(band)
+    return `<span class="onboard-pill capacity-tag${known ? ` cap-${band}` : ''}">${escapeHtml(value)}</span>`
+  }
+
+  /** A numeric context window from an older detail row, in the compact table's units. */
+  function formatCatalogueContext(value) {
+    const raw = String(value ?? '').trim()
+    const n = Number(raw.replace(/,/g, ''))
+    if (!Number.isFinite(n) || n <= 0) return raw || '—'
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
+    if (n >= 1_000) return `${Math.round(n / 1_000)}k`
+    return String(n)
+  }
+
+  /**
+   * The catalogue rows from the text the models action returns. New responses are the compact
+   * table; transcripts written before the compact view still carry the detail table, whose
+   * columns hold AA scores and tok/s rates. Both become the same card. Columns are separated by
+   * two spaces but values contain single spaces ("Very Smart", "Ample Quota"), so whitespace
+   * runs are the delimiter rather than a bare split.
+   */
+  function parseSubagentModelRows(text) {
+    const rows = []
+    const source = String(text || '')
+    const detail = source.trimStart().startsWith('SUBAGENT MODELS — detail')
+    for (const raw of source.split('\n')) {
+      const line = raw.trimEnd()
+      if (
+        !line.trim() ||
+        line.startsWith('SUBAGENT MODELS') ||
+        line.startsWith('key  ') ||
+        line.trimStart().startsWith('…')
+      )
+        continue
+      const cells = line.trim().split(/ {2,}/)
+      if (detail) {
+        if (cells.length < 5) continue
+        const intelligence = cells[1].replace(/\s+\d+(?:\.\d+)?\s*$/, '')
+        const speed = cells[2].replace(/\s+\d+(?:\.\d+)?\s+u\/s.*$/, '')
+        const usage = cells[3].replace(/\s+\(.*$/, '')
+        rows.push({
+          key: cells[0],
+          provider: '',
+          intel: intelligence || '—',
+          speed: speed || '—',
+          usage: usage === 'unknown' ? 'Unknown' : usage || '—',
+          context: formatCatalogueContext(cells[4]),
+          inUse: '—',
+        })
+        continue
+      }
+      if (cells.length < 6) continue
+      rows.push({
+        key: cells[0],
+        provider: cells[1],
+        intel: cells[2],
+        speed: cells[3],
+        usage: cells[4],
+        context: cells[5],
+        inUse: cells[6] || '—',
+      })
+    }
+    return rows
+  }
+
+  /**
+   * A model catalogue as a compact list: the name and provider stay left, while the context
+   * window and the intelligence, speed and usage pills form one right-aligned group.
+   */
+  function subagentModelsMarkup(item, output) {
+    const rows = parseSubagentModelRows(output)
+    if (!rows.length) return ''
+    const body = rows
+      .map((row) => {
+        const key = String(row.key || '')
+        const label = printableModelName(modelLabelByKey.get(key) || key)
+        const inUse = row.inUse && row.inUse !== '—' ? row.inUse : ''
+        return `<div class="hx-cat-row">
+          <div class="hx-cat-main">
+            <div class="hx-cat-title">
+              <span class="hx-cat-name" title="${escapeHtml(key)}">${escapeHtml(label)}</span>
+            </div>
+            ${row.provider && row.provider !== '—' ? `<div class="hx-cat-provider" title="${escapeHtml(row.provider)}">${escapeHtml(row.provider)}</div>` : ''}
+          </div>
+          <div class="hx-cat-meta">
+            <span class="hx-cat-ctx">${escapeHtml(row.context)}</span>
+            ${subagentIntelTag(row.intel)}
+            ${subagentSpeedTag(row.speed)}
+            ${subagentUsageTag(row.usage)}
+            ${inUse ? `<span class="hx-cat-in-use" title="in use">${escapeHtml(inUse)}</span>` : ''}
+          </div>
+        </div>`
+      })
+      .join('')
+    return `<div class="hx-subagent-card hx-model-catalogue"${item.open ? ' data-open="1"' : ''}>
+      <div class="hx-subagent-card-head">
+        <span class="hx-subagent-card-name">Model catalogue</span>
+        <span class="hx-subagent-card-meta">${rows.length} active group${rows.length === 1 ? '' : 's'} · compact</span>
+      </div>
+      <div class="hx-cat-list">
+        ${body}
+      </div>
+    </div>`
+  }
+
+  /** The model/fallback chips a parent tool card and a notification both use. */
+  function subagentToolMarkup(item) {
+    const output = item.result || item.partial || ''
+    const action = String(item.args?.action || 'subagent')
+    if (action === 'models' && output) {
+      const catalogue = subagentModelsMarkup(item, output)
+      if (catalogue) return catalogue
+    }
+    const id =
+      /\bid="(sa_[a-f0-9]+)"/i.exec(output)?.[1] ||
+      (String(item.args?.id || '').startsWith('sa_') ? String(item.args.id) : '')
+    const record = id ? subagentRecord(id) : null
+    const display = subagentDisplay(record || {})
+    // A failed tool call often has no result text; it is still finished and failed, not a
+    // still-running spawn. Use the tool event's state when the record cannot answer.
+    const stateLabel =
+      record?.status ||
+      (item.status === 'error'
+        ? 'failed'
+        : item.status === 'interrupted'
+          ? 'interrupted'
+          : item.status === 'ok' || output
+            ? 'done'
+            : 'running')
+    const name = record?.name || item.args?.name || action
+    const body = clip(output || item.error || '', 12000)
+    const task = record?.task || item.args?.task || ''
+    const tools = record?.tools || item.args?.tools || []
+    const activity = record?.currentTool
+      ? `${record.currentTool} · ${subagentElapsed(record.currentToolStartedAt ? Date.now() - record.currentToolStartedAt : 0)}`
+      : record && Number(record.quietMs) >= 120000
+        ? `quiet ${subagentElapsed(record.quietMs)}`
+        : ''
+    return `<div class="hx-subagent-card" data-subagent-card="${escapeHtml(id)}">
+      <div class="hx-subagent-card-head">
+        <span class="hx-subagent-card-name">${escapeHtml(name)}</span>
+        ${record ? subagentModelChips(record) : ''}
+        <span class="hx-subagent-card-meta">${escapeHtml(action)} · ${escapeHtml(stateLabel)}${activity ? ` · ${escapeHtml(activity)}` : ''}</span>
+        ${id ? `<span class="hx-subagent-card-actions"><button class="hx-btn" type="button" data-subagent-open="${escapeHtml(id)}">Open subagent</button></span>` : ''}
+      </div>
+      ${task ? `<div class="hx-subagent-brief">${escapeHtml(task)}</div>` : ''}
+      ${tools.length ? `<div class="hx-subagent-card-meta">tools: ${tools.map(escapeHtml).join(', ')}</div>` : ''}
+      ${body ? `<details class="hx-subagent-card-body"${item.open ? ' open' : ''}><summary class="hx-subagent-card-meta">live tail and report</summary><pre>${escapeHtml(body)}</pre></details>` : ''}
+    </div>`
+  }
+
+  function subagentWrapperMarkup(kind, text) {
+    const attrs = (name) => {
+      const found = new RegExp(name + '="([^"]*)"', 'i').exec(text)
+      return found?.[1] || ''
+    }
+    const id = attrs('id')
+    const record = id ? subagentRecord(id) : null
+    const name = attrs('name') || record?.name || (kind === 'message' ? attrs('from') : 'subagent')
+    const stateLabel = kind === 'message' ? attrs('mode') || 'message' : attrs('state') || record?.status || 'result'
+    const raw = text
+      .replace(/^[\s\S]*?<result>/i, '')
+      .replace(/<\/result>[\s\S]*$/i, '')
+      .replace(/^[\s\S]*?>\s*/, '')
+      .replace(/<\/[^>]+>\s*$/, '')
+    return `<div class="hx-subagent-card hx-subagent-result" data-subagent-card="${escapeHtml(id)}">
+      <div class="hx-subagent-card-head">
+        <span class="hx-subagent-card-name">${escapeHtml(kind === 'message' ? `message · ${name}` : name)}</span>
+        ${record ? subagentModelChips(record) : ''}
+        <span class="hx-subagent-card-meta">${escapeHtml(stateLabel)}</span>
+        ${id ? `<span class="hx-subagent-card-actions"><button class="hx-btn" type="button" data-subagent-open="${escapeHtml(id)}">Open</button></span>` : ''}
+      </div>
+      <pre>${escapeHtml(clip(raw.trim(), 16000))}</pre>
+    </div>`
+  }
+
   // ── Sessions ────────────────────────────────────────────────────────────────────────
 
   function sessionWhen(modifiedMs) {
@@ -6531,6 +7203,10 @@
     const listed = new Set(rows.map((row) => row.file))
     const open = []
     for (const ctx of state.consoles.values()) {
+      // A child console is shown by its branch in the subagent tree. Listing it here added an
+      // unsaved "New conversation" row every time a subagent was opened, and marked that row
+      // current instead of the parent conversation it belongs to.
+      if (ctx.subagentId || isSubagentSession(ctx.sessionFile)) continue
       if (!ctx.sessionFile || listed.has(ctx.sessionFile)) continue
       listed.add(ctx.sessionFile)
       open.push({
@@ -6573,9 +7249,20 @@
       return
     }
     const current = active()?.sessionFile
+    const currentSubagentId = active()?.subagentId || null
+    const childrenByParent = new Map()
+    for (const record of state.subagents || []) {
+      if (!record.parentId) continue
+      if (!childrenByParent.has(record.parentId)) childrenByParent.set(record.parentId, [])
+      childrenByParent.get(record.parentId).push(record)
+    }
+    for (const children of childrenByParent.values()) {
+      children.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    }
     list.innerHTML = rows
       .slice(0, 60)
       .map((session) => {
+        const branch = subagentBranchForSession(session, childrenByParent, currentSubagentId)
         const stats = []
         if (session.userMessages) stats.push(`${session.userMessages} msg`)
         if (session.toolCalls) stats.push(`${session.toolCalls} tools`)
@@ -6586,14 +7273,14 @@
         // A row being renamed swaps its label for an input. The row itself stops being a
         // button while it edits, so a stray click or Enter cannot also open the conversation.
         if (session.file === state.renamingFile) {
-          return `<div class="hx-session-row current renaming" data-renaming="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}">
+          return `<div class="hx-session-item"><div class="hx-session-row current renaming" data-renaming="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}">
             <div class="hx-session-top">
               <input class="hx-session-rename-input" data-rename-input="${escapeHtml(session.file)}" type="text" maxlength="120" value="${escapeHtml(state.renamingValue)}" placeholder="Session name…" aria-label="Session name">
             </div>
             <div class="hx-session-meta">Enter to save · Esc to cancel</div>
-          </div>`
+          </div>${branch}</div>`
         }
-        return `<button class="hx-session-row${session.file === current ? ' current' : ''}${
+        return `<div class="hx-session-item"><button class="hx-session-row${session.file === current ? ' current' : ''}${
           running ? ' running' : ''
         }" data-session="${escapeHtml(session.file)}" title="${escapeHtml(session.file)}${
           running ? ' · running' : ''
@@ -6604,7 +7291,7 @@
               <span class="hx-session-rename" data-rename="${escapeHtml(session.file)}" role="button" title="Rename this session" aria-label="Rename session">✎</span><span class="hx-session-delete" data-delete="${escapeHtml(session.file)}" role="button" title="Delete this session" aria-label="Delete session">✕</span>
             </div>
             <div class="hx-session-meta">${escapeHtml(meta || session.fileName)}</div>
-          </button>`
+          </button>${branch}</div>`
       })
       .join('')
     // A re-render replaced the input the edit lived in: put the caret back, with the
@@ -6758,6 +7445,7 @@
 
   /** Rebuilds one conversation from the session file its agent is attached to. */
   async function loadMessages(ctx = active()) {
+    if (ctx?.subagentId && !state.subagentToken) await initSubagents()
     // A rebuilt row names its provider from the router's model table (a message records
     // "hammer", which is the router). Read it first, or a conversation opened after a restart
     // labels every model and leaves the provider that served it blank.
@@ -7313,6 +8001,29 @@
     })
     $('hx-new')?.addEventListener('click', newSession)
 
+    $('hx-subagent-strip')?.addEventListener('click', (event) => {
+      if (event.target.closest?.('[data-subagent-back]')) {
+        const current = active()
+        let back = state.consoles.get(state.subagentReturnId) || state.consoles.get('main')
+        // A stale target left by an older page (or a child opened onto itself) must not make
+        // this button a no-op; the parent conversation is always a valid way back.
+        if (back?.id === current?.id) back = state.consoles.get('main')
+        if (back && back.id !== current?.id) activate(back)
+        return
+      }
+      const stop = event.target.closest?.('[data-subagent-stop]')
+      if (stop) void stopSubagent(active()?.subagentId)
+      const remove = event.target.closest?.('[data-subagent-delete]')
+      if (remove) void deleteSubagent(active()?.subagentId)
+    })
+    // A parent tool card, a result card and a notification all open the same child.
+    document.addEventListener('click', (event) => {
+      const open = event.target.closest?.('[data-subagent-open]')
+      if (!open || !$('hx-transcript')?.contains(open)) return
+      event.preventDefault()
+      void openSubagent(open.getAttribute('data-subagent-open'))
+    })
+
     // Compaction controls. The toggle is hidden until Pi reports whether auto-compaction is
     // on, so an agent that cannot answer does not present a switch that would do nothing.
     // `$` is getElementById, so a selector has to be reached through the panel element: a
@@ -7366,6 +8077,22 @@
     })
 
     $('hx-session-list')?.addEventListener('click', (event) => {
+      // Subagent branches are repainted with the rail. Stop is caught before open: both
+      // live inside the same row, and neither may fall through to the session button.
+      const subagentStop = event.target.closest('[data-subagent-stop]')
+      if (subagentStop) {
+        event.preventDefault()
+        event.stopPropagation()
+        void stopSubagent(subagentStop.getAttribute('data-subagent-stop'))
+        return
+      }
+      const subagentOpen = event.target.closest('[data-subagent-open]')
+      if (subagentOpen) {
+        event.preventDefault()
+        event.stopPropagation()
+        void openSubagent(subagentOpen.getAttribute('data-subagent-open'))
+        return
+      }
       // The pencil is inside the row button; it renames instead of opening, so it has to be
       // caught first and the click kept from reaching the row's own handler.
       const pencil = event.target.closest('[data-rename]')
@@ -7565,6 +8292,7 @@
     if (main.sessionFile && !main.running) await restoreHistory(main)
     connectEvents(main)
     await loadSessions()
+    void initSubagents()
     autoGrow()
     void restoreOpenConversations()
   }

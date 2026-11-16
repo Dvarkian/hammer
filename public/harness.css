@@ -2063,6 +2063,7 @@ body.hx-details-collapsed .hx-side-details {
   position: absolute;
   left: -2px;
   right: -2px;
+  box-sizing: border-box;
   min-height: 5px;
   border: 1px solid var(--accent);
   border-radius: 3px;
@@ -3516,3 +3517,374 @@ body.hx-details-collapsed .hx-side-details {
     stroke-dashoffset: 42.4;
   }
 }
+
+/* ── Subagents ─────────────────────────────────────────────────────────────────────── */
+
+.hx-session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+/* The branch is attached to its session row, one indent step in from the title. */
+.hx-subagent-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin: 1px 0 5px 14px;
+  padding-left: 5px;
+  border-left: 1px solid var(--border);
+}
+
+.hx-subagent-node {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.hx-subagent-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  margin-left: 9px;
+  padding-left: 4px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.hx-subagent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 5px 7px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  min-width: 0;
+}
+
+.hx-subagent-row:hover,
+.hx-subagent-row.current {
+  background: var(--surface-alt);
+}
+
+.hx-subagent-row .hx-subagent-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-dim);
+}
+
+.hx-subagent-row.running .hx-subagent-dot {
+  background: var(--status-success-text);
+}
+
+.hx-subagent-row.failed .hx-subagent-dot {
+  background: var(--status-error-text);
+}
+
+.hx-subagent-row .hx-subagent-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 550;
+}
+
+.hx-subagent-row .hx-subagent-meta {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.hx-subagent-tag,
+.hx-subagent-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 5px;
+  color: var(--text-dim);
+  font-size: 0.65rem;
+  line-height: 1.55;
+  white-space: nowrap;
+}
+
+.hx-subagent-tag.quiet {
+  color: var(--status-warning-text);
+  border-color: var(--status-warning-border);
+}
+
+.hx-subagent-actions {
+  display: none;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.hx-subagent-row:hover .hx-subagent-actions {
+  display: inline-flex;
+}
+
+.hx-subagent-row:hover .hx-subagent-meta {
+  display: none;
+}
+
+.hx-subagent-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 2px;
+  font: inherit;
+}
+
+.hx-subagent-actions button:hover {
+  color: var(--text);
+}
+
+.hx-subagent-detail {
+  margin-top: 6px;
+  padding: 7px 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.hx-subagent-detail strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.hx-subagent-detail .hx-subagent-model-line {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.hx-subagent-link {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.hx-subagent-session {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-subagent-brief {
+  margin: 4px 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  max-height: 90px;
+  overflow: auto;
+}
+
+.hx-subagent-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-dim);
+  font-size: 0.75rem;
+}
+
+/* The strip is displayed as flex while a child is open; the attribute is how the page says
+   it is not. A display rule beats the UA default, so say it here too. */
+.hx-subagent-strip[hidden] {
+  display: none;
+}
+
+.hx-subagent-strip #hx-subagent-strip-label {
+  color: var(--text);
+  font-weight: 550;
+}
+
+/* A tag is inline-flex, which would outrank the browser's [hidden] rule. */
+.hx-subagent-strip .hx-subagent-tag[hidden] {
+  display: none;
+}
+
+.hx-subagent-strip .hx-subagent-stop {
+  margin-left: auto;
+}
+
+.hx-subagent-strip .hx-subagent-delete {
+  margin-left: auto;
+}
+
+.hx-subagent-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin: 7px 0;
+  padding: 8px 10px;
+  background: var(--surface-alt);
+}
+
+.hx-subagent-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+}
+
+.hx-subagent-card-name {
+  font-weight: 600;
+}
+
+.hx-subagent-card-meta {
+  color: var(--text-dim);
+  font-size: 0.72rem;
+}
+
+.hx-subagent-card-actions {
+  margin-left: auto;
+}
+
+.hx-subagent-card details {
+  margin-top: 6px;
+}
+
+.hx-subagent-card pre {
+  max-height: 260px;
+  overflow: auto;
+  white-space: pre-wrap;
+  color: var(--text);
+  font-size: 0.74rem;
+}
+
+/* The models action is a catalogue, not a shell result: a compact list with the router's own
+   intelligence, speed and quota pills. The list scrolls inside the card so a hundred groups
+   stay in the log, and the model column keeps the width the pills need to stay on one line. */
+.hx-model-catalogue {
+  padding-bottom: 7px;
+}
+
+.hx-cat-list {
+  margin-top: 7px;
+  max-height: min(420px, 55vh);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+}
+
+.hx-cat-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: 4px 10px;
+}
+
+.hx-cat-row {
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.72rem;
+}
+
+.hx-cat-row:last-child {
+  border-bottom: none;
+}
+
+.hx-cat-row:hover {
+  background: var(--surface-alt);
+}
+
+.hx-cat-main {
+  flex: 1 1 170px;
+  min-width: 0;
+}
+
+.hx-cat-title {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.hx-cat-name {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hx-cat-provider {
+  margin-top: 2px;
+  color: var(--text-dim);
+  font-size: 0.66rem;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.hx-cat-meta {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.hx-cat-ctx {
+  color: var(--text-dim);
+  font-size: 0.69rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.hx-cat-in-use {
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 0.58rem;
+  line-height: 1.45;
+  white-space: nowrap;
+}
+
+.hx-cat-list .onboard-pill {
+  padding: 1px 7px;
+  font-size: 0.6rem;
+}
+
+.hx-cat-list .intel-tag,
+.hx-cat-list .capacity-tag {
+  margin-left: 0;
+}
+
+.hx-model-none {
+  color: var(--text-muted);
+}
+
+.hx-subagent-result {
+  border-left: 2px solid var(--border-strong, var(--border));
+  padding-left: 9px;
+}
+

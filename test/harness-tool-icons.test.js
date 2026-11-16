@@ -295,6 +295,8 @@ test('every tool the router can name has a glyph, and the set stays sparse', () 
     'task',
     'todo',
     'webfetch',
+    'web_search',
+    'web_fetch',
     'question',
     'other',
   ]

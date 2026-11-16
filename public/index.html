@@ -104,6 +104,13 @@
       </aside>
 
       <div class="hx-main">
+        <div class="hx-subagent-strip" id="hx-subagent-strip" hidden>
+          <button class="hx-btn hx-subagent-back" type="button" data-subagent-back>← parent</button>
+          <span id="hx-subagent-strip-label">subagent</span>
+          <span class="hx-subagent-tag" id="hx-subagent-strip-thinking" hidden></span>
+          <button class="hx-btn hx-subagent-stop" type="button" data-subagent-stop hidden>Stop</button>
+          <button class="hx-btn hx-subagent-delete" type="button" data-subagent-delete>Delete</button>
+        </div>
         <div class="hx-route-strip" id="hx-route-strip">
           <span id="hx-model-via">via <span id="hx-model-provider">—</span></span>
           <span class="hx-route-badge" id="hx-routed-badge" hidden></span>
@@ -353,7 +360,7 @@
               <th>Model</th>
               <th class="sort-active text-center" id="th-intell" title="The intelligence band a model's Artificial Analysis Index falls in — AA's own rating, or an estimate from fetched benchmark evidence. Hover a tag for the index it was banded from, its source, and whether that index is an estimate. The table is always ordered by this column, strongest first. Bands: Genius 55+, Very Smart 45+, Smart 33.9+, Average 20+, Dumb 12+, Very Dumb below 12.">INT <i class="sort-arrow"
                   id="arrow-intell">↓</i></th>
-              <th class="text-center" title="How fast this endpoint answers: the same speed tag the provider setup popup shows. Hover a tag for its measured time-to-first-token and tokens-per-second.">Speed</th>
+              <th class="text-center" title="How fast this endpoint answers over a 500-token reply: composite tokens per second from measured time-to-first-token and throughput. Hover a tag for both figures.">Speed</th>
               <th id="th-usage" class="text-center" title="How much this model can still take, in one word: Unlimited, Ample, Limited, Scarce or Exhausted. It sums every provider under the heading from the same windows the Quota and Rate-limit columns draw; hover it for the window that decided it. Blank means nothing is published, which is not the same as ample.">Usage</th>
               <th id="th-ctx" class="text-center"
                 title="Context window: known limit, or bounds inferred from real requests (e.g. >120k, <500k)">Context</th>

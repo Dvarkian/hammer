@@ -3212,7 +3212,10 @@ test('the models table leads with a logo column for the model brand', () => {
   assert.match(js, /function speedTagInner\(verdict, ttft, tps, ttftLabel/)
   assert.match(js, /class="onboard-pill speed-tag/)
   assert.match(js, /\$\{speedTagCell\(m\.verdict, rowTtft\(m\), rowTps\(m\)/)
-  assert.match(js, /\$\{speedTagCell\(s\.speedMember\?\.verdict, s\.minTtft, s\.maxTps/)
+  assert.match(
+    js,
+    /\$\{speedTagCell\(s\.speedMember\?\.verdict, s\.speedMember \? rowTtft\(s\.speedMember\) : s\.minTtft/,
+  )
   // The rate-limit column sits between quota and context in the header and in every row builder
   // (model heading, provider row, graveyard row). It is filled, not empty: the throttle counters
   // and bench state render into it from the row's rateLimit half.

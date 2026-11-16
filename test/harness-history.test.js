@@ -61,7 +61,18 @@ test('a restart lands on the conversation the page was showing', () => {
   // Read once at load: boot activates an empty main console before the restore runs, and
   // remembering that would overwrite the file the restore is about to put back.
   assert.match(harness, /const bootLastViewed = lastViewedFile\(\)/)
-  assert.match(harness, /const lastFile = bootLastViewed \|\|/)
+  assert.match(harness, /const lastFile =\s*bootLastViewed \|\|/)
+  // A child belongs to the subagent tree: neither its file nor an old saved tab may be
+  // adopted as the page's main conversation after a restart.
+  assert.match(
+    harness,
+    /console\.subagentId \|\| isSubagentSession\(console\.sessionFile\)\) return/,
+  )
+  assert.match(
+    harness,
+    /if \(isSubagentSession\(file\)\) \{\s*localStorage\.removeItem\(LAST_KEY\)/,
+  )
+  assert.match(harness, /if \(isSubagentSession\(file\)\) openFiles\.delete\(file\)/)
   // The console's earlier rebuild (an empty conversation, after a restart) must not stop the
   // remembered file from being read now.
   assert.match(harness, /main\.historyLoaded = false\n\s*await restoreHistory\(main\)/)

@@ -112,10 +112,20 @@ test('a tick names its row to a screen reader and to a hover', () => {
 test('the viewport window says where in the conversation you are', () => {
   assert.match(harness, /function updateMinimapWindow\(\)/)
   assert.match(harness, /const scrollable = transcript\.scrollHeight - transcript\.clientHeight/)
+  // A window is a scrollbar thumb: its height is the viewport's share of the whole log. Scaling
+  // by the scroll range made a barely-overflowing log's grab taller than the rail, and then
+  // `track - height` went negative and parked it above the top of the screen.
   assert.match(
     harness,
-    /windowEl\.style\.top = `\$\{Math\.round\(Math\.min\(top, track - height\)\)\}px`/,
+    /const height = Math\.min\(\s*Math\.max\(\(track \* transcript\.clientHeight\) \/ transcript\.scrollHeight, MINIMAP_TICK\),\s*track,?\s*\)/,
   )
+  assert.match(harness, /const maxTop = Math\.max\(track - height, 0\)/)
+  assert.match(
+    harness,
+    /windowEl\.style\.top = `\$\{Math\.round\(Math\.max\(0, Math\.min\(top, maxTop\)\)\)\}px`/,
+  )
+  assert.match(harness, /const travel = Math\.max\(track - windowEl\.offsetHeight, 0\)/)
+  assert.match(harness, /Math\.max\(0, Math\.min\(next, travel\)\)/)
   assert.match(harness, /if \(scrollable <= 0\) \{/)
   assert.match(harness, /\$\('hx-transcript'\)\?\.addEventListener\('scroll', \(\) => \{/)
   assert.match(harness, /setPointerCapture\?\.\(event\.pointerId\)/)

@@ -63,10 +63,12 @@ test('onboarding summarizes how many models can serve right now', () => {
   assert.equal(summary.byVerdict['Not Active'], 2)
 })
 
-test('the speed verdicts band average ping latency into Very Fast through Very Slow', () => {
-  // The bands the Speed column and the onboarding popup both read. 'Unstable' is not a speed:
-  // it is reserved for repeated recent failures (see the failure-evidence test below), so every
-  // successful-ping average lands on a speed tag however slow it is.
+test('the speed verdicts band the effective rate from TTFT and throughput', () => {
+  // The Speed column and the onboarding popup share one vocabulary. A row measured for both
+  // latency and throughput is banded on the effective rate over a 500-token answer; a row with
+  // only a latency sample keeps the latency bands. 'Unstable' is not a speed: it is reserved
+  // for repeated recent failures (see the failure-evidence test below), so every successful
+  // measurement lands on a speed tag however slow it is.
   const row = (ms) => ({
     status: 'up',
     httpCode: null,
@@ -88,8 +90,36 @@ test('the speed verdicts band average ping latency into Very Fast through Very S
   // is what keeps a tag alive across a restart, and it applies to a row that is not currently
   // active too, because the tag reports speed, not health.
   assert.equal(getVerdict({ status: 'up', pings: [] }), 'Not Active')
+  // A null/empty ttft is not a zero-latency measurement: Number(null) is 0, and treating that
+  // as evidence painted unmeasured rows 'Very Fast'.
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: null, tps: null }), 'Not Active')
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: '', tps: null }), 'Not Active')
+  // 250ms + 40 tok/s sustains ~39 tok/s at the 500-token reference: Normal, not the Fast the
+  // old latency-only band gave it.
   assert.equal(
     getVerdict({ status: 'up', pings: [], ttft: 250, tps: 40, speedTokens: 200 }),
+    'Normal',
+  )
+  // A slow first token no longer condemns a fast generator: 3s + 200 tok/s is ~91 tok/s.
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 3000, tps: 200 }), 'Fast')
+  // A quick first token no longer flatters a slow generator: 100ms + 5 tok/s is ~5 tok/s.
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 100, tps: 5 }), 'Very Slow')
+  // The composite bands meet at 100 / 50 / 25 / 10 effective tok/s. At a 1s TTFT the rates
+  // that land on those boundaries are 125 / 55.56 / 26.32 / 10.20 generation tok/s.
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 1000, tps: 125 }), 'Very Fast')
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 1000, tps: 124 }), 'Fast')
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 1000, tps: 500 / 9 }), 'Fast')
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 1000, tps: 500 / 19 }), 'Normal')
+  assert.equal(getVerdict({ status: 'up', pings: [], ttft: 1000, tps: 500 / 49 }), 'Slow')
+  // A live ping does not override a complete usage sample: the tag, the tooltip and the router
+  // all describe the same effective rate, so a 50ms probe cannot hide a 3s real TTFT.
+  assert.equal(
+    getVerdict({
+      status: 'up',
+      pings: [{ code: '200', ms: 50, ts: Date.now() }],
+      ttft: 3000,
+      tps: 200,
+    }),
     'Fast',
   )
   assert.equal(getVerdict({ status: 'down', pings: [], ttft: 100 }), 'Very Fast')
