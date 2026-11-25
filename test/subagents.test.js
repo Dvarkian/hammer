@@ -7,7 +7,9 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,6 +29,7 @@ import {
   usageTagLabel,
 } from '../lib/subagents/model-usage.js'
 import {
+  CAPS,
   canControlRecord,
   canMessageRecord,
   canReadRecord,
@@ -36,7 +39,9 @@ import {
   reportPayload,
 } from '../lib/subagents/policy.js'
 import { SubagentRegistry, rootIdForConsole } from '../lib/subagents/registry.js'
-import { SubagentManager } from '../lib/subagents/manager.js'
+import { SubagentManager, renderTranscriptRecords } from '../lib/subagents/manager.js'
+import { setActiveSubagentManager } from '../lib/subagents/live.js'
+import { reportSubagentPick } from '../lib/http/routes/proxy.js'
 import { childCharter, materializeSubagentExtension } from '../lib/subagents/extension.js'
 import { materializeWebExtension, webExtensionPath } from '../lib/pi/web-tools.js'
 
@@ -115,6 +120,116 @@ function childPrincipal(overrides = {}) {
     tools: ['read', 'grep'],
     grants: { transcripts: false, message: false, spawn: false },
     ...overrides,
+  }
+}
+
+function nestedFixture(prefix = 'nested') {
+  const root = mkdtempSync(join(tmpdir(), `hammer-subagent-${prefix}-`))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  let rootSession = '/tmp/root-session.jsonl'
+  class FixtureBridge extends EventEmitter {
+    prompts = []
+    promptOptions = []
+    sessionFile = null
+    aborted = 0
+    disposed = false
+    async start() {}
+    async prompt(message, options) {
+      this.prompts.push(message)
+      this.promptOptions.push(options)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return {
+        sessionFile: this.sessionFile,
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessages: 0,
+      }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      this.aborted += 1
+      return {}
+    }
+    dispose() {
+      this.disposed = true
+    }
+  }
+  const bridges = new Map()
+  const rootBridge = new FixtureBridge()
+  rootBridge.sessionFile = rootSession
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ record }) => {
+      const bridge = new FixtureBridge()
+      bridge.sessionFile = join(settings.sessions, 'subagents', `${record.id}.jsonl`)
+      bridges.set(record.id, bridge)
+      return bridge
+    },
+    parentBridge: () => rootBridge,
+  })
+  const principal = parentPrincipal({
+    sessionFile: rootSession,
+    tools: [...PI_TOOL_NAMES],
+  })
+  return {
+    manager,
+    principal,
+    bridges,
+    rootBridge,
+    setRootSession(sessionFile) {
+      rootSession = sessionFile
+      rootBridge.sessionFile = sessionFile
+    },
+    async spawnAlpha(overrides = {}) {
+      const receipt = await manager.spawn(principal, {
+        name: 'alpha',
+        task: 'Spawn a child of your own.',
+        model: 'fast',
+        tools: ['read', 'spawn'],
+        background: true,
+        notify: 'silent',
+        ...overrides,
+      })
+      const record = manager.registry.get(receipt.id)
+      return {
+        record,
+        principal: manager.tokens.verify(manager.childToken(record, record.runs.at(-1))),
+      }
+    },
+    async spawnBeta(alpha, overrides = {}) {
+      const receipt = await manager.spawn(alpha.principal, {
+        name: 'beta',
+        task: 'Return a nested report.',
+        model: 'fast',
+        tools: ['read'],
+        background: true,
+        notify: 'silent',
+        ...overrides,
+      })
+      return manager.registry.get(receipt.id)
+    },
   }
 }
 
@@ -325,6 +440,27 @@ test('the catalogue returns every active group in compact form', () => {
   assert.doesNotMatch(text, /tokens\/s|ttft|status/)
 })
 
+test('an empty catalogue says why it is empty instead of printing a bare header', () => {
+  // This is the transcript that motivated the change: the parent asked for models twice
+  // while provider discovery was still marking routes up, saw only headers, concluded the
+  // tool was broken, and spent the turn re-planning instead of spawning.
+  const duringDiscovery = formatCatalogueText(cataloguePayload({ groups: [] }), { rows: 2270 })
+  assert.match(duringDiscovery, /No active model group yet/)
+  assert.match(duringDiscovery, /the router holds 2270 model rows/)
+  assert.match(duringDiscovery, /call models again in about a minute/)
+  assert.match(duringDiscovery, /not a missing tool/)
+
+  const noRows = formatCatalogueText(cataloguePayload({ groups: [] }), { rows: 0 })
+  assert.match(noRows, /the router holds 0 model rows/)
+
+  const groups = buildActiveGroups({
+    results: [row({ modelId: 'alpha', label: 'Alpha', aa: 50, ttft: 500, tps: 100 })],
+  })
+  const filteredOut = formatCatalogueText(cataloguePayload({ groups, query: 'zzz' }))
+  assert.match(filteredOut, /No active group matches those filters \(1 active\)/)
+  assert.match(filteredOut, /Loosen or drop the filters/)
+})
+
 test('catalogue filters search the whole active set and pages the compact table', () => {
   const groups = buildActiveGroups({
     results: [
@@ -344,6 +480,32 @@ test('catalogue filters search the whole active set and pages the compact table'
   assert.equal(page.next_offset, null)
   assert.equal(page.compact_offset, 1)
   assert.deepEqual(page.detail, [])
+})
+
+test('catalogue filters treat small numbers as tag floors and reject unknown usage words', () => {
+  const groups = buildActiveGroups({
+    results: [
+      row({ modelId: 'very-dumb', label: 'Very Dumb', aa: 8, ttft: 1000, tps: 100 }),
+      row({ modelId: 'average', label: 'Average', aa: 28, ttft: 1000, tps: 100 }),
+      row({ modelId: 'very-smart-slow', label: 'Very Smart Slow', aa: 50, ttft: 5000, tps: 5 }),
+    ],
+  })
+  const intelligent = cataloguePayload({ groups, min_intelligence: 3 })
+  assert.deepEqual(
+    intelligent.compact.map((entry) => entry.key).sort(),
+    ['average', 'very-smart-slow'],
+    '3 means Average or better, not raw AA >= 3',
+  )
+  const fastEnough = cataloguePayload({ groups, min_speed: 2 })
+  assert.deepEqual(
+    fastEnough.compact.map((entry) => entry.key).sort(),
+    ['average', 'very-dumb'],
+    '2 means Slow or better, not raw speed >= 2',
+  )
+  assert.throws(
+    () => cataloguePayload({ groups, usage: 'reported' }),
+    /Unknown usage filter "reported"/,
+  )
 })
 
 test('tier resolution prefers an unused group, and an explicit key is honored', () => {
@@ -427,12 +589,42 @@ test('a spawn is clamped to the parent, the depth cap and the workspace', () => 
       }),
     /does not have the "bash" tool/,
   )
+  const recursive = normalizeSpawnRequest({
+    principal,
+    workspace,
+    params: { name: 'x', task: 't', model: 'fast', tools: ['read', 'spawn'] },
+  })
+  assert.equal(recursive.depth, 1)
+  assert.equal(recursive.grants.spawn, true)
+  assert.deepEqual(recursive.tools, ['read'])
+
+  const nestedParent = childPrincipal({
+    grants: { transcripts: false, message: false, spawn: true },
+    tools: ['read'],
+  })
+  const nested = normalizeSpawnRequest({
+    principal: nestedParent,
+    workspace,
+    params: { name: 'grandchild', task: 't', model: 'fast', tools: ['read'] },
+  })
+  assert.equal(nested.depth, 2)
+  assert.equal(nested.parentId, 'sa_child')
+  assert.equal(nested.grants.spawn, false)
   assert.throws(
     () =>
       normalizeSpawnRequest({
-        principal,
+        principal: nestedParent,
         workspace,
         params: { name: 'x', task: 't', model: 'fast', tools: ['spawn'] },
+      }),
+    /cannot spawn again/,
+  )
+  assert.throws(
+    () =>
+      normalizeSpawnRequest({
+        principal: { ...nestedParent, depth: 2, grants: { spawn: true } },
+        workspace,
+        params: { name: 'x', task: 't', model: 'fast' },
       }),
     /cannot spawn again/,
   )
@@ -455,6 +647,44 @@ test('a spawn is clamped to the parent, the depth cap and the workspace', () => 
         params: { name: 'x', task: 't', model: 'fast' },
       }),
     /not allowed|does not hold/,
+  )
+})
+
+test('spawn accepts model filters, keeps a 500-token budget and rejects unknown usage words', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'hammer-subagent-filters-'))
+  const request = normalizeSpawnRequest({
+    principal: parentPrincipal(),
+    workspace,
+    params: {
+      name: 'filtered',
+      task: 'check',
+      model: 'fast',
+      min_intelligence: 3,
+      min_speed: 2,
+      min_context: 32000,
+      usage: 'ample',
+      token_budget: 500,
+    },
+  })
+  assert.deepEqual(request.filters, {
+    min_intelligence: 3,
+    min_speed: 2,
+    min_context: 32000,
+    usage: 'ample',
+  })
+  assert.equal(
+    request.limits.tokenBudget,
+    500,
+    'a requested token budget is not rounded up to 1000',
+  )
+  assert.throws(
+    () =>
+      normalizeSpawnRequest({
+        principal: parentPrincipal(),
+        workspace,
+        params: { name: 'filtered', task: 'check', model: 'fast', usage: 'reported' },
+      }),
+    /Unknown usage filter "reported"/,
   )
 })
 
@@ -511,6 +741,45 @@ test('the minimal status carries no task, transcript or report text', () => {
   const report = reportPayload(record)
   assert.equal(report.text, 'SECRET REPORT')
   assert.equal(report.model, 'fast')
+})
+
+test('a saved child transcript renders its messages, calls and results', () => {
+  const transcript = renderTranscriptRecords(
+    [
+      {
+        type: 'message',
+        message: { role: 'user', content: [{ type: 'text', text: 'Read the news.' }] },
+      },
+      {
+        type: 'message',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Let me search.' },
+            { type: 'toolCall', name: 'web_search', arguments: { query: 'news' } },
+          ],
+        },
+      },
+      {
+        type: 'message',
+        message: {
+          role: 'toolResult',
+          toolName: 'web_search',
+          content: [{ type: 'text', text: 'Headline: something happened.' }],
+        },
+      },
+      {
+        type: 'message',
+        message: { role: 'assistant', content: [{ type: 'text', text: '# Final report' }] },
+      },
+    ],
+    8_000,
+  )
+  assert.match(transcript.text, /user: Read the news\./)
+  assert.match(transcript.text, /assistant: Let me search\./)
+  assert.match(transcript.text, /tool web_search \{"query":"news"\}/)
+  assert.match(transcript.text, /result web_search: Headline: something happened\./)
+  assert.match(transcript.text, /assistant: # Final report/)
 })
 
 test('the registry persists records atomically and bounds itself', () => {
@@ -578,17 +847,25 @@ test('a real fake-Pi child runs, reports and can be read back through the manage
     parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
   })
   try {
-    const spawned = await manager.spawn(principal, {
+    const spawnParams = {
       name: 'fake-child',
       task: 'Say hello and finish.',
       model: 'fast',
       thinking: 'high',
       tools: ['read', 'web_search', 'web_fetch'],
       background: false,
-    })
+      request_id: 'call_test_spawn',
+    }
+    const spawned = await manager.spawn(principal, spawnParams)
     assert.equal(spawned.id.startsWith('sa_'), true)
     await waitFor(() => manager.registry.get(spawned.id)?.status !== 'running')
     const record = manager.registry.get(spawned.id)
+    // The request id makes a spawn whose response was lost retry-safe: it returns the same
+    // child (and now its report) instead of colliding with the name it already created.
+    const replay = await manager.spawn(principal, spawnParams)
+    assert.equal(replay.id, spawned.id)
+    assert.equal(replay.report?.id, spawned.id)
+    assert.match(replay.report?.text || '', /Hello/)
     const parentClaims = manager.tokens.verify(manager.parentTokenValue)
     assert.deepEqual(parentClaims.tools, [...PI_TOOL_NAMES])
     assert.ok(parentClaims.tools.includes('web_search'))
@@ -659,6 +936,1109 @@ test('a real fake-Pi child runs, reports and can be read back through the manage
     if (previousLog === undefined) delete process.env.FAKE_PI_LOG
     else process.env.FAKE_PI_LOG = previousLog
     delete process.env.FAKE_PI_SETTLE_DELAY_MS
+  }
+})
+
+test('a child that stops on a planning sentence is asked to continue, then finishes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-continue-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class StubBridge extends EventEmitter {
+    prompts = []
+    async start() {}
+    async prompt(message) {
+      this.prompts.push(message)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    dispose() {}
+  }
+  const bridge = new StubBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => bridge,
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'planning-child',
+      task: 'Research the news.',
+      model: 'fast',
+      tools: ['web_search'],
+    })
+    bridge.emit('event', { type: 'tool_execution_start', toolName: 'web_search' })
+    bridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'I have enough. Let me fetch one more article.' }],
+      },
+    })
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => bridge.prompts.length === 2)
+    assert.match(bridge.prompts[1], /Continue the delegated task/)
+    assert.equal(manager.registry.get(spawned.id)?.status, 'running')
+
+    bridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: '# Final report\nDone.' }],
+      },
+    })
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    assert.match(manager.registry.get(spawned.id)?.result?.text || '', /# Final report/)
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a max-turns child gets its first turn, and token usage is recorded before finish', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-budget-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class StubBridge extends EventEmitter {
+    async start() {}
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    dispose() {}
+  }
+  const bridge = new StubBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => bridge,
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'one-turn-child',
+      task: 'Reply with pong.',
+      model: 'fast',
+      max_turns: 1,
+    })
+    const record = manager.registry.get(spawned.id)
+    assert.equal(record.usage.turns, 0)
+    bridge.emit('event', { type: 'agent_start' })
+    // Starting a turn does not spend it. Counting here is what made a one-turn child abort
+    // its first request before the provider could answer.
+    assert.equal(record.usage.turns, 0)
+    bridge.emit('usage', { inputTokens: 120, outputTokens: 30, totalTokens: 150, cost: 0 })
+    assert.equal(record.usage.totalTokens, 150)
+    bridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'pong' }],
+        usage: { input: 120, output: 30, totalTokens: 150 },
+      },
+    })
+    bridge.emit('event', { type: 'agent_end' })
+    assert.equal(record.usage.turns, 1)
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    assert.equal(manager.registry.get(spawned.id)?.result?.text, 'pong')
+    assert.equal(manager.registry.get(spawned.id)?.usage?.totalTokens, 150)
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a console turn on a finished child reopens its record and records the new answer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-console-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class ConsoleBridge extends EventEmitter {
+    prompts = []
+    running = true
+    async start() {}
+    async prompt(message) {
+      this.prompts.push(message)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return {
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessages: 0,
+        running: this.running,
+        sessionFile: '/tmp/child-session.jsonl',
+      }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    dispose() {}
+  }
+  const bridge = new ConsoleBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => bridge,
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'console-child',
+      task: 'Reply with pong.',
+      model: 'fast',
+      max_turns: 6,
+    })
+    // The keeper is the liveness signal: a finished child whose keeper still listens gets a
+    // new turn on the same process, while one whose socket refuses a connection is restarted.
+    const socketPath = manager.registry.get(spawned.id)?.runs?.at(-1)?.keeperSocket
+    assert.ok(socketPath, 'a child records the keeper socket it launched under')
+    mkdirSync(join(settings.agentRoot, 'sockets'), { recursive: true })
+    const keeper = createServer(() => {})
+    await new Promise((resolve) => keeper.listen(socketPath, resolve))
+    bridge.emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'pong' }] },
+    })
+    bridge.emit('event', { type: 'agent_end' })
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    assert.equal(manager.registry.get(spawned.id)?.result?.text, 'pong')
+    assert.equal(manager.registry.get(spawned.id)?.usage?.turns, 1)
+
+    // A turn typed into the child's own console is still a managed turn: before this, the
+    // child answered while its record stayed completed with the old report and token count.
+    await manager.promptFromConsole(principal, spawned.id, 'Say ping instead.')
+    const reopened = manager.registry.get(spawned.id)
+    assert.equal(reopened?.status, 'running')
+    assert.equal(reopened?.result?.text, null)
+    assert.equal(bridge.prompts.at(-1), 'Say ping instead.')
+
+    bridge.emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'ping' }] },
+    })
+    bridge.emit('event', { type: 'agent_end' })
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    const after = manager.registry.get(spawned.id)
+    assert.equal(after?.result?.text, 'ping')
+    assert.equal(after?.usage?.turns, 2)
+    // The process was never restarted, so the record keeps its one run.
+    assert.equal(after?.runs?.length, 1)
+    await new Promise((resolve) => keeper.close(resolve))
+    rmSync(socketPath, { force: true })
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a console turn on a child whose process is gone restarts it on its session', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-console-restart-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class ConsoleBridge extends EventEmitter {
+    prompts = []
+    running = true
+    async start() {}
+    async prompt(message) {
+      this.prompts.push(message)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return {
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessages: 0,
+        running: this.running,
+        sessionFile: '/tmp/child-session-2.jsonl',
+      }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    dispose() {}
+  }
+  const bridges = []
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => {
+      const bridge = new ConsoleBridge()
+      bridges.push(bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'restart-child',
+      task: 'Reply with pong.',
+      model: 'fast',
+      max_turns: 6,
+    })
+    bridges[0].emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'pong' }] },
+    })
+    bridges[0].emit('event', { type: 'agent_end' })
+    bridges[0].emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    // The keeper has reaped the child: its bridge is still on record but no process is left.
+    bridges[0].running = false
+
+    await manager.promptFromConsole(principal, spawned.id, 'Are you still there?')
+    assert.equal(bridges.length, 2)
+    assert.equal(bridges[1].prompts.at(-1), 'Are you still there?')
+    const restarted = manager.registry.get(spawned.id)
+    assert.equal(restarted?.status, 'running')
+    assert.equal(restarted?.runs?.length, 2)
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('wall-clock budgets stop an idle child and stop wins the completion race', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-limits-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class LimitsBridge extends EventEmitter {
+    async start() {}
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      // A provider that has not sent agent_start yet reports no streaming. The wall-clock
+      // budget must still stop it: this is the live failure a 3-second timeout ran 86s on.
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      // A successful abort makes Pi settle. That settle used to write completed before
+      // manager.stop could write stopped; the record has to be stopped first.
+      this.emit('event', { type: 'agent_settled' })
+      return {}
+    }
+    dispose() {}
+  }
+  const bridge = new LimitsBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  let created = 0
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => {
+      // Launching the first child is slow enough to outlast its budget. The timer must
+      // already be counting from spawn, not from the end of bridge creation.
+      if (created++ === 0) await new Promise((resolve) => setTimeout(resolve, 6_000))
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const timed = await manager.spawn(principal, {
+      name: 'timeout-child',
+      task: 'Wait forever.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+      timeout_ms: 1_000,
+      max_turns: 2,
+    })
+    await waitFor(() => manager.registry.get(timed.id)?.status === 'stopped', {
+      timeoutMs: 8_000,
+    })
+    const timedRecord = manager.registry.get(timed.id)
+    assert.match(timedRecord?.result?.error || '', /time or token budget/)
+    // It stopped on the first budget tick, not after the six-second launch and another tick.
+    assert.ok(Number(timedRecord?.endedAt) - Number(timedRecord?.startedAt) < 7_000)
+
+    const stoppedChild = await manager.spawn(principal, {
+      name: 'stop-child',
+      task: 'Wait for a stop.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+      max_turns: 2,
+    })
+    const stopped = await manager.stop(principal, stoppedChild.id)
+    assert.equal(stopped.subagent.status, 'stopped')
+    assert.equal(stopped.report.error, 'Stopped by the parent.')
+    assert.equal(manager.registry.get(stoppedChild.id)?.status, 'stopped')
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('token budgets stop mid-stream and measured over-budget usage cannot settle completed', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-token-budget-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class TokenBridge extends EventEmitter {
+    aborted = 0
+    async start() {}
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      this.aborted += 1
+      return {}
+    }
+    dispose() {}
+  }
+  const bridges = []
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => {
+      const bridge = new TokenBridge()
+      bridges.push(bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const streamed = await manager.spawn(principal, {
+      name: 'stream-budget',
+      task: 'Keep writing.',
+      model: 'fast',
+      token_budget: 500,
+      background: true,
+      notify: 'silent',
+    })
+    const streamRecord = manager.registry.get(streamed.id)
+    assert.equal(streamRecord.limits.tokenBudget, 500)
+    bridges[0].emit('event', {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(2_100) },
+    })
+    await waitFor(() => manager.registry.get(streamed.id)?.status === 'stopped')
+    assert.match(manager.registry.get(streamed.id)?.result?.error || '', /time or token budget/)
+    assert.equal(bridges[0].aborted, 1)
+
+    const measured = await manager.spawn(principal, {
+      name: 'measured-budget',
+      task: 'Answer in one turn.',
+      model: 'fast',
+      token_budget: 500,
+      background: true,
+      notify: 'silent',
+    })
+    bridges[1].emit('usage', {
+      inputTokens: 400,
+      outputTokens: 600,
+      totalTokens: 1_000,
+      cost: 0,
+    })
+    await waitFor(() => manager.registry.get(measured.id)?.status === 'stopped')
+    // The old five-second tick lost this race: message_end settled the child completed first.
+    bridges[1].emit('event', { type: 'agent_settled' })
+    assert.equal(manager.registry.get(measured.id)?.status, 'stopped')
+    assert.equal(manager.registry.get(measured.id)?.usage?.totalTokens, 1_000)
+
+    const cleared = await manager.spawn(principal, {
+      name: 'cleared-estimate',
+      task: 'Keep writing.',
+      model: 'fast',
+      token_budget: 1_000,
+      background: true,
+      notify: 'silent',
+    })
+    bridges[2].emit('event', {
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', delta: 'x'.repeat(2_400) },
+    })
+    // 600 estimated on top of 500 measured would cross 1,000 if the estimate were kept after
+    // measured usage replaced it. The measured message already includes that text.
+    bridges[2].emit('usage', { inputTokens: 300, outputTokens: 200, totalTokens: 500, cost: 0 })
+    assert.equal(manager.registry.get(cleared.id)?.status, 'running')
+    assert.equal(manager.registry.get(cleared.id)?.streamChars, 0)
+    bridges[2].emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] },
+    })
+    bridges[2].emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(cleared.id)?.status === 'completed')
+
+    const deferred = await manager.spawn(principal, {
+      name: 'deferred-empty',
+      task: 'Answer.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    manager.deferFinish(deferred.id)
+    await waitFor(() => manager.registry.get(deferred.id)?.status === 'failed')
+    assert.match(
+      manager.registry.get(deferred.id)?.result?.error || '',
+      /finished without a final report/,
+    )
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a provider error is a failed child, not an empty completed report', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-error-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class ErrorBridge extends EventEmitter {
+    async start() {}
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      return {}
+    }
+    dispose() {}
+  }
+  const bridge = new ErrorBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => bridge,
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'provider-error',
+      task: 'Answer.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    bridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: '400: the provider refused the request',
+        content: [],
+      },
+    })
+    bridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'failed')
+    assert.match(manager.registry.get(spawned.id)?.result?.error || '', /provider refused/)
+    assert.equal(manager.registry.get(spawned.id)?.result?.text, null)
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('live children are not capped per root or per router', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-fanout-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class FanoutBridge extends EventEmitter {
+    async start() {}
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      return {}
+    }
+    dispose() {}
+  }
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => new FanoutBridge(),
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    for (let index = 0; index < 9; index += 1) {
+      await manager.spawn(principal, {
+        name: `fanout-${index}`,
+        task: 'Wait.',
+        model: 'fast',
+        background: true,
+        notify: 'silent',
+      })
+    }
+    assert.equal(
+      manager.registry.all().filter((record) => record.status === 'running').length,
+      9,
+      'the old 4-per-root / 8-per-router caps rejected the fifth and ninth children',
+    )
+    assert.equal('maxLivePerRoot' in CAPS, false)
+    assert.equal('maxLiveTotal' in CAPS, false)
+
+    await assert.rejects(
+      manager.spawn(principal, {
+        name: 'too-smart',
+        task: 'Wait.',
+        model: 'fast',
+        min_intelligence: 5,
+        background: true,
+        notify: 'silent',
+      }),
+      /does not meet the requested/,
+      'spawn applies the same tag-floor filters as models',
+    )
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a child with the spawn grant creates a depth-2 child that reports to its own parent', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-nested-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class NestedBridge extends EventEmitter {
+    prompts = []
+    sessionFile = null
+    async start() {}
+    async prompt(message) {
+      this.prompts.push(message)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return {
+        sessionFile: this.sessionFile,
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessages: 0,
+      }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    dispose() {}
+  }
+  const bridges = new Map()
+  const rootBridge = new NestedBridge()
+  rootBridge.status = () => ({
+    sessionFile: '/tmp/root-session.jsonl',
+    isStreaming: false,
+    isCompacting: false,
+    pendingMessages: 0,
+  })
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ record }) => {
+      const bridge = new NestedBridge()
+      bridge.sessionFile = join(settings.sessions, 'subagents', `${record.id}.jsonl`)
+      bridges.set(record.id, bridge)
+      return bridge
+    },
+    parentBridge: () => rootBridge,
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const alphaReceipt = await manager.spawn(principal, {
+      name: 'alpha',
+      task: 'Spawn a child of your own.',
+      model: 'fast',
+      tools: ['read', 'spawn'],
+      background: true,
+      notify: 'silent',
+    })
+    const alpha = manager.registry.get(alphaReceipt.id)
+    assert.equal(alpha.depth, 1)
+    assert.equal(alpha.grants.spawn, true)
+    const alphaAgentDir = join(settings.agentRoot, 'subagents', alpha.id, 'agent')
+    assert.ok(existsSync(join(alphaAgentDir, 'extensions', 'subagent.ts')))
+    assert.match(
+      readFileSync(join(alphaAgentDir, 'APPEND_SYSTEM.md'), 'utf8'),
+      /You may spawn child agents/,
+    )
+
+    const alphaToken = manager.childToken(alpha, alpha.runs.at(-1))
+    const alphaPrincipal = manager.tokens.verify(alphaToken)
+    assert.equal(alphaPrincipal.depth, 1)
+    assert.equal(alphaPrincipal.grants.spawn, true)
+    const betaReceipt = await manager.spawn(alphaPrincipal, {
+      name: 'beta',
+      task: 'Return a nested report.',
+      model: 'fast',
+      tools: ['read'],
+      background: true,
+      notify: 'auto',
+    })
+    const beta = manager.registry.get(betaReceipt.id)
+    assert.equal(beta.depth, 2)
+    assert.equal(beta.parentId, alpha.id)
+    assert.equal(beta.grants.spawn, false)
+    assert.equal(beta.parent.sessionFile, alpha.runs.at(-1).sessionFile)
+    assert.notEqual(beta.parent.sessionFile, '/tmp/root-session.jsonl')
+    assert.match(
+      readFileSync(
+        join(settings.agentRoot, 'subagents', beta.id, 'agent', 'APPEND_SYSTEM.md'),
+        'utf8',
+      ),
+      /cannot spawn further subagents/,
+    )
+
+    const alphaBridge = bridges.get(alpha.id)
+    const betaBridge = bridges.get(beta.id)
+    const before = alphaBridge.prompts.length
+    betaBridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'Nested report.' }],
+      },
+    })
+    betaBridge.emit('event', { type: 'agent_settled' })
+    await waitFor(
+      () =>
+        manager.registry.get(beta.id)?.status === 'completed' &&
+        alphaBridge.prompts.length === before + 1,
+    )
+    assert.match(alphaBridge.prompts.at(-1), /<subagent-result/)
+    assert.match(alphaBridge.prompts.at(-1), /Nested report/)
+    assert.equal(rootBridge.prompts.length, 0, 'the root must not receive its grandchild report')
+    assert.deepEqual(
+      manager
+        .list(principal)
+        .subagents.map((entry) => entry.id)
+        .sort(),
+      [alpha.id],
+    )
+    assert.deepEqual(
+      manager.list(alphaPrincipal).subagents.map((entry) => entry.id),
+      [beta.id],
+    )
+
+    const betaToken = manager.childToken(
+      manager.registry.get(beta.id),
+      manager.registry.get(beta.id).runs.at(-1),
+    )
+    const betaPrincipal = manager.tokens.verify(betaToken)
+    await assert.rejects(
+      () => manager.spawn(betaPrincipal, { name: 'gamma', task: 't', model: 'fast' }),
+      /not allowed/,
+    )
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a child spawn stays in the child conversation when the root switches sessions', async () => {
+  const fixture = nestedFixture('nested-session')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    const alphaSession = alpha.record.runs.at(-1).sessionFile
+    assert.ok(alphaSession)
+    assert.equal(alpha.record.parent.sessionFile, '/tmp/root-session.jsonl')
+
+    fixture.setRootSession('/tmp/other-root-session.jsonl')
+    const beta = await fixture.spawnBeta(alpha)
+    assert.equal(beta.parentId, alpha.record.id)
+    assert.equal(beta.parent.sessionFile, alphaSession)
+    assert.notEqual(beta.parent.sessionFile, '/tmp/other-root-session.jsonl')
+
+    // The root is on another conversation now: it must not see alpha's child, and the
+    // child's spawn must not have been stamped with the root's current session.
+    assert.deepEqual(fixture.manager.list(fixture.principal).subagents, [])
+    assert.deepEqual(
+      fixture.manager.list(alpha.principal).subagents.map((entry) => entry.id),
+      [beta.id],
+    )
+
+    fixture.setRootSession('/tmp/root-session.jsonl')
+    assert.deepEqual(
+      fixture.manager.list(fixture.principal).subagents.map((entry) => entry.id),
+      [alpha.record.id],
+    )
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('a spawn belongs to the console whose token asked, not always the main console', async () => {
+  const fixture = nestedFixture('parent-console')
+  try {
+    fixture.manager.attachParent(fixture.rootBridge)
+    const instanceBridge = new EventEmitter()
+    instanceBridge.status = () => ({
+      sessionFile: '/tmp/parallel-session.jsonl',
+      isStreaming: false,
+      isCompacting: false,
+      pendingMessages: 0,
+    })
+    fixture.manager.attachParentBridge('test-parallel', instanceBridge)
+    const env = fixture.manager.parentEnv('test-parallel')
+    const principal = fixture.manager.tokens.verify(env.HAMMER_SUBAGENT_TOKEN)
+    assert.equal(principal.consoleKey, 'test-parallel')
+
+    const receipt = await fixture.manager.spawn(principal, {
+      name: 'parallel-child',
+      task: 'Work in the parallel conversation.',
+      model: 'fast',
+      tools: ['read'],
+      background: true,
+      notify: 'silent',
+    })
+    const record = fixture.manager.registry.get(receipt.id)
+    assert.equal(record.parent.consoleKey, 'test-parallel')
+    assert.equal(record.parent.sessionFile, '/tmp/parallel-session.jsonl')
+    const ui = fixture.manager.uiRecords().find((entry) => entry.id === receipt.id)
+    assert.equal(ui.parentSessionFile, '/tmp/parallel-session.jsonl')
+    assert.equal(ui.parentConsoleKey, 'test-parallel')
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('a parent session learned after spawn is adopted rather than following the open row', async () => {
+  const fixture = nestedFixture('parent-backfill')
+  try {
+    fixture.rootBridge.sessionFile = null
+    fixture.manager.attachParent(fixture.rootBridge)
+    const principal = fixture.manager.tokens.verify(fixture.manager.parentTokenValue)
+    const receipt = await fixture.manager.spawn(principal, {
+      name: 'first-turn-child',
+      task: 'Start before this conversation has a file.',
+      model: 'fast',
+      tools: ['read'],
+      background: true,
+      notify: 'silent',
+    })
+    assert.equal(fixture.manager.registry.get(receipt.id)?.parent?.sessionFile, null)
+
+    fixture.rootBridge.sessionFile = '/tmp/late-session.jsonl'
+    fixture.rootBridge.emit('status', { sessionFile: '/tmp/late-session.jsonl' })
+    assert.equal(
+      fixture.manager.registry.get(receipt.id)?.parent?.sessionFile,
+      '/tmp/late-session.jsonl',
+    )
+    const ui = fixture.manager.uiRecords().find((entry) => entry.id === receipt.id)
+    assert.equal(ui.parentSessionFile, '/tmp/late-session.jsonl')
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('a tree snapshot reuses the display catalogue instead of rebuilding it per child', async () => {
+  const fixture = nestedFixture('ui-groups')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    await fixture.spawnBeta(alpha)
+    fixture.manager.uiGroupsCache = null
+    let builds = 0
+    const original = fixture.manager.groups.bind(fixture.manager)
+    fixture.manager.groups = () => {
+      builds += 1
+      return original()
+    }
+    assert.equal(fixture.manager.uiRecords().length, 2)
+    assert.equal(fixture.manager.uiRecords().length, 2)
+    assert.equal(builds, 1, 'one catalogue build serves the burst of tree snapshots')
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('a child message into the parent chat is always steered, even while the parent is busy', async () => {
+  const fixture = nestedFixture('parent-steer')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    fixture.rootBridge.status = () => ({
+      sessionFile: '/tmp/root-session.jsonl',
+      isStreaming: true,
+      isCompacting: false,
+      pendingMessages: 0,
+    })
+
+    const steered = await fixture.manager.send(alpha.principal, 'parent', 'child-to-parent-OK')
+    assert.equal(steered.mode, 'steer')
+    assert.equal(fixture.rootBridge.promptOptions.at(-1), undefined)
+    assert.match(fixture.rootBridge.prompts.at(-1), /<agent-message[^>]*mode="steer"/)
+    assert.match(fixture.rootBridge.prompts.at(-1), /child-to-parent-OK/)
+
+    // A parent-bound message is never held for the next turn boundary, even when the caller
+    // asks for queue: the parent chat receives it as a steer.
+    const queued = await fixture.manager.send(alpha.principal, 'parent', 'do-not-queue', 'queue')
+    assert.equal(queued.mode, 'steer')
+    assert.equal(fixture.rootBridge.promptOptions.at(-1), undefined)
+    assert.match(fixture.rootBridge.prompts.at(-1), /<agent-message[^>]*mode="steer"/)
+    assert.match(fixture.rootBridge.prompts.at(-1), /do-not-queue/)
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('stopping a parent stops its running grandchild', async () => {
+  const fixture = nestedFixture('nested-stop')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    const beta = await fixture.spawnBeta(alpha)
+    assert.equal(beta.status, 'running')
+
+    const stopped = await fixture.manager.stop(fixture.principal, alpha.record.id)
+    assert.equal(stopped.subagent.status, 'stopped')
+    assert.equal(fixture.manager.registry.get(alpha.record.id)?.status, 'stopped')
+    assert.equal(fixture.manager.registry.get(beta.id)?.status, 'stopped')
+    assert.match(fixture.manager.registry.get(beta.id)?.result?.error || '', /parent was stopped/)
+    assert.equal(fixture.bridges.get(beta.id)?.aborted, 1)
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('stopping a completed parent still stops its running grandchild', async () => {
+  const fixture = nestedFixture('nested-stop-completed')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    const beta = await fixture.spawnBeta(alpha)
+    const alphaBridge = fixture.bridges.get(alpha.record.id)
+    alphaBridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'Parent finished first.' }],
+      },
+    })
+    alphaBridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => fixture.manager.registry.get(alpha.record.id)?.status === 'completed')
+    assert.equal(fixture.manager.registry.get(beta.id)?.status, 'running')
+
+    const stopped = await fixture.manager.stop(fixture.principal, alpha.record.id)
+    assert.equal(stopped.subagent.status, 'completed')
+    assert.equal(fixture.manager.registry.get(alpha.record.id)?.status, 'completed')
+    assert.equal(fixture.manager.registry.get(beta.id)?.status, 'stopped')
+    assert.match(fixture.manager.registry.get(beta.id)?.result?.error || '', /parent was stopped/)
+    assert.equal(fixture.bridges.get(beta.id)?.aborted, 1)
+  } finally {
+    fixture.manager.dispose()
+  }
+})
+
+test('deleting a parent removes its running grandchild and its bridge', async () => {
+  const fixture = nestedFixture('nested-delete')
+  try {
+    const alpha = await fixture.spawnAlpha()
+    const beta = await fixture.spawnBeta(alpha)
+    const betaBridge = fixture.bridges.get(beta.id)
+    const betaAgentDir = join(fixture.manager.agentRoot, 'subagents', beta.id)
+    assert.equal(beta.status, 'running')
+
+    const deleted = await fixture.manager.delete(fixture.principal, alpha.record.id)
+    assert.deepEqual(deleted, { deleted: true, id: alpha.record.id })
+    assert.equal(fixture.manager.registry.get(alpha.record.id), null)
+    assert.equal(fixture.manager.registry.get(beta.id), null)
+    assert.equal(fixture.manager.bridges.has(beta.id), false)
+    assert.equal(betaBridge?.aborted, 1)
+    assert.equal(betaBridge?.disposed, true)
+    assert.equal(existsSync(betaAgentDir), false)
+    const ui = fixture.manager.tokens.verify(fixture.manager.uiToken())
+    assert.deepEqual(fixture.manager.list(ui).subagents, [])
+  } finally {
+    fixture.manager.dispose()
   }
 })
 
@@ -759,13 +2139,28 @@ test('the child charter is generic and the extension is materialized outside the
     instructions: 'Review the diff.',
     cwd: '/workspace',
     tools: ['read'],
+    grants: { spawn: true },
     depth: 1,
-    maxDepth: 1,
+    maxDepth: 2,
   })
   assert.match(charter, /Review the diff/)
   assert.match(charter, /final assistant message is your report/)
   assert.match(charter, /instead of answering from memory/)
+  assert.match(charter, /You may spawn child agents/)
+  assert.match(
+    charter,
+    /wait for a write, edit or mkdir result before a later read or bash command/,
+  )
   assert.ok(!/web access/.test(charter))
+  const terminalCharter = childCharter({
+    tools: ['read'],
+    grants: { spawn: true },
+    depth: 2,
+    maxDepth: 2,
+  })
+  assert.doesNotMatch(terminalCharter, /You may spawn child agents/)
+  assert.match(terminalCharter, /cannot spawn further subagents/)
+  assert.match(terminalCharter, /do not invent or claim use of a tool you were not given/)
   assert.doesNotMatch(charter, /reviewer|scout|worker persona/i)
   const webCharter = childCharter({ tools: ['read', 'web_fetch'] })
   assert.match(webCharter, /You have web access/)
@@ -798,9 +2193,19 @@ test('the harness paints the subagent tree, child view and result cards', () => 
   assert.match(harness, /SUBAGENT MODELS — detail/)
   assert.match(harness, /function formatCatalogueContext\(/)
   assert.match(harness, /if \(action === 'models' && output\)/)
+  assert.match(harness, /function parseSubagentListRows\(/)
+  assert.match(harness, /function subagentListMarkup\(/)
+  assert.match(harness, /if \(action === 'list' && output\)/)
+  assert.match(harness, /hx-sub-table/)
   assert.match(harness, /hx-cat-list/)
   assert.match(harness, /hx-cat-title/)
+  // The catalogue header is its title alone; the active-group count and "compact" label
+  // crowded the top of the card without telling a reader anything the list did not.
+  assert.doesNotMatch(harness, /active group\$\{rows\.length/)
   assert.match(harness, /parentSessionFile/)
+  assert.match(harness, /function applySubagents\(/)
+  assert.match(harness, /nextRevision < state\.subagentRevision/)
+  assert.doesNotMatch(harness, /currentFile === session\.file && record\.rootId/)
   assert.match(harness, /hx-subagent-branch/)
   assert.match(harness, /hx-session-item/)
   assert.match(
@@ -846,4 +2251,639 @@ test('the harness paints the subagent tree, child view and result cards', () => 
   assert.match(css, /\.hx-cat-title \{/)
   assert.doesNotMatch(css, /\.hx-cat-provider \{[^}]*font-family: var\(--hx-mono\)/)
   assert.match(css, /max-height: min\(420px, 55vh\);/)
+})
+
+test('a child that answered with its plan is continued, and a report is not its reasoning', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-plan-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  /** @type {Array<{ message: string, options: any }>} */
+  const prompts = []
+  class CaptureBridge extends EventEmitter {
+    async start() {}
+    async prompt(message, options) {
+      prompts.push({ message, options })
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0, sessionFile: null }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      return {}
+    }
+    dispose() {}
+  }
+  const bridges = new Map()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ record }) => {
+      const bridge = new CaptureBridge()
+      bridges.set(record.id, bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    // A forty-turn child re-sends its context every turn; a 300,000-token ceiling is spent in
+    // minutes and killed three research children before they wrote a report.
+    assert.equal(manager.limits.tokenBudget, 2_000_000)
+
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const planned = await manager.spawn(principal, {
+      name: 'plan-only',
+      task: 'Research paper roads.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const planBridge = bridges.get(planned.id)
+    // The first prompt of a child is an ack from a Pi that is still starting, so it gets more
+    // than the twenty-second command timeout that once failed a healthy child outright.
+    assert.equal(prompts[0].options.timeoutMs, 90_000)
+    planBridge.emit('event', { type: 'agent_start' })
+    planBridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [
+          { type: 'text', text: 'Let me start researching. I will begin with the NSW definition.' },
+        ],
+      },
+    })
+    planBridge.emit('event', { type: 'agent_end' })
+    planBridge.emit('event', { type: 'agent_settled' })
+    assert.equal(manager.registry.get(planned.id)?.status, 'running')
+    await waitFor(() => prompts.length === 2)
+    assert.match(prompts[1].message, /make that tool call now/)
+    // No tool had run, and that used to be an exemption from the continuation check.
+    assert.equal(manager.registry.get(planned.id)?.last?.sawTool, undefined)
+    assert.equal(manager.registry.get(planned.id)?.status, 'running')
+
+    const reasoning = await manager.spawn(principal, {
+      name: 'reasoning-report',
+      task: 'Report the findings.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const reportBridge = bridges.get(reasoning.id)
+    reportBridge.emit('event', { type: 'agent_start' })
+    reportBridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [
+          {
+            type: 'text',
+            text: ' thinking\nI should search more.\n</think>\n\n# Report\n\nAll done.',
+          },
+        ],
+      },
+    })
+    reportBridge.emit('event', { type: 'agent_end' })
+    reportBridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(reasoning.id)?.status === 'completed')
+    assert.equal(manager.registry.get(reasoning.id)?.result?.text, '# Report\n\nAll done.')
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('tool-call JSON is not a report, and a failing tool stops being retried', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-payload-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  /** @type {Array<{ message: string, options: any }>} */
+  const prompts = []
+  class CaptureBridge extends EventEmitter {
+    async start() {}
+    async prompt(message, options) {
+      prompts.push({ message, options })
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0, sessionFile: null }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      return {}
+    }
+    dispose() {}
+  }
+  const bridges = new Map()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ record }) => {
+      const bridge = new CaptureBridge()
+      bridges.set(record.id, bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'payload-only',
+      task: 'Find the page.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const bridge = bridges.get(spawned.id)
+    const payload = {
+      role: 'assistant',
+      stopReason: 'stop',
+      content: [
+        { type: 'text', text: '{"url":"https://a.example"}\n\n{"url":"https://b.example"}' },
+      ],
+    }
+    const settle = () => {
+      bridge.emit('event', { type: 'agent_start' })
+      bridge.emit('event', { type: 'message_end', message: payload })
+      bridge.emit('event', { type: 'agent_end' })
+      bridge.emit('event', { type: 'agent_settled' })
+    }
+    settle()
+    await waitFor(() => prompts.length === 2)
+    assert.match(prompts[1].message, /make that tool call now/)
+    assert.equal(manager.registry.get(spawned.id)?.status, 'running')
+    settle()
+    await waitFor(() => prompts.length === 3)
+    assert.match(prompts[2].message, /Stop researching now/)
+    settle()
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'failed')
+    assert.match(manager.registry.get(spawned.id)?.result?.error || '', /tool-call JSON/)
+
+    const failing = await manager.spawn(principal, {
+      name: 'failing-tools',
+      task: 'Search.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const failingBridge = bridges.get(failing.id)
+    const before = prompts.length
+    for (let index = 0; index < 4; index += 1) {
+      failingBridge.emit('event', {
+        type: 'tool_execution_end',
+        toolName: 'web_fetch',
+        result: 'Web fetch failed. Exa MCP returned 429: rate limit.',
+      })
+    }
+    await waitFor(() => prompts.length === before + 1)
+    assert.match(prompts.at(-1).message, /Stop retrying the same tool/)
+    // The nudge is sent once, not on every further failure.
+    failingBridge.emit('event', {
+      type: 'tool_execution_end',
+      toolName: 'web_fetch',
+      result: 'Web fetch failed. 429 rate limit.',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.equal(prompts.length, before + 1)
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a malformed tool call is retried once instead of killing the child', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-json-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  const prompts = []
+  class CaptureBridge extends EventEmitter {
+    async start() {}
+    async prompt(message, options) {
+      prompts.push({ message, options })
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0, sessionFile: null }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {
+      return {}
+    }
+    dispose() {}
+  }
+  const bridges = new Map()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ record }) => {
+      const bridge = new CaptureBridge()
+      bridges.set(record.id, bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'bad-arguments',
+      task: 'Search.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const bridge = bridges.get(spawned.id)
+    const failTurn = () => {
+      bridge.emit('event', { type: 'agent_start' })
+      bridge.emit('event', {
+        type: 'message_end',
+        message: {
+          role: 'assistant',
+          stopReason: 'error',
+          errorMessage:
+            'Unexpected non-whitespace character after JSON at position 380 (line 2 column 1)',
+          content: [],
+        },
+      })
+      bridge.emit('event', { type: 'agent_end' })
+      bridge.emit('event', { type: 'agent_settled' })
+    }
+    failTurn()
+    await waitFor(() => prompts.length === 2)
+    assert.match(prompts[1].message, /not valid JSON/)
+    assert.equal(manager.registry.get(spawned.id)?.status, 'running')
+    assert.equal(manager.registry.get(spawned.id)?.result?.error, null)
+
+    // A second slip is answered with "stop using tools and write what you have", which is the
+    // only thing that salvages a report from a model that cannot format a call.
+    failTurn()
+    await waitFor(() => prompts.length === 3)
+    assert.match(prompts[2].message, /Stop using tools now/)
+    assert.equal(manager.registry.get(spawned.id)?.status, 'running')
+
+    // A third is a real failure, and the parent gets the reason.
+    failTurn()
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'failed')
+    assert.match(manager.registry.get(spawned.id)?.result?.error || '', /non-whitespace character/)
+
+    // A dropped connection mid-turn is retried rather than thrown away: a live child was
+    // aborted after 253 seconds with everything it had found.
+    const aborted = await manager.spawn(principal, {
+      name: 'aborted-turn',
+      task: 'Search.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    const abortedBridge = bridges.get(aborted.id)
+    const before = prompts.length
+    abortedBridge.emit('event', { type: 'agent_start' })
+    abortedBridge.emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'This operation was aborted',
+        content: [],
+      },
+    })
+    abortedBridge.emit('event', { type: 'agent_end' })
+    abortedBridge.emit('event', { type: 'agent_settled' })
+    await waitFor(() => prompts.length === before + 1)
+    assert.match(prompts.at(-1).message, /connection failed mid-turn/)
+    assert.equal(manager.registry.get(aborted.id)?.status, 'running')
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a widened pool pick is recorded as the route that served the child', () => {
+  // The spawn-time row is a snapshot. When a child outlives it, the proxy widens to the live
+  // catalogue rather than 503 — and the record must name that row, or the finished report
+  // credits a route the child never reached.
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-widened-route-'))
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings: {
+      agentRoot: join(root, 'agent'),
+      sessions: join(root, 'sessions'),
+      workspace: root,
+    },
+    agentRoot: join(root, 'agent'),
+    sessionsRoot: join(root, 'sessions'),
+    workspace: root,
+    parentKey: 'test',
+    results: () => [],
+  })
+  try {
+    manager.registry.insert({
+      id: 'sa_widened',
+      name: 'widened',
+      rootId: manager.rootId,
+      parentId: null,
+      status: 'running',
+      phase: 'working',
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+      endedAt: null,
+      model: {
+        requested: 'fast',
+        groupId: 'fast-group',
+        rowKey: 'spent/primary',
+        pool: ['spent/primary'],
+        selectedKey: null,
+        fallbacks: [],
+      },
+      runs: [{ number: 1, consoleKey: 'sub-widened', sessionFile: '/tmp/child.jsonl' }],
+      usage: { turns: 1, inputTokens: 0, outputTokens: 0, totalTokens: 40 },
+      result: { text: 'report', reportPath: null, truncated: false, error: null },
+    })
+    setActiveSubagentManager(manager)
+
+    reportSubagentPick('sub-widened', row({ providerKey: 'live', modelId: 'spare' }), {
+      widened: true,
+    })
+    const record = manager.registry.get('sa_widened')
+    const status = minimalStatus(record)
+    assert.equal(status.model.selected, 'live/spare')
+    assert.equal(status.model.widened, true)
+    assert.deepEqual(status.model.fallback, ['live/spare'])
+    // The snapshot stays intact: the deviation is recorded, not rewritten.
+    assert.equal(record.model.rowKey, 'spent/primary')
+
+    const report = reportPayload(record)
+    assert.equal(report.selected, 'live/spare')
+    assert.equal(report.widened, true)
+    assert.equal(report.model, 'fast-group')
+    assert.deepEqual(report.fallback, [
+      {
+        from: 'spent/primary',
+        to: 'live/spare',
+        reason: 'pool exhausted; widened to the live catalogue',
+      },
+    ])
+
+    // A move inside the child's own pool keeps its own reason, so the last-resort widening
+    // does not get confused with an ordinary group fallback.
+    reportSubagentPick('sub-widened', row({ providerKey: 'live', modelId: 'second' }))
+    const fallback = reportPayload(manager.registry.get('sa_widened')).fallback.at(-1)
+    assert.equal(fallback.to, 'live/second')
+    assert.equal(fallback.reason, 'provider unavailable; pool fallback')
+  } finally {
+    setActiveSubagentManager(null)
+    manager.dispose()
+  }
+})
+
+test('a resumed child opens its own session instead of starting a blank one', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-resume-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class ResumeBridge extends EventEmitter {
+    prompts = []
+    sessionFile = null
+    async start() {}
+    async prompt(message) {
+      this.prompts.push(message)
+      return { data: { disposition: 'started' } }
+    }
+    status() {
+      return {
+        sessionFile: this.sessionFile,
+        isStreaming: false,
+        isCompacting: false,
+        pendingMessages: 0,
+      }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async abort() {}
+    dispose() {}
+  }
+  const launches = []
+  const bridges = []
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async ({ plan }) => {
+      launches.push(plan.args.slice())
+      const bridge = new ResumeBridge()
+      bridges.push(bridge)
+      return bridge
+    },
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    const principal = parentPrincipal({
+      sessionFile: '/tmp/root-session.jsonl',
+      tools: [...PI_TOOL_NAMES],
+    })
+    const spawned = await manager.spawn(principal, {
+      name: 'resume-child',
+      task: 'Say hello.',
+      model: 'fast',
+      background: true,
+      notify: 'silent',
+    })
+    assert.ok(!launches[0].includes('--session'), 'a fresh child lets Pi name a new session')
+    const childSessions = join(settings.sessions, 'subagents')
+    mkdirSync(childSessions, { recursive: true })
+    const sessionFile = join(childSessions, `${spawned.id}.jsonl`)
+    writeFileSync(sessionFile, '')
+    manager.registry.get(spawned.id).runs[0].sessionFile = sessionFile
+    bridges[0].emit('event', {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        stopReason: 'stop',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    })
+    bridges[0].emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+
+    // A message to a finished child is the resume path. Pi starts a new session when it is
+    // only given --session-dir, so the child's own file has to be named or the follow-up
+    // arrives with none of the work it is following up on.
+    await manager.send(principal, spawned.id, 'One more thing.', 'queue')
+    const resumed = launches.at(-1)
+    assert.ok(resumed.includes('--session'), 'the resume names the child session')
+    assert.equal(resumed[resumed.indexOf('--session') + 1], sessionFile)
+    assert.match(bridges.at(-1).prompts.at(-1), /One more thing/)
+    assert.doesNotMatch(
+      bridges.at(-1).prompts.at(-1),
+      /Say hello\./,
+      'a resume does not replay the task first',
+    )
+
+    // A session file the user removed cannot be named: Pi would fail or create it blank, so
+    // the run starts fresh rather than pretending to resume nothing.
+    bridges.at(-1).emit('event', {
+      type: 'message_end',
+      message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'done' }] },
+    })
+    bridges.at(-1).emit('event', { type: 'agent_settled' })
+    await waitFor(() => manager.registry.get(spawned.id)?.status === 'completed')
+    rmSync(sessionFile, { force: true })
+    await manager.send(principal, spawned.id, 'Again.', 'queue')
+    assert.ok(!launches.at(-1).includes('--session'))
+  } finally {
+    manager.dispose()
+  }
+})
+
+test('a reattached child console reports its brief, grants and run file', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hammer-subagent-reattach-'))
+  const settings = {
+    command: process.execPath,
+    node: process.execPath,
+    agentRoot: join(root, 'agent'),
+    sessions: join(root, 'sessions'),
+    workspace: root,
+    extraArgs: [],
+    compaction: {},
+  }
+  class KeeperBridge extends EventEmitter {
+    adopted = 0
+    async adoptKeeper() {
+      this.adopted += 1
+    }
+    status() {
+      return { isStreaming: false, isCompacting: false, pendingMessages: 0 }
+    }
+    willContinue() {
+      return false
+    }
+    history() {
+      return []
+    }
+    async prompt() {
+      return { data: { disposition: 'started' } }
+    }
+    dispose() {}
+  }
+  const bridge = new KeeperBridge()
+  const results = [row({ modelId: 'fast', label: 'Fast', aa: 40, ttft: 400, tps: 100 })]
+  const manager = new SubagentManager({
+    baseUrl: 'http://127.0.0.1:9/v1',
+    settings,
+    agentRoot: settings.agentRoot,
+    sessionsRoot: settings.sessions,
+    workspace: root,
+    parentKey: 'test',
+    results: () => results,
+    createBridge: async () => bridge,
+    parentBridge: () => ({ status: () => ({ sessionFile: '/tmp/root-session.jsonl' }) }),
+  })
+  try {
+    manager.registry.insert({
+      id: 'sa_restored',
+      name: 'restored',
+      rootId: manager.rootId,
+      parentId: null,
+      status: 'running',
+      phase: 'busy',
+      task: 'Audit the schema.',
+      instructions: 'Be terse.',
+      tools: ['read'],
+      grants: { transcripts: false, message: false, spawn: false },
+      cwd: root,
+      depth: 1,
+      createdAt: Date.now(),
+      startedAt: Date.now(),
+      endedAt: null,
+      model: { requested: 'fast', groupId: 'fast-group', rowKey: 'a/b', pool: [], fallbacks: [] },
+      runs: [{ number: 1, consoleKey: 'sub-restored', sessionFile: '/tmp/child.jsonl' }],
+      usage: { turns: 1, inputTokens: 0, outputTokens: 0, totalTokens: 40 },
+      result: { text: null, reportPath: null, truncated: false, error: null },
+    })
+    await manager.restore()
+    assert.equal(bridge.adopted, 1)
+    const info = bridge.subagentInfo()
+    assert.equal(info.task, 'Audit the schema.')
+    assert.equal(info.instructions, 'Be terse.')
+    assert.deepEqual(info.grants, { transcripts: false, message: false, spawn: false })
+    assert.equal(info.runs[0].sessionFile, '/tmp/child.jsonl')
+    assert.equal(info.status, 'running')
+  } finally {
+    manager.dispose()
+  }
 })

@@ -324,6 +324,30 @@ test('each glyph meets the spine at the top and the bottom of its box', () => {
   assert.equal(failures.join('; '), '', 'every glyph links into the spine at both ends')
 })
 
+test('the web tools wear the requested globe and downward-arrow marks', () => {
+  // The search mark is a round globe: an actual circle, two latitude strokes and one
+  // meridian. The inspectable claim is not just "a globe" but that those strokes are the
+  // shapes a reader sees at 12px rather than a magnifier or a badge.
+  const search = glyphTable.web_search
+  assert.match(search, /<circle cx="12" cy="12" r="9"\/>/)
+  assert.match(search, /<ellipse cx="12" cy="12" rx="4\.5" ry="9"\/>/)
+  assert.equal(
+    (search.match(/<path/g) || []).length,
+    1,
+    'the stems and latitudes share one stroke set',
+  )
+  assert.match(search, /M4 8\.2c4\.6 1\.6 11\.4 1\.6 16 0/)
+  assert.match(search, /M4 15\.8c4\.6-1\.6 11\.4-1\.6 16 0/)
+
+  // Fetch is an outlined arrow, not a line arrow: the closed shaft/head outline is the
+  // drawing, with the spine entering above it and resuming at the point.
+  const arrow = glyphTable.web_fetch
+  assert.equal(glyphTable.webfetch, arrow, 'both fetch tool names use the same mark')
+  assert.match(arrow, /M9\.5 3H14\.5V12H18L12 21L6 12H9\.5Z/)
+  assert.match(arrow, /M12 0v3/)
+  assert.match(arrow, /M12 21v3/)
+})
+
 test('each state of the badge is a colour, not a filled box', () => {
   assert.match(css, /\.hx-tool\.running \.hx-tool-icon \{[^}]*color: var\(--accent\);/)
   assert.match(css, /\.hx-tool\.running \.hx-tool-icon \{[^}]*animation: hx-pulse/)

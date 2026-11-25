@@ -58,6 +58,8 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
     'vendor/translator-8b',
     'vendor/calibration-suite',
     'vendor/saudi-chat',
+    'vendor/arabic-chat-7b',
+    'vendor/Arabic-7b-instruct',
     'vendor/whisper-audio-large',
     // Speech-to-text rows answer with a transcript, not a chat completion, and their ids need not
     // contain "audio" or "whisper": live OpenAI catalog ids are `gpt-4o-transcribe` and friends.
@@ -97,6 +99,21 @@ test('a model whose id names a non-chat family is incompatible by name', () => {
   ]) {
     assert.equal(isBlockedModelName(id), false, `${id} is a chat model`)
   }
+})
+
+test('a model whose display label says Arabic is incompatible even when its id does not', () => {
+  const now = Date.now()
+  const row = {
+    modelId: 'vendor/chat-7b',
+    label: 'Arabic Chat 7B',
+    providerKey: 'vendor',
+    status: 'up',
+    lastResponse: { ok: true, text: 'marhaba', status: 200, at: now, error: null },
+  }
+  assert.equal(isBlockedModelName(row.modelId, row.label), true)
+  assert.equal(isBlockedModelName(row.modelId, 'Chat 7B'), false)
+  assert.equal(resolveModelStatus(row, now), 'incompatible')
+  assert.equal(isModelEligibleForRouting(row), false)
 })
 
 test('the name rule outranks a successful probe, in every place that reads it', () => {

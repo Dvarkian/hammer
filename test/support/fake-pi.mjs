@@ -15,6 +15,8 @@
  *   FAKE_PI_COMPACT_DELAY_MS=<ms> hold a compaction in flight this long, so a prompt can be
  *                                  queued while the summary is still being written
  *   FAKE_PI_SESSION_STATS=<json>  the `get_session_stats` payload (default: 42 total tokens)
+ *   FAKE_PI_NEW_SESSION_FILE=<path> the file `new_session` leaves the agent on, as a real
+ *                                  reset names a fresh session immediately
  *   FAKE_PI_MESSAGE_USAGE=<json>  usage object attached to the assistant `message_end`
  *   FAKE_PI_END_ERROR=<text>      end each turn with this provider error instead of an answer
  *   FAKE_PI_NO_FOLLOW_UP=1        leave follow-ups queued on settle instead of starting them
@@ -290,9 +292,16 @@ function handle(command) {
       respond(command, null)
       return
 
-    case 'new_session':
-      respond(command, { cancelled: process.env.FAKE_PI_CANCEL_RESET === '1' })
+    case 'new_session': {
+      const cancelled = process.env.FAKE_PI_CANCEL_RESET === '1'
+      // A real reset names a new session straight away, and `get_state` is where that name is
+      // read. A fake that kept its old file would hide a console that never re-read it.
+      if (!cancelled && process.env.FAKE_PI_NEW_SESSION_FILE) {
+        fakeSessionFile = process.env.FAKE_PI_NEW_SESSION_FILE
+      }
+      respond(command, { cancelled })
       return
+    }
 
     case 'clear_queue': {
       const cleared = { steering: [...steeringQueue], followUp: [...followUpQueue] }

@@ -239,7 +239,13 @@ session file, with its own bridge and subscribers. Each instance has a console k
 (`${port}-${id}`) used for slope state and status. The page-wide stream
 `/api/pi/consoles/events` carries every console over one connection; the harness keeps a
 `console` object per id and switches the transcript/composer between them. A subagent is
-structurally another console with a parent, which is why the UI can be nearly free.
+structurally another console with a parent, which is why the UI can be nearly free. Each
+parent bridge is registered with the manager under its console key and its environment
+carries a parent token naming that key, so a spawn records the conversation that actually
+asked for the child instead of inheriting the main conversation. The rail groups root
+children by `parent.sessionFile`; when a console is still on its first turn and has no file
+yet, the manager backfills that field from the console's first status report rather than
+guessing from whichever row is open.
 
 ### 2.3 A private Pi agent directory and the `best` alias
 
@@ -305,7 +311,9 @@ the capacity signal.
 
 `public/harness.js` keeps a `consoles` map, one per conversation, and `activate()` points
 the transcript/composer at one of them. `renderSessions()` builds the Sessions rail from
-the server's session list plus any open console. The transcript renders Pi events
+the server's session list plus any open console. Subagent snapshots carry a revision, and
+the SSE stream sends one with its opening `hello`, so a reconnect cannot overwrite a
+newer spawn with a slower list response or miss children created while the page was away. The transcript renders Pi events
 including tool calls, thinking, notices and usage. `public/index.html` has the sidebar,
 composer (with steer/follow-up buttons), details rail and the agent/router view switch.
 Both `dashboard.css` and `harness.css` are loaded, so the dashboard's tag styles are
@@ -397,8 +405,10 @@ There is no second queued-mode spelling. A parent sending to a finished child re
 on its session and delivers only that message; the stored task is not replayed first. One
 verb, with an optional `mode`. The same action is how a permissioned child messages its
 parent, a sibling or another same-root agent. The root chooser is addressable as `parent`;
-otherwise targets are ids, with names unique per root. A message to a target that finishes
-before delivery fails with `delivery_failed`; it never resumes it.
+otherwise targets are ids, with names unique per root. A message addressed to `parent` is
+always delivered as a steer, even when the caller asks for `queue`: it must reach a running
+parent turn rather than wait behind it. A message to a target that finishes before delivery
+fails with `delivery_failed`; it never resumes it.
 
 **Stop.** Abort the child, mark stopped, return partial output.
 
@@ -663,19 +673,30 @@ Rules:
   capped at 8k chars and limited to 10 per child per 10 minutes. A parent that is blocked
   inside a `subagent` tool call accepts only `queue`, at its next turn boundary; `steer`
   is deferred while a tool call is open.
-- Every parent has both powers over its own descendants without a grant; the root chooser
-  can read and steer any child. The chooser is not a subagent record: descendants address
-  it as `parent`. Transcript reads count against the reader's context budget.
-- `spawn` requires depth < `maxDepth`. V1 ships **depth 1** only: the root chooser can
-  spawn, and children cannot spawn. The grant is present for a later depth-2 config but is
-  unreachable in v1. The child's token carries its requester id, `rootId`, `parentId`,
-  depth and grants; routes derive the principal from the token and never trust a
-  client-supplied parent or root. It never receives the parent's token.
+- Every parent has both powers over its own descendants without a grant. The chooser is not
+  a subagent record: descendants address it as `parent`. Transcript reads count against the
+  reader's context budget. Model-facing list and target lookup are scoped to the caller's
+  conversation: a child's own spawn belongs to that child's run session, not to whatever
+  session the root console happens to be viewing. Stopping or deleting a parent cascades to
+  its running descendants so they are not left orphaned; deleting also removes their records,
+  sessions and private agent directories.
+- `spawn` requires depth < `maxDepth`. The default limit is **depth 2**: the root chooser
+  can spawn, a depth-1 child can spawn its own child when it was given the `spawn`
+  capability in `tools`, and a depth-2 child is terminal. The capability must be granted
+  explicitly; it also adds the `subagent` tool. The child's token carries its requester id,
+  `rootId`, `parentId`, depth and grants; routes derive the principal from the token and
+  never trust a client-supplied parent or root. It never receives the parent's token.
+  Background reports go to the immediate parent subagent while it is live, then fall back
+  to the root conversation notice queue.
 - `cwd` defaults to the parent workspace and must resolve inside it. Worktree isolation
   is a later option, not v1.
 - Budgets are permissions too: wall clock 20 minutes (max 60), 40 turns, 300k tokens per
-  child; a steer at 80% says “wrap up”, and 100% aborts with a partial report.
-- Caps: 4 live children per root (configurable), 8 total, 32 spawns per hour.
+  child. A token budget is enforced from measured usage at every message and from the
+  streamed output estimate, not only by a five-second poll; the child is stopped mid-turn if
+  it crosses the ceiling. A steer at 80% says “wrap up”.
+- There is no live-child concurrency cap: a parent may fan out as far as the supervised
+  processes and its hourly spawn budget allow. The remaining cap is 32 spawns per hour,
+  plus depth 2.
 - **There is no OS sandbox.** A child with `bash` can read anything the user can,
   including other sessions, process environments and loopback routes. These grants are
   context and blast-radius limits, not a security boundary; do not give `bash` to a child
@@ -726,8 +747,9 @@ burning a turn.
 Peer messages use the same delivery machinery with an `<agent-message>` wrapper. They are
 accepted from a child holding the `message` grant, or from a parent exercising its inherent
 authority, and always name their sender. `steer` injects into a live turn; `queue` waits
-for the next turn boundary. A parent message is queued while the parent is inside a
-`subagent` tool call.
+for the next turn boundary. A message addressed to the parent is always a steer, including
+while the parent is inside a `subagent` tool call; only messages to other targets use the
+requested mode.
 Message-triggered turns count against the recipient's budget, and a root-level cap stops
 ping-pong; the 10-per-10-minute limit alone is not enough. A message to a finished target
 is rejected for a child; a parent's `send` restarts it with only that message. The
@@ -857,12 +879,12 @@ mailbox. The tree remains the authority structure.
 
 ### 3.14 Concurrency and resources
 
-- 4 live children per root, 8 total, 32 spawns per hour, depth 1 — the defaults.
-- Each child is a Pi process plus a keeper process; at 4 live that is 8 processes. The
-  keeper is what makes a router restart survivable, so it is worth the overhead. If it
-  becomes a problem, a single fleet keeper can replace one-per-child later.
+- There is deliberately no live-child cap; 32 spawns per hour and depth 2 remain.
+- Each child is a Pi process plus a keeper process, so a fan-out costs roughly two processes
+  per live child. The keeper is what makes a router restart survivable, so it is worth the
+  overhead. If it becomes a problem, a single fleet keeper can replace one-per-child later.
 - Quotas are shared across a group's routes, and the parent's own route counts as
-  occupied where known. Four children on one scarce model will thrash; the catalogue's
+  occupied where known. Many children on one scarce model will thrash; the catalogue's
   usage tag and the fallback pool are the mitigation. The usage band is aggregate, so the
   pool still re-checks each route before every request.
 - A root budget (e.g. 1M tokens) can cap the total cost of a fan-out; per-child budgets
@@ -888,8 +910,9 @@ subagent({
   query?: string, min_intelligence?: number,
   min_speed?: number, min_context?: number, usage?: string,
   include_unrated?: boolean, limit?: number, offset?: number, // detail or compact page, default 25
-  // spawn
+  // spawn (the four model filters are accepted here too)
   name?: string, task?: string, instructions?: string,
+  min_intelligence?: number, min_speed?: number, min_context?: number, usage?: string,
   model?: string,            // catalogue key or "fast"|"balanced"|"smart"; no "inherit"
   provider?: string,         // optional exact provider
   tools?: string[],          // read, grep, find, ls, edit, write, bash, webfetch, web_search, web_fetch, transcripts, message, spawn
@@ -902,6 +925,12 @@ subagent({
   wait_ms?: number, transcript_limit?: number, // chars, default 8000
 })
 ```
+
+`min_intelligence` and `min_speed` accept a 1-based tag floor for small integers:
+intelligence 1–6 is Very Dumb through Genius, speed 1–5 is Very Slow through Very Fast.
+Larger values are the raw AA score and effective tok/s. `usage` accepts `any`, `usable`,
+`ample`, or one of the concrete bands; an unknown word is rejected rather than silently
+matching nothing. The same filters can be passed to `spawn` to constrain its tier choice.
 
 `web_search` and `web_fetch` are keyless Pi extensions materialized with the child agent. They
 are not in the default child tool set; pass them explicitly when a child needs current external
@@ -1007,7 +1036,7 @@ model-supplied `id` is a target, never a sender or root claim.
 - **Aggregate usage hides route exhaustion:** the usage tag is group-level; one route can
   be spent while another carries the group. The pool re-filters each route before every
   request; do not infer capacity from a route count.
-- **Runaway spawns:** depth 1, live-child cap, total cap, token/time budgets, per-token
+- **Runaway spawns:** depth 2, live-child cap, total cap, token/time budgets, per-token
   scope. A child with `bash` can still bypass tool limits by running another agent; that is
   the no-sandbox caveat.
 - **Permission bypass through `bash`:** a child with `bash` can read session files, process
@@ -1099,7 +1128,7 @@ If any fails, stop and adjust the architecture before building on it.
 - End-to-end with two real children.
 
 Deferred deliberately: worktree isolation, team broadcast/shared mailbox, task board,
-observer/advisor severity layer, nested depth greater than 1, in-process children for
+observer/advisor severity layer, nested depth greater than 2, in-process children for
 startup latency, user-facing model override at spawn.
 
 ---
@@ -1124,8 +1153,9 @@ startup latency, user-facing model override at spawn.
   report text to a `message`-only child.
 - **Principal and routes:** forged sender/root/target is rejected; a loopback request
   without the token cannot read or send; token claims match the registry.
-- **Transcript and messaging:** bounded transcript reads; steer/queue modes;
-  parent is queued while inside a `subagent` tool call; a child's message to a finished
+- **Transcript and messaging:** bounded transcript reads; steer/queue modes for ordinary
+  targets; a parent-bound message is always steered, including inside a `subagent` tool
+  call; a child's message to a finished
   target fails with `delivery_failed`, while a parent's `send` restarts it with the message;
   peer-loop turn caps and recipient budgets; attribution; no approval or grant escalation;
   message and read rate limits.
@@ -1156,8 +1186,8 @@ These are the defaults this plan assumes:
    `edit`/`write`/`bash`. Safer, but every editing delegation must say so.
 3. **Model required at spawn** — catalogue key or a tier. No silent default and no
    `inherit`; the choice is the feature.
-4. **Depth 1** (no nested subagents) and **4 live / 8 total** per root for v1. The
-   `spawn` grant is reserved for a later depth-2 config and is unreachable in v1.
+4. **Depth 2** (one nested level) and **4 live / 8 total** per root. The `spawn` grant is
+   explicit and may be passed to a depth-1 child; depth-2 children are terminal.
 5. **`notify: "auto"`** for background results (wake if idle, queue if busy), with
    `silent` available. A long job that should not wake the parent sets `queue` explicitly;
    there is no duration-based default.

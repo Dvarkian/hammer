@@ -133,6 +133,8 @@
     sessionQuery: '',
     /** Subagent records for the tree (the router is authoritative; this is its last paint). */
     subagents: [],
+    /** The router's snapshot revision, so a slow list fetch cannot overwrite a newer frame. */
+    subagentRevision: 0,
     /** The scoped UI token, fetched on boot; never a child's or the parent console's. */
     subagentToken: '',
     /** The root the active conversation owns, used to scope its tree. */
@@ -188,6 +190,8 @@
       notesSeen: new Set(),
       /** True once the transcript came from the session file rather than the replay log. */
       historyLoaded: false,
+      /** True once this conversation has a persisted transcript worth plotting. */
+      usageReady: false,
       /** True while a rebuild from that file is in flight, so it is not started twice. */
       historyLoading: false,
       /** The model `best` resolved to, as the router reported it (see renderRouting). */
@@ -550,7 +554,7 @@
       } catch (err) {
         // Gone from the store: forget it rather than retrying on every load. One that merely
         // failed to start this time keeps its slot for the next page.
-        if (/unknown|not found|no such|missing/i.test(err?.message || '')) {
+        if (/unknown|not found|no such|no session file|missing/i.test(err?.message || '')) {
           openFiles.delete(file)
           saveOpenConversations()
         }
@@ -677,7 +681,10 @@
    */
   async function readSessionUsage(ctx) {
     const file = ctx?.sessionFile
-    if (!file) {
+    // A fresh conversation is named before its first turn writes the file. Asking for usage
+    // then is a guaranteed 400 and a console error, so the plot waits for the first saved
+    // turn (or for a rebuilt history) to say there is something to read.
+    if (!file || !ctx.usageReady) {
       window.publishSessionUsage?.(null, [])
       return
     }
@@ -1995,12 +2002,15 @@
       task: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><path d="M8.5 10.5l2.5 2.5 4.5-4.5"/>',
       // Diamond checkbox node woven into the spine stream.
       todo: '<path d="M12 0v3L5 10.5L12 18v6M12 3l7 7.5L12 18"/><path d="M9 10.5l2 2 4-4"/>',
-      // Globe node with equator and meridians linking top and bottom to spine.
-      webfetch: '<path d="M12 0v2.5C6.5 2.5 4 6.5 4 12c0 5.5 2.5 9.5 8 9.5v2.5M12 2.5c5.5 0 8 4 8 9.5s-2.5 9.5-8 9.5"/><path d="M4 12h16M12 2.5C8.5 6 8.5 18 12 21.5M12 2.5C15.5 6 15.5 18 12 21.5"/>',
-      // The same globe for Hammer's explicit web fetch tool.
-      web_fetch: '<path d="M12 0v2.5C6.5 2.5 4 6.5 4 12c0 5.5 2.5 9.5 8 9.5v2.5M12 2.5c5.5 0 8 4 8 9.5s-2.5 9.5-8 9.5"/><path d="M4 12h16M12 2.5C8.5 6 8.5 18 12 21.5M12 2.5C15.5 6 15.5 18 12 21.5"/>',
-      // The magnifier for a web search, sharing the grep glyph's spine geometry.
-      web_search: '<path d="M12 0v3C8 3 5.5 5.5 5.5 9.5C5.5 13.5 8 16 12 16v8M12 3C16 3 18.5 5.5 18.5 9.5C18.5 13.5 16 16 12 16"/><path d="M12 16l4.5 4.5M9 8.5h6M10 11h4"/>',
+      // Outlined downward arrow, its shaft and tip linked through the spine.
+      webfetch: '<path d="M12 0v3M9.5 3H14.5V12H18L12 21L6 12H9.5Z M12 21v3"/>',
+      // The same arrow for Hammer's explicit web fetch tool.
+      web_fetch: '<path d="M12 0v3M9.5 3H14.5V12H18L12 21L6 12H9.5Z M12 21v3"/>',
+      // A round globe with two latitude lines and a meridian, linked into the spine.
+      web_search: '<path d="M12 0v3M12 21v3M4 8.2c4.6 1.6 11.4 1.6 16 0M4 15.8c4.6-1.6 11.4-1.6 16 0"/><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4.5" ry="9"/>',
+      // A node on the spine with one branch to a child, the same mark the session tree uses.
+      subagent:
+        '<path d="M12 0v9.4M12 14.6V24"/><circle cx="12" cy="12" r="2.6"/><path d="M14.4 10.8c3-.7 4.2-2.4 4.6-4.5M9.6 13.2c-3 .7-4.2 2.4-4.6 4.5"/>',
       // Question mark node branching out of the spine stream.
       question: '<path d="M12 0v3C7 3 5 5.5 5 10.5C5 15.5 7 18 12 18v6M12 3c5 0 7 2.5 7 7.5s-2 7.5-7 7.5"/><path d="M10 8c0-1.2 1-2 2-2s2 .8 2 2c0 1.5-2 1.8-2 3.5M12 14v.5"/>',
       // Gear node woven into the spine stream.
@@ -2123,15 +2133,62 @@
       .join('')
   }
 
-  function toolMarkup(item) {
-    // A subagent call is not a shell or a file read: its result is a child's lifecycle, so
-    // the generic command card would hide the name, model and open control that matter.
-    if (/^subagent$/i.test(String(item.name || ''))) return subagentToolMarkup(item)
-    const output = item.result || item.partial || ''
+  /**
+   * The one tool row shape. Every call — a shell, a file read, or a subagent action — wears the
+   * same station on the spine and the same fold; only its body and command differ. Keeping the
+   * head here is what stops the subagent actions drifting back into their own card grammar.
+   */
+  /**
+   * Peer traffic arrives as a user-shaped message wrapped in `<agent-message>`; the wrapper is
+   * the only marker that separates another agent's words from the reader's own prompt, and it
+   * is what gives the row its yellow treatment instead of the prompt's blue.
+   */
+  const AGENT_MESSAGE_WRAPPER = /^\s*<agent-message\b/i
+
+  /**
+   * A system message: the prompt the agent was started with, not something either speaker
+   * said. It is folded — it is context, and an unfolded prompt would push the first turn off
+   * the screen — but the row is always there, in its own colour, expandable in place.
+   */
+  function systemMarkup(item) {
+    const text = String(item.text || '')
+    return `<details class="hx-system">
+        <summary class="hx-system-head">
+          <span class="hx-role">System</span>
+          <span class="hx-system-meta">${text.length.toLocaleString()} chars</span>
+        </summary>
+        <pre class="hx-system-text">${escapeHtml(text)}</pre>
+      </details>`
+  }
+
+  function toolRowMarkup(item, { body = '', runCommand = '', runLang = '' } = {}) {
     const took = item.durationMs != null ? `${(item.durationMs / 1000).toFixed(2)}s` : ''
     // A finished call's meta is its timing alone: the state label says nothing for it, so the
     // separator only belongs between two live fragments.
     const meta = [toolStateLabel(item), took].filter(Boolean).join(' · ')
+    // A finished call folds away, whatever its verdict: failure is a word in the summary ("failed",
+    // in the error colour) and its output is one click away, exactly like a call that succeeded.
+    // Only a call still in flight stays open, because that output is arriving as you watch; a row
+    // the reader opened by hand (item.open) is theirs and stays as they left it.
+    const open =
+      body && (item.open || item.status === 'running' || item.status === 'preparing') ? ' open' : ''
+    return `<details class="hx-tool ${item.status}${body ? '' : ' hx-tool-empty'}"${open}>
+          <summary class="hx-tool-head">
+            ${toolIcon(item.name || 'tool')}
+            <span class="hx-tool-name">${escapeHtml(toolLabel(item.name))}</span>
+            <span class="hx-tool-cmd"${runLang ? ` data-lang="${escapeHtml(runLang)}"` : ''}>${runLang ? highlightCode(runCommand, runLang) : escapeHtml(runCommand)}</span>
+            <span class="hx-tool-state">${escapeHtml(meta)}</span>
+          </summary>
+          ${body}
+        </details>`
+  }
+
+  function toolMarkup(item) {
+    // A subagent call is still a tool call. Its action and child live in the command column and
+    // its report in the same fold as a read or a shell run; the child-specific views live in
+    // the body rather than in a separate card.
+    if (/^subagent$/i.test(String(item.name || ''))) return subagentToolMarkup(item)
+    const output = item.result || item.partial || ''
     // An edit whose call finished shows its diff instead of its result sentence — the change is
     // the output. A failed edit keeps the error text, which is the thing worth reading.
     const isEdit = /^edit$/i.test(String(item.name || ''))
@@ -2150,23 +2207,11 @@
       ? toolSummary(item)
       : ''
     const runLang = runCommand ? languageForCommand(runCommand) : ''
-    // A finished call folds away, whatever its verdict: failure is a word in the summary ("failed",
-    // in the error colour) and its output is one click away, exactly like a call that succeeded.
-    // Keeping every failure open meant one broken command pushed the rest of the turn off screen,
-    // which is the opposite of what a reader scanning a log needs. Only a call still in flight
-    // stays open, because that output is arriving as you watch; a row the reader opened by hand
-    // (item.open) is theirs and stays as they left it.
-    const open =
-      body && (item.open || item.status === 'running' || item.status === 'preparing') ? ' open' : ''
-    return `<details class="hx-tool ${item.status}${body ? '' : ' hx-tool-empty'}"${open}>
-          <summary class="hx-tool-head">
-            ${toolIcon(item.name || 'tool')}
-            <span class="hx-tool-name">${escapeHtml(toolLabel(item.name))}</span>
-            <span class="hx-tool-cmd"${runLang ? ` data-lang="${escapeHtml(runLang)}"` : ''}>${runLang ? highlightCode(runCommand, runLang) : escapeHtml(toolSummary(item))}</span>
-            <span class="hx-tool-state">${escapeHtml(meta)}</span>
-          </summary>
-          ${body}
-        </details>`
+    return toolRowMarkup(item, {
+      body,
+      runCommand: runCommand || toolSummary(item),
+      runLang,
+    })
   }
 
   function itemMarkup(item) {
@@ -2175,9 +2220,10 @@
       // Background results and peer messages are injected into Pi as user-shaped text. They
       // are cards here, never a message the user typed.
       if (/^\s*<subagent-result\b/i.test(text)) return subagentWrapperMarkup('result', text)
-      if (/^\s*<agent-message\b/i.test(text)) return subagentWrapperMarkup('message', text)
+      if (AGENT_MESSAGE_WRAPPER.test(text)) return subagentWrapperMarkup('message', text)
       return `<div class="hx-role">You</div><div class="hx-turn-text">${escapeHtml(item.text)}</div>`
     }
+    if (item.kind === 'system') return systemMarkup(item)
     if (item.kind === 'assistant') return assistantMarkup(item)
     if (item.kind === 'tool') return toolMarkup(item)
     if (item.kind === 'compaction') return compactionMarkup(item)
@@ -2545,7 +2591,7 @@
       )
         continue
       const row = document.createElement('div')
-      row.className = `hx-row hx-row-${item.kind}`
+      row.className = `hx-row hx-row-${item.kind}${item.peer ? ' hx-row-peer' : ''}`
       row.innerHTML = itemMarkup(item)
       item.node = row
       transcript.appendChild(row)
@@ -2629,6 +2675,7 @@
 
   /** The excerpt a tooltip (and nothing else) shows for one row. */
   function minimapLabel(item) {
+    if (item.kind === 'system') return 'System prompt'
     if (item.kind === 'user') return item.text || ''
     if (item.kind === 'assistant') {
       const text = (item.blocks || [])
@@ -3173,8 +3220,17 @@
         break
       case 'message_start': {
         const message = record.message || {}
-        if (message.role === 'user') {
-          ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
+        if (message.role === 'system') {
+          // The system prompt is part of what the agent was told, so the log keeps it — but it
+          // is context rather than conversation, and it has its own colour (see hx-row-system).
+          const text = textFromBlocks(message.content)
+          if (text.trim()) {
+            ctx.items.push({ kind: 'system', text })
+            syncTranscript({}, ctx)
+          }
+        } else if (message.role === 'user') {
+          const text = textFromBlocks(message.content)
+          ctx.items.push({ kind: 'user', text, peer: AGENT_MESSAGE_WRAPPER.test(text) })
           syncTranscript({}, ctx)
         } else if (message.role === 'assistant') {
           const model = messageModelName(message, ctx)
@@ -3234,6 +3290,7 @@
           // republishes its history — this is the only live update the plot gets, and it is
           // the one that keeps the rail's newest bar level with the newest answer. A console
           // in the background waits for the switch (see activate).
+          ctx.usageReady = true
           if (ctx.sessionFile === active()?.sessionFile) void publishSessionUsage(ctx)
           // The message's own report is the truth, not the route it was sent on: a fallback
           // answers with a model the pick did not name. This is the base the next message is
@@ -6010,8 +6067,7 @@
         return
       }
       if (payload.type === 'subagents') {
-        state.subagents = Array.isArray(payload.records) ? payload.records : []
-        renderSubagents()
+        applySubagents(payload.records, payload.revision)
         return
       }
       const target = state.consoles.get(payload.consoleId)
@@ -6458,6 +6514,8 @@
       }
       console.items = []
       console.tools.clear()
+      console.historyLoaded = false
+      console.usageReady = false
       // The old conversation's draft is gone with it: a fresh session should not inherit text
       // that belonged to the one just left behind.
       saveDraft(console, '')
@@ -6470,7 +6528,7 @@
         state.mounted = 0
         syncTranscript({ reset: true }, console)
       }
-      setHint('New session.', 'success')
+      setHint('')
       refreshStatus(console)
       refreshSessionsSoon()
     } catch (err) {
@@ -6634,6 +6692,19 @@
 
   const SUBAGENT_API = '/api/subagents'
 
+  /**
+   * The subagent mark, drawn like a tool station: the spine runs through a central node and
+   * forks into two children. At 24 units its top and bottom ends join the transcript rail; the
+   * same drawing is scaled down for the session tree, so a child reads the same in both places.
+   */
+  function subagentGlyphSvg() {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 0v9.4M12 14.6V24"/><circle cx="12" cy="12" r="2.6"/><path d="M14.4 10.8c3-.7 4.2-2.4 4.6-4.5M9.6 13.2c-3 .7-4.2 2.4-4.6 4.5"/><circle cx="19" cy="6" r="1.3"/><circle cx="5" cy="18" r="1.3"/></svg>'
+  }
+
+  function subagentGlyph(className) {
+    return `<span class="${className}" aria-hidden="true">${subagentGlyphSvg()}</span>`
+  }
+
   function subagentChip(label, tone = '') {
     if (!label) return ''
     return `<span class="hx-subagent-tag${tone ? ` ${tone}` : ''}">${escapeHtml(label)}</span>`
@@ -6694,6 +6765,18 @@
     return state.subagents.find((record) => record.id === id) || null
   }
 
+  /** Applies a full tree snapshot, unless a slower request is carrying an older one. */
+  function applySubagents(records, revision) {
+    const next = Array.isArray(records) ? records : []
+    const nextRevision = Number(revision)
+    if (Number.isFinite(nextRevision) && nextRevision < state.subagentRevision) return false
+    if (Number.isFinite(nextRevision)) state.subagentRevision = nextRevision
+    state.subagents = next
+    state.subagentsAvailable = true
+    renderSubagents()
+    return true
+  }
+
   async function subagentRequest(path, options = {}) {
     if (!state.subagentToken) return null
     const response = await fetch(`${SUBAGENT_API}${path}`, {
@@ -6734,18 +6817,26 @@
     try {
       const data = await subagentRequest('')
       if (!data) return
-      state.subagents = Array.isArray(data.subagents) ? data.subagents : []
-      state.subagentsAvailable = true
-      renderSubagents()
+      applySubagents(data.subagents, data.revision)
     } catch {
       // A router without the route, or a page that lost its token, simply has no tree.
     }
   }
 
   async function openSubagent(id) {
-    const record = subagentRecord(id)
-    if (!record) return
-    if (!state.subagentToken) await initSubagents()
+    let record = subagentRecord(id)
+    if (!record) {
+      // A result card outlives the registry entry it names. Refresh once before deciding the
+      // child is gone; a page that loaded before the child was listed must not have an inert
+      // button, and a deleted child must say so instead of doing nothing.
+      if (!state.subagentToken) await initSubagents()
+      else await loadSubagents()
+      record = subagentRecord(id)
+    }
+    if (!record) {
+      setHint('That subagent is no longer available.', 'error')
+      return
+    }
     let ctx = [...state.consoles.values()].find((candidate) => candidate.subagentId === id)
     if (!ctx) {
       const consoleKey = `sub-${String(id).replace(/^sa_/, '')}`
@@ -6803,10 +6894,6 @@
     }
   }
 
-  function subagentRootForPage() {
-    return active()?.rootId || active()?.status?.rootId || state.subagentRoot || null
-  }
-
   function renderSubagentDetail() {
     const panel = $('hx-subagent-detail')
     if (!panel) return
@@ -6852,6 +6939,8 @@
     const info = record || ctx.subagent || {}
     const display = subagentDisplay(record || {})
     strip.hidden = false
+    const mark = $('hx-subagent-strip-icon')
+    if (mark) mark.innerHTML = subagentGlyphSvg()
     const label = $('hx-subagent-strip-label')
     if (label) {
       label.textContent = `subagent · ${info.name || ctx.subagentId} · ${display.label}${info.tools?.length ? ` · ${info.tools.join(', ')}` : ''}`
@@ -6879,26 +6968,33 @@
   }
 
   /** One sidebar row and, recursively, the children it spawned. */
-  function subagentSidebarRow(record, depth, currentId, childrenByParent, seen) {
+  function subagentSidebarRow(record, currentId, childrenByParent, seen) {
     if (seen.has(record.id)) return ''
     seen.add(record.id)
     const display = subagentDisplay(record)
     const quiet = Number(record.quietMs) >= 120000 && record.status === 'running'
     const running = record.status === 'running'
     const children = (childrenByParent.get(record.id) || [])
-      .map((child) => subagentSidebarRow(child, depth + 1, currentId, childrenByParent, seen))
+      .map((child) => subagentSidebarRow(child, currentId, childrenByParent, seen))
       .filter(Boolean)
       .join('')
     return `<div class="hx-subagent-node">
-      <div class="hx-subagent-row${running ? ' running' : ''}${record.status === 'failed' ? ' failed' : ''}${record.id === currentId ? ' current' : ''}" role="button" tabindex="0" data-subagent-open="${escapeHtml(record.id)}" title="${escapeHtml(record.task || record.name)}" style="padding-left:${7 + depth * 9}px">
-        <span class="hx-subagent-dot" aria-hidden="true"></span>
-        <span class="hx-subagent-name">${escapeHtml(record.name)}</span>
-        ${subagentChip(display.intel)}
-        ${subagentChip(display.speed)}
-        ${quiet ? '<span class="hx-subagent-tag quiet">quiet</span>' : ''}
-        <span class="hx-subagent-meta">${subagentElapsed(record.elapsedMs)} · ${Number(record.tokens || 0).toLocaleString()}t</span>
+      <div class="hx-subagent-row${running ? ' running' : ''}${record.status === 'failed' ? ' failed' : ''}${record.id === currentId ? ' current' : ''}" role="button" tabindex="0" data-subagent-open="${escapeHtml(record.id)}" title="${escapeHtml(record.task || record.name)}">
+        ${subagentGlyph('hx-subagent-node-icon')}
+        <span class="hx-subagent-main">
+          <span class="hx-subagent-top">
+            <span class="hx-subagent-name">${escapeHtml(record.name)}</span>
+            ${quiet ? '<span class="hx-subagent-tag quiet">quiet</span>' : ''}
+            <span class="hx-subagent-meta">${subagentElapsed(record.elapsedMs)} · ${Number(record.tokens || 0).toLocaleString()}t</span>
+          </span>
+          ${
+            display.intel || display.speed
+              ? `<span class="hx-subagent-sub">${subagentChip(display.intel)}${subagentChip(display.speed)}</span>`
+              : ''
+          }
+        </span>
         <span class="hx-subagent-actions">
-          ${running ? `<button type="button" data-subagent-stop="${escapeHtml(record.id)}" title="Stop ${escapeHtml(record.name)}" aria-label="Stop subagent">■</button>` : ''}
+          ${running ? `<button type="button" data-subagent-stop="${escapeHtml(record.id)}" title="Stop ${escapeHtml(record.name)}" aria-label="Stop subagent"><span class="hx-subagent-stop-glyph" aria-hidden="true"></span></button>` : ''}
         </span>
       </div>
       ${children ? `<div class="hx-subagent-children">${children}</div>` : ''}
@@ -6907,19 +7003,17 @@
 
   /** The branch of subagents spawned by one saved conversation. */
   function subagentBranchForSession(session, childrenByParent, currentId) {
-    const currentFile = active()?.sessionFile
+    // The router backfills a parent's session file when its console names it. Until then a
+    // root child has no honest place in the rail: attaching it to whichever row happens to be
+    // open put children under the wrong parent and then moved them when the reader switched.
     const roots = (state.subagents || [])
       .filter((record) => !record.parentId)
-      .filter((record) => {
-        if (record.parentSessionFile) return record.parentSessionFile === session.file
-        // A record written before the parent file was known can still belong to the open one.
-        return currentFile === session.file && record.rootId === subagentRootForPage()
-      })
+      .filter((record) => Boolean(session.file) && record.parentSessionFile === session.file)
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
     if (!roots.length) return ''
     const seen = new Set()
     return `<div class="hx-subagent-branch">${roots
-      .map((record) => subagentSidebarRow(record, 0, currentId, childrenByParent, seen))
+      .map((record) => subagentSidebarRow(record, currentId, childrenByParent, seen))
       .join('')}</div>`
   }
 
@@ -7051,64 +7145,167 @@
         </div>`
       })
       .join('')
-    return `<div class="hx-subagent-card hx-model-catalogue"${item.open ? ' data-open="1"' : ''}>
-      <div class="hx-subagent-card-head">
-        <span class="hx-subagent-card-name">Model catalogue</span>
-        <span class="hx-subagent-card-meta">${rows.length} active group${rows.length === 1 ? '' : 's'} · compact</span>
+    return `<div class="hx-cat-list">${body}</div>`
+  }
+
+  /**
+   * The list action returns a JSON array of minimal status records. A raw array is useful to
+   * the model, but not to a reader: turn it into the same compact table shape as the model
+   * catalogue, with the live state and usage of each child on one line.
+   */
+  function parseSubagentListRows(text) {
+    const raw = String(text || '').trim()
+    if (!raw) return null
+    try {
+      const parsed = JSON.parse(raw)
+      const rows = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray(parsed?.subagents)
+          ? parsed.subagents
+          : null
+      if (!rows) return null
+      return rows.filter((entry) => entry && typeof entry === 'object')
+    } catch {
+      return null
+    }
+  }
+
+  function subagentListMarkup(item, output) {
+    const rows = parseSubagentListRows(output)
+    if (!rows) return ''
+    const body = rows
+      .map((entry) => {
+        const id = String(entry.id || '')
+        const record = id ? subagentRecord(id) : null
+        const display = subagentDisplay(record || entry)
+        const state = String(entry.status || record?.status || 'unknown')
+        const phase = String(entry.phase || record?.phase || '')
+        const stateLabel =
+          state === 'running' && phase && phase !== 'busy' ? `${state} · ${phase}` : state
+        const tools = Array.isArray(entry.tools) ? entry.tools : record?.tools || []
+        const activity = entry.currentTool || record?.currentTool || ''
+        const queue = Number(entry.queueLength ?? record?.queueLength ?? 0) || 0
+        const name = String(entry.name || record?.name || id || 'subagent')
+        const task = String(entry.task || record?.task || '')
+        const selected =
+          display.selected && display.selected !== display.key ? display.selected : ''
+        const stateClass =
+          state === 'failed' ? ' failed' : state === 'running' ? ' running' : ''
+        const title = [id, task].filter(Boolean).join(' · ')
+        const stateTitle = [
+          stateLabel,
+          tools.length ? `tools: ${tools.join(', ')}` : '',
+          activity ? `tool: ${activity}` : '',
+          queue ? `${queue} queued` : '',
+        ]
+          .filter(Boolean)
+          .join(' · ')
+        return `<div class="hx-sub-table-row" role="row">
+          <div class="hx-sub-table-person" role="cell" title="${escapeHtml(title)}">
+            <span class="hx-sub-table-name">${escapeHtml(name)}</span>
+            ${id ? `<span class="hx-sub-table-id">${escapeHtml(id)}</span>` : ''}
+          </div>
+          <div class="hx-sub-table-model" role="cell" title="${escapeHtml([display.label, selected].filter(Boolean).join(' · '))}">${escapeHtml(display.label || '—')}</div>
+          <div class="hx-sub-table-state${stateClass}" role="cell" title="${escapeHtml(stateTitle)}">
+            <span class="hx-subagent-dot" aria-hidden="true"></span>
+            <span>${escapeHtml(stateLabel)}</span>
+            ${queue ? `<span class="hx-sub-table-queue">+${queue}</span>` : ''}
+          </div>
+          <div class="hx-sub-table-num" role="cell">${Number(entry.turns ?? record?.turns ?? 0).toLocaleString()}</div>
+          <div class="hx-sub-table-num" role="cell">${Number(entry.tokens ?? record?.tokens ?? 0).toLocaleString()}</div>
+          <div class="hx-sub-table-num" role="cell">${escapeHtml(subagentElapsed(entry.elapsedMs ?? record?.elapsedMs ?? 0))}</div>
+          <div class="hx-sub-table-action" role="cell">${id ? `<button class="hx-sub-table-open" type="button" data-subagent-open="${escapeHtml(id)}">Open</button>` : ''}</div>
+        </div>`
+      })
+      .join('')
+    return `<div class="hx-sub-table" role="table" aria-label="Subagents">
+      <div class="hx-sub-table-head" role="row">
+        <span role="columnheader">Name</span>
+        <span role="columnheader">Model</span>
+        <span role="columnheader">State</span>
+        <span class="hx-sub-table-num" role="columnheader">Turns</span>
+        <span class="hx-sub-table-num" role="columnheader">Tokens</span>
+        <span class="hx-sub-table-num" role="columnheader">Elapsed</span>
+        <span class="hx-sub-table-action" role="columnheader"></span>
       </div>
-      <div class="hx-cat-list">
-        ${body}
-      </div>
+      ${body || '<div class="hx-sub-table-empty" role="row">No subagents in this conversation.</div>'}
     </div>`
   }
 
-  /** The model/fallback chips a parent tool card and a notification both use. */
+  /**
+   * A subagent action in the standard tool row. `status`, `wait`, `send` and the rest are tool
+   * calls like any other: their action and target belong in the command column, and their result
+   * belongs behind the same disclosure. The catalogue/list views are richer bodies, not a
+   * reason to switch back to a card.
+   */
   function subagentToolMarkup(item) {
     const output = item.result || item.partial || ''
     const action = String(item.args?.action || 'subagent')
-    if (action === 'models' && output) {
-      const catalogue = subagentModelsMarkup(item, output)
-      if (catalogue) return catalogue
-    }
+    const rawId = String(item.args?.id || '')
     const id =
       /\bid="(sa_[a-f0-9]+)"/i.exec(output)?.[1] ||
-      (String(item.args?.id || '').startsWith('sa_') ? String(item.args.id) : '')
+      /"id"\s*:\s*"(sa_[a-f0-9]+)"/i.exec(output)?.[1] ||
+      (rawId.startsWith('sa_') ? rawId : '')
     const record = id ? subagentRecord(id) : null
-    const display = subagentDisplay(record || {})
-    // A failed tool call often has no result text; it is still finished and failed, not a
-    // still-running spawn. Use the tool event's state when the record cannot answer.
-    const stateLabel =
-      record?.status ||
-      (item.status === 'error'
-        ? 'failed'
-        : item.status === 'interrupted'
-          ? 'interrupted'
-          : item.status === 'ok' || output
-            ? 'done'
-            : 'running')
-    const name = record?.name || item.args?.name || action
-    const body = clip(output || item.error || '', 12000)
-    const task = record?.task || item.args?.task || ''
+    const xmlName = /\bname="([^"]+)"/i.exec(output)?.[1] || ''
+    const jsonName = /"name"\s*:\s*"([^"]+)"/i.exec(output)?.[1] || ''
+    const name =
+      record?.name || String(item.args?.name || '') || xmlName || jsonName || (rawId === 'parent' ? 'parent' : '')
+
+    const modelRows = action === 'models' && output ? parseSubagentModelRows(output) : []
+    const listRows = action === 'list' && output ? parseSubagentListRows(output) : null
+    let command = action
+    if (action === 'models') {
+      command += modelRows.length
+        ? ` · ${modelRows.length} ${modelRows.length === 1 ? 'model' : 'models'}`
+        : ' · catalogue'
+    } else if (action === 'list') {
+      command += listRows?.length
+        ? ` · ${listRows.length} ${listRows.length === 1 ? 'child' : 'children'}`
+        : ' · children'
+    } else if (name) {
+      command += ` · ${name}`
+    } else if (id) {
+      command += ` · ${id}`
+    }
+
+    let rich = ''
+    if (action === 'models' && output) {
+      if (modelRows.length) rich = subagentModelsMarkup(item, output)
+    } else if (action === 'list' && output) {
+      if (listRows) rich = subagentListMarkup(item, output)
+    }
+
+    const task = record?.task || String(item.args?.task || '')
     const tools = record?.tools || item.args?.tools || []
-    const activity = record?.currentTool
-      ? `${record.currentTool} · ${subagentElapsed(record.currentToolStartedAt ? Date.now() - record.currentToolStartedAt : 0)}`
-      : record && Number(record.quietMs) >= 120000
-        ? `quiet ${subagentElapsed(record.quietMs)}`
+    const notes = []
+    const actions = []
+    if (id) {
+      actions.push(
+        `<button class="hx-tool-open" type="button" data-subagent-open="${escapeHtml(id)}">open subagent</button>`,
+      )
+    }
+    const chips = record ? subagentModelChips(record) : ''
+    const meta = [chips, tools.length ? `tools: ${tools.map(escapeHtml).join(', ')}` : '']
+      .filter(Boolean)
+      .join('')
+    if (meta) actions.push(`<span class="hx-subagent-tool-meta">${meta}</span>`)
+    if (actions.length) notes.push(`<div class="hx-subagent-tool-actions">${actions.join('')}</div>`)
+    if (task) notes.push(`<div class="hx-subagent-brief">${escapeHtml(task)}</div>`)
+    if (output || item.error) {
+      notes.push(`<pre class="hx-tool-out">${escapeHtml(clip(output || item.error, 12000))}</pre>`)
+    }
+
+    const body = rich
+      ? `<div class="hx-subagent-tool-rich">${rich}</div>`
+      : notes.length
+        ? `<div class="hx-subagent-tool-body">${notes.join('')}</div>`
         : ''
-    return `<div class="hx-subagent-card" data-subagent-card="${escapeHtml(id)}">
-      <div class="hx-subagent-card-head">
-        <span class="hx-subagent-card-name">${escapeHtml(name)}</span>
-        ${record ? subagentModelChips(record) : ''}
-        <span class="hx-subagent-card-meta">${escapeHtml(action)} · ${escapeHtml(stateLabel)}${activity ? ` · ${escapeHtml(activity)}` : ''}</span>
-        ${id ? `<span class="hx-subagent-card-actions"><button class="hx-btn" type="button" data-subagent-open="${escapeHtml(id)}">Open subagent</button></span>` : ''}
-      </div>
-      ${task ? `<div class="hx-subagent-brief">${escapeHtml(task)}</div>` : ''}
-      ${tools.length ? `<div class="hx-subagent-card-meta">tools: ${tools.map(escapeHtml).join(', ')}</div>` : ''}
-      ${body ? `<details class="hx-subagent-card-body"${item.open ? ' open' : ''}><summary class="hx-subagent-card-meta">live tail and report</summary><pre>${escapeHtml(body)}</pre></details>` : ''}
-    </div>`
+    return toolRowMarkup(item, { body, runCommand: command })
   }
 
   function subagentWrapperMarkup(kind, text) {
+    const variant = kind === 'message' ? ' hx-subagent-message' : ''
     const attrs = (name) => {
       const found = new RegExp(name + '="([^"]*)"', 'i').exec(text)
       return found?.[1] || ''
@@ -7122,8 +7319,9 @@
       .replace(/<\/result>[\s\S]*$/i, '')
       .replace(/^[\s\S]*?>\s*/, '')
       .replace(/<\/[^>]+>\s*$/, '')
-    return `<div class="hx-subagent-card hx-subagent-result" data-subagent-card="${escapeHtml(id)}">
+    return `<div class="hx-subagent-card hx-subagent-result${variant}" data-subagent-card="${escapeHtml(id)}">
       <div class="hx-subagent-card-head">
+        ${subagentGlyph('hx-subagent-card-icon')}
         <span class="hx-subagent-card-name">${escapeHtml(kind === 'message' ? `message · ${name}` : name)}</span>
         ${record ? subagentModelChips(record) : ''}
         <span class="hx-subagent-card-meta">${escapeHtml(stateLabel)}</span>
@@ -7369,6 +7567,13 @@
     renderSessions()
   }
 
+  /** Puts keyboard focus back on the row an inline rename replaced. */
+  function focusSessionRow(file) {
+    const row = [...document.querySelectorAll('#hx-session-list .hx-session-row')]
+      .find((candidate) => candidate.dataset.session === file)
+    if (row instanceof HTMLElement) row.focus()
+  }
+
   /** The input of the row currently being renamed, if any. */
   function renameInput() {
     return /** @type {HTMLInputElement | null} */ ($('hx-session-list')?.querySelector('[data-rename-input]')) || null
@@ -7382,6 +7587,7 @@
     if (!file) return
     if (!name) {
       closeRename()
+      focusSessionRow(file)
       return
     }
     try {
@@ -7396,6 +7602,7 @@
       state.renamingValue = ''
       setHint(`Session renamed: ${data.label || name}`, 'success')
       await loadSessions()
+      focusSessionRow(file)
     } catch (err) {
       // The edit stays open so the user can fix or escape it; the message says what failed.
       setHint(err?.message || 'Could not rename that session.', 'error')
@@ -7427,16 +7634,37 @@
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.success) throw new Error(data.error || `delete ${res.status}`)
       setHint('Session deleted.', 'success')
-      // Clear the sessionFile from any console that was attached to it.
+      // The file is gone, so every console that was on it becomes a fresh conversation. The
+      // transcript must go with it: leaving the deleted messages on screen (or allowing the
+      // bridge's next status frame to re-adopt the path) is what made a deleted session come
+      // back after a reload.
       for (const ctx of state.consoles.values()) {
-        if (ctx.sessionFile === file) {
-          ctx.sessionFile = null
-          // The file is gone, so it has no history to publish. A console that was on screen
-          // hands the plot straight back to the router's own view rather than leaving the
-          // deleted conversation drawn there.
-          if (ctx === active()) void publishSessionUsage(ctx)
+        if (ctx.sessionFile !== file) continue
+        ctx.sessionFile = null
+        ctx.items = []
+        ctx.tools.clear()
+        ctx.notesSeen.clear()
+        ctx.historyLoaded = false
+        ctx.usageReady = false
+        if (ctx.status) {
+          ctx.status = { ...ctx.status, sessionFile: null, sessionId: null, sessionName: null }
+        }
+        if (ctx === active()) {
+          state.items = ctx.items
+          state.tools = ctx.tools
+          state.mounted = 0
+          syncTranscript({ reset: true }, ctx)
+          updateComposer()
+          void publishSessionUsage(ctx)
         }
       }
+      // Neither the next page nor the tab list may try to reopen a file that is gone.
+      try {
+        if (localStorage.getItem(LAST_KEY) === file) localStorage.removeItem(LAST_KEY)
+      } catch {
+        // A browser without storage simply does not remember.
+      }
+      if (openFiles.delete(file)) saveOpenConversations()
       await loadSessions()
     } catch (err) {
       setHint(err?.message || 'Could not delete that session.', 'error')
@@ -7480,8 +7708,14 @@
     let previousModel = null
     let previousProvider = ''
     for (const message of data.messages || []) {
-      if (message.role === 'user') {
-        ctx.items.push({ kind: 'user', text: textFromBlocks(message.content) })
+      if (message.role === 'system') {
+        // The session file keeps the prompt the agent was started with; a rebuilt conversation
+        // shows it as the same purple row the live stream would have drawn.
+        const text = textFromBlocks(message.content)
+        if (text.trim()) ctx.items.push({ kind: 'system', text })
+      } else if (message.role === 'user') {
+        const text = textFromBlocks(message.content)
+        ctx.items.push({ kind: 'user', text, peer: AGENT_MESSAGE_WRAPPER.test(text) })
       } else if (message.role === 'assistant') {
         const blocks = contentParts(message.content)
         const model = messageModelName(message, ctx, { resolveAlias: false })
@@ -7573,6 +7807,9 @@
     // This console's transcript now comes from its session file, which is authoritative and
     // survives a restart; the replay log is no longer needed to describe it.
     ctx.historyLoaded = true
+    // Only a transcript the server read from the session file is plottable. A fresh session
+    // answers from the live agent with `source: 'agent'`, and its file does not exist yet.
+    ctx.usageReady = data.source !== 'agent'
   }
 
   /**
@@ -7793,8 +8030,17 @@
     return q ? COMMANDS.filter((c) => c.label.toLowerCase().includes(q)) : COMMANDS
   }
 
+  let paletteReturnFocus = null
+
   function closePalette() {
-    $('hx-palette')?.classList.remove('open')
+    const overlay = $('hx-palette')
+    if (!overlay?.classList.contains('open')) return
+    overlay.classList.remove('open')
+    // The palette covers the page, so closing it must put the keyboard back where it was.
+    // Leaving focus on a hidden input makes the next Tab start inside an invisible dialog.
+    const target = paletteReturnFocus
+    paletteReturnFocus = null
+    if (target && document.contains(target) && typeof target.focus === 'function') target.focus()
   }
 
   function renderPalette() {
@@ -7828,6 +8074,11 @@
   function openPalette() {
     const overlay = $('hx-palette')
     if (!overlay) return
+    if (overlay.classList.contains('open')) {
+      $('hx-palette-input')?.focus()
+      return
+    }
+    paletteReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     overlay.classList.add('open')
     const input = $('hx-palette-input')
     if (input) {
@@ -8065,7 +8316,9 @@
         void saveRename()
       } else if (event.key === 'Escape') {
         event.preventDefault()
+        const file = state.renamingFile
         closeRename()
+        focusSessionRow(file)
       }
     })
     // A click anywhere else cancels the edit — but a click inside the list (the pencil of
@@ -8291,8 +8544,10 @@
     await refreshStatus(main)
     if (main.sessionFile && !main.running) await restoreHistory(main)
     connectEvents(main)
-    await loadSessions()
+    // The tree does not depend on the session list, and a slow disk scan for conversations
+    // must not hold back a child that already exists.
     void initSubagents()
+    await loadSessions()
     autoGrow()
     void restoreOpenConversations()
   }

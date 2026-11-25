@@ -81,7 +81,11 @@ function timeoutSignal(signal: AbortSignal | undefined, ms: number) {
 function messageOf(error: unknown) {
   if (error instanceof Error) {
     if (error.name === 'AbortError') return 'The web request was cancelled or timed out.'
-    return error.message || String(error)
+    const message = error.message || String(error)
+    // undici reduces transport failures to "fetch failed"; the cause is what names a
+    // certificate, DNS or connection problem. Without it a TLS failure reads as a dead network.
+    const cause = error.cause instanceof Error ? error.cause.message : ''
+    return cause && !message.includes(cause) ? `${message} (${cause})` : message
   }
   return String(error)
 }

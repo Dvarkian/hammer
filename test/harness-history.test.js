@@ -36,6 +36,28 @@ test('a console stuck "running" still rebuilds its transcript from its file', ()
   assert.match(harness, /watchStalledHistory\(console\)/)
 })
 
+test('the system prompt is purple and a peer message is yellow', () => {
+  // The prompt reaches the page two ways — as the session file's `role: 'system'` message on a
+  // rebuild, and as `message_start` on a live start — and both keep it as its own kind, which is
+  // what gives the row the purple class.
+  assert.match(harness, /if \(message\.role === 'system'\)/)
+  assert.match(harness, /kind: 'system', text/)
+  assert.match(harness, /function systemMarkup\(item\)/)
+  // Another agent's words arrive as user-shaped text wrapped in `<agent-message>`; the wrapper
+  // is the only marker that separates them from the reader's own prompt, and it yellow-rows
+  // the row instead of the prompt's blue.
+  assert.match(harness, /const AGENT_MESSAGE_WRAPPER = \/\^\\s\*<agent-message\\b\/i/)
+  assert.match(harness, /peer: AGENT_MESSAGE_WRAPPER\.test\(text\)/)
+  assert.match(harness, /item\.peer \? ' hx-row-peer' : ''/)
+
+  const css = readFileSync(new URL('../public/harness.css', import.meta.url), 'utf8')
+  assert.match(css, /\.hx-row-system \{[^}]*var\(--hx-system-rail\)/)
+  assert.match(css, /\.hx-row-system::before \{[^}]*var\(--hx-system-wash\)/)
+  assert.match(css, /\.hx-row-user\.hx-row-peer \{[^}]*var\(--hx-peer-rail\)/)
+  assert.match(css, /\.hx-row-user\.hx-row-peer::before \{[^}]*var\(--hx-peer-wash\)/)
+  assert.match(css, /\.hx-subagent-card\.hx-subagent-message \{/)
+})
+
 test('opening a conversation that is already open shows it instead of failing', () => {
   assert.match(harness, /if \(res\.status === 409\)/)
   // The main console is asked for its file once, because that is the one that answers 409.

@@ -54,7 +54,10 @@
         // not this call, is what decides whether it came back.
       }
 
-      const deadline = Date.now() + 45000;
+      // Startup discovery routinely takes over a minute on a cold catalog; the old 45s
+      // deadline reported a healthy restart as failed while the replacement was still on its
+      // way up. Keep polling long enough to cover a normal start, then reload.
+      const deadline = Date.now() + 180000;
       while (Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 750));
         try {
@@ -71,7 +74,7 @@
       setLabel('Restart failed');
       if (btn) {
         btn.disabled = false;
-        btn.title = 'The router did not come back within 45s. Start it again manually, then reload this page.';
+        btn.title = 'The router did not come back within 3 minutes. Start it again manually, then reload this page.';
       }
     }
 
@@ -432,7 +435,10 @@
     // when an event arrived must not roll the UI back to the selection it read before the event.
     let routerEventRevision = 0;
     let proxyErrorState = null;
-    const isTableHovered = false;
+    // The table's inline mouseenter/mouseleave handlers assign this value. A const here
+    // throws "Assignment to constant variable" on every hover and leaves the pause badge
+    // and the order lock permanently off; a module-local let is invisible to those handlers.
+    window.isTableHovered = false;
     let logsViewMode = 'history';
     let logsAutoRefreshPaused = false;
     const PROVIDER_ERROR_MAX_AGE_MS = 120 * 60_000;
@@ -4542,7 +4548,7 @@
     function render(isUserAction = false, precomputedGroups = null) {
       // While hovering, keep values live but lock row order so rows never
       // reorder or rebuild under the user's cursor.
-      const hoverLocked = !isUserAction && isTableHovered;
+      const hoverLocked = !isUserAction && window.isTableHovered;
       const tbody = document.getElementById('table-body');
 
       // 1. Apply Search
@@ -4590,6 +4596,33 @@
           if (ai === bi) return 0;
           return ai < bi ? -1 : 1;
         });
+      }
+
+      // The live table can legitimately have no rows: a search that matches nothing, or a
+      // roster with no available models. Leaving the tbody blank made both look like a
+      // rendering failure, so say which state the reader is looking at.
+      if (expanded.length === 0) {
+        const query = document.getElementById('search-input')?.value.trim() || searchTerm;
+        const message = query
+          ? `No models match “${query}”.`
+          : 'No models available.';
+        let row = tbody.querySelector('tr.models-empty-row');
+        let cell = row?.firstElementChild;
+        if (!row) {
+          tbody.replaceChildren();
+          row = document.createElement('tr');
+          row.className = 'models-empty-row';
+          row.dataset.rowKey = '__empty__';
+          cell = document.createElement('td');
+          cell.colSpan = 9;
+          cell.style.cssText = 'padding:24px; text-align:center; color:var(--text-muted);';
+          row.appendChild(cell);
+          tbody.appendChild(row);
+        }
+        if (cell.textContent !== message) cell.textContent = message;
+        currentRenderedOrder = [];
+        renderGraveyard(graveyardGroups);
+        return;
       }
 
       const newOrderKeys = expanded.map(e => e.type === 'group' ? 'g:' + e.key : getModelRowKey(e.m));
@@ -10096,7 +10129,13 @@
             `;
           }
 
-          const logModelStatus = allModels ? (allModels.find(m => m.modelId === l.model)?.status || 'unknown') : 'unknown';
+          // The log names the upstream's own model id; rows may publish the bare id under a
+          // different provider. Compare the same canonical model key the table groups by, so
+          // a Ban on either spelling lights up the same control.
+          const logModelKey = getModelGroupKey({ modelId: l.model });
+          const logModelStatus = allModels
+            ? (allModels.find(m => getModelGroupKey(m) === logModelKey)?.status || 'unknown')
+            : 'unknown';
           const isBanned = logModelStatus === 'banned';
           // Use a stable unique id for toggling
           const cardId = 'log-' + l.timestamp.replace(/[^a-z0-9]/gi, '');

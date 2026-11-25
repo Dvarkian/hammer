@@ -23,7 +23,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
-import { PiBridge } from '../lib/pi/bridge.js'
+import { PiBridge, endsOnAnnouncement } from '../lib/pi/bridge.js'
 import {
   HAMMER_MODEL,
   HAMMER_PROVIDER,
@@ -355,20 +355,31 @@ test('stopping clears the queue, cancels a retry, then aborts the run', async ()
 })
 
 test('a new session clears the transcript a page would replay', async () => {
-  const { bridge } = makeFake()
-  try {
-    const settled = nextEvent(bridge, 'agent_settled')
-    await bridge.prompt('hi')
-    await settled
-    assert.ok(bridge.history().length > 0)
+  await withEnv({ FAKE_PI_NEW_SESSION_FILE: '/store/fresh.jsonl' }, async () => {
+    const { bridge } = makeFake()
+    try {
+      const settled = nextEvent(bridge, 'agent_settled')
+      await bridge.prompt('hi')
+      await settled
+      assert.ok(bridge.history().length > 0)
+      bridge.state.sessionFile = '/store/before.jsonl'
+      bridge.state.sessionName = 'the conversation that was left'
 
-    const record = await bridge.reset()
-    assert.equal(record.data.cancelled, false)
-    assert.equal(bridge.history().length, 0)
-    assert.equal(bridge.state.sessionId, null)
-  } finally {
-    bridge.dispose()
-  }
+      const record = await bridge.reset()
+      assert.equal(record.data.cancelled, false)
+      assert.equal(bridge.history().length, 0)
+      // The console names the session pi just opened, not the one it left: the rail draws the
+      // open conversation from this name, so a null here is a running turn with no row.
+      assert.equal(bridge.state.sessionFile, '/store/fresh.jsonl')
+      assert.equal(
+        bridge.state.sessionName,
+        null,
+        'the old conversation name does not sit over the new session',
+      )
+    } finally {
+      bridge.dispose()
+    }
+  })
 })
 
 // ── Session persistence: switch, restart-to, and the store ────────────────────────────────
@@ -383,10 +394,17 @@ test('an idle agent switches sessions over RPC and reports where it landed', asy
         await bridge.prompt('hi')
         await settled
         assert.ok(bridge.history().length > 0)
+        bridge.state.sessionFile = '/store/current.jsonl'
+        bridge.state.sessionName = 'the old conversation'
 
         await bridge.switchSession('/store/other.jsonl')
         assert.equal(bridge.state.sessionFile, '/store/other.jsonl')
         assert.equal(bridge.state.sessionId, 'session-switched')
+        assert.equal(
+          bridge.state.sessionName,
+          null,
+          'the old conversation name does not sit over the new transcript',
+        )
         assert.equal(bridge.history().length, 0, 'the replay log is a different conversation now')
       } finally {
         bridge.dispose()
@@ -1014,6 +1032,11 @@ test('with no system Node, a packaged app runs pi on the Node inside Electron', 
     assert.equal(plan.error, null)
     assert.equal(plan.node, process.execPath)
     assert.equal(plan.env.ELECTRON_RUN_AS_NODE, '1', 'the child is told to behave as Node')
+    assert.match(
+      plan.env.NODE_OPTIONS,
+      /--use-system-ca/,
+      'the child trusts the OS certificate store, where a local proxy CA lives',
+    )
     assert.equal(
       plan.env.PI_CODING_AGENT_DIR,
       join(root, 'agent'),
@@ -1736,6 +1759,68 @@ test('the store lists saved sessions with summaries and the current file', async
     assert.match(a.preview, /first conversation/)
     assert.ok(a.label, 'every row carries a human label')
   })
+})
+
+test('a conversation prompted after a delete is named, so the rail can list it', async () => {
+  const store = mkdtempSync(join(tmpdir(), 'hammer-pi-store-'))
+  const gone = writeSessionFile(
+    store,
+    'deleted.jsonl',
+    '77777777-7777-4777-8777-777777777777',
+    'the conversation that was deleted',
+  )
+  const next = writeSessionFile(
+    store,
+    'next.jsonl',
+    '88888888-8888-4888-8888-888888888888',
+    'the one the prompt started',
+  )
+  const agentDir = join(mkdtempSync(join(tmpdir(), 'hammer-pi-agent-')), 'agent')
+  // The fake names a fresh session on `new_session`, the way pi does, so a bridge that never
+  // re-reads its state after a reset is visible instead of accidentally looking right.
+  process.env.FAKE_PI_SESSION_FILE = gone
+  process.env.FAKE_PI_NEW_SESSION_FILE = next
+  try {
+    await withPiApp(
+      {
+        piCommand: process.execPath,
+        piArgs: [FAKE_PI],
+        piCwd: tmpdir(),
+        piBaseUrl: 'http://127.0.0.1:7352/v1',
+        piAgentDir: agentDir,
+        piSessionsDir: store,
+      },
+      async (base) => {
+        const before = await (await fetch(`${base}/api/pi/status`)).json()
+        assert.equal(before.sessionFile, gone, 'the console starts on the launched conversation')
+
+        const removed = await fetch(`${base}/api/pi/sessions/delete`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session: gone }),
+        })
+        assert.equal(removed.status, 200)
+        assert.equal(existsSync(gone), false)
+
+        const sent = await fetch(`${base}/api/pi/prompt`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ message: 'start over' }),
+        })
+        assert.equal(sent.status, 200)
+
+        // The rail is drawn from what the console names: an unnamed conversation has no row
+        // until some later read of the store, so a turn running alone on screen is exactly
+        // what a missing row looks like.
+        const listed = await (await fetch(`${base}/api/pi/sessions`)).json()
+        assert.equal(listed.current, next)
+        assert.equal((await (await fetch(`${base}/api/pi/status`)).json()).sessionFile, next)
+      },
+    )
+  } finally {
+    delete process.env.FAKE_PI_SESSION_FILE
+    delete process.env.FAKE_PI_NEW_SESSION_FILE
+  }
 })
 
 test('a restored transcript is read from its file before the bridge names it', async () => {
@@ -3504,6 +3589,36 @@ function endProseTurn(
   bridge.track({ type: 'agent_end', messages })
   bridge.track({ type: 'agent_settled' })
 }
+
+test('an announcement and a serialized tool call both count as unfinished work', () => {
+  assert.equal(
+    endsOnAnnouncement('I have enough. Let me fetch one or two more full articles.'),
+    true,
+  )
+  assert.equal(
+    endsOnAnnouncement(
+      '{"role":"assistant","content":"Let me fetch the pages.","tool_calls":[{"id":"x"}]}',
+    ),
+    true,
+  )
+  // The two shapes six research children actually ended on: a plan that says "make the calls"
+  // with the verb the old cue list did not carry, and Anthropic's serialized-call spelling.
+  assert.equal(endsOnAnnouncement('I need to make tool calls one at a time with valid JSON.'), true)
+  assert.equal(
+    endsOnAnnouncement('Here is the call: {"name":"web_search","arguments":{"q":"x"}}'),
+    true,
+  )
+  // A bare URL after the announcement is a citation, not the answer: this exact shape was
+  // stored as a completed report ("I'll fetch that page now." + the URL).
+  assert.equal(
+    endsOnAnnouncement(
+      "I'll fetch that page now.\n\n\n\nhttps://en.wikipedia.org/wiki/Travelling_stock_route",
+    ),
+    true,
+  )
+  assert.equal(endsOnAnnouncement('The report is complete. All sources are cited.'), false)
+  assert.equal(endsOnAnnouncement('Let me know if you need anything else.'), false)
+})
 
 test('a Beam turn that stops on an announcement is continued', async () => {
   const bridge = new PiBridge({ autoContinueBaseMs: 1 })

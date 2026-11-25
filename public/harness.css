@@ -28,6 +28,12 @@
   --hx-hl-prop: #0e7490;
   --hx-hl-tag: #7d2231;
   --hx-hl-attr: #b45309;
+  /* Message provenance: a prompt is blue, the system prompt purple, peer traffic yellow. The
+     colour answers "whose words are these" before the label is read. */
+  --hx-system-rail: #7c3aed;
+  --hx-system-wash: rgba(124, 58, 237, 0.1);
+  --hx-peer-rail: #ca8a04;
+  --hx-peer-wash: rgba(202, 138, 4, 0.13);
 }
 
 [data-theme="dark"] {
@@ -39,6 +45,10 @@
   --hx-hl-prop: #7dd3fc;
   --hx-hl-tag: #e08c96;
   --hx-hl-attr: #fbbf24;
+  --hx-system-rail: #a78bfa;
+  --hx-system-wash: rgba(167, 139, 250, 0.16);
+  --hx-peer-rail: #facc15;
+  --hx-peer-wash: rgba(250, 204, 21, 0.12);
 }
 
 html,
@@ -309,6 +319,13 @@ body[data-view='router'] #agent-view {
 /* Restarting the router is a router action: on the agent screen the only Restart is the
    agent's. Two buttons with one word was the ambiguity; one lives on each surface now. */
 body[data-view='agent'] #reload-btn {
+  display: none !important;
+}
+
+/* These toggles open the agent's sidebars. The router has neither sidebar, so leaving the
+   buttons visible there only produced a control that changed state with nothing on screen. */
+body[data-view='router'] #hx-toggle-sessions,
+body[data-view='router'] #hx-toggle-details {
   display: none !important;
 }
 
@@ -605,6 +622,70 @@ body.hx-details-collapsed .hx-side-details {
   inset: 0 calc(-1 * var(--hx-gutter) - 2px);
   background: color-mix(in srgb, var(--status-success-bg) 55%, transparent);
   z-index: -1;
+}
+
+/*
+ * The system prompt is neither speaker: it is the instruction the agent was started with. It
+ * keeps the prompt's full-width shape, so the log stays one column, but it takes purple — the
+ * reader can tell at a glance that these words came from the harness rather than the person.
+ * The row is folded at its own level (see `.hx-system-head`); this block only colours it.
+ */
+.hx-row-system {
+  border-left: 2px solid var(--hx-system-rail);
+  padding: 6px 0 6px 12px;
+  margin: 14px 0;
+  position: relative;
+  isolation: isolate;
+}
+
+.hx-row-system::before {
+  content: "";
+  position: absolute;
+  inset: 0 calc(-1 * var(--hx-gutter) - 2px);
+  background: var(--hx-system-wash);
+  z-index: -1;
+}
+
+/* The system prompt is context, not conversation: one folded line, expandable in place, so it
+   does not push the first turn off the screen. */
+.hx-system-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.hx-system-head .hx-role {
+  margin-bottom: 0;
+  color: var(--hx-system-rail);
+}
+
+.hx-system-meta {
+  font-family: var(--hx-mono);
+  font-size: 0.62rem;
+  color: var(--text-dim);
+}
+
+.hx-system-text {
+  margin: 6px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--hx-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+/* A peer message arrives as user-shaped text, but it is not the reader's prompt: the row drops
+   the prompt's blue for the yellow that marks another agent's words. The card inside repeats
+   it, because the card's own surface would otherwise cover the wash. */
+.hx-row-user.hx-row-peer {
+  border-left-color: var(--hx-peer-rail);
+}
+
+.hx-row-user.hx-row-peer::before {
+  background: var(--hx-peer-wash);
 }
 
 .hx-row-tool {
@@ -3527,15 +3608,16 @@ body.hx-details-collapsed .hx-side-details {
   min-width: 0;
 }
 
-/* The branch is attached to its session row, one indent step in from the title. */
+/* The branch is attached to its session row, one indent step in from the title. Its left rule
+   is the rail the child marks sit on, so it gets a little of the transcript spine's maroon
+   rather than the neutral divider used for unrelated sections. */
 .hx-subagent-branch {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
-  margin: 1px 0 5px 14px;
-  padding-left: 5px;
-  border-left: 1px solid var(--border);
+  margin: 1px 0 6px 14px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border));
 }
 
 .hx-subagent-node {
@@ -3548,28 +3630,30 @@ body.hx-details-collapsed .hx-side-details {
 .hx-subagent-children {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
   margin-left: 9px;
-  padding-left: 4px;
-  border-left: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
 }
 
 .hx-subagent-row {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
+  box-sizing: border-box;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--text);
-  padding: 5px 7px;
+  padding: 5px 7px 5px 23px;
   text-align: left;
   cursor: pointer;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
   min-width: 0;
+  transition: background 0.12s ease;
 }
 
 .hx-subagent-row:hover,
@@ -3577,20 +3661,56 @@ body.hx-details-collapsed .hx-side-details {
   background: var(--surface-alt);
 }
 
-.hx-subagent-row .hx-subagent-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
+/* The mark replaces the old unanchored dot: it is centred on the branch rule, with the rule
+   continuing through the node the way the transcript's maroon spine runs through a station. */
+.hx-subagent-node-icon {
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
   flex: none;
-  background: var(--text-dim);
+  color: var(--text-muted);
 }
 
-.hx-subagent-row.running .hx-subagent-dot {
-  background: var(--status-success-text);
+.hx-subagent-node-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
-.hx-subagent-row.failed .hx-subagent-dot {
-  background: var(--status-error-text);
+.hx-subagent-row.running .hx-subagent-node-icon {
+  color: var(--status-success-text);
+}
+
+.hx-subagent-row.failed .hx-subagent-node-icon {
+  color: var(--status-error-text);
+}
+
+.hx-subagent-row.current .hx-subagent-node-icon {
+  color: var(--accent);
+}
+
+.hx-subagent-main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hx-subagent-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .hx-subagent-row .hx-subagent-name {
@@ -3605,8 +3725,18 @@ body.hx-details-collapsed .hx-side-details {
 .hx-subagent-row .hx-subagent-meta {
   margin-left: auto;
   color: var(--text-dim);
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   white-space: nowrap;
+}
+
+/* The second line mirrors a session row's metadata line, keeping the name whole while the two
+   model bands remain scannable as the same pills the catalogue and card heads use. */
+.hx-subagent-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .hx-subagent-tag,
@@ -3622,13 +3752,27 @@ body.hx-details-collapsed .hx-side-details {
   white-space: nowrap;
 }
 
+.hx-subagent-row .hx-subagent-tag {
+  padding: 0 4px;
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 0.6rem;
+  line-height: 1.4;
+}
+
 .hx-subagent-tag.quiet {
+  color: var(--status-warning-text);
+  border-color: var(--status-warning-border);
+}
+
+.hx-subagent-row .hx-subagent-tag.quiet {
   color: var(--status-warning-text);
   border-color: var(--status-warning-border);
 }
 
 .hx-subagent-actions {
   display: none;
+  align-self: center;
   gap: 2px;
   margin-left: auto;
 }
@@ -3642,16 +3786,31 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 .hx-subagent-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   border: 0;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  padding: 0 2px;
   font: inherit;
 }
 
 .hx-subagent-actions button:hover {
+  background: var(--surface-hover);
   color: var(--text);
+}
+
+.hx-subagent-stop-glyph {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: 1.5px;
+  background: currentColor;
 }
 
 .hx-subagent-detail {
@@ -3697,6 +3856,63 @@ body.hx-details-collapsed .hx-side-details {
   overflow: auto;
 }
 
+/* The body of a subagent action hangs under its standard tool row with the same left edge as
+   any other tool's output. There is no surrounding card: the row's disclosure is the card. */
+.hx-subagent-tool-body {
+  padding: 3px 0 6px 8px;
+}
+
+.hx-subagent-tool-body .hx-tool-out {
+  padding-left: 0;
+}
+
+.hx-subagent-tool-body .hx-subagent-brief {
+  margin: 3px 0 0;
+}
+
+.hx-subagent-tool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.hx-subagent-tool-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+}
+
+.hx-tool-open {
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 0.66rem;
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.hx-tool-open:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.hx-subagent-tool-rich {
+  padding: 4px 0 6px 8px;
+}
+
+.hx-subagent-tool-rich .hx-cat-list,
+.hx-subagent-tool-rich .hx-sub-table {
+  margin-top: 0;
+}
+
 .hx-subagent-strip {
   display: flex;
   align-items: center;
@@ -3712,6 +3928,25 @@ body.hx-details-collapsed .hx-side-details {
    it is not. A display rule beats the UA default, so say it here too. */
 .hx-subagent-strip[hidden] {
   display: none;
+}
+
+.hx-subagent-strip-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--accent);
+}
+
+.hx-subagent-strip-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .hx-subagent-strip #hx-subagent-strip-label {
@@ -3733,11 +3968,46 @@ body.hx-details-collapsed .hx-side-details {
 }
 
 .hx-subagent-card {
+  position: relative;
   border: 1px solid var(--border);
   border-radius: 8px;
   margin: 7px 0;
   padding: 8px 10px;
   background: var(--surface-alt);
+}
+
+/* A child's card is a station like any tool call. Its mark is pinned to the transcript's
+   spine (outside the card, in the gutter), with the glyph carrying the line through it. The
+   card begins 9px down (the row's 2px padding and its own 7px margin) and 1px in from the
+   row content edge, so -10/-24 lands the 24px mark exactly on the rail. */
+.hx-row-tool > .hx-subagent-card > .hx-subagent-card-head > .hx-subagent-card-icon {
+  position: absolute;
+  left: -24px;
+  top: -10px;
+  width: 24px;
+  height: 24px;
+  margin-top: 0;
+  color: var(--accent);
+}
+
+.hx-subagent-card-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.hx-subagent-card-icon svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .hx-subagent-card-head {
@@ -3771,6 +4041,12 @@ body.hx-details-collapsed .hx-side-details {
   white-space: pre-wrap;
   color: var(--text);
   font-size: 0.74rem;
+}
+
+/* A message from another agent, not a child's finished report: yellow, like its row. */
+.hx-subagent-card.hx-subagent-message {
+  background: var(--hx-peer-wash);
+  border-color: color-mix(in srgb, var(--hx-peer-rail) 40%, var(--border));
 }
 
 /* The models action is a catalogue, not a shell result: a compact list with the router's own
@@ -3881,6 +4157,147 @@ body.hx-details-collapsed .hx-side-details {
 
 .hx-model-none {
   color: var(--text-muted);
+}
+
+/* The list action is a status table, not a JSON dump. It scrolls horizontally rather than
+   wrapping every row: a name, its model and its live budget are read across, not down. */
+.hx-sub-table {
+  margin-top: 7px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+}
+
+.hx-sub-table-head,
+.hx-sub-table-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.4fr) minmax(110px, 1.1fr) 92px 46px 68px 58px 46px;
+  align-items: center;
+  gap: 8px;
+  min-width: 620px;
+  padding: 6px 9px;
+}
+
+.hx-sub-table-head {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-dim);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.hx-sub-table-row {
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.72rem;
+}
+
+.hx-sub-table-row:last-child {
+  border-bottom: none;
+}
+
+.hx-sub-table-row:hover {
+  background: var(--surface-alt);
+}
+
+.hx-sub-table-person,
+.hx-sub-table-model {
+  min-width: 0;
+}
+
+.hx-sub-table-name,
+.hx-sub-table-id,
+.hx-sub-table-model {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hx-sub-table-name {
+  font-weight: 600;
+}
+
+.hx-sub-table-id {
+  margin-top: 1px;
+  color: var(--text-muted);
+  font-family: var(--hx-mono);
+  font-size: 0.62rem;
+  line-height: 1.25;
+}
+
+.hx-sub-table-model {
+  color: var(--text-dim);
+}
+
+.hx-sub-table-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.hx-sub-table-state .hx-subagent-dot {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+
+.hx-sub-table-state.running .hx-subagent-dot {
+  background: var(--status-success-text);
+}
+
+.hx-sub-table-state.failed .hx-subagent-dot {
+  background: var(--status-error-text);
+}
+
+.hx-sub-table-queue {
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: 0.6rem;
+  line-height: 1.4;
+}
+
+.hx-sub-table-num {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.hx-sub-table-action {
+  justify-self: end;
+  text-align: right;
+}
+
+.hx-sub-table-open {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.65rem;
+  line-height: 1.55;
+  cursor: pointer;
+}
+
+.hx-sub-table-open:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.hx-sub-table-empty {
+  padding: 10px;
+  color: var(--text-dim);
+  font-size: 0.72rem;
 }
 
 .hx-subagent-result {
