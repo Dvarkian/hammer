@@ -1,8 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+// The OAuth client is configuration, not source: `lib/oauth-clients.js` resolves it from the
+// environment or `~/.hammer/oauth-clients.json`, so the suite supplies its own pair.
+process.env.GOOGLE_OAUTH_CLIENT_ID ||= 'test-google-client-id'
+process.env.GOOGLE_OAUTH_CLIENT_SECRET ||= 'test-google-client-secret'
+
 import {
-  GOOGLE_OAUTH_CLIENT_ID,
   GOOGLE_OAUTH_SCOPES,
   buildGoogleOAuthUrl,
   createGooglePkcePair,
@@ -23,7 +27,7 @@ test('the Google consent URL is the installed-app offline PKCE flow', () => {
     }),
   )
   assert.equal(url.origin + url.pathname, 'https://accounts.google.com/o/oauth2/v2/auth')
-  assert.equal(url.searchParams.get('client_id'), GOOGLE_OAUTH_CLIENT_ID)
+  assert.equal(url.searchParams.get('client_id'), 'test-google-client-id')
   assert.equal(url.searchParams.get('access_type'), 'offline')
   assert.equal(url.searchParams.get('prompt'), 'consent')
   assert.equal(url.searchParams.get('code_challenge'), challenge)

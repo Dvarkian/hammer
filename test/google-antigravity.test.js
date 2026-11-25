@@ -1,10 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+// The OAuth client is configuration, not source: `lib/oauth-clients.js` resolves it from the
+// environment or `~/.hammer/oauth-clients.json`, so the suite supplies its own pair.
+process.env.ANTIGRAVITY_CLIENT_ID ||= 'test-antigravity-client-id'
+process.env.ANTIGRAVITY_CLIENT_SECRET ||= 'test-antigravity-client-secret'
+
 import {
   ANTIGRAVITY_CALLBACK_HOST,
   ANTIGRAVITY_CALLBACK_PORT,
-  ANTIGRAVITY_CLIENT_ID,
   ANTIGRAVITY_ENDPOINTS,
   ANTIGRAVITY_MODELS,
   ANTIGRAVITY_PROVIDER_KEY,
@@ -43,7 +47,7 @@ test('the consent URL asks for the grant Antigravity registers', () => {
       codeChallenge: 'challenge-1',
     }),
   )
-  assert.equal(url.searchParams.get('client_id'), ANTIGRAVITY_CLIENT_ID)
+  assert.equal(url.searchParams.get('client_id'), 'test-antigravity-client-id')
   assert.equal(url.searchParams.get('redirect_uri'), ANTIGRAVITY_REDIRECT_URI)
   assert.equal(url.searchParams.get('access_type'), 'offline')
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256')
